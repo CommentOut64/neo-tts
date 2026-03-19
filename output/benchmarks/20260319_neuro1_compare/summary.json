@@ -1,0 +1,62 @@
+{
+  "pytorch": {
+    "log_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\pytorch.log",
+    "exists": true,
+    "reference_processing_s": 3.123,
+    "target_text_cleaning_s": 1.616,
+    "gpt_semantic_gen_s": 57.8,
+    "gpt_tokens_per_s": 137.25,
+    "sovits_audio_decode_s": 5.414,
+    "first_segment_latency_s": 4.098,
+    "total_audio_duration_s": 330.22,
+    "total_inference_time_s": 68.031,
+    "rtf": 0.206,
+    "wall_clock_s": 86.174,
+    "exit_code": 0,
+    "status": "success",
+    "wav_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\pytorch_neuro1.wav",
+    "wav_frames": 10567040,
+    "wav_samplerate": 32000,
+    "wav_duration_s": 330.22,
+    "wav_channels": 1,
+    "wav_format": "WAV",
+    "wav_subtype": "PCM_16",
+    "wav_bytes": 21134124
+  },
+  "onnx": {
+    "log_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\onnx.log",
+    "exists": true,
+    "reference_processing_s": 1.063,
+    "target_text_cleaning_s": 1.63,
+    "gpt_semantic_gen_s": 70.148,
+    "gpt_tokens_per_s": 128.93,
+    "sovits_audio_decode_s": 11.943,
+    "first_segment_latency_s": 2.252,
+    "total_audio_duration_s": 370.86,
+    "total_inference_time_s": 84.964,
+    "rtf": 0.2291,
+    "wall_clock_s": 103.321,
+    "exit_code": 0,
+    "status": "success",
+    "wav_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\onnx_neuro1.wav",
+    "wav_frames": 11867520,
+    "wav_samplerate": 32000,
+    "wav_duration_s": 370.86,
+    "wav_channels": 1,
+    "wav_format": "WAV",
+    "wav_subtype": "PCM_16",
+    "wav_bytes": 23735084
+  },
+  "trt": {
+    "log_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\trt.log",
+    "exists": true,
+    "wall_clock_s": 0.3,
+    "exit_code": 1,
+    "status": "failed",
+    "error": "ModuleNotFoundError: No module named tensorrt"
+  },
+  "input": {
+    "clean_text_path": "F:\\GPT-SoVITS_minimal_inference-master\\output\\benchmarks\\20260319_neuro1_compare\\input_text_cleaned.txt",
+    "char_count": 1692
+  }
+}

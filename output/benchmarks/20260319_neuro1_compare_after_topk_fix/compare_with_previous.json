@@ -1,0 +1,55 @@
+{
+  "before": {
+    "reference_processing_s": 1.063,
+    "target_text_cleaning_s": 1.63,
+    "gpt_semantic_gen_s": 70.148,
+    "gpt_tokens_per_s": 128.93,
+    "sovits_audio_decode_s": 11.943,
+    "first_segment_latency_s": 2.252,
+    "total_audio_duration_s": 370.86,
+    "total_inference_time_s": 84.964,
+    "rtf": 0.2291,
+    "wall_clock_s": 103.321,
+    "exit_code": 0,
+    "wav_duration_s": 370.86,
+    "wav_bytes": 23735084,
+    "token_count_stats": {
+      "count": 43,
+      "min": 28,
+      "median": 159,
+      "max": 347,
+      "sum": 7448
+    }
+  },
+  "after_topk_fix": {
+    "reference_processing_s": 1.02,
+    "target_text_cleaning_s": 1.726,
+    "gpt_semantic_gen_s": 81.813,
+    "gpt_tokens_per_s": 113.27,
+    "sovits_audio_decode_s": 12.183,
+    "first_segment_latency_s": 2.239,
+    "total_audio_duration_s": 379.9,
+    "total_inference_time_s": 96.931,
+    "rtf": 0.2551,
+    "wall_clock_s": 115.668,
+    "exit_code": 0,
+    "wav_duration_s": 379.9,
+    "wav_bytes": 24313644,
+    "token_count_stats": {
+      "count": 43,
+      "min": 30,
+      "median": 157,
+      "max": 361,
+      "sum": 7674
+    }
+  },
+  "delta": {
+    "total_inference_time_s": 11.967,
+    "total_audio_duration_s": 9.04,
+    "rtf": 0.026,
+    "gpt_semantic_gen_s": 11.665,
+    "gpt_tokens_per_s": -15.66,
+    "sovits_audio_decode_s": 0.24,
+    "first_segment_latency_s": -0.013
+  }
+}

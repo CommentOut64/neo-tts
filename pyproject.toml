@@ -1,0 +1,89 @@
+[project]
+name = "gpt-sovits-minimal-inference"
+version = "1.0.0"
+description = "GPT-SoVITS minimal inference with ONNX/TensorRT acceleration"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # === 深度学习框架 ===
+    "torch",
+    "torchaudio",
+
+    # === 推理加速 ===
+    "onnx",
+    "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+    "onnxruntime; platform_machine == 'aarch64' or platform_machine == 'arm64'",
+    "onnxsim==0.4.28",
+    "onnxconverter-common",
+
+    # === 音频处理 ===
+    "librosa==0.10.2",
+    "soundfile",
+    "scipy",
+    "numba",
+    "ffmpeg-python",
+    "av>=11",
+
+    # === NLP / 多语言文本 ===
+    "transformers>=4.43,<=4.50",
+    "tokenizers>=0.13,<1",
+    "sentencepiece",
+    "pypinyin",
+    "cn2an",
+    "jieba_fast",
+    "jieba",
+    "opencc",
+    "pyopenjtalk>=0.4.1",
+    "g2p_en",
+    "g2pk2",
+    "ko_pron",
+    "ToJyutping",
+    "split-lang",
+    "fast_langdetect>=0.3.1",
+    "wordsegment",
+    "python_mecab_ko; sys_platform != 'win32'",
+
+    # === 模型管理 ===
+    "pytorch-lightning>=2.4",
+    "modelscope==1.10.0",
+    "huggingface_hub>=0.13",
+    "peft",
+    "rotary_embedding_torch",
+    "x_transformers",
+    "torchmetrics<=1.5",
+    "ctranslate2>=4.0,<5",
+
+    # === Web 服务 ===
+    "fastapi[standard]>=0.115.2",
+    "gradio<5",
+    "pydantic<=2.10.6",
+
+    # === 工具 ===
+    "numpy<2.0",
+    "tensorboard",
+    "tqdm",
+    "chardet",
+    "PyYAML",
+    "psutil",
+    "funasr==1.0.27",
+]
+
+[project.optional-dependencies]
+trt = [
+    "tensorrt",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+torchaudio = [{ index = "pytorch-cu124" }]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["GPT_SoVITS"]

@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "F:\GPT-SoVITS_minimal_inference-master\run_trt_inference.py", line 2, in <module>
+    import tensorrt as trt
+ModuleNotFoundError: No module named 'tensorrt'
+EXIT_CODE=1
+WALL_CLOCK_SECONDS=0.3
+OUTPUT_PATH=.\output\benchmarks\20260319_neuro1_compare\trt_neuro1.wav

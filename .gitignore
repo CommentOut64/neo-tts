@@ -1,0 +1,10 @@
+/GEMINI.md
+.idea
+/GPT_SoVITS/pretrained_models/
+*.onnx
+*.zip
+*.wav
+/onnx
+/pretrained_models
+/onnx_export/
+/assets
