@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --el-color-primary: #3B82F6;
+  --el-color-success: #22C55E;
+  --el-color-warning: #F59E0B;
+  --el-color-danger: #EF4444;
+  --el-color-info: #94A3B8;
+  --el-bg-color: #0F172A;
+  --el-bg-color-overlay: #1B2336;
+  --el-bg-color-page: #0F172A;
+  --el-text-color-primary: #F8FAFC;
+  --el-text-color-regular: #CBD5E1;
+  --el-text-color-secondary: #94A3B8;
+  --el-text-color-placeholder: #64748B;
+  --el-border-color: #475569;
+  --el-border-color-light: #334155;
+  --el-border-color-lighter: #272F42;
+  --el-fill-color: #272F42;
+  --el-fill-color-light: #1B2336;
+  --el-fill-color-blank: #0F172A;
+  --el-border-radius-base: 8px;
+  --el-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --el-font-size-base: 14px;
+}
+
+*:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+}
+
+@keyframes audio-bars {
+  0%, 100% { height: 20%; }
+  50% { height: 80%; }
+}
+.audio-bar { animation: audio-bars 1.2s ease-in-out infinite; }
+.audio-bar:nth-child(1) { animation-delay: 0s; }
+.audio-bar:nth-child(2) { animation-delay: 0.15s; }
+.audio-bar:nth-child(3) { animation-delay: 0.3s; }
+.audio-bar:nth-child(4) { animation-delay: 0.45s; }
+.audio-bar:nth-child(5) { animation-delay: 0.6s; }
+
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-once { animation: spin-once 0.6s ease-in-out; }

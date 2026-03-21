@@ -11,3 +11,6 @@ __pycache__/
 /pretrained_models
 /onnx_export/
 /assets
+/frontend/node_modules/
+/frontend/dist/
+/docs/superpowers/
