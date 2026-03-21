@@ -1,0 +1,45 @@
+<script setup lang="ts">
+import { useRoute, useRouter } from 'vue-router'
+import { Microphone, Setting } from '@element-plus/icons-vue'
+import StatusIndicator from './StatusIndicator.vue'
+import type { ConnectionStatus } from '@/composables/useHealthCheck'
+
+defineProps<{ status: ConnectionStatus }>()
+
+const route = useRoute()
+const router = useRouter()
+
+const navItems = [
+  { path: '/studio', label: '语音合成', icon: Microphone },
+  { path: '/voices', label: '模型管理', icon: Setting },
+]
+</script>
+
+<template>
+  <nav class="fixed top-0 left-0 right-0 z-50 h-14 bg-primary border-b border-border flex items-center px-6">
+    <div class="flex items-center gap-2 mr-8">
+      <el-icon :size="22" class="text-accent"><Microphone /></el-icon>
+      <span class="text-base font-semibold text-foreground">GPT-SoVITS Studio</span>
+    </div>
+    <div class="flex items-center gap-1">
+      <button
+        v-for="item in navItems"
+        :key="item.path"
+        class="relative px-4 py-2 text-sm font-medium transition-colors duration-150 rounded-btn"
+        :class="route.path === item.path
+          ? 'text-foreground'
+          : 'text-muted-fg hover:text-foreground hover:bg-secondary'"
+        @click="router.push(item.path)"
+      >
+        {{ item.label }}
+        <span
+          v-if="route.path === item.path"
+          class="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full"
+        />
+      </button>
+    </div>
+    <div class="ml-auto">
+      <StatusIndicator :status="status" />
+    </div>
+  </nav>
+</template>
