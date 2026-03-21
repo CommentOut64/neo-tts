@@ -31,6 +31,8 @@ from GPT_SoVITS.text.LangSegmenter import LangSegmenter
 from GPT_SoVITS.module.mel_processing import spectrogram_torch
 from GPT_SoVITS.process_ckpt import load_sovits_new, get_sovits_version_from_path_fast
 from GPT_SoVITS.sv import SV
+from backend.app.inference.audio_processing import load_reference_spectrogram
+from backend.app.inference.text_processing import build_phones_and_bert_features, split_text_segments
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 is_half = True if device == "cuda" else False
@@ -65,29 +67,7 @@ class DictToAttrRecursive(dict):
 
 
 def split_text(text):
-    text = text.strip("\n")
-    if not text:
-        return []
-    sentence_delimiters = r'([。！？.!?…\n])'
-    parts = re.split(sentence_delimiters, text)
-    sentences = []
-    for i in range(0, len(parts) - 1, 2):
-        sentences.append(parts[i] + parts[i + 1])
-    if len(parts) % 2 == 1:
-        sentences.append(parts[-1])
-    sentences = [s.strip() for s in sentences if s.strip()]
-    merged = []
-    current = ""
-    for s in sentences:
-        if len(current) + len(s) < 20:
-            current += s
-        else:
-            if current:
-                merged.append(current)
-            current = s
-    if current:
-        merged.append(current)
-    return merged
+    return split_text_segments(text, min_segment_length=20)
 
 
 class GPTSoVITSInference:
@@ -230,93 +210,29 @@ class GPTSoVITSInference:
         return bert
 
     def get_phones_and_bert(self, text, language, version, default_lang=None):
-        import re
-        text = re.sub(r' {2,}', ' ', text)
-        textlist = []
-        langlist = []
-        if language == "all_zh":
-            for tmp in LangSegmenter.getTexts(text, "zh"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_yue":
-            for tmp in LangSegmenter.getTexts(text, "zh"):
-                if tmp["lang"] == "zh":
-                    tmp["lang"] = "yue"
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_ja":
-            for tmp in LangSegmenter.getTexts(text, "ja"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_ko":
-            for tmp in LangSegmenter.getTexts(text, "ko"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "en":
-            langlist.append("en")
-            textlist.append(text)
-        elif language == "auto":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "auto_yue":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
-                if tmp["lang"] == "zh":
-                    tmp["lang"] = "yue"
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        else:
-            for tmp in LangSegmenter.getTexts(text):
-                if langlist:
-                    if (tmp["lang"] == "en" and langlist[-1] == "en") or (tmp["lang"] != "en" and langlist[-1] != "en"):
-                        textlist[-1] += tmp["text"]
-                        continue
-                if tmp["lang"] == "en":
-                    langlist.append(tmp["lang"])
-                else:
-                    langlist.append(language.replace("all_", ""))
-                textlist.append(tmp["text"])
-
-        print(f"Text segments: {textlist}")
-        print(f"Language segments: {langlist}")
-
-        phones_list = []
-        bert_list = []
-        norm_text_list = []
-        for i in range(len(textlist)):
-            lang = langlist[i]
-            phones, word2ph, norm_text = clean_text(textlist[i], lang, version)
-            phones = cleaned_text_to_sequence(phones, version)
-            bert = self.get_bert_inf(phones, word2ph, norm_text, lang)
-            phones_list.append(phones)
-            norm_text_list.append(norm_text)
-            bert_list.append(bert)
-
-        bert = torch.cat(bert_list, dim=1)
-        phones = sum(phones_list, [])
-        norm_text = "".join(norm_text_list)
-
-        return phones, bert.to(torch.float16 if self.is_half else torch.float32), norm_text
+        phones, bert, norm_text = build_phones_and_bert_features(
+            text=text,
+            language=language,
+            version=version,
+            tokenizer=self.tokenizer,
+            bert_model=self.bert_model,
+            device=self.device,
+            is_half=self.is_half,
+            default_lang=default_lang,
+            return_norm_text=True,
+        )
+        return phones, bert, norm_text
 
     def get_spepc(self, filename):
-        audio, sr = load_audio_equivalent(filename, self.device)
-        if sr != self.hps.data.sampling_rate:
-            audio = torchaudio.transforms.Resample(sr, self.hps.data.sampling_rate).to(self.device)(audio)
-
-        if audio.shape[0] > 1:
-            audio = audio.mean(0, keepdim=True)
-
-        spec = spectrogram_torch(
-            audio,
-            self.hps.data.filter_length,
-            self.hps.data.sampling_rate,
-            self.hps.data.hop_length,
-            self.hps.data.win_length,
-            center=False
+        return load_reference_spectrogram(
+            filename=filename,
+            device=self.device,
+            sampling_rate=self.hps.data.sampling_rate,
+            filter_length=self.hps.data.filter_length,
+            hop_length=self.hps.data.hop_length,
+            win_length=self.hps.data.win_length,
+            is_half=self.is_half,
         )
-        if self.is_half:
-            spec = spec.half()
-        return spec, audio
 
     def infer(self, ref_wav_path, prompt_text, prompt_lang, text, text_lang,
               top_k=5, top_p=1, temperature=1, speed=1, pause_length=0.3):

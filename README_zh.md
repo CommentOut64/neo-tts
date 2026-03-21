@@ -42,6 +42,31 @@ KV-Cache optimization, and zero-copy streaming.
 
 ---
 
+## 🚧 架构重建状态
+
+当前仓库正在向长期可维护的新架构迁移：
+
+* 正在引入标准化 FastAPI 后端，目录为 `backend/`
+* 正在引入 Vue 前端，目录为 `frontend/`
+* 长期目标只保留 PyTorch 推理主链路
+* ONNX 和 TensorRT 当前仅作为迁移期 legacy baseline 保留，不再承接新功能
+
+现阶段根目录脚本仍是可运行基线，新结构会逐步替代它们。
+
+### 当前 Legacy 基线入口（2026-03-20）
+
+当前保留以下根目录文件作为迁移期基线：
+
+* API：`api_server.py`、`api_server_onnx.py`、`api_server_trt.py`
+* PyTorch 推理：`run_inference.py`、`run_streaming_inference.py`、`run_long_inference.py`、`run_optimized_inference.py`
+* ONNX/TensorRT 推理：`run_onnx_inference.py`、`run_onnx_streaming_inference.py`、`run_onnx_long_inference.py`、`run_trt_inference.py`
+
+### 首轮迁移映射
+
+* `api_server.py` -> `backend/app/api/routers/*.py` + `backend/app/services/*.py` + `backend/app/repositories/*.py`
+* `run_optimized_inference.py` -> `backend/app/inference/{engine,pipeline,audio_processing,text_processing,model_cache}.py`
+* `run_inference.py`、`run_streaming_inference.py`、`run_long_inference.py` -> 迁移期 PyTorch 行为对照基线
+
 ## 🛠️ 深度分析：为何重构？ (The "Why")
 
 ### 1. 消除动态图与 Python 开销
@@ -155,9 +180,10 @@ python onnx2trt.py --help
 
 如果您不想每天对着终端敲命令，或者想让您的后端程序直接调用。我们整出了兼容 **OpenAI 协议** 的 API 服务，支持流式输出。
 
-*   **PyTorch 稳定版**: `python api_server.py` (默认 8000 端口，适合还没折腾 ONNX 的你)
-*   **ONNX 极速版**: `python api_server_onnx.py` (默认 8001 端口，CPU 用户的福音，部署简单)
-*   **TensorRT 究极版**: `python api_server_trt.py` (默认 8002 端口，显卡在尖叫，性能在狂飙)
+*   **Legacy 基线，PyTorch**: `python api_server.py` (默认 8000 端口)
+*   **Legacy 基线，ONNX**: `python api_server_onnx.py` (默认 8001 端口)
+*   **Legacy 基线，TensorRT**: `python api_server_trt.py` (默认 8002 端口)
+*   **重构中**: 新后端会逐步迁移到 `backend/app`
 
 👉 **[点击查阅 API 详细文档](./API_USAGE.md)** —— 求求了，看一眼文档吧，都在这里了。
 

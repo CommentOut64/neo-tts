@@ -42,6 +42,31 @@ Our goal is simple: **Make GPU go brrr**. We strive for: **Fast AF 🏎️**, **
 
 ---
 
+## 🚧 Architecture Rebuild Status
+
+This repository is currently being rebuilt toward a cleaner long-term architecture:
+
+* A new standard FastAPI backend is being introduced under `backend/`.
+* A new Vue frontend is being introduced under `frontend/`.
+* PyTorch is the target long-term inference backend.
+* ONNX and TensorRT remain only as legacy baseline paths during migration and will not receive new feature work.
+
+At this stage, the root-level scripts remain the runnable baseline while the new structure is being built out.
+
+### Current Legacy Baseline Entrypoints (2026-03-20)
+
+The following root-level files are currently kept as migration baselines:
+
+* API: `api_server.py`, `api_server_onnx.py`, `api_server_trt.py`
+* PyTorch inference: `run_inference.py`, `run_streaming_inference.py`, `run_long_inference.py`, `run_optimized_inference.py`
+* ONNX/TensorRT inference: `run_onnx_inference.py`, `run_onnx_streaming_inference.py`, `run_onnx_long_inference.py`, `run_trt_inference.py`
+
+### First-Round Migration Mapping
+
+* `api_server.py` -> `backend/app/api/routers/*.py` + `backend/app/services/*.py` + `backend/app/repositories/*.py`
+* `run_optimized_inference.py` -> `backend/app/inference/{engine,pipeline,audio_processing,text_processing,model_cache}.py`
+* `run_inference.py`, `run_streaming_inference.py`, `run_long_inference.py` -> migration-period PyTorch behavior baselines
+
 ## 🛠️ Deep Analysis: Why Refactor?
 
 ### 1. Eliminating Dynamic Graph & Python Overhead
@@ -159,9 +184,10 @@ Available shape profiles:
 
 If you're tired of staring at the terminal or want your backend to talk to this beast directly, we've squeezed out an **OpenAI-compatible** API service with streaming support. It's basically "Plug and Play".
 
-*   **PyTorch (Stable)**: `python api_server.py` (Port 8000, for the traditionalists)
-*   **ONNX (Turbo)**: `python api_server_onnx.py` (Port 8001, CPU users' salvation, easy deployment)
-*   **TensorRT (Godspeed)**: `python api_server_trt.py` (Port 8002, GPU screaming, performance peaking)
+*   **Legacy baseline, PyTorch**: `python api_server.py` (Port 8000)
+*   **Legacy baseline, ONNX**: `python api_server_onnx.py` (Port 8001)
+*   **Legacy baseline, TensorRT**: `python api_server_trt.py` (Port 8002)
+*   **In rebuild**: the new backend is being migrated into `backend/app`
 
 👉 **[Check the API Documentation](./API_USAGE.md)** — Please, just read the docs. I beg you. Everything is in there.
 

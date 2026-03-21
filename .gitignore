@@ -1,3 +1,6 @@
+__pycache__/
+*.pyc
+
 /GEMINI.md
 .idea
 /GPT_SoVITS/pretrained_models/

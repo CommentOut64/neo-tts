@@ -1,14 +1,14 @@
 [project]
 name = "gpt-sovits-minimal-inference"
 version = "1.0.0"
-description = "GPT-SoVITS minimal inference with ONNX/TensorRT acceleration"
+description = "GPT-SoVITS minimal inference with architecture rebuild in progress (PyTorch-first)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     # === 深度学习框架 ===
     "torch",
     "torchaudio",
 
-    # === 推理加速 ===
+    # === 推理加速（迁移期 legacy baseline，后续下线）===
     "onnx",
     "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
     "onnxruntime; platform_machine == 'aarch64' or platform_machine == 'arm64'",
@@ -70,6 +70,11 @@ dependencies = [
 [project.optional-dependencies]
 trt = [
     "tensorrt",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
 ]
 
 [[tool.uv.index]]

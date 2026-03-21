@@ -30,6 +30,8 @@ from GPT_SoVITS.module.mel_processing import spectrogram_torch
 from GPT_SoVITS.process_ckpt import load_sovits_new, get_sovits_version_from_path_fast
 from GPT_SoVITS.sv import SV
 from GPT_SoVITS.utils import load_audio_equivalent
+from backend.app.inference.audio_processing import load_reference_spectrogram
+from backend.app.inference.text_processing import build_phones_and_bert_features, split_text_segments
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 is_half = True if device == "cuda" else False
@@ -58,38 +60,7 @@ class DictToAttrRecursive(dict):
 
 
 def split_text(text):
-    text = text.strip("\n")
-    if not text:
-        return []
-    
-    # Split by common sentence endings and keep them
-    # Use multiple punctuation marks as delimiters
-    sentence_delimiters = r'([。！？.!?…\n])'
-    parts = re.split(sentence_delimiters, text)
-    
-    # Reconstruct sentences
-    sentences = []
-    for i in range(0, len(parts)-1, 2):
-        sentences.append(parts[i] + parts[i+1])
-    if len(parts) % 2 == 1:
-        sentences.append(parts[-1])
-    
-    sentences = [s.strip() for s in sentences if s.strip()]
-    
-    # Merge short sentences
-    merged = []
-    current = ""
-    for s in sentences:
-        if len(current) + len(s) < 20: # Minimum segment length (increased slightly)
-            current += s
-        else:
-            if current:
-                merged.append(current)
-            current = s
-    if current:
-        merged.append(current)
-    
-    return merged
+    return split_text_segments(text, min_segment_length=20)
 
 
 class GPTSoVITSLongInference:
@@ -155,91 +126,28 @@ class GPTSoVITSLongInference:
         self.sv_model = SV(device, is_half)
 
     def get_phones_and_bert(self, text, language, version, default_lang=None):
-        text = re.sub(r' {2,}', ' ', text)
-        textlist = []
-        langlist = []
-        if language == "all_zh":
-            for tmp in LangSegmenter.getTexts(text, "zh"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_yue":
-            for tmp in LangSegmenter.getTexts(text, "zh"):
-                if tmp["lang"] == "zh": tmp["lang"] = "yue"
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_ja":
-            for tmp in LangSegmenter.getTexts(text, "ja"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "all_ko":
-            for tmp in LangSegmenter.getTexts(text, "ko"):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "en":
-            langlist.append("en")
-            textlist.append(text)
-        elif language == "auto":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        elif language == "auto_yue":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
-                if tmp["lang"] == "zh": tmp["lang"] = "yue"
-                langlist.append(tmp["lang"])
-                textlist.append(tmp["text"])
-        else:
-            for tmp in LangSegmenter.getTexts(text):
-                if langlist:
-                    if (tmp["lang"] == "en" and langlist[-1] == "en") or (tmp["lang"] != "en" and langlist[-1] != "en"):
-                        textlist[-1] += tmp["text"]
-                        continue
-                if tmp["lang"] == "en":
-                    langlist.append(tmp["lang"])
-                else:
-                    langlist.append(language.replace("all_", ""))
-                textlist.append(tmp["text"])
-        
-        phones_list = []
-        bert_list = []
-        for i in range(len(textlist)):
-            lang = langlist[i]
-            phones, word2ph, norm_text = clean_text(textlist[i], lang, version)
-            phones = cleaned_text_to_sequence(phones, version)
-            
-            if lang in ["zh", "yue"]:
-                with torch.no_grad():
-                    inputs = self.tokenizer(norm_text, return_tensors="pt")
-                    for k in inputs:
-                        inputs[k] = inputs[k].to(self.device)
-                    res = self.bert_model(**inputs, output_hidden_states=True)
-                    res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
-                
-                phone_level_feature = []
-                for j in range(len(word2ph)):
-                    phone_level_feature.append(res[j].repeat(word2ph[j], 1))
-                bert = torch.cat(phone_level_feature, dim=0).T
-            else:
-                bert = torch.zeros(
-                    (1024, len(phones)),
-                    dtype=torch.float16 if self.is_half else torch.float32,
-                )
-
-            phones_list.append(phones)
-            bert_list.append(bert)
-        
-        bert = torch.cat(bert_list, dim=1)
-        phones = sum(phones_list, [])
-        return phones, bert.to(torch.float16 if self.is_half else torch.float32)
+        return build_phones_and_bert_features(
+            text=text,
+            language=language,
+            version=version,
+            tokenizer=self.tokenizer,
+            bert_model=self.bert_model,
+            device=self.device,
+            is_half=self.is_half,
+            default_lang=default_lang,
+            return_norm_text=False,
+        )
 
     def get_spepc(self, filename):
-        audio, sr = load_audio_equivalent(filename, self.device)
-        if sr != self.hps.data.sampling_rate:
-            audio = torchaudio.transforms.Resample(sr, self.hps.data.sampling_rate).to(self.device)(audio)
-        if audio.shape[0] > 1: audio = audio.mean(0, keepdim=True)
-        spec = spectrogram_torch(audio, self.hps.data.filter_length, self.hps.data.sampling_rate,
-                                 self.hps.data.hop_length, self.hps.data.win_length, center=False)
-        if self.is_half: spec = spec.half()
-        return spec, audio
+        return load_reference_spectrogram(
+            filename=filename,
+            device=self.device,
+            sampling_rate=self.hps.data.sampling_rate,
+            filter_length=self.hps.data.filter_length,
+            hop_length=self.hps.data.hop_length,
+            win_length=self.hps.data.win_length,
+            is_half=self.is_half,
+        )
 
     def infer_long(self, ref_wav_path, prompt_text, prompt_lang, text, text_lang,
                    top_k=15, top_p=1, temperature=1, speed=1, chunk_length=24, noise_scale=0.35, pause_length=0.3):

@@ -1,4 +1,5 @@
 --no-binary=opencc
+# 迁移期说明：ONNX/TensorRT 相关依赖仍保留为 legacy baseline，后续在 Chunk 5 清理
 numpy<2.0
 scipy
 tensorboard
@@ -45,3 +46,4 @@ huggingface_hub>=0.13
 tokenizers>=0.13,<1
 av>=11
 tqdm
+pytest>=8,<9
