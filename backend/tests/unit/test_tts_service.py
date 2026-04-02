@@ -81,7 +81,7 @@ def test_synthesize_stream_merges_request_and_calls_engine():
         def __init__(self) -> None:
             self.last_request = None
 
-        def synthesize_stream(self, request):
+        def synthesize_stream(self, request, *, progress_callback=None, should_cancel=None):
             self.last_request = request
             return 32000, iter(["chunk"])
 
@@ -109,7 +109,7 @@ def test_synthesize_stream_merges_request_and_calls_engine():
 
 def test_synthesize_stream_rejects_unsupported_response_format():
     class FakeEngine:
-        def synthesize_stream(self, request):
+        def synthesize_stream(self, request, *, progress_callback=None, should_cancel=None):
             return 32000, iter([])
 
     service = TtsService()

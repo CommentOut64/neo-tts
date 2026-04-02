@@ -24,6 +24,7 @@ def _build_request(**kwargs) -> PreparedSynthesisRequest:
         "model": "gpt-sovits-v2",
         "response_format": "wav",
         "text_lang": "auto",
+        "text_split_method": "cut5",
         "chunk_length": 24,
         "history_window": 4,
         "speed": 1.0,
@@ -54,6 +55,7 @@ def test_pipeline_resolves_relative_ref_audio_and_delegates_to_model(tmp_path: P
     assert len(chunks) == 1
     assert model.calls[0]["ref_wav_path"] == str((tmp_path / "pretrained_models/demo.wav").resolve())
     assert model.calls[0]["text"] == "hello world"
+    assert model.calls[0]["text_split_method"] == "cut5"
 
 
 def test_pipeline_rejects_empty_input_text(tmp_path: Path):

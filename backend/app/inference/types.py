@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 import numpy as np
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ class InferenceRequest(BaseModel):
     model: str
     response_format: str
     text_lang: str
+    text_split_method: str = "cut5"
     chunk_length: int
     history_window: int
     speed: float
@@ -44,3 +45,12 @@ class ModelHandle:
 class InferenceStreamResult:
     sample_rate: int
     stream: Iterator[np.ndarray]
+
+
+ProgressPayload = Mapping[str, Any]
+ProgressCallback = Callable[[ProgressPayload], None]
+CancelChecker = Callable[[], bool]
+
+
+class InferenceCancelledError(RuntimeError):
+    """推理被外部强制中断时抛出的领域异常。"""

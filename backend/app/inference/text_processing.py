@@ -36,6 +36,188 @@ def split_text_segments(text: str, min_segment_length: int = 10) -> list[str]:
     return merged
 
 
+OFFICIAL_SPLIT_PUNCTUATION = {
+    "，",
+    "。",
+    "？",
+    "！",
+    ",",
+    ".",
+    "?",
+    "!",
+    "~",
+    ":",
+    "：",
+    "—",
+    "…",
+}
+
+OFFICIAL_CUT5_PUNCTUATION = {",", ".", ";", "?", "!", "、", "，", "。", "？", "！", "：", "…"}
+OFFICIAL_EMPTY_SEGMENT_PUNCTUATION = {"!", "?", "…", ",", ".", "-", " "}
+
+
+def _official_split_sentence_units(text: str) -> list[str]:
+    text = text.replace("……", "。").replace("——", "，")
+    if text and text[-1] not in OFFICIAL_SPLIT_PUNCTUATION:
+        text += "。"
+
+    head = 0
+    tail = 0
+    units: list[str] = []
+    while head < len(text):
+        if text[head] in OFFICIAL_SPLIT_PUNCTUATION:
+            head += 1
+            units.append(text[tail:head])
+            tail = head
+            continue
+        head += 1
+    return units
+
+
+def _official_cut0(text: str) -> str:
+    return text if not set(text).issubset(OFFICIAL_EMPTY_SEGMENT_PUNCTUATION) else "\n"
+
+
+def _official_cut1(text: str) -> str:
+    text = text.strip("\n")
+    units = _official_split_sentence_units(text)
+    split_idx = list(range(0, len(units), 4))
+    if split_idx:
+        split_idx[-1] = None
+    if len(split_idx) > 1:
+        pieces = []
+        for index in range(len(split_idx) - 1):
+            pieces.append("".join(units[split_idx[index] : split_idx[index + 1]]))
+    else:
+        pieces = [text]
+    pieces = [item for item in pieces if not set(item).issubset(OFFICIAL_EMPTY_SEGMENT_PUNCTUATION)]
+    return "\n".join(pieces)
+
+
+def _official_cut2(text: str) -> str:
+    text = text.strip("\n")
+    units = _official_split_sentence_units(text)
+    if len(units) < 2:
+        return text
+
+    pieces: list[str] = []
+    char_sum = 0
+    chunk = ""
+    for unit in units:
+        char_sum += len(unit)
+        chunk += unit
+        if char_sum > 50:
+            char_sum = 0
+            pieces.append(chunk)
+            chunk = ""
+
+    if chunk:
+        pieces.append(chunk)
+
+    if len(pieces) > 1 and len(pieces[-1]) < 50:
+        pieces[-2] = pieces[-2] + pieces[-1]
+        pieces = pieces[:-1]
+
+    pieces = [item for item in pieces if not set(item).issubset(OFFICIAL_EMPTY_SEGMENT_PUNCTUATION)]
+    return "\n".join(pieces)
+
+
+def _official_cut3(text: str) -> str:
+    text = text.strip("\n")
+    pieces = [item for item in text.strip("。").split("。") if not set(item).issubset(OFFICIAL_EMPTY_SEGMENT_PUNCTUATION)]
+    return "\n".join(pieces)
+
+
+def _official_cut4(text: str) -> str:
+    text = text.strip("\n")
+    pieces = re.split(r"(?<!\d)\.(?!\d)", text.strip("."))
+    pieces = [item for item in pieces if not set(item).issubset(OFFICIAL_EMPTY_SEGMENT_PUNCTUATION)]
+    return "\n".join(pieces)
+
+
+def _official_cut5(text: str) -> str:
+    text = text.strip("\n")
+    merged_items: list[str] = []
+    chars: list[str] = []
+
+    for index, char in enumerate(text):
+        if char in OFFICIAL_CUT5_PUNCTUATION:
+            is_decimal_dot = (
+                char == "."
+                and index > 0
+                and index < len(text) - 1
+                and text[index - 1].isdigit()
+                and text[index + 1].isdigit()
+            )
+            if is_decimal_dot:
+                chars.append(char)
+            else:
+                chars.append(char)
+                merged_items.append("".join(chars))
+                chars = []
+            continue
+        chars.append(char)
+
+    if chars:
+        merged_items.append("".join(chars))
+
+    result = [item for item in merged_items if not set(item).issubset(OFFICIAL_CUT5_PUNCTUATION)]
+    return "\n".join(result)
+
+
+OFFICIAL_SPLIT_METHODS = {
+    "cut0": _official_cut0,
+    "cut1": _official_cut1,
+    "cut2": _official_cut2,
+    "cut3": _official_cut3,
+    "cut4": _official_cut4,
+    "cut5": _official_cut5,
+}
+
+
+def _official_process_text_lines(lines: list[str]) -> list[str]:
+    if all(item in [None, " ", "\n", ""] for item in lines):
+        raise ValueError("请输入有效文本")
+    return [item for item in lines if item not in [None, " ", ""]]
+
+
+def _official_merge_short_text_in_array(lines: list[str], threshold: int) -> list[str]:
+    if len(lines) < 2:
+        return lines
+
+    result: list[str] = []
+    current = ""
+    for line in lines:
+        current += line
+        if len(current) >= threshold:
+            result.append(current)
+            current = ""
+
+    if current:
+        if not result:
+            result.append(current)
+        else:
+            result[-1] += current
+    return result
+
+
+def split_text_segments_official(text: str, text_split_method: str = "cut5") -> list[str]:
+    normalized = text.strip("\n")
+    if not normalized:
+        return []
+
+    splitter = OFFICIAL_SPLIT_METHODS.get(text_split_method)
+    if splitter is None:
+        raise ValueError(f"Unsupported text_split_method '{text_split_method}'.")
+
+    split_result = splitter(normalized)
+    while "\n\n" in split_result:
+        split_result = split_result.replace("\n\n", "\n")
+
+    lines = _official_process_text_lines(split_result.split("\n"))
+    return _official_merge_short_text_in_array(lines, threshold=5)
+
+
 def build_phones_and_bert_features(
     text: str,
     language: str,
