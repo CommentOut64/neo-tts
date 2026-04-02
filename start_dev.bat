@@ -13,18 +13,21 @@ if %errorlevel%==0 (
     goto start_frontend
 )
 
-:: Start frontend in a separate window
-:start_frontend
-echo [1/2] Starting frontend (separate window)...
-start "GPT-SoVITS Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+:: Start backend in a separate window
+:start_backend
+echo [1/2] Starting backend on port 8000 (separate window)...
+start "GPT-SoVITS Backend" cmd /k "cd /d %~dp0 && call .venv\Scripts\activate.bat && python -m backend.app.cli --port 8000"
 
-:: Wait a moment then open browser
-timeout /t 3 /nobreak >nul
-start "" http://localhost:5173
+:: Wait for backend to be ready
+echo      Waiting for backend to be ready...
+:wait_backend
+timeout /t 2 /nobreak >nul
+netstat -ano | findstr ":8000 " | findstr "LISTENING" >nul 2>&1
+if %errorlevel% neq 0 goto wait_backend
+echo      Backend is ready.
 
-:: Start backend in current window (logs visible here)
-echo [2/2] Starting backend on port 8000 (logs below)
+:: Start frontend in current window (logs visible here)
+echo [2/2] Starting frontend (logs below)
 echo ================================================
-cd /d %~dp0
-python -m backend.app.cli --port 8000
-pause
+cd /d %~dp0frontend
+npm run dev
