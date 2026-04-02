@@ -1,4 +1,6 @@
 import pathlib
+import importlib
+import sys
 
 from backend.app.inference.model_cache import PyTorchModelCache
 
@@ -91,3 +93,37 @@ def test_model_cache_exposes_model_handle_with_normalized_paths(tmp_path: pathli
     assert handle.cache_key.endswith("gpt.ckpt|%s" % str((tmp_path / "pretrained_models" / "sovits.pth").resolve()))
     assert handle.gpt_path == str((tmp_path / "pretrained_models" / "gpt.ckpt").resolve())
     assert handle.sovits_path == str((tmp_path / "pretrained_models" / "sovits.pth").resolve())
+
+
+def test_model_cache_default_factory_uses_backend_runtime_module(tmp_path: pathlib.Path, monkeypatch):
+    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+    sentinel = object()
+
+    def fake_runtime(*args):
+        return sentinel
+
+    monkeypatch.setattr(runtime_module, "GPTSoVITSOptimizedInference", fake_runtime)
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        warmup_hook=lambda engine: None,
+    )
+
+    engine = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+
+    assert engine is sentinel
+
+
+def test_pytorch_runtime_bootstraps_gpt_sovits_import_paths():
+    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+    project_root = pathlib.Path(__file__).resolve().parents[3]
+    gpt_sovits_root = str((project_root / "GPT_SoVITS").resolve())
+    repo_root = str(project_root.resolve())
+
+    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root, gpt_sovits_root}]
+    importlib.reload(runtime_module)
+
+    assert repo_root in sys.path
+    assert gpt_sovits_root in sys.path

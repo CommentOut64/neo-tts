@@ -1,9 +1,0 @@
-.git
-.gitignore
-docker-compose.yml
-__pycache__
-venv/
-.venv/
-.idea
-/onnx
-/onnx_export/

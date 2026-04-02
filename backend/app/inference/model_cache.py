@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.app.inference.legacy_adapter import build_pytorch_optimized_inference
+from backend.app.inference import pytorch_optimized
 from backend.app.inference.types import ModelHandle
 
 EngineFactory = Callable[[str, str, str, str], Any]
@@ -59,9 +59,9 @@ class PyTorchModelCache:
 
     @staticmethod
     def _build_engine(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str) -> Any:
-        return build_pytorch_optimized_inference(
-            gpt_path=gpt_path,
-            sovits_path=sovits_path,
-            cnhubert_path=cnhubert_path,
-            bert_path=bert_path,
+        return pytorch_optimized.GPTSoVITSOptimizedInference(
+            gpt_path,
+            sovits_path,
+            cnhubert_path,
+            bert_path,
         )

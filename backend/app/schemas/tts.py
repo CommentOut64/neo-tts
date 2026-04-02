@@ -13,6 +13,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = None
     temperature: float | None = None
     text_lang: str = "auto"
+    text_split_method: str = "cut5"
     chunk_length: int = 24
     history_window: int = 4
     pause_length: float | None = None

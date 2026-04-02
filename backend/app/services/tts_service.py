@@ -1,6 +1,6 @@
 from typing import Any
 
-from backend.app.inference.types import PreparedSynthesisRequest
+from backend.app.inference.types import CancelChecker, PreparedSynthesisRequest, ProgressCallback
 from backend.app.schemas.tts import SpeechRequest
 from backend.app.schemas.voice import VoiceProfile
 
@@ -14,6 +14,7 @@ class TtsService:
             model=request.model,
             response_format=request.response_format,
             text_lang=request.text_lang,
+            text_split_method=request.text_split_method,
             chunk_length=request.chunk_length,
             history_window=request.history_window,
             speed=request.speed if request.speed is not None else defaults.speed,
@@ -34,15 +35,30 @@ class TtsService:
         request: SpeechRequest,
         voice: VoiceProfile,
         inference_engine: Any,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        should_cancel: CancelChecker | None = None,
     ):
         prepared_request = self.prepare_request(request=request, voice=voice)
-        return self.synthesize_prepared_stream(prepared_request=prepared_request, inference_engine=inference_engine)
+        return self.synthesize_prepared_stream(
+            prepared_request=prepared_request,
+            inference_engine=inference_engine,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
 
     def synthesize_prepared_stream(
         self,
         prepared_request: PreparedSynthesisRequest,
         inference_engine: Any,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        should_cancel: CancelChecker | None = None,
     ):
         if prepared_request.response_format not in {"wav", "mp3"}:
             raise ValueError(f"Unsupported response_format '{prepared_request.response_format}'.")
-        return inference_engine.synthesize_stream(prepared_request)
+        return inference_engine.synthesize_stream(
+            prepared_request,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
