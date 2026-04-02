@@ -2,7 +2,76 @@
 @tailwind components;
 @tailwind utilities;
 
+/* === 亮色主题（默认） === */
 :root {
+  /* 自定义语义 token */
+  --color-background: #F8FAFC;
+  --color-primary: #FFFFFF;
+  --color-secondary: #F1F5F9;
+  --color-card: #FFFFFF;
+  --color-card-fg: #0F172A;
+  --color-foreground: #0F172A;
+  --color-muted: #F1F3F5;
+  --color-muted-fg: #64748B;
+  --color-border: #E2E8F0;
+  --color-cta: #3B82F6;
+  --color-accent: #22C55E;
+  --color-destructive: #EF4444;
+  --color-warning: #F59E0B;
+  --color-info: #3B82F6;
+  --color-success: #22C55E;
+  --color-error: #EF4444;
+
+  /* 阴影 token */
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.15);
+  --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.15);
+
+  /* Element Plus 变量 */
+  --el-color-primary: #3B82F6;
+  --el-color-success: #22C55E;
+  --el-color-warning: #F59E0B;
+  --el-color-danger: #EF4444;
+  --el-color-info: #94A3B8;
+  --el-bg-color: #FFFFFF;
+  --el-bg-color-overlay: #FFFFFF;
+  --el-bg-color-page: #F8FAFC;
+  --el-text-color-primary: #0F172A;
+  --el-text-color-regular: #334155;
+  --el-text-color-secondary: #64748B;
+  --el-text-color-placeholder: #94A3B8;
+  --el-border-color: #E2E8F0;
+  --el-border-color-light: #F1F5F9;
+  --el-border-color-lighter: #F8FAFC;
+  --el-fill-color: #F1F5F9;
+  --el-fill-color-light: #F8FAFC;
+  --el-fill-color-blank: #FFFFFF;
+  --el-border-radius-base: 8px;
+  --el-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --el-font-size-base: 14px;
+}
+
+/* === 暗色主题 === */
+html.dark {
+  /* 自定义语义 token */
+  --color-background: #0F172A;
+  --color-primary: #1E293B;
+  --color-secondary: #334155;
+  --color-card: #1B2336;
+  --color-card-fg: #F8FAFC;
+  --color-foreground: #F8FAFC;
+  --color-muted: #272F42;
+  --color-muted-fg: #94A3B8;
+  --color-border: #475569;
+
+  /* 阴影 token */
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.25);
+  --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.25);
+
+  /* Element Plus 变量 */
   --el-color-primary: #3B82F6;
   --el-color-success: #22C55E;
   --el-color-warning: #F59E0B;
@@ -21,13 +90,34 @@
   --el-fill-color: #272F42;
   --el-fill-color-light: #1B2336;
   --el-fill-color-blank: #0F172A;
-  --el-border-radius-base: 8px;
-  --el-font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  --el-font-size-base: 14px;
+}
+
+/* === View Transition 主题切换动画 === */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 9999;
+}
+
+/* 尊重用户减少动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 *:focus-visible {
-  outline: 2px solid #3B82F6;
+  outline: 2px solid var(--color-cta);
   outline-offset: 2px;
 }
 

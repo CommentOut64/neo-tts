@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, provide } from 'vue'
-import { Download, Microphone, WarningFilled } from '@element-plus/icons-vue'
+import { Download, Microphone, WarningFilled, Delete } from '@element-plus/icons-vue'
 import type { AudioHistoryItem } from '@/types/tts'
 import AudioPlayer from './AudioPlayer.vue'
 
@@ -18,6 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   download: [item: AudioHistoryItem]
+  delete: [item: AudioHistoryItem]
 }>()
 
 const isEmpty = computed(() => props.history.length === 0 && !props.isInferring)
@@ -57,7 +58,20 @@ function truncate(text: string, max = 60): string {
           <span class="text-xs font-medium" :class="index === 0 ? 'text-accent' : 'text-muted-fg'">
             {{ index === 0 ? '最新' : `#${index + 1}` }}
           </span>
-          <span class="text-xs text-muted-fg">{{ timeAgo(item.createdAt) }}</span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-muted-fg">{{ timeAgo(item.createdAt) }}</span>
+            <el-popconfirm
+              v-if="item.status !== 'pending'"
+              title="确认删除此条结果？"
+              confirm-button-text="删除"
+              cancel-button-text="取消"
+              @confirm="emit('delete', item)"
+            >
+              <template #reference>
+                <el-button :icon="Delete" size="small" text class="!text-muted-fg hover:!text-destructive" />
+              </template>
+            </el-popconfirm>
+          </div>
         </div>
         <p class="text-sm text-foreground/80 mb-2">{{ truncate(item.text) }}</p>
 

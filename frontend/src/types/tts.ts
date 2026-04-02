@@ -25,6 +25,8 @@ export interface AudioHistoryItem {
   text: string
   blobUrl: string | null
   duration: number | null
+  taskId?: string | null
+  resultId?: string | null
   createdAt: Date
   status: 'pending' | 'done' | 'error'
   errorMessage?: string
@@ -37,6 +39,7 @@ export interface InferenceParams {
   top_k: number
   pause_length: number
   text_lang: string
+  text_split_method: string
   chunk_length: number
 }
 
@@ -50,6 +53,7 @@ export interface SpeechRequest {
   top_p?: number
   temperature?: number
   text_lang?: string
+  text_split_method?: string
   chunk_length?: number
   history_window?: number
   pause_length?: number
@@ -59,4 +63,58 @@ export interface SpeechRequest {
   ref_audio_file?: File
   ref_text?: string
   ref_lang?: string
+}
+
+export type InferenceProgressStatus =
+  | 'idle'
+  | 'preparing'
+  | 'inferencing'
+  | 'cancelling'
+  | 'completed'
+  | 'cancelled'
+  | 'error'
+
+export interface InferenceProgressState {
+  task_id: string | null
+  status: InferenceProgressStatus
+  progress: number
+  message: string
+  cancel_requested: boolean
+  current_segment: number | null
+  total_segments: number | null
+  result_id: string | null
+  updated_at: string
+}
+
+export interface ForcePauseResponse {
+  accepted: boolean
+  state: InferenceProgressState
+}
+
+export interface CleanupResidualsResponse {
+  cancelled_active_task: boolean
+  removed_temp_ref_dirs: number
+  removed_result_files: number
+  state: InferenceProgressState
+}
+
+export interface DeleteSynthesisResultResponse {
+  status: 'deleted'
+  result_id: string
+}
+
+export interface SynthesizeSpeechResponse {
+  blob: Blob
+  taskId: string | null
+  resultId: string | null
+}
+
+export interface InferenceParamsCacheResponse {
+  payload: Record<string, unknown>
+  updated_at: string | null
+}
+
+export interface InferenceParamsCacheEnvelope {
+  payload: Record<string, unknown>
+  updatedAt: string | null
 }

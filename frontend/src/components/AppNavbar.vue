@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { Microphone, Setting } from '@element-plus/icons-vue'
+import { Microphone, Setting, Sunny, Moon } from '@element-plus/icons-vue'
 import StatusIndicator from './StatusIndicator.vue'
+import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 
-defineProps<{ status: ConnectionStatus }>()
+defineProps<{
+  status: ConnectionStatus
+  isProgressStreamConnected?: boolean
+}>()
 
 const route = useRoute()
 const router = useRouter()
+const { isDark, toggleThemeWithTransition } = useTheme()
 
 const navItems = [
   { path: '/studio', label: '语音合成', icon: Microphone },
@@ -38,7 +43,27 @@ const navItems = [
         />
       </button>
     </div>
-    <div class="ml-auto">
+    <div class="ml-auto flex items-center gap-3">
+      <!-- 进度流状态 -->
+      <div v-if="isProgressStreamConnected !== undefined" class="flex items-center gap-1.5">
+        <span
+          class="w-1.5 h-1.5 rounded-full"
+          :class="isProgressStreamConnected ? 'bg-accent' : 'bg-muted-fg/40'"
+        />
+        <span class="text-xs text-muted-fg">
+          {{ isProgressStreamConnected ? '进度流在线' : '进度流离线' }}
+        </span>
+      </div>
+      <button
+        class="w-11 h-11 flex items-center justify-center rounded-full transition-colors duration-200 text-muted-fg hover:text-foreground hover:bg-secondary"
+        :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'"
+        @click="toggleThemeWithTransition($event)"
+      >
+        <el-icon :size="18">
+          <Sunny v-if="isDark" />
+          <Moon v-else />
+        </el-icon>
+      </button>
       <StatusIndicator :status="status" />
     </div>
   </nav>

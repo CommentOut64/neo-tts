@@ -9,6 +9,7 @@ const props = defineProps<{ params: InferenceParams }>()
 const emit = defineEmits<{
   'update:params': [value: InferenceParams]
   reset: []
+  'save-now': []
 }>()
 
 const expanded = ref(true)
@@ -48,7 +49,21 @@ function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[
           <el-option value="ko" label="한국어" />
         </el-select>
       </div>
-      <el-button size="small" text class="!text-muted-fg" @click="emit('reset')">恢复默认</el-button>
+      <div class="flex items-center gap-2">
+        <label class="text-[13px] font-semibold text-foreground whitespace-nowrap">切分策略</label>
+        <el-select :model-value="params.text_split_method" size="small" class="w-44" @update:model-value="update('text_split_method', $event)">
+          <el-option value="cut0" label="不切分 (cut0)" />
+          <el-option value="cut1" label="四句一切 (cut1)" />
+          <el-option value="cut2" label="50字一切 (cut2)" />
+          <el-option value="cut3" label="按中文句号 (cut3)" />
+          <el-option value="cut4" label="按英文句号 (cut4)" />
+          <el-option value="cut5" label="按标点切分 (cut5)" />
+        </el-select>
+      </div>
+      <div class="flex items-center gap-2">
+        <el-button size="small" text class="!text-muted-fg" @click="emit('reset')">恢复默认</el-button>
+        <el-button size="small" text class="!text-muted-fg" @click="emit('save-now')">保存配置</el-button>
+      </div>
     </div>
   </div>
 </template>

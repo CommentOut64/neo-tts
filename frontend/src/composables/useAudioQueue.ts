@@ -20,9 +20,16 @@ export function useAudioQueue() {
     return item
   }
 
-  function markDone(item: AudioHistoryItem, blobUrl: string, duration: number | null) {
+  function markDone(
+    item: AudioHistoryItem,
+    blobUrl: string,
+    duration: number | null,
+    meta?: { taskId?: string | null; resultId?: string | null },
+  ) {
     item.blobUrl = blobUrl
     item.duration = duration
+    item.taskId = meta?.taskId ?? item.taskId ?? null
+    item.resultId = meta?.resultId ?? item.resultId ?? null
     item.status = 'done'
   }
 
@@ -44,7 +51,14 @@ export function useAudioQueue() {
     })
   }
 
+  function remove(item: AudioHistoryItem) {
+    const index = history.value.findIndex((entry) => entry.id === item.id)
+    if (index < 0) return
+    const [removed] = history.value.splice(index, 1)
+    if (removed?.blobUrl) URL.revokeObjectURL(removed.blobUrl)
+  }
+
   onBeforeUnmount(releaseAll)
 
-  return { history, pushPending, markDone, markError }
+  return { history, pushPending, markDone, markError, remove }
 }

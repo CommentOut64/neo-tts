@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { VoiceProfile, AudioHistoryItem } from '@/types/tts'
-import { fetchVoices, synthesizeSpeech } from '@/api/tts'
+import { fetchVoices, synthesizeSpeechWithMeta, deleteSynthesisResult } from '@/api/tts'
 import { useAudioQueue } from '@/composables/useAudioQueue'
 import VoiceSelect from '@/components/VoiceSelect.vue'
 import InferenceSettingsPanel from '@/components/InferenceSettingsPanel.vue'
 import TtsForm from '@/components/TtsForm.vue'
 import AudioResultPanel from '@/components/AudioResultPanel.vue'
+import { useInferenceRuntime } from '@/composables/useInferenceRuntime'
+import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
+import InferenceControlBar from '@/components/InferenceControlBar.vue'
 
 // Models
 const voices = ref<VoiceProfile[]>([])
@@ -30,6 +33,7 @@ const params = ref({
   top_k: 15,
   pause_length: 0.3,
   text_lang: 'auto',
+  text_split_method: 'cut5',
   chunk_length: 24,
 })
 
@@ -38,7 +42,29 @@ const inputText = ref('')
 const isInferring = ref(false)
 
 // Audio queue
-const { history: audioHistory, pushPending, markDone, markError } = useAudioQueue()
+const { history: audioHistory, pushPending, markDone, markError, remove: removeFromQueue } = useAudioQueue()
+
+// 推理运行时（单例）
+const {
+  progress,
+  isProgressStreamConnected,
+  runtimeError,
+  connectProgressStream,
+  requestForcePause,
+  requestCleanupResiduals,
+  clearRuntimeError,
+} = useInferenceRuntime()
+
+// 参数缓存
+const {
+  cacheError,
+  restoreCache,
+  persistCacheWhenIdle,
+  persistCacheNow,
+} = useInferenceParamsCache()
+
+// 缓存恢复守卫
+const isRestoring = ref(false)
 
 // Sync params when voice changes
 watch(selectedVoice, (voice) => {
@@ -50,6 +76,7 @@ watch(selectedVoice, (voice) => {
     top_k: voice.defaults.top_k,
     pause_length: voice.defaults.pause_length,
     text_lang: 'auto',
+    text_split_method: 'cut5',
     chunk_length: 24,
   }
   refText.value = voice.ref_text
@@ -58,6 +85,25 @@ watch(selectedVoice, (voice) => {
   customRefFile.value = null
 })
 
+function buildCachePayload(): Record<string, unknown> {
+  return {
+    ...params.value,
+    voice: selectedVoiceName.value,
+    refText: refText.value,
+    refLang: refLang.value,
+  }
+}
+
+// 参数变更自动缓存（isRestoring 守卫防止恢复期间触发无效回写）
+watch(
+  [params, selectedVoiceName, refText, refLang],
+  () => {
+    if (isRestoring.value) return
+    persistCacheWhenIdle(buildCachePayload())
+  },
+  { deep: true },
+)
+
 // Inference
 async function handleInference() {
   if (!inputText.value.trim() || !selectedVoiceName.value || isInferring.value) return
@@ -65,7 +111,7 @@ async function handleInference() {
   const pending = pushPending(inputText.value)
 
   try {
-    const blob = await synthesizeSpeech({
+    const synthesis = await synthesizeSpeechWithMeta({
       input: inputText.value,
       voice: selectedVoiceName.value,
       ...params.value,
@@ -74,16 +120,25 @@ async function handleInference() {
         : {}),
     })
 
-    const blobUrl = URL.createObjectURL(blob)
+    const blobUrl = URL.createObjectURL(synthesis.blob)
     const audio = new Audio(blobUrl)
     await new Promise<void>((resolve) => {
       audio.addEventListener('loadedmetadata', () => resolve(), { once: true })
       audio.addEventListener('error', () => resolve(), { once: true })
     })
-    markDone(pending, blobUrl, audio.duration || null)
+    markDone(pending, blobUrl, audio.duration || null, {
+      taskId: synthesis.taskId,
+      resultId: synthesis.resultId,
+    })
   } catch (err: unknown) {
-    markError(pending, (err as Error).message)
-    ElMessage.error(`推理失败: ${(err as Error).message}`)
+    const axiosErr = err as { response?: { status?: number } }
+    if (axiosErr.response?.status === 409) {
+      ElMessage.warning('当前已有推理任务，请先暂停或等待完成')
+      removeFromQueue(pending)
+    } else {
+      markError(pending, (err as Error).message)
+      ElMessage.error(`推理失败: ${(err as Error).message}`)
+    }
   } finally {
     isInferring.value = false
   }
@@ -100,6 +155,7 @@ function resetParams() {
     top_k: voice.defaults.top_k,
     pause_length: voice.defaults.pause_length,
     text_lang: 'auto',
+    text_split_method: 'cut5',
     chunk_length: 24,
   }
 }
@@ -113,13 +169,93 @@ function handleDownload(item: AudioHistoryItem) {
   a.click()
 }
 
+// 强制暂停
+async function handleForcePause() {
+  try {
+    await requestForcePause()
+    ElMessage.success('已发送暂停请求')
+  } catch (err: unknown) {
+    ElMessage.error(`暂停失败: ${(err as Error).message}`)
+  }
+}
+
+// 清理残留
+async function handleCleanup() {
+  try {
+    const result = await requestCleanupResiduals()
+    const count = result.removed_temp_ref_dirs + result.removed_result_files
+    ElMessage.success(`已清理 ${count} 项残留资源`)
+  } catch (err: unknown) {
+    ElMessage.error(`清理失败: ${(err as Error).message}`)
+  }
+}
+
+// 单条删除
+async function handleDeleteResult(item: AudioHistoryItem) {
+  try {
+    if (item.resultId) {
+      await deleteSynthesisResult(item.resultId)
+    }
+  } catch {
+    // 后端清理失败时静默降级，仍执行本地移除
+  }
+  removeFromQueue(item)
+}
+
+// 手动保存配置
+async function handleSaveNow() {
+  try {
+    await persistCacheNow(buildCachePayload())
+    ElMessage.success('配置已保存')
+  } catch (err: unknown) {
+    ElMessage.error(`保存失败: ${(err as Error).message}`)
+  }
+}
+
 // Init
 async function init() {
   try {
     voices.value = await fetchVoices()
-    if (voices.value.length > 0) selectedVoiceName.value = voices.value[0].name
+    if (voices.value.length === 0) return
+
+    // 恢复缓存
+    isRestoring.value = true
+    const cached = await restoreCache()
+    const p = cached?.payload
+
+    // 先选 voice — 触发 selectedVoice watcher 设置 voice defaults
+    if (p && typeof p.voice === 'string' && voices.value.some(v => v.name === p.voice)) {
+      selectedVoiceName.value = p.voice as string
+    } else {
+      selectedVoiceName.value = voices.value[0].name
+    }
+
+    // 让 selectedVoice watcher 完成 defaults 填充
+    await nextTick()
+
+    // 用缓存值覆盖 voice defaults（必须在 watcher 触发之后）
+    if (p) {
+      if (typeof p.speed === 'number') params.value.speed = p.speed
+      if (typeof p.temperature === 'number') params.value.temperature = p.temperature
+      if (typeof p.top_p === 'number') params.value.top_p = p.top_p
+      if (typeof p.top_k === 'number') params.value.top_k = p.top_k
+      if (typeof p.pause_length === 'number') params.value.pause_length = p.pause_length
+      if (typeof p.text_lang === 'string') params.value.text_lang = p.text_lang
+      if (typeof p.text_split_method === 'string') params.value.text_split_method = p.text_split_method
+      if (typeof p.chunk_length === 'number') params.value.chunk_length = p.chunk_length
+      if (typeof p.refText === 'string') refText.value = p.refText
+      if (typeof p.refLang === 'string') refLang.value = p.refLang
+    }
+
+    // 等 params watcher 被调度后再关闭守卫（此时 isRestoring 仍为 true，watcher 被拦截）
+    await nextTick()
+    isRestoring.value = false
+
+    // 建立 SSE 连接
+    connectProgressStream()
   } catch (err: unknown) {
-    ElMessage.error(`加载模型列表失败: ${(err as Error).message}`)
+    isRestoring.value = false
+    ElMessage.error(`初始化失败: ${(err as Error).message}`)
   }
 }
 init()
@@ -191,7 +327,7 @@ init()
 
         <!-- Inference params -->
         <section class="bg-card rounded-card shadow-card overflow-hidden">
-          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" />
+          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" @save-now="handleSaveNow" />
         </section>
       </aside>
 
@@ -203,10 +339,21 @@ init()
           :disabled="!selectedVoiceName"
           @submit="handleInference"
         />
+        <InferenceControlBar
+          :progress="progress"
+          :runtime-error="runtimeError"
+          :cache-error="cacheError"
+          :is-connected="isProgressStreamConnected"
+          @force-pause="handleForcePause"
+          @cleanup="handleCleanup"
+          @dismiss-runtime-error="clearRuntimeError"
+          @dismiss-cache-error="cacheError = null"
+        />
         <AudioResultPanel
           :history="audioHistory"
           :is-inferring="isInferring"
           @download="handleDownload"
+          @delete="handleDeleteResult"
         />
       </main>
     </div>
