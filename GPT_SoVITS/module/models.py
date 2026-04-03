@@ -1125,8 +1125,8 @@ class SynthesizerTrn(nn.Module):
         if self.semantic_frame_rate == "25hz":
             # Use scale_factor instead of size to maintain dynamic axis in ONNX
             quantized = F.interpolate(quantized, scale_factor=2.0, mode="nearest")
-            result_length = (2*result_length) if result_length is not None else None
-            padding_length = (2*padding_length) if padding_length is not None else None
+            # quantized has already been expanded onto the decoder frame axis, so
+            # boundary window arguments must remain in that same frame unit.
         x, m_p, logs_p, y_mask, y_, y_mask_ = self.enc_p(
             quantized,
             y_lengths,
