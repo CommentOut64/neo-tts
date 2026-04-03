@@ -14,8 +14,6 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
-from backend.app.inference.engine import PyTorchInferenceEngine
-from backend.app.inference.model_cache import PyTorchModelCache
 from backend.app.inference.types import InferenceCancelledError
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.inference import (
@@ -44,6 +42,9 @@ def _build_voice_service(request: Request) -> VoiceService:
 
 
 def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
+    from backend.app.inference.engine import PyTorchInferenceEngine
+    from backend.app.inference.model_cache import PyTorchModelCache
+
     existing_engine = getattr(request.app.state, "inference_engine", None)
     if existing_engine is not None:
         return existing_engine
