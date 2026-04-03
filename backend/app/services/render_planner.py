@@ -100,6 +100,36 @@ class RenderPlanner:
             compose_only=pause_only,
         )
 
+    def for_segment_swap(
+        self,
+        *,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+        swapped_segment_ids: set[str],
+    ) -> TargetedRenderPlan:
+        before_pairs = {
+            (edge.left_segment_id, edge.right_segment_id)
+            for edge in before_snapshot.edges
+        }
+        changed_edges = {
+            edge.edge_id
+            for edge in after_snapshot.edges
+            if (edge.left_segment_id, edge.right_segment_id) not in before_pairs
+        }
+        changed_segment_ids = {
+            segment_id
+            for edge in after_snapshot.edges
+            if edge.edge_id in changed_edges
+            for segment_id in (edge.left_segment_id, edge.right_segment_id)
+        }
+        changed_segment_ids.update(swapped_segment_ids)
+        return TargetedRenderPlan(
+            target_segment_ids=set(),
+            target_edge_ids=changed_edges,
+            target_block_ids=self._collect_block_ids(after_snapshot, changed_segment_ids),
+            compose_only=False,
+        )
+
     def _collect_after_neighbor_segment_ids(self, snapshot: DocumentSnapshot, segment_id: str) -> set[str]:
         segment = next((item for item in snapshot.segments if item.segment_id == segment_id), None)
         if segment is None:

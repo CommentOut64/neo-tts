@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-import hashlib
+from datetime import datetime, timezone
 import json
 import threading
 from uuid import uuid4
@@ -11,6 +10,7 @@ import numpy as np
 
 from backend.app.core.exceptions import (
     ActiveRenderJobConflictError,
+    AssetNotFoundError,
     EditSessionNotFoundError,
     SnapshotStateError,
 )
@@ -34,7 +34,6 @@ from backend.app.inference.text_processing import (
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
-    AudioDeliveryDescriptor,
     CompositionResponse,
     CreateSegmentRequest,
     DocumentSnapshot,
@@ -44,9 +43,12 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    SegmentAssetResponse,
+    BoundaryAssetResponse,
     RenderJobAcceptedResponse,
     RenderJobRecord,
     RenderJobResponse,
+    SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
 )
@@ -54,6 +56,7 @@ from backend.app.services.block_planner import BlockPlanner
 from backend.app.services.composition_builder import CompositionBuilder
 from backend.app.services.edge_service import EdgeService
 from backend.app.services.edit_asset_store import EditAssetStore
+from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.playback_map_service import PlaybackMapService
@@ -116,7 +119,9 @@ class RenderJobService:
         segment_service: SegmentService | None = None,
         edge_service: EdgeService | None = None,
         render_planner: RenderPlanner | None = None,
+        audio_delivery_service: AudioDeliveryService | None = None,
         run_jobs_in_background: bool = True,
+        preview_ttl_seconds: int = 600,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
@@ -132,7 +137,9 @@ class RenderJobService:
             edge_service=self._edge_service,
         )
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
+        self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._run_jobs_in_background = run_jobs_in_background
+        self._preview_ttl_seconds = preview_ttl_seconds
         self._queued_requests: dict[str, InitializeEditSessionRequest] = {}
         self._queued_edit_jobs: dict[str, QueuedEditJob] = {}
 
@@ -217,6 +224,25 @@ class RenderJobService:
         return self._enqueue_edit_job(
             job_kind="segment_delete",
             message=f"已创建删段作业，目标段 {segment_id}。",
+            snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
+    def create_swap_segments_job(self, body: SwapSegmentsRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        mutation = self._segment_service.swap_segments(
+            body.first_segment_id,
+            body.second_segment_id,
+            snapshot=before_snapshot,
+        )
+        impact = self._render_planner.for_segment_swap(
+            before_snapshot=before_snapshot,
+            after_snapshot=mutation.snapshot,
+            swapped_segment_ids={body.first_segment_id, body.second_segment_id},
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_swap",
+            message=f"已创建换段作业，目标段 {body.first_segment_id} 与 {body.second_segment_id}。",
             snapshot=mutation.snapshot,
             impact=impact,
         )
@@ -383,15 +409,17 @@ class RenderJobService:
         if snapshot.composition_manifest_id is None:
             raise EditSessionNotFoundError("Composition manifest not found.")
         asset_id = snapshot.composition_manifest_id
+        sample_rate = self._load_sample_rate(self._asset_store.composition_asset_path(asset_id), asset_id=asset_id)
         return CompositionResponse(
             composition_manifest_id=asset_id,
             document_id=snapshot.document_id,
             document_version=snapshot.document_version,
             materialized_audio_available=True,
-            audio_delivery=self._build_audio_delivery_descriptor(
+            audio_delivery=self._audio_delivery_service.build_descriptor(
                 asset_id=asset_id,
                 audio_url=f"/v1/edit-session/assets/compositions/{asset_id}/audio",
                 asset_path=self._asset_store.composition_asset_path(asset_id),
+                sample_rate=sample_rate,
             ),
         )
 
@@ -478,16 +506,56 @@ class RenderJobService:
             payload.sample_rate,
             float_audio_chunk_to_pcm16_bytes(payload.audio.astype(np.float32, copy=False)),
         )
-        self._asset_store.write_preview_bytes(payload.preview_asset_id, wav_bytes)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        preview_record = self._asset_store.create_preview_asset(
+            job_id=payload.preview_asset_id,
+            preview_asset_id=payload.preview_asset_id,
+            preview_kind=payload.preview_kind,
+            payload=wav_bytes,
+            ttl_seconds=self._preview_ttl_seconds,
+        )
         return PreviewResponse(
             preview_asset_id=payload.preview_asset_id,
             preview_kind=payload.preview_kind,
-            audio_delivery=self._build_audio_delivery_descriptor(
+            audio_delivery=self._audio_delivery_service.build_descriptor(
                 asset_id=payload.preview_asset_id,
                 audio_url=f"/v1/edit-session/assets/previews/{payload.preview_asset_id}/audio",
-                asset_path=self._asset_store.preview_asset_path(payload.preview_asset_id),
-                expires_at=expires_at,
+                asset_path=preview_record.asset_path,
+                sample_rate=payload.sample_rate,
+                expires_at=preview_record.expires_at,
+            ),
+        )
+
+    def get_segment_asset_response(self, render_asset_id: str) -> SegmentAssetResponse:
+        asset = self._load_segment_asset_or_404(render_asset_id)
+        sample_rate = self._load_sample_rate(self._asset_store.segment_asset_path(render_asset_id), asset_id=render_asset_id)
+        return SegmentAssetResponse(
+            render_asset_id=asset.render_asset_id,
+            segment_id=asset.segment_id,
+            render_version=asset.render_version,
+            audio_delivery=self._audio_delivery_service.build_descriptor(
+                asset_id=asset.render_asset_id,
+                audio_url=f"/v1/edit-session/assets/segments/{asset.render_asset_id}/audio",
+                asset_path=self._asset_store.segment_asset_path(render_asset_id),
+                sample_rate=sample_rate,
+            ),
+        )
+
+    def get_boundary_asset_response(self, boundary_asset_id: str) -> BoundaryAssetResponse:
+        asset = self._load_boundary_asset_or_404(boundary_asset_id)
+        sample_rate = self._load_sample_rate(
+            self._asset_store.boundary_asset_path(boundary_asset_id),
+            asset_id=boundary_asset_id,
+        )
+        return BoundaryAssetResponse(
+            boundary_asset_id=asset.boundary_asset_id,
+            left_segment_id=asset.left_segment_id,
+            right_segment_id=asset.right_segment_id,
+            edge_version=asset.edge_version,
+            audio_delivery=self._audio_delivery_service.build_descriptor(
+                asset_id=asset.boundary_asset_id,
+                audio_url=f"/v1/edit-session/assets/boundaries/{asset.boundary_asset_id}/audio",
+                asset_path=self._asset_store.boundary_asset_path(boundary_asset_id),
+                sample_rate=sample_rate,
             ),
         )
 
@@ -527,7 +595,10 @@ class RenderJobService:
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
-        if not plan.skip_render and not plan.compose_only:
+        requires_reference_context = bool(plan.target_segment_ids) or (
+            bool(plan.target_edge_ids) and plan.job_kind != "segment_swap"
+        )
+        if not plan.skip_render and not plan.compose_only and requires_reference_context:
             plan.context = self._gateway.build_reference_context(plan.request)
         self._runtime.update_job(
             plan.job_id,
@@ -610,9 +681,12 @@ class RenderJobService:
             left_asset = plan.segment_assets[edge.left_segment_id]
             right_asset = plan.segment_assets[edge.right_segment_id]
             if edge.edge_id in plan.target_edge_ids:
-                if plan.context is None:
-                    raise SnapshotStateError("Reference context is required for boundary re-render.")
-                boundary_asset = self._gateway.render_boundary_asset(left_asset, right_asset, edge, plan.context)
+                if plan.job_kind == "segment_swap":
+                    boundary_asset = self._build_fallback_boundary_asset(left_asset, right_asset, edge)
+                else:
+                    if plan.context is None:
+                        raise SnapshotStateError("Reference context is required for boundary re-render.")
+                    boundary_asset = self._gateway.render_boundary_asset(left_asset, right_asset, edge, plan.context)
                 self._write_boundary_asset(plan.job_id, boundary_asset)
             else:
                 boundary_asset = self._asset_store.load_boundary_asset(
@@ -627,6 +701,48 @@ class RenderJobService:
                 )
             plan.boundary_assets[edge.edge_id] = boundary_asset
         self._persist_runtime_job(plan.job_id)
+
+    def _build_fallback_boundary_asset(
+        self,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+        edge: EditableEdge,
+    ) -> BoundaryAssetPayload:
+        left_margin = left_asset.right_margin_audio.astype(np.float32, copy=False)
+        right_margin = right_asset.left_margin_audio.astype(np.float32, copy=False)
+        if left_margin.size == 0:
+            boundary_audio = right_margin.copy()
+        elif right_margin.size == 0:
+            boundary_audio = left_margin.copy()
+        else:
+            overlap = min(int(left_margin.size), int(right_margin.size))
+            prefix = left_margin[:-overlap]
+            suffix = right_margin[overlap:]
+            theta = np.linspace(0.0, np.pi / 2.0, overlap, endpoint=True, dtype=np.float32)
+            crossfaded = (np.cos(theta) * left_margin[-overlap:] + np.sin(theta) * right_margin[:overlap]).astype(
+                np.float32,
+                copy=False,
+            )
+            boundary_audio = np.concatenate([prefix, crossfaded, suffix]).astype(np.float32, copy=False)
+        return BoundaryAssetPayload(
+            boundary_asset_id=build_boundary_asset_id(
+                left_segment_id=edge.left_segment_id,
+                left_render_version=left_asset.render_version,
+                right_segment_id=edge.right_segment_id,
+                right_render_version=right_asset.render_version,
+                edge_version=edge.edge_version,
+                boundary_strategy=edge.boundary_strategy,
+            ),
+            left_segment_id=edge.left_segment_id,
+            left_render_version=left_asset.render_version,
+            right_segment_id=edge.right_segment_id,
+            right_render_version=right_asset.render_version,
+            edge_version=edge.edge_version,
+            boundary_strategy=edge.boundary_strategy,
+            boundary_sample_count=int(boundary_audio.size),
+            boundary_audio=boundary_audio,
+            trace={"boundary_kind": "fallback_equal_power_crossfade"},
+        )
 
     def _compose(self, plan: RenderPlan) -> None:
         if plan.skip_compose:
@@ -1054,25 +1170,21 @@ class RenderJobService:
             raise SnapshotStateError("Active session initialize request is missing.")
         return active_session.initialize_request
 
-    def _build_audio_delivery_descriptor(
-        self,
-        *,
-        asset_id: str,
-        audio_url: str,
-        asset_path,
-        expires_at: datetime | None = None,
-    ) -> AudioDeliveryDescriptor:
-        wav_path = asset_path / "audio.wav"
-        if not wav_path.exists():
-            raise EditSessionNotFoundError(f"Audio asset '{asset_id}' not found.")
-        sample_rate, _ = self._asset_store.load_wav_asset(asset_path)
-        stat = wav_path.stat()
-        etag_source = f"{asset_id}:{stat.st_size}:{stat.st_mtime_ns}"
-        return AudioDeliveryDescriptor(
-            asset_id=asset_id,
-            audio_url=audio_url,
-            sample_rate=sample_rate,
-            byte_length=stat.st_size,
-            etag=hashlib.sha1(etag_source.encode("utf-8")).hexdigest(),
-            expires_at=expires_at,
-        )
+    def _load_sample_rate(self, asset_path, *, asset_id: str) -> int:
+        try:
+            sample_rate, _ = self._asset_store.load_wav_asset(asset_path)
+        except FileNotFoundError as exc:
+            raise AssetNotFoundError(f"Audio asset '{asset_id}' not found.") from exc
+        return sample_rate
+
+    def _load_segment_asset_or_404(self, render_asset_id: str) -> SegmentRenderAssetPayload:
+        try:
+            return self._asset_store.load_segment_asset(render_asset_id)
+        except FileNotFoundError as exc:
+            raise AssetNotFoundError(f"Segment asset '{render_asset_id}' not found.") from exc
+
+    def _load_boundary_asset_or_404(self, boundary_asset_id: str) -> BoundaryAssetPayload:
+        try:
+            return self._asset_store.load_boundary_asset(boundary_asset_id)
+        except FileNotFoundError as exc:
+            raise AssetNotFoundError(f"Boundary asset '{boundary_asset_id}' not found.") from exc

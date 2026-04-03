@@ -7,11 +7,12 @@ import queue
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 
-from backend.app.core.exceptions import EditSessionNotFoundError
+from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     BaselineSnapshotResponse,
+    BoundaryAssetResponse,
     CompositionResponse,
     CreateSegmentRequest,
     EdgeListResponse,
@@ -22,10 +23,13 @@ from backend.app.schemas.edit_session import (
     PreviewResponse,
     RenderJobAcceptedResponse,
     RenderJobResponse,
+    SegmentAssetResponse,
     SegmentListResponse,
+    SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
 )
+from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.render_job_service import RenderJobService
 from backend.app.services.voice_service import VoiceService
@@ -107,6 +111,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         runtime=request.app.state.edit_session_runtime,
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
+        audio_delivery_service=AudioDeliveryService(),
     )
 
 
@@ -120,7 +125,44 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         runtime=request.app.state.edit_session_runtime,
         session_service=_build_edit_session_service(request),
         gateway=gateway,
+        audio_delivery_service=AudioDeliveryService(),
         run_jobs_in_background=False,
+    )
+
+
+def _build_audio_delivery_service() -> AudioDeliveryService:
+    return AudioDeliveryService()
+
+
+def _stream_audio_asset(
+    request: Request,
+    *,
+    asset_path: Path,
+    etag: str,
+    expires_at=None,
+    download: bool = False,
+) -> Response:
+    return _build_audio_delivery_service().build_streaming_response(
+        request=request,
+        asset_path=asset_path,
+        content_type="audio/wav",
+        etag=etag,
+        expires_at=expires_at,
+        download=download,
+    )
+
+
+def _build_formal_audio_descriptor(request: Request, *, asset_id: str, asset_path: Path):
+    audio_service = _build_audio_delivery_service()
+    try:
+        sample_rate, _ = request.app.state.edit_asset_store.load_wav_asset(asset_path)
+    except FileNotFoundError as exc:
+        raise AssetNotFoundError(f"Audio asset '{asset_id}' not found.") from exc
+    return audio_service.build_descriptor(
+        asset_id=asset_id,
+        audio_url=str(request.url.path),
+        asset_path=asset_path,
+        sample_rate=sample_rate,
     )
 
 
@@ -168,7 +210,7 @@ def restore_baseline(request: Request) -> RenderJobAcceptedResponse:
 
 @router.get("/segments", response_model=SegmentListResponse)
 def list_segments(request: Request, limit: int = 1000, cursor: int | None = None) -> SegmentListResponse:
-    service = _build_render_job_service(request)
+    service = _build_readonly_render_job_service(request)
     snapshot = service.get_head_snapshot()
     items = [item.model_dump(mode="json") for item in service.list_segments(limit=limit, cursor=cursor)]
     next_cursor = items[-1]["order_key"] if len(items) == limit else None
@@ -190,6 +232,11 @@ def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest)
     return _build_render_job_service(request).create_update_segment_job(segment_id, body)
 
 
+@router.post("/segments/swap", response_model=RenderJobAcceptedResponse, status_code=202)
+def swap_segments(request: Request, body: SwapSegmentsRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_swap_segments_job(body)
+
+
 @router.delete("/segments/{segment_id}", response_model=RenderJobAcceptedResponse, status_code=202)
 def delete_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_delete_segment_job(segment_id)
@@ -197,7 +244,7 @@ def delete_segment(request: Request, segment_id: str) -> RenderJobAcceptedRespon
 
 @router.get("/edges", response_model=EdgeListResponse)
 def list_edges(request: Request, limit: int = 1000, cursor: int | None = None) -> EdgeListResponse:
-    service = _build_render_job_service(request)
+    service = _build_readonly_render_job_service(request)
     snapshot = service.get_head_snapshot()
     items = [item.model_dump(mode="json") for item in service.list_edges(limit=limit, cursor=cursor)]
     segment_order_by_id = {segment.segment_id: segment.order_key for segment in snapshot.segments}
@@ -236,6 +283,75 @@ def get_preview(
 ) -> PreviewResponse:
     body = PreviewRequest(segment_id=segment_id, edge_id=edge_id, block_id=block_id)
     return _build_readonly_render_job_service(request).get_preview_response(body)
+
+
+@router.get("/assets/compositions/{composition_manifest_id}/audio")
+def get_composition_audio(request: Request, composition_manifest_id: str, download: bool = False) -> Response:
+    descriptor = _build_formal_audio_descriptor(
+        request,
+        asset_id=composition_manifest_id,
+        asset_path=request.app.state.edit_asset_store.composition_asset_path(composition_manifest_id),
+    )
+    return _stream_audio_asset(
+        request,
+        asset_path=request.app.state.edit_asset_store.composition_asset_path(composition_manifest_id),
+        etag=descriptor.etag,
+        download=download,
+    )
+
+
+@router.get("/assets/previews/{preview_asset_id}/audio")
+def get_preview_audio(request: Request, preview_asset_id: str, download: bool = False) -> Response:
+    try:
+        record = request.app.state.edit_asset_store.get_preview_asset_record(preview_asset_id)
+    except FileNotFoundError as exc:
+        raise AssetNotFoundError(f"Preview asset '{preview_asset_id}' not found.") from exc
+    descriptor = _build_audio_delivery_service().build_descriptor(
+        asset_id=preview_asset_id,
+        audio_url=str(request.url.path),
+        asset_path=record.asset_path,
+        sample_rate=request.app.state.edit_asset_store.load_wav_asset(record.asset_path)[0],
+        expires_at=record.expires_at,
+    )
+    return _stream_audio_asset(
+        request,
+        asset_path=record.asset_path,
+        etag=descriptor.etag,
+        expires_at=descriptor.expires_at,
+        download=download,
+    )
+
+
+@router.get("/assets/segments/{render_asset_id}", response_model=SegmentAssetResponse)
+def get_segment_asset(request: Request, render_asset_id: str) -> SegmentAssetResponse:
+    return _build_readonly_render_job_service(request).get_segment_asset_response(render_asset_id)
+
+
+@router.get("/assets/segments/{render_asset_id}/audio")
+def get_segment_audio(request: Request, render_asset_id: str, download: bool = False) -> Response:
+    response = _build_readonly_render_job_service(request).get_segment_asset_response(render_asset_id)
+    return _stream_audio_asset(
+        request,
+        asset_path=request.app.state.edit_asset_store.segment_asset_path(render_asset_id),
+        etag=response.audio_delivery.etag,
+        download=download,
+    )
+
+
+@router.get("/assets/boundaries/{boundary_asset_id}", response_model=BoundaryAssetResponse)
+def get_boundary_asset(request: Request, boundary_asset_id: str) -> BoundaryAssetResponse:
+    return _build_readonly_render_job_service(request).get_boundary_asset_response(boundary_asset_id)
+
+
+@router.get("/assets/boundaries/{boundary_asset_id}/audio")
+def get_boundary_audio(request: Request, boundary_asset_id: str, download: bool = False) -> Response:
+    response = _build_readonly_render_job_service(request).get_boundary_asset_response(boundary_asset_id)
+    return _stream_audio_asset(
+        request,
+        asset_path=request.app.state.edit_asset_store.boundary_asset_path(boundary_asset_id),
+        etag=response.audio_delivery.etag,
+        download=download,
+    )
 
 
 @router.get("/render-jobs/{job_id}", response_model=RenderJobResponse)

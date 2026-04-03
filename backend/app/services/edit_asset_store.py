@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import io
 from pathlib import Path
@@ -16,6 +17,22 @@ from backend.app.inference.editable_types import (
     SegmentCompositionEntry,
     SegmentRenderAssetPayload,
 )
+
+
+@dataclass(frozen=True)
+class PreviewAssetRecord:
+    job_id: str
+    preview_asset_id: str
+    preview_kind: str
+    expires_at: datetime
+    asset_path: Path
+    audio_file_path: Path
+
+
+@dataclass(frozen=True)
+class AssetGcReport:
+    deleted_asset_paths: list[Path]
+    kept_asset_paths: list[Path]
 
 
 class EditAssetStore:
@@ -103,6 +120,119 @@ class EditAssetStore:
         target_path = asset_dir / "audio.wav"
         target_path.write_bytes(payload)
         return target_path
+
+    def create_preview_asset(
+        self,
+        *,
+        job_id: str,
+        preview_asset_id: str,
+        preview_kind: str,
+        payload: bytes,
+        ttl_seconds: int,
+        now: datetime | None = None,
+    ) -> PreviewAssetRecord:
+        asset_dir = self.preview_asset_path(preview_asset_id)
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        expires_at = (now or datetime.now(timezone.utc)) + timedelta(seconds=ttl_seconds)
+        audio_file_path = asset_dir / "audio.wav"
+        audio_file_path.write_bytes(payload)
+        metadata_path = asset_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "preview_asset_id": preview_asset_id,
+                    "preview_kind": preview_kind,
+                    "expires_at": expires_at.isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return PreviewAssetRecord(
+            job_id=job_id,
+            preview_asset_id=preview_asset_id,
+            preview_kind=preview_kind,
+            expires_at=expires_at,
+            asset_path=asset_dir,
+            audio_file_path=audio_file_path,
+        )
+
+    def get_preview_asset_record(self, preview_asset_id: str) -> PreviewAssetRecord:
+        asset_dir = self.preview_asset_path(preview_asset_id)
+        metadata = self._read_json(asset_dir / "metadata.json")
+        expires_at_raw = metadata.get("expires_at")
+        if not expires_at_raw:
+            raise ValueError(f"Preview asset '{preview_asset_id}' is missing expires_at metadata.")
+        return PreviewAssetRecord(
+            job_id=metadata.get("job_id", preview_asset_id),
+            preview_asset_id=metadata["preview_asset_id"],
+            preview_kind=metadata["preview_kind"],
+            expires_at=datetime.fromisoformat(expires_at_raw),
+            asset_path=asset_dir,
+            audio_file_path=asset_dir / "audio.wav",
+        )
+
+    def purge_expired_preview_assets(self, *, now: datetime | None = None) -> int:
+        now = now or datetime.now(timezone.utc)
+        preview_root = self._formal_root / "previews"
+        if not preview_root.exists():
+            return 0
+
+        removed = 0
+        for child in preview_root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                record = self.get_preview_asset_record(child.name)
+            except (FileNotFoundError, ValueError, KeyError):
+                continue
+            if record.expires_at > now:
+                continue
+            shutil.rmtree(child, ignore_errors=False)
+            removed += 1
+        return removed
+
+    def collect_unreferenced_formal_assets(
+        self,
+        referenced_asset_ids: set[str],
+        *,
+        dry_run: bool = False,
+    ) -> AssetGcReport:
+        deleted_asset_paths: list[Path] = []
+        kept_asset_paths: list[Path] = []
+        if not self._formal_root.exists():
+            return AssetGcReport(deleted_asset_paths=deleted_asset_paths, kept_asset_paths=kept_asset_paths)
+
+        for category_root in sorted(path for path in self._formal_root.iterdir() if path.is_dir()):
+            if category_root.name == "previews":
+                continue
+            for asset_path in sorted(path for path in category_root.iterdir() if path.is_dir()):
+                relative_key = asset_path.relative_to(self._formal_root).as_posix()
+                if relative_key in referenced_asset_ids:
+                    kept_asset_paths.append(asset_path)
+                    continue
+                deleted_asset_paths.append(asset_path)
+                if not dry_run:
+                    shutil.rmtree(asset_path, ignore_errors=False)
+
+        return AssetGcReport(deleted_asset_paths=deleted_asset_paths, kept_asset_paths=kept_asset_paths)
+
+    def cleanup_orphan_preview_assets(self, referenced_preview_ids: set[str]) -> int:
+        preview_root = self._formal_root / "previews"
+        if not preview_root.exists():
+            return 0
+
+        removed = 0
+        for child in preview_root.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name in referenced_preview_ids:
+                continue
+            shutil.rmtree(child, ignore_errors=False)
+            removed += 1
+        return removed
 
     def write_formal_json(self, relative_path: str, payload: dict) -> Path:
         target_path = (self._formal_root / self._validate_relative_path(relative_path)).resolve()

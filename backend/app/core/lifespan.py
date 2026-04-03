@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.services.edit_asset_store import EditAssetStore
+from backend.app.services.edit_session_maintenance_service import EditSessionMaintenanceService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
@@ -47,6 +49,13 @@ async def app_lifespan(app: FastAPI):
         staging_ttl_seconds=settings.edit_session_staging_ttl_seconds,
     )
     edit_session_runtime = EditSessionRuntime()
+    edit_session_maintenance_service = EditSessionMaintenanceService(
+        repository=edit_session_repository,
+        asset_store=edit_asset_store,
+        runtime=edit_session_runtime,
+    )
+    await edit_session_maintenance_service.reconcile_on_startup()
+    cleanup_task = asyncio.create_task(edit_session_maintenance_service.run_periodic_loop())
     app.state.model_cache = model_cache
     app.state.inference_engine = inference_engine
     app.state.inference_runtime = inference_runtime
@@ -55,4 +64,11 @@ async def app_lifespan(app: FastAPI):
     app.state.edit_session_repository = edit_session_repository
     app.state.edit_asset_store = edit_asset_store
     app.state.edit_session_runtime = edit_session_runtime
-    yield
+    app.state.edit_session_maintenance_service = edit_session_maintenance_service
+    app.state.edit_session_cleanup_task = cleanup_task
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task

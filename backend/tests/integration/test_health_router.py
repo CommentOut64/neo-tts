@@ -24,6 +24,8 @@ def test_app_lifespan_initializes_edit_session_dependencies(test_app_settings):
         assert hasattr(client.app.state, "edit_session_repository")
         assert hasattr(client.app.state, "edit_asset_store")
         assert hasattr(client.app.state, "edit_session_runtime")
+        assert hasattr(client.app.state, "edit_session_maintenance_service")
+        assert hasattr(client.app.state, "edit_session_cleanup_task")
         assert test_app_settings.edit_session_db_file.exists()
         assert (test_app_settings.edit_session_assets_dir / "staging").exists()
         assert (test_app_settings.edit_session_assets_dir / "formal").exists()

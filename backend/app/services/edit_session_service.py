@@ -20,6 +20,10 @@ from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.voice_service import VoiceService
 
 
+def should_inline_segment_summary(total_segment_count: int) -> bool:
+    return total_segment_count < 1000
+
+
 class EditSessionService:
     def __init__(
         self,
@@ -98,14 +102,16 @@ class EditSessionService:
             if composition_manifest_id is not None
             else None
         )
+        total_segment_count = len(current_snapshot.segments) if current_snapshot is not None else 0
+        inline_entities = should_inline_segment_summary(total_segment_count)
         segments = (
             [EditableSegmentResponse.model_validate(segment.model_dump()) for segment in current_snapshot.segments]
-            if current_snapshot is not None
+            if current_snapshot is not None and inline_entities
             else []
         )
         edges = (
             [EditableEdgeResponse.model_validate(edge.model_dump()) for edge in current_snapshot.edges]
-            if current_snapshot is not None
+            if current_snapshot is not None and inline_entities
             else []
         )
         return EditSessionSnapshotResponse(
@@ -114,15 +120,27 @@ class EditSessionService:
             document_version=current_snapshot.document_version if current_snapshot is not None else None,
             baseline_version=baseline_snapshot.document_version if baseline_snapshot is not None else None,
             head_version=head_snapshot.document_version if head_snapshot is not None else None,
-            total_segment_count=len(current_snapshot.segments) if current_snapshot is not None else 0,
+            total_segment_count=total_segment_count,
             total_edge_count=len(current_snapshot.edges) if current_snapshot is not None else 0,
-            ready_segment_count=sum(segment.render_asset_id is not None for segment in segments),
+            ready_segment_count=(
+                sum(segment.render_asset_id is not None for segment in current_snapshot.segments)
+                if current_snapshot is not None
+                else 0
+            ),
             ready_block_count=len(current_snapshot.block_ids) if current_snapshot is not None else 0,
             composition_manifest_id=composition_manifest_id,
             composition_audio_url=composition_audio_url,
             playable_sample_span=(
-                (0, max(entry.assembled_audio_span[1] for entry in segments if entry.assembled_audio_span is not None))
-                if any(entry.assembled_audio_span is not None for entry in segments)
+                (
+                    0,
+                    max(
+                        entry.assembled_audio_span[1]
+                        for entry in current_snapshot.segments
+                        if entry.assembled_audio_span is not None
+                    ),
+                )
+                if current_snapshot is not None
+                and any(entry.assembled_audio_span is not None for entry in current_snapshot.segments)
                 else None
             ),
             active_job=active_job,

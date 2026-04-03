@@ -170,6 +170,37 @@ class SegmentService:
             segment=None,
         )
 
+    def swap_segments(
+        self,
+        first_segment_id: str,
+        second_segment_id: str,
+        *,
+        snapshot: DocumentSnapshot | None = None,
+    ) -> SegmentMutationResult:
+        head_snapshot = snapshot or self._get_head_snapshot()
+        if first_segment_id == second_segment_id:
+            raise ValueError("Swap segment ids must be different.")
+
+        segments = [item.model_copy(deep=True) for item in head_snapshot.segments]
+        first_index = next((index for index, item in enumerate(segments) if item.segment_id == first_segment_id), None)
+        second_index = next((index for index, item in enumerate(segments) if item.segment_id == second_segment_id), None)
+        if first_index is None:
+            raise EditSessionNotFoundError(f"Segment '{first_segment_id}' not found.")
+        if second_index is None:
+            raise EditSessionNotFoundError(f"Segment '{second_segment_id}' not found.")
+
+        segments[first_index], segments[second_index] = segments[second_index], segments[first_index]
+        normalized_segments = self._normalize_segment_order(segments)
+        edges = self._edge_service.rebuild_neighbor_edges(
+            normalized_segments,
+            existing_edges=head_snapshot.edges,
+            default_pause_duration_seconds=self._default_pause_duration_seconds(),
+        )
+        return SegmentMutationResult(
+            snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
+            segment=None,
+        )
+
     def _get_head_snapshot(self) -> DocumentSnapshot:
         active_session = self._repository.get_active_session()
         if active_session is None or active_session.head_snapshot_id is None:

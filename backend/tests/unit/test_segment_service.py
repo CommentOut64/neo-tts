@@ -84,3 +84,26 @@ def test_update_segment_marks_long_segment_risk(tmp_path):
 
     assert mutation.segment is not None
     assert "long_edit_cost_risk" in mutation.segment.risk_flags
+
+
+def test_swap_segments_reorders_snapshot_and_rebuilds_neighbors(tmp_path):
+    service = _build_service(tmp_path)
+    first = _segment("seg-1", 1, "第一句。")
+    second = _segment("seg-2", 2, "第二句。")
+    third = _segment("seg-3", 3, "第三句。")
+    snapshot = _snapshot(first, second, third)
+
+    mutation = service.swap_segments("seg-2", "seg-3", snapshot=snapshot)
+
+    assert mutation.segment is None
+    assert [segment.segment_id for segment in mutation.snapshot.segments] == ["seg-1", "seg-3", "seg-2"]
+    assert [segment.order_key for segment in mutation.snapshot.segments] == [1, 2, 3]
+    assert mutation.snapshot.segments[1].previous_segment_id == "seg-1"
+    assert mutation.snapshot.segments[1].next_segment_id == "seg-2"
+    assert mutation.snapshot.segments[2].previous_segment_id == "seg-3"
+    assert mutation.snapshot.segments[2].next_segment_id is None
+    assert mutation.snapshot.raw_text == "第一句。第三句。第二句。"
+    assert [(edge.left_segment_id, edge.right_segment_id) for edge in mutation.snapshot.edges] == [
+        ("seg-1", "seg-3"),
+        ("seg-3", "seg-2"),
+    ]

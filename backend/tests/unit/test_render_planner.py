@@ -180,3 +180,31 @@ def test_for_segment_delete_targets_new_bridging_edge_only():
     assert plan.target_edge_ids == {"edge-seg-1-seg-3"}
     assert plan.target_block_ids == _block_ids(*after_segments)
     assert plan.compose_only is False
+
+
+def test_for_segment_swap_targets_changed_edges_and_blocks_without_segment_rerender():
+    planner = _planner()
+    before_segments = [_segment("seg-1", 1), _segment("seg-2", 2), _segment("seg-3", 3), _segment("seg-4", 4)]
+    after_segments = [
+        before_segments[0].model_copy(update={"next_segment_id": "seg-3"}),
+        before_segments[2].model_copy(update={"order_key": 2, "previous_segment_id": "seg-1", "next_segment_id": "seg-2"}),
+        before_segments[1].model_copy(update={"order_key": 3, "previous_segment_id": "seg-3", "next_segment_id": "seg-4"}),
+        before_segments[3].model_copy(update={"previous_segment_id": "seg-2", "next_segment_id": None}),
+    ]
+
+    plan = planner.for_segment_swap(
+        before_snapshot=_snapshot(
+            segments=before_segments,
+            edges=[_edge("seg-1", "seg-2"), _edge("seg-2", "seg-3"), _edge("seg-3", "seg-4")],
+        ),
+        after_snapshot=_snapshot(
+            segments=after_segments,
+            edges=[_edge("seg-1", "seg-3"), _edge("seg-3", "seg-2"), _edge("seg-2", "seg-4")],
+        ),
+        swapped_segment_ids={"seg-2", "seg-3"},
+    )
+
+    assert plan.target_segment_ids == set()
+    assert plan.target_edge_ids == {"edge-seg-1-seg-3", "edge-seg-3-seg-2", "edge-seg-2-seg-4"}
+    assert plan.target_block_ids == _block_ids(*after_segments)
+    assert plan.compose_only is False

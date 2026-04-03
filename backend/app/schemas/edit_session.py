@@ -78,6 +78,17 @@ class UpdateSegmentRequest(BaseModel):
         return self
 
 
+class SwapSegmentsRequest(BaseModel):
+    first_segment_id: str
+    second_segment_id: str
+
+    @model_validator(mode="after")
+    def _validate_distinct_segment_ids(self) -> "SwapSegmentsRequest":
+        if self.first_segment_id == self.second_segment_id:
+            raise ValueError("Swap segment ids must be different.")
+        return self
+
+
 class EditableEdge(BaseModel):
     edge_id: str
     document_id: str

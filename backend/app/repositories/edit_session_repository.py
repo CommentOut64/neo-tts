@@ -1,11 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import sqlite3
 import threading
 
+from backend.app.inference.editable_types import build_boundary_asset_id
 from backend.app.schemas.edit_session import ActiveDocumentState, DocumentSnapshot, EditableEdge, EditableSegment, RenderJobRecord
+
+
+TERMINAL_JOB_STATUSES = {"completed", "cancelled", "failed"}
+
+
+@dataclass(frozen=True)
+class PersistedRecoverableState:
+    active_session: ActiveDocumentState
+    head_snapshot: DocumentSnapshot
+    baseline_snapshot: DocumentSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class ReferencedAssetGraph:
+    segment_asset_ids: set[str] = field(default_factory=set)
+    boundary_asset_ids: set[str] = field(default_factory=set)
+    block_ids: set[str] = field(default_factory=set)
+    composition_manifest_ids: set[str] = field(default_factory=set)
+    preview_asset_ids: set[str] = field(default_factory=set)
+
+    def as_relative_asset_paths(self) -> set[str]:
+        return {
+            *{f"segments/{asset_id}" for asset_id in self.segment_asset_ids},
+            *{f"boundaries/{asset_id}" for asset_id in self.boundary_asset_ids},
+            *{f"blocks/{asset_id}" for asset_id in self.block_ids},
+            *{f"compositions/{asset_id}" for asset_id in self.composition_manifest_ids},
+            *{f"previews/{asset_id}" for asset_id in self.preview_asset_ids},
+        }
 
 
 class EditSessionRepository:
@@ -247,6 +278,90 @@ class EditSessionRepository:
         if row is None:
             return None
         return RenderJobRecord.model_validate_json(row["payload"])
+
+    def load_recoverable_state(self) -> PersistedRecoverableState | None:
+        active_session = self.get_active_session()
+        if active_session is None or active_session.head_snapshot_id is None:
+            return None
+        head_snapshot = self.get_snapshot(active_session.head_snapshot_id)
+        if head_snapshot is None:
+            return None
+        baseline_snapshot = (
+            self.get_snapshot(active_session.baseline_snapshot_id)
+            if active_session.baseline_snapshot_id is not None
+            else None
+        )
+        return PersistedRecoverableState(
+            active_session=active_session,
+            head_snapshot=head_snapshot,
+            baseline_snapshot=baseline_snapshot,
+        )
+
+    def list_non_terminal_jobs(self) -> list[RenderJobRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM render_jobs
+                ORDER BY updated_at ASC, job_id ASC
+                """
+            ).fetchall()
+        jobs = [RenderJobRecord.model_validate_json(row["payload"]) for row in rows]
+        return [job for job in jobs if job.status not in TERMINAL_JOB_STATUSES]
+
+    def mark_job_terminal(self, job_id: str, *, status: str, message: str) -> None:
+        job = self.get_render_job(job_id)
+        if job is None:
+            raise LookupError(f"Render job '{job_id}' not found.")
+        progress = 1.0 if status == "completed" else 0.0
+        updated_job = job.model_copy(
+            update={
+                "status": status,
+                "message": message,
+                "progress": progress,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        self.save_render_job(updated_job)
+
+    def collect_referenced_asset_ids(self) -> ReferencedAssetGraph:
+        recoverable = self.load_recoverable_state()
+        if recoverable is None:
+            return ReferencedAssetGraph()
+
+        snapshots = [recoverable.head_snapshot]
+        if recoverable.baseline_snapshot is not None:
+            snapshots.append(recoverable.baseline_snapshot)
+
+        graph = ReferencedAssetGraph()
+        for snapshot in snapshots:
+            graph.block_ids.update(snapshot.block_ids)
+            if snapshot.composition_manifest_id is not None:
+                graph.composition_manifest_ids.add(snapshot.composition_manifest_id)
+
+            segments_by_id = {segment.segment_id: segment for segment in snapshot.segments}
+            for segment in snapshot.segments:
+                if segment.render_asset_id is not None:
+                    graph.segment_asset_ids.add(segment.render_asset_id)
+
+            for edge in snapshot.edges:
+                left_segment = segments_by_id.get(edge.left_segment_id)
+                right_segment = segments_by_id.get(edge.right_segment_id)
+                if left_segment is None or right_segment is None:
+                    continue
+                if left_segment.render_asset_id is None or right_segment.render_asset_id is None:
+                    continue
+                graph.boundary_asset_ids.add(
+                    build_boundary_asset_id(
+                        left_segment_id=edge.left_segment_id,
+                        left_render_version=left_segment.render_version,
+                        right_segment_id=edge.right_segment_id,
+                        right_render_version=right_segment.render_version,
+                        edge_version=edge.edge_version,
+                        boundary_strategy=edge.boundary_strategy,
+                    )
+                )
+        return graph
 
     def clear(self) -> None:
         with self._lock, self._connect() as connection:

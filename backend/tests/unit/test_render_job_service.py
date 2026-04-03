@@ -12,7 +12,7 @@ from backend.app.inference.editable_types import (
     build_boundary_asset_id,
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
-from backend.app.schemas.edit_session import InitializeEditSessionRequest, PreviewRequest, UpdateSegmentRequest
+from backend.app.schemas.edit_session import EditableEdge, InitializeEditSessionRequest, PreviewRequest, UpdateSegmentRequest
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_asset_store import EditAssetStore
@@ -246,6 +246,57 @@ def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_pa
 
     assert not (tmp_path / "assets" / "staging" / accepted.job.job_id).exists()
     assert not any((tmp_path / "assets" / "formal").rglob("*.wav"))
+
+
+def test_build_fallback_boundary_asset_crossfades_segment_margins_without_model_rerender(tmp_path):
+    service = _build_service(tmp_path)
+    left_asset = SegmentRenderAssetPayload(
+        render_asset_id="render-left",
+        segment_id="seg-left",
+        render_version=3,
+        semantic_tokens=[1],
+        phone_ids=[11],
+        decoder_frame_count=2,
+        audio_sample_count=4,
+        left_margin_sample_count=0,
+        core_sample_count=2,
+        right_margin_sample_count=2,
+        left_margin_audio=np.zeros(0, dtype=np.float32),
+        core_audio=np.asarray([0.2, 0.3], dtype=np.float32),
+        right_margin_audio=np.asarray([1.0, 1.0], dtype=np.float32),
+        trace=None,
+    )
+    right_asset = SegmentRenderAssetPayload(
+        render_asset_id="render-right",
+        segment_id="seg-right",
+        render_version=5,
+        semantic_tokens=[2],
+        phone_ids=[12],
+        decoder_frame_count=2,
+        audio_sample_count=4,
+        left_margin_sample_count=2,
+        core_sample_count=2,
+        right_margin_sample_count=0,
+        left_margin_audio=np.asarray([0.0, 0.0], dtype=np.float32),
+        core_audio=np.asarray([0.4, 0.5], dtype=np.float32),
+        right_margin_audio=np.zeros(0, dtype=np.float32),
+        trace=None,
+    )
+    edge = EditableEdge(
+        edge_id="edge-seg-left-seg-right",
+        document_id="doc-1",
+        left_segment_id="seg-left",
+        right_segment_id="seg-right",
+        edge_version=2,
+    )
+
+    boundary = service._build_fallback_boundary_asset(left_asset, right_asset, edge)
+
+    assert boundary.left_render_version == 3
+    assert boundary.right_render_version == 5
+    assert boundary.boundary_sample_count == 2
+    assert boundary.trace == {"boundary_kind": "fallback_equal_power_crossfade"}
+    assert np.allclose(boundary.boundary_audio, np.asarray([1.0, 0.0], dtype=np.float32), atol=1e-6)
 
 
 def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
