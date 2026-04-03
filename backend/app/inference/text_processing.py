@@ -218,6 +218,17 @@ def split_text_segments_official(text: str, text_split_method: str = "cut5") -> 
     return _official_merge_short_text_in_array(lines, threshold=5)
 
 
+def compute_effective_margin_frame_count(
+    *,
+    decoder_frame_count: int,
+    requested_margin_frame_count: int,
+    min_core_frame_count: int = 10,
+) -> int:
+    if decoder_frame_count <= 0 or requested_margin_frame_count <= 0:
+        return 0
+    return min(requested_margin_frame_count, max((decoder_frame_count - min_core_frame_count) // 2, 0))
+
+
 def build_phones_and_bert_features(
     text: str,
     language: str,

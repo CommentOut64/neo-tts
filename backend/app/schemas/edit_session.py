@@ -167,6 +167,12 @@ class CompositionResponse(BaseModel):
     materialized_audio_available: bool
     audio_delivery: AudioDeliveryDescriptor
 
+    @model_validator(mode="after")
+    def _validate_non_expiring_delivery(self) -> "CompositionResponse":
+        if self.audio_delivery.expires_at is not None:
+            raise ValueError("CompositionResponse.audio_delivery.expires_at must be null for formal assets.")
+        return self
+
 
 class PreviewRequest(BaseModel):
     segment_id: str | None = None
@@ -187,12 +193,24 @@ class PreviewResponse(BaseModel):
     preview_kind: Literal["segment", "edge", "block"]
     audio_delivery: AudioDeliveryDescriptor
 
+    @model_validator(mode="after")
+    def _validate_expiring_delivery(self) -> "PreviewResponse":
+        if self.audio_delivery.expires_at is None:
+            raise ValueError("PreviewResponse.audio_delivery.expires_at is required.")
+        return self
+
 
 class SegmentAssetResponse(BaseModel):
     render_asset_id: str
     segment_id: str
     render_version: int
     audio_delivery: AudioDeliveryDescriptor
+
+    @model_validator(mode="after")
+    def _validate_non_expiring_delivery(self) -> "SegmentAssetResponse":
+        if self.audio_delivery.expires_at is not None:
+            raise ValueError("SegmentAssetResponse.audio_delivery.expires_at must be null for formal assets.")
+        return self
 
 
 class BoundaryAssetResponse(BaseModel):
@@ -201,6 +219,12 @@ class BoundaryAssetResponse(BaseModel):
     right_segment_id: str
     edge_version: int
     audio_delivery: AudioDeliveryDescriptor
+
+    @model_validator(mode="after")
+    def _validate_non_expiring_delivery(self) -> "BoundaryAssetResponse":
+        if self.audio_delivery.expires_at is not None:
+            raise ValueError("BoundaryAssetResponse.audio_delivery.expires_at must be null for formal assets.")
+        return self
 
 
 class BaselineSnapshotResponse(BaseModel):
