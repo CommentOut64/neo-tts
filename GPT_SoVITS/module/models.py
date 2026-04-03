@@ -1039,6 +1039,56 @@ class SynthesizerTrn(nn.Module):
         o = self.dec((z * y_mask)[:, :, :], g=ge)
         return o
 
+    @torch.no_grad()
+    def decode_with_trace(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None):
+        def get_ge(refer, sv_emb):
+            ge = None
+            if refer is not None:
+                refer_len = torch.tensor(refer.size(2), device=refer.device).unsqueeze(0)
+                refer_mask = torch.unsqueeze(commons.sequence_mask(refer_len, refer.size(2)), 1).to(refer.dtype)
+                if self.version == "v1":
+                    ge = self.ref_enc(refer * refer_mask, refer_mask)
+                else:
+                    ge = self.ref_enc(refer[:, :704] * refer_mask, refer_mask)
+                if self.is_v2pro:
+                    sv_emb = self.sv_emb(sv_emb)
+                    ge += sv_emb.unsqueeze(-1)
+                    ge = self.prelu(ge)
+            return ge
+
+        if type(refer) == list:
+            ges = []
+            for idx, _refer in enumerate(refer):
+                ge = get_ge(_refer, sv_emb[idx] if self.is_v2pro else None)
+                ges.append(ge)
+            ge = torch.stack(ges, 0).mean(0)
+        else:
+            ge = get_ge(refer, sv_emb)
+
+        y_lengths = (torch.tensor(codes.shape[2], device=codes.device) * 2).reshape(1)
+        text_lengths = torch.tensor(text.shape[-1], device=text.device).reshape(1)
+
+        quantized = self.quantizer.decode(codes)
+        if self.semantic_frame_rate == "25hz":
+            quantized = F.interpolate(quantized, scale_factor=2.0, mode="nearest")
+        x, m_p, logs_p, y_mask, y_, y_mask_ = self.enc_p(
+            quantized,
+            y_lengths,
+            text,
+            text_lengths,
+            self.ge_to512(ge.transpose(2, 1)).transpose(2, 1) if self.is_v2pro else ge,
+            speed,
+        )
+        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
+        z = self.flow(z_p, y_mask, g=ge, reverse=True)
+        o = self.dec((z * y_mask)[:, :, :], g=ge)
+        trace = {
+            "encoder_shape": list(y_.shape),
+            "encoder_mask_shape": list(y_mask_.shape),
+            "decoder_shape": list(o.shape),
+        }
+        return o, trace, y_
+
 
     @torch.no_grad()
     def decode_streaming(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None, result_length:int=None, overlap_frames:torch.Tensor=None, padding_length:int=None):
@@ -1094,6 +1144,47 @@ class SynthesizerTrn(nn.Module):
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
         return o, y_, y_mask_
+
+    @torch.no_grad()
+    def decode_boundary_prefix(
+        self,
+        codes,
+        text,
+        refer,
+        *,
+        left_overlap_frames,
+        boundary_overlap_frame_count,
+        boundary_padding_frame_count,
+        boundary_result_frame_count,
+        noise_scale=0.5,
+        speed=1,
+        sv_emb=None,
+    ):
+        overlap_tensor = left_overlap_frames
+        if overlap_tensor.dim() == 1:
+            overlap_tensor = overlap_tensor.view(1, 1, -1)
+        elif overlap_tensor.dim() == 2:
+            overlap_tensor = overlap_tensor.unsqueeze(0)
+
+        o, y_, y_mask_ = self.decode_streaming(
+            codes,
+            text,
+            refer,
+            noise_scale=noise_scale,
+            speed=speed,
+            sv_emb=sv_emb,
+            result_length=boundary_result_frame_count,
+            overlap_frames=overlap_tensor,
+            padding_length=boundary_padding_frame_count,
+        )
+        trace = {
+            "encoder_shape": list(y_.shape),
+            "encoder_mask_shape": list(y_mask_.shape),
+            "requested_overlap_frame_count": int(boundary_overlap_frame_count),
+            "requested_padding_frame_count": int(boundary_padding_frame_count),
+            "requested_result_frame_count": int(boundary_result_frame_count),
+        }
+        return o, int(boundary_result_frame_count), trace
 
     def extract_latent(self, x):
         ssl = self.ssl_proj(x)
