@@ -51,11 +51,31 @@ class EditableSegment(BaseModel):
     render_version: int = 0
     render_asset_id: str | None = None
     inference_override: dict[str, Any] = Field(default_factory=dict)
+    risk_flags: list[str] = Field(default_factory=list)
     assembled_audio_span: tuple[int, int] | None = None
 
 
 class EditableSegmentResponse(EditableSegment):
     pass
+
+
+class CreateSegmentRequest(BaseModel):
+    after_segment_id: str | None = None
+    raw_text: str
+    text_language: str = "auto"
+    inference_override: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateSegmentRequest(BaseModel):
+    raw_text: str | None = None
+    text_language: str | None = None
+    inference_override: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "UpdateSegmentRequest":
+        if self.raw_text is None and self.text_language is None and self.inference_override is None:
+            raise ValueError("At least one segment field must be provided.")
+        return self
 
 
 class EditableEdge(BaseModel):
@@ -72,6 +92,17 @@ class EditableEdgeResponse(EditableEdge):
     pass
 
 
+class UpdateEdgeRequest(BaseModel):
+    pause_duration_seconds: float | None = None
+    boundary_strategy: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "UpdateEdgeRequest":
+        if self.pause_duration_seconds is None and self.boundary_strategy is None:
+            raise ValueError("At least one edge field must be provided.")
+        return self
+
+
 class ActiveDocumentState(BaseModel):
     document_id: str
     session_status: Literal["initializing", "ready", "failed"] = "initializing"
@@ -79,6 +110,7 @@ class ActiveDocumentState(BaseModel):
     head_snapshot_id: str | None = None
     active_job_id: str | None = None
     editable_mode: str = "segment"
+    initialize_request: InitializeEditSessionRequest | None = None
     created_at: datetime = Field(default_factory=_now_utc)
     updated_at: datetime = Field(default_factory=_now_utc)
 
@@ -247,3 +279,17 @@ class EditSessionSnapshotResponse(BaseModel):
     active_job: RenderJobResponse | None = None
     segments: list[EditableSegmentResponse] = Field(default_factory=list)
     edges: list[EditableEdgeResponse] = Field(default_factory=list)
+
+
+class SegmentListResponse(BaseModel):
+    document_id: str
+    document_version: int
+    items: list[EditableSegmentResponse] = Field(default_factory=list)
+    next_cursor: int | None = None
+
+
+class EdgeListResponse(BaseModel):
+    document_id: str
+    document_version: int
+    items: list[EditableEdgeResponse] = Field(default_factory=list)
+    next_cursor: int | None = None

@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import io
 from pathlib import Path
 import shutil
+import wave
+import json
+
+import numpy as np
+from pydantic import TypeAdapter
+
+from backend.app.inference.editable_types import (
+    BlockCompositionAssetPayload,
+    BoundaryAssetPayload,
+    SegmentCompositionEntry,
+    SegmentRenderAssetPayload,
+)
 
 
 class EditAssetStore:
@@ -19,6 +32,15 @@ class EditAssetStore:
 
     def boundary_asset_path(self, boundary_asset_id: str) -> Path:
         return self._formal_root / "boundaries" / self._validate_leaf_name(boundary_asset_id)
+
+    def block_asset_path(self, block_id: str) -> Path:
+        return self._formal_root / "blocks" / self._validate_leaf_name(block_id)
+
+    def composition_asset_path(self, composition_manifest_id: str) -> Path:
+        return self._formal_root / "compositions" / self._validate_leaf_name(composition_manifest_id)
+
+    def preview_asset_path(self, preview_asset_id: str) -> Path:
+        return self._formal_root / "previews" / self._validate_leaf_name(preview_asset_id)
 
     def write_staging_bytes(self, job_id: str, relative_path: str, payload: bytes) -> Path:
         job_root = self._staging_root / self._validate_leaf_name(job_id)
@@ -61,6 +83,111 @@ class EditAssetStore:
             removed += 1
         return removed
 
+    def clear_all(self) -> None:
+        if self._assets_dir.exists():
+            shutil.rmtree(self._assets_dir, ignore_errors=False)
+        self._assets_dir.mkdir(parents=True, exist_ok=True)
+        self._staging_root.mkdir(parents=True, exist_ok=True)
+        self._formal_root.mkdir(parents=True, exist_ok=True)
+
+    def cleanup_staging_job(self, job_id: str) -> bool:
+        job_root = self._staging_root / self._validate_leaf_name(job_id)
+        if not job_root.exists():
+            return False
+        shutil.rmtree(job_root, ignore_errors=False)
+        return True
+
+    def write_preview_bytes(self, preview_asset_id: str, payload: bytes) -> Path:
+        asset_dir = self.preview_asset_path(preview_asset_id)
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        target_path = asset_dir / "audio.wav"
+        target_path.write_bytes(payload)
+        return target_path
+
+    def write_formal_json(self, relative_path: str, payload: dict) -> Path:
+        target_path = (self._formal_root / self._validate_relative_path(relative_path)).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target_path
+
+    def load_segment_asset(self, render_asset_id: str) -> SegmentRenderAssetPayload:
+        asset_dir = self.segment_asset_path(render_asset_id)
+        metadata = self._read_json(asset_dir / "metadata.json")
+        sample_rate, audio = self.load_wav_asset(asset_dir)
+        del sample_rate
+        left_count = int(metadata["left_margin_sample_count"])
+        core_count = int(metadata["core_sample_count"])
+        right_count = int(metadata["right_margin_sample_count"])
+        if int(audio.size) != left_count + core_count + right_count:
+            raise ValueError(f"Segment asset '{render_asset_id}' metadata does not match audio sample count.")
+        return SegmentRenderAssetPayload(
+            render_asset_id=metadata["render_asset_id"],
+            segment_id=metadata["segment_id"],
+            render_version=int(metadata["render_version"]),
+            semantic_tokens=list(metadata["semantic_tokens"]),
+            phone_ids=list(metadata["phone_ids"]),
+            decoder_frame_count=int(metadata["decoder_frame_count"]),
+            audio_sample_count=int(metadata["audio_sample_count"]),
+            left_margin_sample_count=left_count,
+            core_sample_count=core_count,
+            right_margin_sample_count=right_count,
+            left_margin_audio=audio[:left_count],
+            core_audio=audio[left_count : left_count + core_count],
+            right_margin_audio=audio[left_count + core_count : left_count + core_count + right_count],
+            trace=metadata.get("trace"),
+        )
+
+    def load_boundary_asset(self, boundary_asset_id: str) -> BoundaryAssetPayload:
+        asset_dir = self.boundary_asset_path(boundary_asset_id)
+        metadata = self._read_json(asset_dir / "metadata.json")
+        sample_rate, audio = self.load_wav_asset(asset_dir)
+        del sample_rate
+        return BoundaryAssetPayload(
+            boundary_asset_id=metadata["boundary_asset_id"],
+            left_segment_id=metadata["left_segment_id"],
+            left_render_version=int(metadata["left_render_version"]),
+            right_segment_id=metadata["right_segment_id"],
+            right_render_version=int(metadata["right_render_version"]),
+            edge_version=int(metadata["edge_version"]),
+            boundary_strategy=metadata["boundary_strategy"],
+            boundary_sample_count=int(metadata["boundary_sample_count"]),
+            boundary_audio=audio,
+            trace=metadata.get("trace"),
+        )
+
+    def load_block_asset(self, block_id: str) -> BlockCompositionAssetPayload:
+        asset_dir = self.block_asset_path(block_id)
+        metadata = self._read_json(asset_dir / "metadata.json")
+        sample_rate, audio = self.load_wav_asset(asset_dir)
+        segment_entries = [
+            SegmentCompositionEntry(
+                segment_id=entry["segment_id"],
+                audio_sample_span=tuple(entry["audio_sample_span"]),
+                order_key=int(entry.get("order_key", 0)),
+            )
+            for entry in metadata["segment_entries"]
+        ]
+        return BlockCompositionAssetPayload(
+            block_id=metadata["block_id"],
+            segment_ids=list(metadata["segment_ids"]),
+            sample_rate=sample_rate,
+            audio=audio,
+            audio_sample_count=int(metadata["audio_sample_count"]),
+            segment_entries=segment_entries,
+        )
+
+    def load_wav_asset(self, asset_path: Path) -> tuple[int, np.ndarray]:
+        wav_path = asset_path / "audio.wav"
+        if not wav_path.exists():
+            raise FileNotFoundError(f"Asset audio file not found: {wav_path}")
+        with wave.open(io.BytesIO(wav_path.read_bytes()), "rb") as wav_file:
+            sample_rate = wav_file.getframerate()
+            frames = wav_file.readframes(wav_file.getnframes())
+        audio_int16 = np.frombuffer(frames, dtype=np.int16)
+        if audio_int16.size == 0:
+            return sample_rate, np.zeros(0, dtype=np.float32)
+        return sample_rate, (audio_int16.astype(np.float32) / 32767.0).astype(np.float32, copy=False)
+
     @property
     def _staging_root(self) -> Path:
         return self._assets_dir / "staging"
@@ -73,6 +200,12 @@ class EditAssetStore:
         if value.is_absolute():
             return value
         return (self._project_root / value).resolve()
+
+    @staticmethod
+    def _read_json(path: Path) -> dict:
+        if not path.exists():
+            raise FileNotFoundError(f"Asset metadata file not found: {path}")
+        return TypeAdapter(dict).validate_json(path.read_text(encoding="utf-8"))
 
     @staticmethod
     def _validate_leaf_name(value: str) -> str:

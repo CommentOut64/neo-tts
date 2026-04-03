@@ -4,10 +4,30 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
+class EditSessionNotFoundError(LookupError):
+    pass
+
+
+class ActiveRenderJobConflictError(RuntimeError):
+    pass
+
+
+class SnapshotStateError(RuntimeError):
+    pass
+
+
+class AssetNotFoundError(LookupError):
+    pass
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(LookupError)
     async def _lookup_error_handler(_: Request, exc: LookupError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(ActiveRenderJobConflictError)
+    async def _runtime_error_handler(_: Request, exc: ActiveRenderJobConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(ValueError)
     async def _value_error_handler(_: Request, exc: ValueError) -> JSONResponse:

@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 
-from backend.app.inference.model_cache import PyTorchModelCache
 from backend.app.inference.pipeline import PyTorchSynthesisPipeline
 from backend.app.inference.types import CancelChecker, PreparedSynthesisRequest, ProgressCallback
+
+if TYPE_CHECKING:
+    from backend.app.inference.model_cache import PyTorchModelCache
 
 
 class PyTorchInferenceEngine:
     def __init__(
         self,
-        model_cache: PyTorchModelCache,
+        model_cache: "PyTorchModelCache",
         project_root: Path,
         pipeline: PyTorchSynthesisPipeline | None = None,
     ) -> None:

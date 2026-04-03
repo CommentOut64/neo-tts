@@ -58,6 +58,54 @@ class BoundaryAssetPayload:
     trace: dict[str, Any] | None
 
 
+@dataclass(frozen=True)
+class RenderBlock:
+    block_id: str
+    segment_ids: list[str]
+    start_order_key: int
+    end_order_key: int
+    estimated_sample_count: int
+
+
+@dataclass(frozen=True)
+class SegmentCompositionEntry:
+    segment_id: str
+    audio_sample_span: tuple[int, int]
+    order_key: int = 0
+
+
+@dataclass(frozen=True)
+class BlockCompositionAssetPayload:
+    block_id: str
+    segment_ids: list[str]
+    sample_rate: int
+    audio: np.ndarray
+    audio_sample_count: int
+    segment_entries: list[SegmentCompositionEntry]
+
+
+@dataclass(frozen=True)
+class DocumentCompositionManifestPayload:
+    composition_manifest_id: str
+    document_id: str
+    document_version: int
+    sample_rate: int
+    audio_sample_count: int
+    playable_sample_span: tuple[int, int]
+    block_ids: list[str]
+    block_spans: dict[str, tuple[int, int]]
+    segment_entries: list[SegmentCompositionEntry]
+    audio: np.ndarray | None
+
+
+@dataclass(frozen=True)
+class PreviewPayload:
+    preview_asset_id: str
+    preview_kind: str
+    sample_rate: int
+    audio: np.ndarray
+
+
 def fingerprint_inference_config(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(encoded.encode("utf-8")).hexdigest()

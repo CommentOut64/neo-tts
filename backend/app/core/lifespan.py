@@ -4,8 +4,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.inference.engine import PyTorchInferenceEngine
-from backend.app.inference.model_cache import PyTorchModelCache
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
@@ -16,6 +14,9 @@ from backend.app.services.synthesis_result_store import SynthesisResultStore
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
+    from backend.app.inference.engine import PyTorchInferenceEngine
+    from backend.app.inference.model_cache import PyTorchModelCache
+
     settings = app.state.settings
     model_cache = PyTorchModelCache(
         project_root=settings.project_root,

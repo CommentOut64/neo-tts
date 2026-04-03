@@ -90,6 +90,12 @@ class EditSessionRuntime:
                 return None
             return job.model_copy(deep=True)
 
+    def reset(self) -> None:
+        with self._lock:
+            self._jobs.clear()
+            self._subscribers.clear()
+            self._active_job_id = None
+
     def _broadcast_locked(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:

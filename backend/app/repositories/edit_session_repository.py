@@ -248,6 +248,14 @@ class EditSessionRepository:
             return None
         return RenderJobRecord.model_validate_json(row["payload"])
 
+    def clear(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM active_session")
+            connection.execute("DELETE FROM snapshots")
+            connection.execute("DELETE FROM segments")
+            connection.execute("DELETE FROM edges")
+            connection.execute("DELETE FROM render_jobs")
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_file)
         connection.row_factory = sqlite3.Row

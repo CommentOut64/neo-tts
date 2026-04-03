@@ -218,6 +218,31 @@ def split_text_segments_official(text: str, text_split_method: str = "cut5") -> 
     return _official_merge_short_text_in_array(lines, threshold=5)
 
 
+def split_text_segments_raw_strong_punctuation(text: str) -> list[str]:
+    normalized = text.strip("\n")
+    if not normalized:
+        return []
+    return _official_process_text_lines(_official_split_sentence_units(normalized))
+
+
+def split_text_segments_zh_period(text: str) -> list[str]:
+    normalized = text.strip("\n")
+    if not normalized:
+        return []
+
+    pieces: list[str] = []
+    start = 0
+    for index, char in enumerate(normalized):
+        if char != "。":
+            continue
+        pieces.append(normalized[start : index + 1])
+        start = index + 1
+
+    if start < len(normalized):
+        pieces.append(normalized[start:])
+    return _official_process_text_lines(pieces)
+
+
 def compute_effective_margin_frame_count(
     *,
     decoder_frame_count: int,
