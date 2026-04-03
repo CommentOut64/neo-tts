@@ -132,3 +132,106 @@ def test_repository_saves_and_loads_render_job(tmp_path: Path):
     loaded = repository.get_render_job("job-1")
 
     assert loaded == job
+
+
+def test_repository_preserves_snapshot_specific_segment_and_edge_indexes(tmp_path: Path):
+    repository = _build_repository(tmp_path / "edit_session.db")
+    baseline_snapshot = DocumentSnapshot(
+        snapshot_id="snap-base",
+        document_id="doc-1",
+        snapshot_kind="baseline",
+        document_version=1,
+        raw_text="甲。乙。",
+        normalized_text="甲。乙。",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                raw_text="甲。",
+                normalized_text="甲。",
+                text_language="zh",
+            ),
+            EditableSegment(
+                segment_id="seg-2",
+                document_id="doc-1",
+                order_key=2,
+                raw_text="乙。",
+                normalized_text="乙。",
+                text_language="zh",
+                previous_segment_id="seg-1",
+            ),
+        ],
+        edges=[
+            EditableEdge(
+                edge_id="edge-base",
+                document_id="doc-1",
+                left_segment_id="seg-1",
+                right_segment_id="seg-2",
+            )
+        ],
+    )
+    head_snapshot = DocumentSnapshot(
+        snapshot_id="snap-head",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=2,
+        raw_text="甲。乙。丙。",
+        normalized_text="甲。乙。丙。",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1-v2",
+                document_id="doc-1",
+                order_key=1,
+                raw_text="甲。",
+                normalized_text="甲。",
+                text_language="zh",
+            ),
+            EditableSegment(
+                segment_id="seg-2-v2",
+                document_id="doc-1",
+                order_key=2,
+                raw_text="乙。",
+                normalized_text="乙。",
+                text_language="zh",
+                previous_segment_id="seg-1-v2",
+                next_segment_id="seg-3-v2",
+            ),
+            EditableSegment(
+                segment_id="seg-3-v2",
+                document_id="doc-1",
+                order_key=3,
+                raw_text="丙。",
+                normalized_text="丙。",
+                text_language="zh",
+                previous_segment_id="seg-2-v2",
+            ),
+        ],
+        edges=[
+            EditableEdge(
+                edge_id="edge-head-1",
+                document_id="doc-1",
+                left_segment_id="seg-1-v2",
+                right_segment_id="seg-2-v2",
+            ),
+            EditableEdge(
+                edge_id="edge-head-2",
+                document_id="doc-1",
+                left_segment_id="seg-2-v2",
+                right_segment_id="seg-3-v2",
+            ),
+        ],
+    )
+
+    repository.save_snapshot(baseline_snapshot)
+    repository.save_snapshot(head_snapshot)
+
+    baseline_segments = repository.list_segments("doc-1", limit=10, cursor=None, snapshot_id="snap-base")
+    head_segments = repository.list_segments("doc-1", limit=10, cursor=None, snapshot_id="snap-head")
+    baseline_edges = repository.list_edges("doc-1", limit=10, cursor=None, snapshot_id="snap-base")
+    head_edges = repository.list_edges("doc-1", limit=10, cursor=None, snapshot_id="snap-head")
+
+    assert [segment.segment_id for segment in baseline_segments] == ["seg-1", "seg-2"]
+    assert [segment.segment_id for segment in head_segments] == ["seg-1-v2", "seg-2-v2", "seg-3-v2"]
+    assert [edge.edge_id for edge in baseline_edges] == ["edge-base"]
+    assert [edge.edge_id for edge in head_edges] == ["edge-head-1", "edge-head-2"]

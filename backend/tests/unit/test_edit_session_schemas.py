@@ -1,7 +1,10 @@
+import pytest
+
 from datetime import datetime, timezone
 
 from backend.app.schemas.edit_session import (
     AudioDeliveryDescriptor,
+    BoundaryAssetResponse,
     CompositionResponse,
     EditableEdgeResponse,
     EditableSegmentResponse,
@@ -9,6 +12,7 @@ from backend.app.schemas.edit_session import (
     PreviewRequest,
     PreviewResponse,
     RenderJobResponse,
+    SegmentAssetResponse,
 )
 
 
@@ -55,7 +59,7 @@ def test_render_job_response_exposes_frozen_progress_fields():
 
 
 def test_audio_delivery_contract_is_metadata_only():
-    descriptor = AudioDeliveryDescriptor(
+    preview_descriptor = AudioDeliveryDescriptor(
         asset_id="asset-1",
         audio_url="/v1/edit-session/assets/previews/asset-1/audio",
         sample_rate=32000,
@@ -63,24 +67,83 @@ def test_audio_delivery_contract_is_metadata_only():
         etag="etag-1",
         expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
+    composition_descriptor = AudioDeliveryDescriptor(
+        asset_id="comp-1",
+        audio_url="/v1/edit-session/assets/compositions/comp-1/audio",
+        sample_rate=32000,
+        byte_length=2048,
+        etag="etag-2",
+    )
 
     composition = CompositionResponse(
         composition_manifest_id="comp-1",
         document_id="doc-1",
         document_version=2,
         materialized_audio_available=True,
-        audio_delivery=descriptor,
+        audio_delivery=composition_descriptor,
     )
     preview = PreviewResponse(
         preview_asset_id="preview-1",
         preview_kind="segment",
-        audio_delivery=descriptor,
+        audio_delivery=preview_descriptor,
     )
 
     assert composition.audio_delivery.audio_url.endswith("/audio")
     assert composition.audio_delivery.content_type == "audio/wav"
     assert composition.audio_delivery.supports_range is True
     assert preview.audio_delivery.expires_at is not None
+
+
+def test_preview_response_requires_expires_at():
+    descriptor = AudioDeliveryDescriptor(
+        asset_id="preview-1",
+        audio_url="/v1/edit-session/assets/previews/preview-1/audio",
+        sample_rate=32000,
+        etag="etag-1",
+    )
+
+    with pytest.raises(ValueError, match="expires_at"):
+        PreviewResponse(
+            preview_asset_id="preview-1",
+            preview_kind="segment",
+            audio_delivery=descriptor,
+        )
+
+
+def test_formal_asset_responses_reject_short_ttl():
+    expiring_descriptor = AudioDeliveryDescriptor(
+        asset_id="asset-1",
+        audio_url="/v1/edit-session/assets/segments/asset-1/audio",
+        sample_rate=32000,
+        etag="etag-1",
+        expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="expires_at"):
+        CompositionResponse(
+            composition_manifest_id="comp-1",
+            document_id="doc-1",
+            document_version=2,
+            materialized_audio_available=True,
+            audio_delivery=expiring_descriptor,
+        )
+
+    with pytest.raises(ValueError, match="expires_at"):
+        SegmentAssetResponse(
+            render_asset_id="render-1",
+            segment_id="seg-1",
+            render_version=1,
+            audio_delivery=expiring_descriptor,
+        )
+
+    with pytest.raises(ValueError, match="expires_at"):
+        BoundaryAssetResponse(
+            boundary_asset_id="boundary-1",
+            left_segment_id="seg-1",
+            right_segment_id="seg-2",
+            edge_version=1,
+            audio_delivery=expiring_descriptor,
+        )
 
 
 def test_preview_request_requires_exactly_one_target():
