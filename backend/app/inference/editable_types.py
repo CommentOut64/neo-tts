@@ -27,6 +27,33 @@ class ReferenceContext:
 
 
 @dataclass(frozen=True)
+class ResolvedVoiceBinding:
+    voice_binding_id: str
+    voice_id: str
+    model_key: str
+    gpt_path: str | None = None
+    sovits_path: str | None = None
+    speaker_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedRenderContext:
+    voice_id: str
+    model_key: str
+    reference_audio_path: str
+    reference_text: str
+    reference_language: str
+    speed: float = 1.0
+    top_k: int = 15
+    top_p: float = 1.0
+    temperature: float = 1.0
+    noise_scale: float = 0.35
+    resolved_voice_binding: ResolvedVoiceBinding | None = None
+    render_profile_id: str | None = None
+    render_profile_fingerprint: str = ""
+
+
+@dataclass(frozen=True)
 class SegmentRenderAssetPayload:
     render_asset_id: str
     segment_id: str

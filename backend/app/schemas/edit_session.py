@@ -38,6 +38,40 @@ class AudioDeliveryDescriptor(BaseModel):
     expires_at: datetime | None = None
 
 
+class RenderProfile(BaseModel):
+    render_profile_id: str
+    scope: Literal["session", "group", "segment"]
+    name: str = ""
+    speed: float = 1.0
+    top_k: int = 15
+    top_p: float = 1.0
+    temperature: float = 1.0
+    noise_scale: float = 0.35
+    reference_audio_path: str | None = None
+    reference_text: str | None = None
+    reference_language: str | None = None
+    extra_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceBinding(BaseModel):
+    voice_binding_id: str
+    scope: Literal["session", "group", "segment"]
+    voice_id: str
+    model_key: str
+    sovits_path: str | None = None
+    gpt_path: str | None = None
+    speaker_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class SegmentGroup(BaseModel):
+    group_id: str
+    name: str = ""
+    segment_ids: list[str] = Field(default_factory=list)
+    render_profile_id: str | None = None
+    voice_binding_id: str | None = None
+    created_by: Literal["append", "batch_patch", "manual"] = "manual"
+
+
 class EditableSegment(BaseModel):
     segment_id: str
     document_id: str
@@ -70,6 +104,72 @@ class CreateSegmentRequest(BaseModel):
     raw_text: str
     text_language: str = "auto"
     inference_override: dict[str, Any] = Field(default_factory=dict)
+
+
+class RenderProfilePatchRequest(BaseModel):
+    name: str | None = None
+    speed: float | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    temperature: float | None = None
+    noise_scale: float | None = None
+    reference_audio_path: str | None = None
+    reference_text: str | None = None
+    reference_language: str | None = None
+    extra_overrides: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "RenderProfilePatchRequest":
+        if all(
+            value is None
+            for value in (
+                self.name,
+                self.speed,
+                self.top_k,
+                self.top_p,
+                self.temperature,
+                self.noise_scale,
+                self.reference_audio_path,
+                self.reference_text,
+                self.reference_language,
+                self.extra_overrides,
+            )
+        ):
+            raise ValueError("At least one render profile field must be provided.")
+        return self
+
+
+class VoiceBindingPatchRequest(BaseModel):
+    voice_id: str | None = None
+    model_key: str | None = None
+    sovits_path: str | None = None
+    gpt_path: str | None = None
+    speaker_meta: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "VoiceBindingPatchRequest":
+        if all(
+            value is None
+            for value in (
+                self.voice_id,
+                self.model_key,
+                self.sovits_path,
+                self.gpt_path,
+                self.speaker_meta,
+            )
+        ):
+            raise ValueError("At least one voice binding field must be provided.")
+        return self
+
+
+class AppendSegmentsRequest(BaseModel):
+    raw_text: str
+    text_language: str = "auto"
+    after_segment_id: str | None = None
+    segment_boundary_mode: str = "raw_strong_punctuation"
+    target_group_id: str | None = None
+    group_render_profile: RenderProfilePatchRequest | None = None
+    group_voice_binding: VoiceBindingPatchRequest | None = None
 
 
 class UpdateSegmentRequest(BaseModel):
@@ -146,6 +246,11 @@ class DocumentSnapshot(BaseModel):
     segment_ids: list[str] = Field(default_factory=list)
     edge_ids: list[str] = Field(default_factory=list)
     block_ids: list[str] = Field(default_factory=list)
+    groups: list[SegmentGroup] = Field(default_factory=list)
+    render_profiles: list[RenderProfile] = Field(default_factory=list)
+    voice_bindings: list[VoiceBinding] = Field(default_factory=list)
+    default_render_profile_id: str | None = None
+    default_voice_binding_id: str | None = None
     composition_manifest_id: str | None = None
     playback_map_version: int | None = None
     timeline_manifest_id: str | None = None
