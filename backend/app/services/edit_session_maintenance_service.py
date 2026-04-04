@@ -13,6 +13,7 @@ from backend.app.services.edit_session_runtime import EditSessionRuntime
 class MaintenanceReport:
     recovered_document_id: str | None = None
     zombie_job_ids: list[str] = field(default_factory=list)
+    zombie_export_job_ids: list[str] = field(default_factory=list)
     staging_purged_count: int = 0
     preview_purged_count: int = 0
     orphan_preview_removed_count: int = 0
@@ -40,6 +41,7 @@ class EditSessionMaintenanceService:
         recoverable = self._repository.load_recoverable_state()
         recovered_document_id = recoverable.active_session.document_id if recoverable is not None else None
         zombie_job_ids: list[str] = []
+        zombie_export_job_ids: list[str] = []
         active_session = self._repository.get_active_session()
         for job in self._repository.list_non_terminal_jobs():
             checkpoint = self._repository.get_latest_checkpoint(job.document_id)
@@ -67,6 +69,16 @@ class EditSessionMaintenanceService:
             )
             zombie_job_ids.append(job.job_id)
 
+        for export_job in self._repository.list_non_terminal_export_jobs():
+            if export_job.staging_dir:
+                self._asset_store.cleanup_export_staging_dir(export_job.staging_dir)
+            self._repository.mark_export_job_terminal(
+                export_job.export_job_id,
+                status="failed",
+                message="Recovered on startup after interrupted export job.",
+            )
+            zombie_export_job_ids.append(export_job.export_job_id)
+
         if active_session is not None and zombie_job_ids:
             recovered_status = "ready" if recoverable is not None else "failed"
             self._repository.upsert_active_session(
@@ -83,6 +95,7 @@ class EditSessionMaintenanceService:
         report = MaintenanceReport(
             recovered_document_id=recovered_document_id,
             zombie_job_ids=zombie_job_ids,
+            zombie_export_job_ids=zombie_export_job_ids,
             staging_purged_count=cleanup_report.staging_purged_count,
             preview_purged_count=cleanup_report.preview_purged_count,
             orphan_preview_removed_count=cleanup_report.orphan_preview_removed_count,

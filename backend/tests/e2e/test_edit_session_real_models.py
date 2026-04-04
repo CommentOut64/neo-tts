@@ -37,6 +37,21 @@ def _wait_for_snapshot_version(client: TestClient, version: int, *, timeout: flo
     raise AssertionError(f"snapshot 未在 {timeout:.1f}s 内到达 document_version={version}: {last_payload}")
 
 
+def _wait_for_export_job(client: TestClient, export_job_id: str, *, timeout: float = 300.0) -> dict:
+    deadline = time.time() + timeout
+    last_payload: dict | None = None
+    while time.time() < deadline:
+        response = client.get(f"/v1/edit-session/exports/{export_job_id}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        last_payload = payload
+        if payload["status"] in {"completed", "failed"}:
+            assert payload["status"] == "completed", payload
+            return payload
+        time.sleep(0.25)
+    raise AssertionError(f"export job '{export_job_id}' 未在 {timeout:.1f}s 内进入终态: {last_payload}")
+
+
 def _read_wav_sample_count(payload: bytes) -> int:
     with wave.open(io.BytesIO(payload), "rb") as wav_file:
         return wav_file.getnframes()
@@ -78,6 +93,18 @@ def _assert_frontend_consumable_state(client: TestClient, expected_segments: lis
     assert all(start < end for start, end in spans)
 
     composition = client.get("/v1/edit-session/composition")
+    if composition.status_code == 404:
+        export_response = client.post(
+            "/v1/edit-session/exports/composition",
+            json={
+                "document_version": snapshot_payload["document_version"],
+                "target_dir": f"e2e-composition-v{snapshot_payload['document_version']}",
+                "overwrite_policy": "replace",
+            },
+        )
+        assert export_response.status_code == 202, export_response.text
+        _wait_for_export_job(client, export_response.json()["job"]["export_job_id"])
+        composition = client.get("/v1/edit-session/composition")
     assert composition.status_code == 200, composition.text
     composition_payload = composition.json()
     composition_audio = client.get(composition_payload["audio_delivery"]["audio_url"])

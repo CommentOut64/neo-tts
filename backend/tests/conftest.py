@@ -122,6 +122,7 @@ def test_app_settings(sample_voice_config: Path) -> AppSettings:
         inference_params_cache_file=project_root / "state" / "params_cache.json",
         edit_session_db_file=project_root / "storage" / "edit_session" / "session.db",
         edit_session_assets_dir=project_root / "storage" / "edit_session" / "assets",
+        edit_session_exports_dir=project_root / "storage" / "edit_session" / "exports",
         edit_session_staging_ttl_seconds=60,
     )
 
@@ -142,6 +143,7 @@ def real_model_app_settings(tmp_path: Path) -> AppSettings:
         inference_params_cache_file=tmp_path / "state" / "params_cache.json",
         edit_session_db_file=tmp_path / "storage" / "edit_session" / "session.db",
         edit_session_assets_dir=tmp_path / "storage" / "edit_session" / "assets",
+        edit_session_exports_dir=tmp_path / "storage" / "edit_session" / "exports",
         edit_session_staging_ttl_seconds=base_settings.edit_session_staging_ttl_seconds,
         cnhubert_base_path=base_settings.cnhubert_base_path,
         bert_path=base_settings.bert_path,

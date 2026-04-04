@@ -43,14 +43,21 @@ from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdge,
     EditableSegment,
+    GroupListResponse,
     InitializeEditSessionRequest,
+    MergeSegmentsRequest,
+    MoveSegmentRangeRequest,
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
     RenderProfile,
     RenderProfilePatchRequest,
+    RenderProfileListResponse,
     SegmentAssetResponse,
+    SegmentBatchRenderProfilePatchRequest,
+    SegmentBatchVoiceBindingPatchRequest,
     SegmentGroup,
+    SplitSegmentRequest,
     BoundaryAssetResponse,
     RenderJobAcceptedResponse,
     RenderJobRecord,
@@ -60,6 +67,7 @@ from backend.app.schemas.edit_session import (
     UpdateEdgeRequest,
     UpdateSegmentRequest,
     VoiceBinding,
+    VoiceBindingListResponse,
     VoiceBindingPatchRequest,
 )
 from backend.app.services.block_planner import BlockPlanner
@@ -373,6 +381,68 @@ class RenderJobService:
             impact=impact,
         )
 
+    def create_move_range_job(self, body: MoveSegmentRangeRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        mutation = self._segment_service.move_range(
+            body.segment_ids,
+            after_segment_id=body.after_segment_id,
+            snapshot=before_snapshot,
+        )
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=mutation.snapshot,
+            changed_segment_ids=set(body.segment_ids),
+            change_reason="segment_move_range",
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_move_range",
+            message=f"已创建移段作业，目标段 {len(body.segment_ids)} 个。",
+            snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
+    def create_split_segment_job(self, body: SplitSegmentRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        mutation = self._segment_service.split_segment(
+            body.segment_id,
+            left_text=body.left_text,
+            right_text=body.right_text,
+            text_language=body.text_language,
+            snapshot=before_snapshot,
+        )
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=mutation.snapshot,
+            changed_segment_ids={segment.segment_id for segment in mutation.segments},
+            change_reason="segment_split",
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_split",
+            message=f"已创建拆段作业，目标段 {body.segment_id}。",
+            snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
+    def create_merge_segments_job(self, body: MergeSegmentsRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        mutation = self._segment_service.merge_segments(
+            body.left_segment_id,
+            body.right_segment_id,
+            snapshot=before_snapshot,
+        )
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=mutation.snapshot,
+            changed_segment_ids={mutation.segment.segment_id} if mutation.segment is not None else set(),
+            change_reason="segment_merge",
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_merge",
+            message=f"已创建合段作业，目标段 {body.left_segment_id} 与 {body.right_segment_id}。",
+            snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
     def create_update_edge_job(self, edge_id: str, patch: UpdateEdgeRequest) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
         mutation = self._edge_service.update_edge(edge_id, patch, snapshot=before_snapshot)
@@ -497,6 +567,54 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             change_reason="segment_voice_binding_patch",
+        )
+
+    def create_patch_segments_render_profile_batch_job(
+        self,
+        body: SegmentBatchRenderProfilePatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, profile = self._segment_group_service.create_render_profile(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=body.patch,
+            base_profile_id=before_snapshot.default_render_profile_id,
+        )
+        after_snapshot = self._segment_service.update_segments_render_profile(
+            body.segment_ids,
+            profile.render_profile_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="segment_render_profile_batch_patch",
+            message=f"已创建段级批量渲染参数更新作业，目标段 {len(body.segment_ids)} 个。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="segment_render_profile_batch_patch",
+        )
+
+    def create_patch_segments_voice_binding_batch_job(
+        self,
+        body: SegmentBatchVoiceBindingPatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, binding = self._segment_group_service.create_voice_binding(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=body.patch,
+            base_binding_id=before_snapshot.default_voice_binding_id,
+        )
+        after_snapshot = self._segment_service.update_segments_voice_binding(
+            body.segment_ids,
+            binding.voice_binding_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="segment_voice_binding_batch_patch",
+            message=f"已创建段级批量 voice/model 绑定更新作业，目标段 {len(body.segment_ids)} 个。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="segment_voice_binding_batch_patch",
         )
 
     def create_restore_baseline_job(self) -> RenderJobAcceptedResponse:
@@ -724,11 +842,25 @@ class RenderJobService:
     def list_edges(self, *, limit: int, cursor: int | None):
         return self._edge_service.list_edges(limit=limit, cursor=cursor)
 
+    def list_groups(self) -> GroupListResponse:
+        return self._session_service.get_groups()
+
+    def list_render_profiles(self) -> RenderProfileListResponse:
+        return self._session_service.get_render_profiles()
+
+    def list_voice_bindings(self) -> VoiceBindingListResponse:
+        return self._session_service.get_voice_bindings()
+
     def get_composition_response(self) -> CompositionResponse:
         snapshot = self._session_service.get_head_snapshot()
-        if snapshot.composition_manifest_id is None:
-            raise EditSessionNotFoundError("Composition manifest not found.")
-        asset_id = snapshot.composition_manifest_id
+        export_job = self._repository.get_latest_completed_export_job(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            export_kind="composition",
+        )
+        if export_job is None or export_job.output_manifest is None or export_job.output_manifest.composition_manifest_id is None:
+            raise EditSessionNotFoundError("Composition export not found for current document version.")
+        asset_id = export_job.output_manifest.composition_manifest_id
         sample_rate = self._load_sample_rate(self._asset_store.composition_asset_path(asset_id), asset_id=asset_id)
         return CompositionResponse(
             composition_manifest_id=asset_id,
@@ -745,10 +877,11 @@ class RenderJobService:
 
     def get_playback_map_response(self) -> PlaybackMapResponse:
         snapshot = self._session_service.get_head_snapshot()
+        composition_manifest_id = self._get_available_composition_manifest_id(snapshot)
         if snapshot.timeline_manifest_id is not None:
             timeline = self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
             return self._playback_map_service.rebuild(manifest=timeline).model_copy(
-                update={"composition_manifest_id": snapshot.composition_manifest_id}
+                update={"composition_manifest_id": composition_manifest_id}
             )
         playable_sample_span = (
             (0, max(segment.assembled_audio_span[1] for segment in snapshot.segments if segment.assembled_audio_span is not None))
@@ -758,7 +891,7 @@ class RenderJobService:
         return PlaybackMapResponse(
             document_id=snapshot.document_id,
             document_version=snapshot.document_version,
-            composition_manifest_id=snapshot.composition_manifest_id,
+            composition_manifest_id=composition_manifest_id,
             playable_sample_span=playable_sample_span,
             entries=[
                 {
@@ -1215,12 +1348,6 @@ class RenderJobService:
                 },
             )
 
-        plan.composition_manifest = self._composition_builder.compose_document(
-            document_id=plan.document_id,
-            document_version=plan.document_version,
-            blocks=plan.block_assets,
-        )
-        self._write_composition_asset(plan.job_id, plan.composition_manifest)
         temporary_snapshot = self._build_temporary_snapshot(plan)
         plan.timeline_manifest, playback_map = self._timeline_manifest_service.build(
             snapshot=temporary_snapshot,
@@ -1235,11 +1362,12 @@ class RenderJobService:
         self._persist_runtime_job(plan.job_id)
 
     def _commit(self, plan: RenderPlan) -> None:
-        assert plan.composition_manifest is not None
         assert plan.timeline_manifest is not None
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="committing", progress=0.9, message="正在提交快照与资产。")
-        self._asset_store.promote_staging_tree(plan.job_id, "formal")
+        staging_root = self._asset_store._staging_root / plan.job_id  # noqa: SLF001
+        if staging_root.exists():
+            self._asset_store.promote_staging_tree(plan.job_id, "formal")
         self._write_timeline_manifest(plan.timeline_manifest)
 
         snapshot_payload = {
@@ -1255,7 +1383,7 @@ class RenderJobService:
             "voice_bindings": [binding.model_copy(deep=True) for binding in plan.voice_bindings],
             "default_render_profile_id": plan.default_render_profile_id,
             "default_voice_binding_id": plan.default_voice_binding_id,
-            "composition_manifest_id": plan.composition_manifest.composition_manifest_id,
+            "composition_manifest_id": None,
             "playback_map_version": plan.document_version,
             "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
             "segments": plan.segments,
@@ -1319,15 +1447,12 @@ class RenderJobService:
 
         if plan.skip_compose:
             baseline_snapshot = self._repository.get_snapshot(active_session.baseline_snapshot_id) if active_session.baseline_snapshot_id else None
-            composition_manifest_id = baseline_snapshot.composition_manifest_id if baseline_snapshot is not None else None
             block_ids = baseline_snapshot.block_ids if baseline_snapshot is not None else []
             playback_map_version = baseline_snapshot.playback_map_version if baseline_snapshot is not None else None
             timeline_manifest_id = baseline_snapshot.timeline_manifest_id if baseline_snapshot is not None else None
         else:
-            assert plan.composition_manifest is not None
             assert plan.timeline_manifest is not None
             self._write_timeline_manifest(plan.timeline_manifest)
-            composition_manifest_id = plan.composition_manifest.composition_manifest_id
             block_ids = [entry.block_asset_id for entry in plan.timeline_manifest.block_entries]
             playback_map_version = plan.document_version
             timeline_manifest_id = plan.timeline_manifest.timeline_manifest_id
@@ -1347,7 +1472,7 @@ class RenderJobService:
             voice_bindings=[binding.model_copy(deep=True) for binding in plan.voice_bindings],
             default_render_profile_id=plan.default_render_profile_id,
             default_voice_binding_id=plan.default_voice_binding_id,
-            composition_manifest_id=composition_manifest_id,
+            composition_manifest_id=None,
             playback_map_version=playback_map_version,
             timeline_manifest_id=timeline_manifest_id,
             segments=plan.segments,
@@ -1795,6 +1920,18 @@ class RenderJobService:
             }
         )
         self._repository.upsert_active_session(failed_session)
+
+    def _get_available_composition_manifest_id(self, snapshot: DocumentSnapshot) -> str | None:
+        if snapshot.composition_manifest_id is not None:
+            return snapshot.composition_manifest_id
+        export_job = self._repository.get_latest_completed_export_job(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            export_kind="composition",
+        )
+        if export_job is None or export_job.output_manifest is None:
+            return None
+        return export_job.output_manifest.composition_manifest_id
 
     def _rollback_uncommitted_assets(self, job_id: str) -> None:
         self._asset_store.cleanup_staging_job(job_id)

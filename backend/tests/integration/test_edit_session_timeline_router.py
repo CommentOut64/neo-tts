@@ -53,7 +53,7 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200
         assert playback_map.json()["document_version"] == initial_payload["document_version"]
-        assert playback_map.json()["composition_manifest_id"] is not None
+        assert playback_map.json()["composition_manifest_id"] is None
 
         block_audio = client.get(initial_payload["block_entries"][0]["audio_url"])
         assert block_audio.status_code == 200

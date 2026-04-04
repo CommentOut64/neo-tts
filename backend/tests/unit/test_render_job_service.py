@@ -126,6 +126,7 @@ def _build_service(
     asset_store = EditAssetStore(
         project_root=tmp_path,
         assets_dir=tmp_path / "assets",
+        export_root=tmp_path / "exports",
         staging_ttl_seconds=60,
     )
     runtime = EditSessionRuntime()
@@ -181,7 +182,7 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     assert snapshot.total_segment_count == 2
     assert snapshot.total_edge_count == 1
     assert snapshot.ready_block_count == 1
-    assert snapshot.composition_manifest_id is not None
+    assert snapshot.composition_manifest_id is None
 
 
 def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):

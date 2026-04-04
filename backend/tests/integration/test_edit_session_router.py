@@ -111,6 +111,24 @@ def _wait_until(predicate, *, timeout: float = 3.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
+def _export_composition_for_current_snapshot(client: TestClient, *, target_dir: str) -> dict:
+    snapshot = client.get("/v1/edit-session/snapshot").json()
+    response = client.post(
+        "/v1/edit-session/exports/composition",
+        json={
+            "document_version": snapshot["document_version"],
+            "target_dir": target_dir,
+            "overwrite_policy": "fail",
+        },
+    )
+    assert response.status_code == 202
+    export_job_id = response.json()["job"]["export_job_id"]
+    _wait_until(lambda: client.get(f"/v1/edit-session/exports/{export_job_id}").json()["status"] == "completed")
+    composition = client.get("/v1/edit-session/composition")
+    assert composition.status_code == 200
+    return composition.json()
+
+
 def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
     repository = app.state.edit_session_repository
     document_id = "doc-seeded"
@@ -346,9 +364,7 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
         assert len(backend.boundary_calls) == 4
 
         composition = client.get("/v1/edit-session/composition")
-        assert composition.status_code == 200
-        assert composition.json()["document_version"] == 3
-        assert composition.json()["audio_delivery"]["audio_url"].endswith("/audio")
+        assert composition.status_code == 404
 
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200
@@ -406,8 +422,7 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
         ]
 
         composition = client.get("/v1/edit-session/composition")
-        assert composition.status_code == 200
-        assert composition.json()["document_version"] == 2
+        assert composition.status_code == 404
 
 
 def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):
@@ -501,7 +516,7 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
 
         snapshot = client.get("/v1/edit-session/snapshot").json()
-        composition_id = snapshot["composition_manifest_id"]
+        assert snapshot["composition_manifest_id"] is None
         first_segment = snapshot["segments"][0]
         first_edge = snapshot["edges"][0]
         boundary_asset_id = build_boundary_asset_id(
@@ -513,9 +528,11 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
             boundary_strategy=first_edge["boundary_strategy"],
         )
 
-        composition = client.get("/v1/edit-session/composition")
-        assert composition.status_code == 200
-        assert composition.json()["audio_delivery"]["audio_url"].endswith(f"/assets/compositions/{composition_id}/audio")
+        composition_payload = _export_composition_for_current_snapshot(client, target_dir="asset-route-composition")
+        composition_id = composition_payload["composition_manifest_id"]
+        refreshed_snapshot = client.get("/v1/edit-session/snapshot").json()
+        assert refreshed_snapshot["composition_manifest_id"] == composition_id
+        assert composition_payload["audio_delivery"]["audio_url"].endswith(f"/assets/compositions/{composition_id}/audio")
 
         composition_audio = client.get(
             f"/v1/edit-session/assets/compositions/{composition_id}/audio",
@@ -675,6 +692,7 @@ def test_startup_reconcile_cleans_orphan_preview_and_expired_staging(test_app_se
     store = EditAssetStore(
         project_root=test_app_settings.project_root,
         assets_dir=test_app_settings.edit_session_assets_dir,
+        export_root=test_app_settings.edit_session_exports_dir,
         staging_ttl_seconds=test_app_settings.edit_session_staging_ttl_seconds,
     )
     store.create_preview_asset(

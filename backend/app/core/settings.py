@@ -14,6 +14,7 @@ class AppSettings:
     inference_params_cache_file: Path = Path("storage/inference/params_cache.json")
     edit_session_db_file: Path = Path("storage/edit_session/session.db")
     edit_session_assets_dir: Path = Path("storage/edit_session/assets")
+    edit_session_exports_dir: Path = Path("storage/edit_session/exports")
     edit_session_staging_ttl_seconds: int = 3600
     cnhubert_base_path: Path = Path("pretrained_models/chinese-hubert-base")
     bert_path: Path = Path("pretrained_models/chinese-roberta-wwm-ext-large")
@@ -27,6 +28,7 @@ def get_settings() -> AppSettings:
     inference_params_cache_file_env = os.environ.get("GPT_SOVITS_INFERENCE_PARAMS_CACHE_FILE")
     edit_session_db_file_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_DB_FILE")
     edit_session_assets_dir_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_ASSETS_DIR")
+    edit_session_exports_dir_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_EXPORTS_DIR")
     edit_session_staging_ttl_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_STAGING_TTL_SECONDS")
     cnhubert_path_env = os.environ.get("CNHUBERT_PATH") or os.environ.get("GPT_SOVITS_CNHUBERT_PATH")
     bert_path_env = os.environ.get("BERT_PATH") or os.environ.get("GPT_SOVITS_BERT_PATH")
@@ -48,6 +50,9 @@ def get_settings() -> AppSettings:
     edit_session_assets_dir = (
         Path(edit_session_assets_dir_env) if edit_session_assets_dir_env else Path("storage/edit_session/assets")
     )
+    edit_session_exports_dir = (
+        Path(edit_session_exports_dir_env) if edit_session_exports_dir_env else Path("storage/edit_session/exports")
+    )
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
     cnhubert_base_path = Path(cnhubert_path_env) if cnhubert_path_env else Path("pretrained_models/chinese-hubert-base")
     bert_path = Path(bert_path_env) if bert_path_env else Path("pretrained_models/chinese-roberta-wwm-ext-large")
@@ -59,6 +64,7 @@ def get_settings() -> AppSettings:
         inference_params_cache_file=inference_params_cache_file,
         edit_session_db_file=edit_session_db_file,
         edit_session_assets_dir=edit_session_assets_dir,
+        edit_session_exports_dir=edit_session_exports_dir,
         edit_session_staging_ttl_seconds=edit_session_staging_ttl_seconds,
         cnhubert_base_path=cnhubert_base_path,
         bert_path=bert_path,

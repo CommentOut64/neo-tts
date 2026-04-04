@@ -9,6 +9,7 @@ def _build_store(tmp_path: Path) -> EditAssetStore:
     return EditAssetStore(
         project_root=tmp_path,
         assets_dir=Path("storage/edit_session/assets"),
+        export_root=Path("storage/edit_session/exports"),
         staging_ttl_seconds=60,
     )
 

@@ -14,11 +14,13 @@ from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdge,
     EditableSegment,
+    ExportJobRecord,
     RenderJobRecord,
 )
 
 
 TERMINAL_JOB_STATUSES = {"paused", "cancelled_partial", "completed", "failed"}
+TERMINAL_EXPORT_JOB_STATUSES = {"completed", "failed"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,13 @@ class EditSessionRepository:
 
                 CREATE INDEX IF NOT EXISTS idx_checkpoints_document_updated
                 ON checkpoints (document_id, updated_at DESC, checkpoint_id DESC);
+
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    export_job_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
                 """
             )
 
@@ -203,6 +212,23 @@ class EditSessionRepository:
         if row is None:
             return None
         return DocumentSnapshot.model_validate_json(row["payload"])
+
+    def get_snapshot_by_document_version(self, document_id: str, document_version: int) -> DocumentSnapshot | None:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM snapshots
+                WHERE document_id = ? AND document_version = ?
+                ORDER BY created_at DESC, snapshot_id DESC
+                """,
+                (document_id, document_version),
+            ).fetchall()
+        if not rows:
+            return None
+        snapshots = [DocumentSnapshot.model_validate_json(row["payload"]) for row in rows]
+        preferred = next((snapshot for snapshot in snapshots if snapshot.snapshot_kind == "head"), None)
+        return preferred or snapshots[0]
 
     def list_segments(
         self,
@@ -327,6 +353,88 @@ class EditSessionRepository:
         if row is None:
             return None
         return CheckpointState.model_validate_json(row["payload"])
+
+    def save_export_job(self, job: ExportJobRecord) -> None:
+        payload = self._dump_model(job)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO export_jobs(export_job_id, document_id, updated_at, payload)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(export_job_id) DO UPDATE SET
+                    document_id = excluded.document_id,
+                    updated_at = excluded.updated_at,
+                    payload = excluded.payload
+                """,
+                (
+                    job.export_job_id,
+                    job.document_id,
+                    job.updated_at.isoformat(),
+                    payload,
+                ),
+            )
+
+    def get_export_job(self, export_job_id: str) -> ExportJobRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM export_jobs WHERE export_job_id = ?",
+                (export_job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ExportJobRecord.model_validate_json(row["payload"])
+
+    def list_non_terminal_export_jobs(self) -> list[ExportJobRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM export_jobs
+                ORDER BY updated_at ASC, export_job_id ASC
+                """
+            ).fetchall()
+        jobs = [ExportJobRecord.model_validate_json(row["payload"]) for row in rows]
+        return [job for job in jobs if job.status not in TERMINAL_EXPORT_JOB_STATUSES]
+
+    def get_latest_completed_export_job(
+        self,
+        *,
+        document_id: str,
+        document_version: int,
+        export_kind: str,
+    ) -> ExportJobRecord | None:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM export_jobs
+                WHERE document_id = ?
+                ORDER BY updated_at DESC, export_job_id DESC
+                """,
+                (document_id,),
+            ).fetchall()
+        for row in rows:
+            job = ExportJobRecord.model_validate_json(row["payload"])
+            if job.status != "completed":
+                continue
+            if job.document_version != document_version or job.export_kind != export_kind:
+                continue
+            return job
+        return None
+
+    def mark_export_job_terminal(self, export_job_id: str, *, status: str, message: str) -> None:
+        job = self.get_export_job(export_job_id)
+        if job is None:
+            raise LookupError(f"Export job '{export_job_id}' not found.")
+        updated_job = job.model_copy(
+            update={
+                "status": status,
+                "message": message,
+                "progress": 1.0 if status == "completed" else 0.0,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        self.save_export_job(updated_job)
 
     def get_latest_checkpoint(self, document_id: str) -> CheckpointState | None:
         with self._lock, self._connect() as connection:
@@ -471,6 +579,7 @@ class EditSessionRepository:
             connection.execute("DELETE FROM edges")
             connection.execute("DELETE FROM render_jobs")
             connection.execute("DELETE FROM checkpoints")
+            connection.execute("DELETE FROM export_jobs")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_file)
@@ -484,6 +593,14 @@ class EditSessionRepository:
 
     @staticmethod
     def _dump_model(
-        model: ActiveDocumentState | DocumentSnapshot | EditableSegment | EditableEdge | RenderJobRecord | CheckpointState,
+        model: (
+            ActiveDocumentState
+            | DocumentSnapshot
+            | EditableSegment
+            | EditableEdge
+            | RenderJobRecord
+            | CheckpointState
+            | ExportJobRecord
+        ),
     ) -> str:
         return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)

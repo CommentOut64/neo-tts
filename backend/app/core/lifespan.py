@@ -9,6 +9,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_maintenance_service import EditSessionMaintenanceService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
+from backend.app.services.export_service import ExportService
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
@@ -46,9 +47,14 @@ async def app_lifespan(app: FastAPI):
     edit_asset_store = EditAssetStore(
         project_root=settings.project_root,
         assets_dir=settings.edit_session_assets_dir,
+        export_root=settings.edit_session_exports_dir,
         staging_ttl_seconds=settings.edit_session_staging_ttl_seconds,
     )
     edit_session_runtime = EditSessionRuntime()
+    edit_session_export_service = ExportService(
+        repository=edit_session_repository,
+        asset_store=edit_asset_store,
+    )
     edit_session_maintenance_service = EditSessionMaintenanceService(
         repository=edit_session_repository,
         asset_store=edit_asset_store,
@@ -64,6 +70,7 @@ async def app_lifespan(app: FastAPI):
     app.state.edit_session_repository = edit_session_repository
     app.state.edit_asset_store = edit_asset_store
     app.state.edit_session_runtime = edit_session_runtime
+    app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service
     app.state.edit_session_cleanup_task = cleanup_task
     try:

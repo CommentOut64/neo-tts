@@ -41,13 +41,22 @@ class AssetGcReport:
 
 
 class EditAssetStore:
-    def __init__(self, *, project_root: Path, assets_dir: Path, staging_ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        assets_dir: Path,
+        export_root: Path,
+        staging_ttl_seconds: int,
+    ) -> None:
         self._project_root = project_root
         self._assets_dir = self._resolve_path(assets_dir)
+        self._export_root = self._resolve_path(export_root)
         self._staging_ttl = timedelta(seconds=staging_ttl_seconds)
         self._assets_dir.mkdir(parents=True, exist_ok=True)
         self._staging_root.mkdir(parents=True, exist_ok=True)
         self._formal_root.mkdir(parents=True, exist_ok=True)
+        self._export_root.mkdir(parents=True, exist_ok=True)
 
     def segment_asset_path(self, render_asset_id: str) -> Path:
         return self._formal_root / "segments" / self._validate_leaf_name(render_asset_id)
@@ -262,6 +271,55 @@ class EditAssetStore:
             json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
         )
 
+    def resolve_export_target_dir(self, raw_target_dir: str) -> Path:
+        raw_path = Path(raw_target_dir)
+        if raw_path.is_absolute():
+            resolved = raw_path.resolve()
+        else:
+            if ".." in raw_path.parts:
+                raise ValueError("Export target must not escape the controlled export root.")
+            resolved = (self._export_root / raw_path).resolve()
+        try:
+            resolved.relative_to(self._export_root)
+        except ValueError as exc:
+            raise ValueError("Export target must stay inside the controlled export root.") from exc
+        return resolved
+
+    def prepare_export_staging_dir(self, *, export_job_id: str, target_dir: str | Path) -> tuple[Path, Path]:
+        resolved_target = self.resolve_export_target_dir(str(target_dir))
+        resolved_target.parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = resolved_target.parent / f".{resolved_target.name}.tmp-export-{self._validate_leaf_name(export_job_id)}"
+        if staging_dir.exists():
+            self._remove_path(staging_dir)
+        staging_dir.mkdir(parents=True, exist_ok=False)
+        return resolved_target, staging_dir
+
+    def finalize_export_staging_dir(
+        self,
+        *,
+        staging_dir: str | Path,
+        target_dir: str | Path,
+        overwrite_policy: str,
+    ) -> Path:
+        resolved_target = self.resolve_export_target_dir(str(target_dir))
+        resolved_staging = Path(staging_dir)
+        if not resolved_staging.exists():
+            raise FileNotFoundError(f"Export staging directory not found: {resolved_staging}")
+        final_target = self._resolve_export_destination(resolved_target, overwrite_policy=overwrite_policy)
+        if overwrite_policy == "replace" and final_target.exists():
+            self._remove_path(final_target)
+        elif overwrite_policy == "fail" and final_target.exists():
+            raise ValueError(f"Export target already exists: {final_target}")
+        os.replace(resolved_staging, final_target)
+        return final_target
+
+    def cleanup_export_staging_dir(self, staging_dir: str | Path) -> bool:
+        path = Path(staging_dir)
+        if not path.exists():
+            return False
+        self._remove_path(path)
+        return True
+
     def load_segment_asset(self, render_asset_id: str) -> SegmentRenderAssetPayload:
         asset_dir = self.segment_asset_path(render_asset_id)
         metadata = self._read_json(asset_dir / "metadata.json")
@@ -387,6 +445,27 @@ class EditAssetStore:
         if not path.exists():
             raise FileNotFoundError(f"Asset metadata file not found: {path}")
         return TypeAdapter(dict).validate_json(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=False)
+            return
+        path.unlink(missing_ok=False)
+
+    def _resolve_export_destination(self, target_dir: Path, *, overwrite_policy: str) -> Path:
+        if overwrite_policy == "new_folder":
+            if not target_dir.exists():
+                return target_dir
+            index = 1
+            while True:
+                candidate = target_dir.with_name(f"{target_dir.name}-{index}")
+                if not candidate.exists():
+                    return candidate
+                index += 1
+        if overwrite_policy not in {"fail", "replace"}:
+            raise ValueError(f"Unsupported overwrite policy: {overwrite_policy}")
+        return target_dir
 
     @staticmethod
     def _validate_leaf_name(value: str) -> str:

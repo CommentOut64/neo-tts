@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import queue
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
@@ -14,33 +14,67 @@ from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
     BaselineSnapshotResponse,
     BoundaryAssetResponse,
+    CompositionExportRequest,
     CompositionResponse,
     CreateSegmentRequest,
     CurrentCheckpointResponse,
     EdgeListResponse,
     EditSessionSnapshotResponse,
+    ExportJobAcceptedResponse,
+    ExportJobResponse,
+    GroupListResponse,
     InitializeEditSessionRequest,
+    MergeSegmentsRequest,
+    MoveSegmentRangeRequest,
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
     RenderProfilePatchRequest,
+    RenderProfileListResponse,
     RenderJobAcceptedResponse,
     RenderJobResponse,
+    SegmentExportRequest,
     SegmentAssetResponse,
+    SegmentBatchRenderProfilePatchRequest,
+    SegmentBatchVoiceBindingPatchRequest,
     SegmentListResponse,
+    SplitSegmentRequest,
     SwapSegmentsRequest,
     TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
+    VoiceBindingListResponse,
     VoiceBindingPatchRequest,
 )
 from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_service import EditSessionService
+from backend.app.services.export_service import ExportService
 from backend.app.services.render_job_service import RenderJobService
 from backend.app.services.voice_service import VoiceService
 
 
 router = APIRouter(prefix="/v1/edit-session", tags=["edit-session"])
+
+BAD_REQUEST_RESPONSE = {
+    400: {
+        "description": "请求参数不合法，或不满足当前 edit-session 的业务约束。",
+    }
+}
+NOT_FOUND_RESPONSE = {
+    404: {
+        "description": "目标会话、作业、导出记录或音频资产不存在。",
+    }
+}
+CONFLICT_RESPONSE = {
+    409: {
+        "description": "当前已有活动作业，无法启动新的异步编辑作业。",
+    }
+}
+GONE_RESPONSE = {
+    410: {
+        "description": "临时预览资源已过期，需要重新请求 preview。",
+    }
+}
 
 
 class _UnavailableEditableBackend:
@@ -135,6 +169,10 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
     )
 
 
+def _build_export_service(request: Request) -> ExportService:
+    return request.app.state.edit_session_export_service
+
+
 def _build_audio_delivery_service() -> AudioDeliveryService:
     return AudioDeliveryService()
 
@@ -188,51 +226,154 @@ def _should_close_live_event_stream(event_type: str, payload: dict) -> bool:
     return payload.get("status") in {"completed", "failed"}
 
 
-@router.post("/initialize", response_model=RenderJobAcceptedResponse, status_code=202)
+def _should_close_export_event_stream(event_type: str, payload: dict) -> bool:
+    if event_type == "export_completed":
+        return True
+    if event_type != "job_state_changed":
+        return False
+    return payload.get("status") in {"completed", "failed"}
+
+
+@router.post(
+    "/initialize",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="初始化编辑会话",
+    description=(
+        "创建一个新的 edit-session 初始化作业。"
+        "该接口会切分文本、触发首轮渲染、生成 timeline，并在作业完成后提交 document_version=1。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
+)
 def initialize_edit_session(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
     service = _build_render_job_service(request, voice_id=body.voice_id)
     return service.create_initialize_job(body)
 
 
-@router.post("/render-jobs", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/render-jobs",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="兼容：创建初始化作业",
+    description="兼容旧调用方式，语义与 `POST /v1/edit-session/initialize` 相同。",
+    responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
+)
 def create_render_job(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
     service = _build_render_job_service(request, voice_id=body.voice_id)
     return service.create_initialize_job(body)
 
 
-@router.get("/snapshot", response_model=EditSessionSnapshotResponse)
+@router.get(
+    "/snapshot",
+    response_model=EditSessionSnapshotResponse,
+    summary="读取当前会话快照摘要",
+    description=(
+        "返回当前活动 edit-session 的摘要视图，包括 document_version、timeline、兼容 composition 字段、活动作业和可选的内联段/边列表。"
+    ),
+)
 def get_snapshot(request: Request) -> EditSessionSnapshotResponse:
     return _build_edit_session_service(request).get_snapshot()
 
 
-@router.get("/baseline", response_model=BaselineSnapshotResponse)
+@router.get(
+    "/baseline",
+    response_model=BaselineSnapshotResponse,
+    summary="读取基线快照",
+    description="返回当前 edit-session 的 baseline 快照，用于与当前 head 对比或执行恢复基线。",
+)
 def get_baseline(request: Request) -> BaselineSnapshotResponse:
     return _build_edit_session_service(request).get_baseline()
 
 
-@router.get("/timeline", response_model=TimelineManifest)
+@router.get(
+    "/timeline",
+    response_model=TimelineManifest,
+    summary="读取权威时间线",
+    description="返回当前 document_version 的权威播放对象。前端应优先依赖该接口，而不是 `/playback-map`。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def get_timeline(request: Request) -> TimelineManifest:
     return _build_edit_session_service(request).get_timeline()
 
 
-@router.get("/checkpoints/current", response_model=CurrentCheckpointResponse)
+@router.get(
+    "/checkpoints/current",
+    response_model=CurrentCheckpointResponse,
+    summary="读取当前 checkpoint",
+    description="返回当前文档最新的可恢复 checkpoint；若无可恢复状态，则返回 `checkpoint=null`。",
+)
 def get_current_checkpoint(request: Request) -> CurrentCheckpointResponse:
     return _build_edit_session_service(request).get_current_checkpoint()
 
 
-@router.delete("", status_code=204)
+@router.get(
+    "/groups",
+    response_model=GroupListResponse,
+    summary="列出段分组",
+    description="返回当前 head snapshot 中的全部 `SegmentGroup`，用于前端显示 append 组和批量配置组。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_groups(request: Request) -> GroupListResponse:
+    return _build_readonly_render_job_service(request).list_groups()
+
+
+@router.get(
+    "/render-profiles",
+    response_model=RenderProfileListResponse,
+    summary="列出渲染配置",
+    description="返回当前文档已存在的 session/group/segment 级 render profile。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_render_profiles(request: Request) -> RenderProfileListResponse:
+    return _build_readonly_render_job_service(request).list_render_profiles()
+
+
+@router.get(
+    "/voice-bindings",
+    response_model=VoiceBindingListResponse,
+    summary="列出音色与模型绑定",
+    description="返回当前文档已存在的 session/group/segment 级 voice/model binding。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_voice_bindings(request: Request) -> VoiceBindingListResponse:
+    return _build_readonly_render_job_service(request).list_voice_bindings()
+
+
+@router.delete(
+    "",
+    status_code=204,
+    summary="删除当前编辑会话",
+    description="清空当前活动 edit-session、相关持久化记录和本地编辑资产。",
+)
 def delete_session(request: Request) -> Response:
     _build_edit_session_service(request).delete_session()
     return Response(status_code=204)
 
 
-@router.post("/restore-baseline", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/restore-baseline",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="恢复到基线版本",
+    description="创建一个恢复基线作业，将当前 head 回滚到 baseline 的内容并提交为新的 document_version。",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def restore_baseline(request: Request) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_restore_baseline_job()
 
 
-@router.get("/segments", response_model=SegmentListResponse)
-def list_segments(request: Request, limit: int = 1000, cursor: int | None = None) -> SegmentListResponse:
+@router.get(
+    "/segments",
+    response_model=SegmentListResponse,
+    summary="分页列出段",
+    description="按 `order_key` 升序分页返回当前 head snapshot 中的段列表。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def list_segments(
+    request: Request,
+    limit: int = Query(default=1000, ge=1, le=1000, description="分页大小，最大 1000。"),
+    cursor: int | None = Query(default=None, description="上一页最后一个段的 `order_key`。"),
+) -> SegmentListResponse:
     service = _build_readonly_render_job_service(request)
     snapshot = service.get_head_snapshot()
     items = [item.model_dump(mode="json") for item in service.list_segments(limit=limit, cursor=cursor)]
@@ -245,33 +386,105 @@ def list_segments(request: Request, limit: int = 1000, cursor: int | None = None
     )
 
 
-@router.post("/segments", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/segments",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="插入新段",
+    description="在指定段之后插入一个新段，并创建异步渲染作业。成功后会生成新的 `document_version`。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def create_segment(request: Request, body: CreateSegmentRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_insert_segment_job(body)
 
 
-@router.post("/append", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/append",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="追加尾部文本",
+    description=(
+        "把新的尾部文本切成多个 segment 并追加到当前文档末尾。"
+        "若同时提供 group 级 profile/binding，可自动创建或复用 group。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def append_segments(request: Request, body: AppendSegmentsRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_append_job(body)
 
 
-@router.patch("/segments/{segment_id}", response_model=RenderJobAcceptedResponse, status_code=202)
-def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:
-    return _build_render_job_service(request).create_update_segment_job(segment_id, body)
-
-
-@router.post("/segments/swap", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/segments/swap",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="交换两个段的位置",
+    description="交换两个现有段的顺序，并创建新的编辑作业。该操作可能只重排时间线而不重渲染段本身。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def swap_segments(request: Request, body: SwapSegmentsRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_swap_segments_job(body)
 
 
-@router.delete("/segments/{segment_id}", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/segments/move-range",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="移动连续段区间",
+    description="把一组连续段移动到指定目标段之后，并创建新的编辑作业。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def move_segment_range(request: Request, body: MoveSegmentRangeRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_move_range_job(body)
+
+
+@router.post(
+    "/segments/split",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="拆分单个段",
+    description="把一个现有段拆成左右两个新段，并提交为新的 document version。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def split_segment(request: Request, body: SplitSegmentRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_split_segment_job(body)
+
+
+@router.post(
+    "/segments/merge",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="合并相邻段",
+    description="把两个目标段合并为一个新段，并创建新的异步编辑作业。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def merge_segments(request: Request, body: MergeSegmentsRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_merge_segments_job(body)
+
+
+@router.delete(
+    "/segments/{segment_id}",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="删除段",
+    description="删除一个现有段并创建新的编辑作业。",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def delete_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_delete_segment_job(segment_id)
 
 
-@router.get("/edges", response_model=EdgeListResponse)
-def list_edges(request: Request, limit: int = 1000, cursor: int | None = None) -> EdgeListResponse:
+@router.get(
+    "/edges",
+    response_model=EdgeListResponse,
+    summary="分页列出边",
+    description="按左侧段顺序分页返回当前 head snapshot 中的边列表。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def list_edges(
+    request: Request,
+    limit: int = Query(default=1000, ge=1, le=1000, description="分页大小，最大 1000。"),
+    cursor: int | None = Query(default=None, description="上一页最后一条边左侧段的 `order_key`。"),
+) -> EdgeListResponse:
     service = _build_readonly_render_job_service(request)
     snapshot = service.get_head_snapshot()
     items = [item.model_dump(mode="json") for item in service.list_edges(limit=limit, cursor=cursor)]
@@ -287,22 +500,50 @@ def list_edges(request: Request, limit: int = 1000, cursor: int | None = None) -
     )
 
 
-@router.patch("/edges/{edge_id}", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/edges/{edge_id}",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新边参数",
+    description="修改段间停顿或边界策略，并创建新的异步编辑作业。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_update_edge_job(edge_id, body)
 
 
-@router.patch("/session/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/session/render-profile",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新会话级渲染配置",
+    description="创建新的 session-scope render profile，并让后续解析结果以该配置作为默认值。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_session_render_profile_job(body)
 
 
-@router.patch("/session/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/session/voice-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新会话级音色绑定",
+    description="创建新的 session-scope voice/model binding，并作为后续段的默认绑定。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_session_voice_binding_job(body)
 
 
-@router.patch("/groups/{group_id}/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/groups/{group_id}/render-profile",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新组级渲染配置",
+    description="为指定 group 创建新的 render profile，并让组内段继承该 profile。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_group_render_profile(
     request: Request,
     group_id: str,
@@ -311,7 +552,14 @@ def patch_group_render_profile(
     return _build_render_job_service(request).create_patch_group_render_profile_job(group_id, body)
 
 
-@router.patch("/groups/{group_id}/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/groups/{group_id}/voice-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新组级音色绑定",
+    description="为指定 group 创建新的 voice/model binding，并让组内段继承该绑定。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_group_voice_binding(
     request: Request,
     group_id: str,
@@ -320,7 +568,14 @@ def patch_group_voice_binding(
     return _build_render_job_service(request).create_patch_group_voice_binding_job(group_id, body)
 
 
-@router.patch("/segments/{segment_id}/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/segments/{segment_id}/render-profile",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新段级渲染配置",
+    description="为单个段创建新的 render profile，并触发必要的重渲染。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_segment_render_profile(
     request: Request,
     segment_id: str,
@@ -329,7 +584,14 @@ def patch_segment_render_profile(
     return _build_render_job_service(request).create_patch_segment_render_profile_job(segment_id, body)
 
 
-@router.patch("/segments/{segment_id}/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.patch(
+    "/segments/{segment_id}/voice-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新段级音色绑定",
+    description="为单个段创建新的 voice/model binding，并触发必要的重渲染。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def patch_segment_voice_binding(
     request: Request,
     segment_id: str,
@@ -338,29 +600,185 @@ def patch_segment_voice_binding(
     return _build_render_job_service(request).create_patch_segment_voice_binding_job(segment_id, body)
 
 
-@router.get("/composition", response_model=CompositionResponse)
+@router.patch(
+    "/segments/render-profile-batch",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="批量更新段级渲染配置",
+    description="对一组目标段批量创建并绑定同一个新的 render profile。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def patch_segments_render_profile_batch(
+    request: Request,
+    body: SegmentBatchRenderProfilePatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_segments_render_profile_batch_job(body)
+
+
+@router.patch(
+    "/segments/voice-binding-batch",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="批量更新段级音色绑定",
+    description="对一组目标段批量创建并绑定同一个新的 voice/model binding。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def patch_segments_voice_binding_batch(
+    request: Request,
+    body: SegmentBatchVoiceBindingPatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_segments_voice_binding_batch_job(body)
+
+
+@router.patch(
+    "/segments/{segment_id}",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新段文本或推理覆盖项",
+    description="修改单个段的文本、语言或旧版 inference_override，并触发新的编辑作业。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_update_segment_job(segment_id, body)
+
+
+@router.post(
+    "/exports/segments",
+    response_model=ExportJobAcceptedResponse,
+    status_code=202,
+    summary="创建分段导出作业",
+    description=(
+        "导出指定 `document_version` 的分段音频。"
+        "该接口与 composition 导出完全独立，不会隐式触发整条音频导出。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
+def create_segment_export(request: Request, body: SegmentExportRequest) -> ExportJobAcceptedResponse:
+    return _build_export_service(request).create_segment_export_job(body)
+
+
+@router.post(
+    "/exports/composition",
+    response_model=ExportJobAcceptedResponse,
+    status_code=202,
+    summary="创建整条音频导出作业",
+    description=(
+        "导出指定 `document_version` 的整条拼接音频。"
+        "只有在该导出成功后，兼容接口 `/composition` 才会对当前版本返回 200。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
+def create_composition_export(request: Request, body: CompositionExportRequest) -> ExportJobAcceptedResponse:
+    return _build_export_service(request).create_composition_export_job(body)
+
+
+@router.get(
+    "/exports/{export_job_id}",
+    response_model=ExportJobResponse,
+    summary="查询导出作业",
+    description="读取单个 export job 的当前状态、进度、输出清单和最终目标目录。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_export_job(request: Request, export_job_id: str) -> ExportJobResponse:
+    job = _build_export_service(request).get_job(export_job_id)
+    if job is None:
+        raise EditSessionNotFoundError(f"Export job '{export_job_id}' not found.")
+    return job
+
+
+@router.get(
+    "/exports/{export_job_id}/events",
+    summary="订阅导出作业事件流",
+    description=(
+        "以 SSE 形式输出导出作业状态变化和进度事件。"
+        "终态时会发送 `export_completed` 或最后一条 `job_state_changed` 后关闭连接。"
+    ),
+    responses=NOT_FOUND_RESPONSE,
+)
+def stream_export_job_events(request: Request, export_job_id: str) -> StreamingResponse:
+    export_service = _build_export_service(request)
+    current_job = export_service.get_job(export_job_id)
+    stored_job = request.app.state.edit_session_repository.get_export_job(export_job_id)
+    if current_job is None and stored_job is None:
+        raise EditSessionNotFoundError(f"Export job '{export_job_id}' not found.")
+
+    subscriber = export_service.subscribe(export_job_id)
+
+    def event_stream():
+        try:
+            if current_job is None and stored_job is not None:
+                payload = stored_job.model_dump(mode="json")
+                yield _encode_sse_event("job_state_changed", payload)
+                if payload.get("status") in {"completed", "failed"}:
+                    return
+            while True:
+                try:
+                    envelope = subscriber.get(timeout=15)
+                    event_type = envelope.get("event", "job_state_changed")
+                    payload = envelope.get("data", {})
+                    yield _encode_sse_event(event_type, payload)
+                    if _should_close_export_event_stream(event_type, payload):
+                        return
+                except queue.Empty:
+                    yield ": keep-alive\n\n"
+        finally:
+            export_service.unsubscribe(export_job_id, subscriber)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get(
+    "/composition",
+    response_model=CompositionResponse,
+    summary="兼容：读取整条音频",
+    description=(
+        "兼容旧接口。若当前版本已有成功导出的 composition 资产则返回该音频；"
+        "若尚未导出，则返回 404。新前端应优先使用 `/timeline`。"
+    ),
+    responses=NOT_FOUND_RESPONSE,
+)
 def get_composition(request: Request) -> CompositionResponse:
     return _build_readonly_render_job_service(request).get_composition_response()
 
 
-@router.get("/playback-map", response_model=PlaybackMapResponse)
+@router.get(
+    "/playback-map",
+    response_model=PlaybackMapResponse,
+    summary="兼容：读取播放映射",
+    description="兼容旧接口。返回由 `TimelineManifest` 派生的 playback-map 视图，供旧测试或调试使用。",
+)
 def get_playback_map(request: Request) -> PlaybackMapResponse:
     return _build_readonly_render_job_service(request).get_playback_map_response()
 
 
-@router.get("/preview", response_model=PreviewResponse)
+@router.get(
+    "/preview",
+    response_model=PreviewResponse,
+    summary="创建预览音频",
+    description="为单个 segment、edge 或 block 生成一个短期可访问的预览资源，并返回带过期时间的音频地址。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
 def get_preview(
     request: Request,
-    segment_id: str | None = None,
-    edge_id: str | None = None,
-    block_id: str | None = None,
+    segment_id: str | None = Query(default=None, description="要预览的段 ID。"),
+    edge_id: str | None = Query(default=None, description="要预览的边 ID。"),
+    block_id: str | None = Query(default=None, description="要预览的 block ID。"),
 ) -> PreviewResponse:
     body = PreviewRequest(segment_id=segment_id, edge_id=edge_id, block_id=block_id)
     return _build_readonly_render_job_service(request).get_preview_response(body)
 
 
-@router.get("/assets/compositions/{composition_manifest_id}/audio")
-def get_composition_audio(request: Request, composition_manifest_id: str, download: bool = False) -> Response:
+@router.get(
+    "/assets/compositions/{composition_manifest_id}/audio",
+    summary="下载 composition 音频",
+    description="读取一个正式保存的 composition wav 资产，支持 Range 请求。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_composition_audio(
+    request: Request,
+    composition_manifest_id: str,
+    download: bool = Query(default=False, description="为 true 时使用附件下载响应头。"),
+) -> Response:
     descriptor = _build_formal_audio_descriptor(
         request,
         asset_id=composition_manifest_id,
@@ -374,8 +792,17 @@ def get_composition_audio(request: Request, composition_manifest_id: str, downlo
     )
 
 
-@router.get("/assets/previews/{preview_asset_id}/audio")
-def get_preview_audio(request: Request, preview_asset_id: str, download: bool = False) -> Response:
+@router.get(
+    "/assets/previews/{preview_asset_id}/audio",
+    summary="下载 preview 音频",
+    description="读取短期有效的 preview wav 资产；过期后会返回 410。",
+    responses={**NOT_FOUND_RESPONSE, **GONE_RESPONSE},
+)
+def get_preview_audio(
+    request: Request,
+    preview_asset_id: str,
+    download: bool = Query(default=False, description="为 true 时使用附件下载响应头。"),
+) -> Response:
     try:
         record = request.app.state.edit_asset_store.get_preview_asset_record(preview_asset_id)
     except FileNotFoundError as exc:
@@ -396,13 +823,28 @@ def get_preview_audio(request: Request, preview_asset_id: str, download: bool = 
     )
 
 
-@router.get("/assets/segments/{render_asset_id}", response_model=SegmentAssetResponse)
+@router.get(
+    "/assets/segments/{render_asset_id}",
+    response_model=SegmentAssetResponse,
+    summary="读取段资产元信息",
+    description="返回 segment 正式音频资产的元信息和音频地址。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def get_segment_asset(request: Request, render_asset_id: str) -> SegmentAssetResponse:
     return _build_readonly_render_job_service(request).get_segment_asset_response(render_asset_id)
 
 
-@router.get("/assets/segments/{render_asset_id}/audio")
-def get_segment_audio(request: Request, render_asset_id: str, download: bool = False) -> Response:
+@router.get(
+    "/assets/segments/{render_asset_id}/audio",
+    summary="下载段音频",
+    description="读取一个正式保存的 segment wav 资产，支持 Range 请求。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_segment_audio(
+    request: Request,
+    render_asset_id: str,
+    download: bool = Query(default=False, description="为 true 时使用附件下载响应头。"),
+) -> Response:
     response = _build_readonly_render_job_service(request).get_segment_asset_response(render_asset_id)
     return _stream_audio_asset(
         request,
@@ -412,13 +854,28 @@ def get_segment_audio(request: Request, render_asset_id: str, download: bool = F
     )
 
 
-@router.get("/assets/boundaries/{boundary_asset_id}", response_model=BoundaryAssetResponse)
+@router.get(
+    "/assets/boundaries/{boundary_asset_id}",
+    response_model=BoundaryAssetResponse,
+    summary="读取边界资产元信息",
+    description="返回 boundary 正式音频资产的元信息和音频地址。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def get_boundary_asset(request: Request, boundary_asset_id: str) -> BoundaryAssetResponse:
     return _build_readonly_render_job_service(request).get_boundary_asset_response(boundary_asset_id)
 
 
-@router.get("/assets/boundaries/{boundary_asset_id}/audio")
-def get_boundary_audio(request: Request, boundary_asset_id: str, download: bool = False) -> Response:
+@router.get(
+    "/assets/boundaries/{boundary_asset_id}/audio",
+    summary="下载边界音频",
+    description="读取一个正式保存的 boundary wav 资产，支持 Range 请求。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_boundary_audio(
+    request: Request,
+    boundary_asset_id: str,
+    download: bool = Query(default=False, description="为 true 时使用附件下载响应头。"),
+) -> Response:
     response = _build_readonly_render_job_service(request).get_boundary_asset_response(boundary_asset_id)
     return _stream_audio_asset(
         request,
@@ -428,8 +885,17 @@ def get_boundary_audio(request: Request, boundary_asset_id: str, download: bool 
     )
 
 
-@router.get("/assets/blocks/{block_asset_id}/audio")
-def get_block_audio(request: Request, block_asset_id: str, download: bool = False) -> Response:
+@router.get(
+    "/assets/blocks/{block_asset_id}/audio",
+    summary="下载 block 音频",
+    description="读取一个正式保存的 block wav 资产，供前端按 timeline 分块播放。",
+    responses=NOT_FOUND_RESPONSE,
+)
+def get_block_audio(
+    request: Request,
+    block_asset_id: str,
+    download: bool = Query(default=False, description="为 true 时使用附件下载响应头。"),
+) -> Response:
     descriptor = _build_formal_audio_descriptor(
         request,
         asset_id=block_asset_id,
@@ -443,7 +909,13 @@ def get_block_audio(request: Request, block_asset_id: str, download: bool = Fals
     )
 
 
-@router.get("/render-jobs/{job_id}", response_model=RenderJobResponse)
+@router.get(
+    "/render-jobs/{job_id}",
+    response_model=RenderJobResponse,
+    summary="查询渲染作业",
+    description="读取单个 render job 的当前状态、进度、检查点和结果版本。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def get_render_job(request: Request, job_id: str) -> RenderJobResponse:
     job = _build_readonly_render_job_service(request).get_job(job_id)
     if job is None:
@@ -451,7 +923,15 @@ def get_render_job(request: Request, job_id: str) -> RenderJobResponse:
     return job
 
 
-@router.get("/render-jobs/{job_id}/events")
+@router.get(
+    "/render-jobs/{job_id}/events",
+    summary="订阅渲染作业事件流",
+    description=(
+        "以 SSE 形式输出渲染作业的状态变更、段完成、block 完成、checkpoint 等事件。"
+        "作业进入完成、失败、暂停或 cancel partial 终态后会关闭连接。"
+    ),
+    responses=NOT_FOUND_RESPONSE,
+)
 def stream_render_job_events(request: Request, job_id: str) -> StreamingResponse:
     runtime = request.app.state.edit_session_runtime
     repository = request.app.state.edit_session_repository
@@ -485,7 +965,13 @@ def stream_render_job_events(request: Request, job_id: str) -> StreamingResponse
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.post("/render-jobs/{job_id}/cancel", response_model=RenderJobResponse)
+@router.post(
+    "/render-jobs/{job_id}/cancel",
+    response_model=RenderJobResponse,
+    summary="请求取消渲染作业",
+    description="请求当前作业在安全边界处取消。若作业已开始执行，通常会在当前段完成后以 `cancelled_partial` 结束。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def cancel_render_job(request: Request, job_id: str) -> RenderJobResponse:
     service = _build_readonly_render_job_service(request)
     job = service.get_job(job_id)
@@ -497,7 +983,13 @@ def cancel_render_job(request: Request, job_id: str) -> RenderJobResponse:
     return updated_job
 
 
-@router.post("/render-jobs/{job_id}/pause", response_model=RenderJobResponse)
+@router.post(
+    "/render-jobs/{job_id}/pause",
+    response_model=RenderJobResponse,
+    summary="请求暂停渲染作业",
+    description="请求当前作业在安全边界处暂停。成功暂停后可通过 resume 接口恢复。",
+    responses=NOT_FOUND_RESPONSE,
+)
 def pause_render_job(request: Request, job_id: str) -> RenderJobResponse:
     service = _build_readonly_render_job_service(request)
     job = service.get_job(job_id)
@@ -509,7 +1001,14 @@ def pause_render_job(request: Request, job_id: str) -> RenderJobResponse:
     return updated_job
 
 
-@router.post("/render-jobs/{job_id}/resume", response_model=RenderJobAcceptedResponse, status_code=202)
+@router.post(
+    "/render-jobs/{job_id}/resume",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="恢复暂停作业",
+    description="从当前可恢复 checkpoint 创建一个新的 resume 作业，继续完成剩余段的渲染。",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
 def resume_render_job(request: Request, job_id: str) -> RenderJobAcceptedResponse:
     service = _build_render_job_service(request)
     return service.create_resume_job(job_id)

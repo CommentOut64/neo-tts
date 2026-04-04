@@ -13,9 +13,12 @@ from backend.app.schemas.edit_session import (
     EditSessionSnapshotResponse,
     EditableEdgeResponse,
     EditableSegmentResponse,
+    GroupListResponse,
     InitializeEditSessionRequest,
+    RenderProfileListResponse,
     RenderJobResponse,
     TimelineManifest,
+    VoiceBindingListResponse,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
@@ -100,7 +103,7 @@ class EditSessionService:
             if active_session.active_job_id is not None
             else None
         )
-        composition_manifest_id = current_snapshot.composition_manifest_id if current_snapshot is not None else None
+        composition_manifest_id = self._get_available_composition_manifest_id(current_snapshot)
         composition_audio_url = (
             f"/v1/edit-session/assets/compositions/{composition_manifest_id}/audio"
             if composition_manifest_id is not None
@@ -189,11 +192,49 @@ class EditSessionService:
             checkpoint=self._repository.get_latest_checkpoint(active_session.document_id),
         )
 
+    def get_groups(self) -> GroupListResponse:
+        snapshot = self.get_head_snapshot()
+        return GroupListResponse(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            items=[group.model_copy(deep=True) for group in snapshot.groups],
+        )
+
+    def get_render_profiles(self) -> RenderProfileListResponse:
+        snapshot = self.get_head_snapshot()
+        return RenderProfileListResponse(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            items=[profile.model_copy(deep=True) for profile in snapshot.render_profiles],
+        )
+
+    def get_voice_bindings(self) -> VoiceBindingListResponse:
+        snapshot = self.get_head_snapshot()
+        return VoiceBindingListResponse(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            items=[binding.model_copy(deep=True) for binding in snapshot.voice_bindings],
+        )
+
     def require_active_session(self) -> ActiveDocumentState:
         active_session = self._repository.get_active_session()
         if active_session is None:
             raise EditSessionNotFoundError("Active edit session not found.")
         return active_session
+
+    def _get_available_composition_manifest_id(self, snapshot: DocumentSnapshot | None) -> str | None:
+        if snapshot is None:
+            return None
+        if snapshot.composition_manifest_id is not None:
+            return snapshot.composition_manifest_id
+        export_job = self._repository.get_latest_completed_export_job(
+            document_id=snapshot.document_id,
+            document_version=snapshot.document_version,
+            export_kind="composition",
+        )
+        if export_job is None or export_job.output_manifest is None:
+            return None
+        return export_job.output_manifest.composition_manifest_id
 
     def _load_timeline(self, snapshot: DocumentSnapshot | None) -> TimelineManifest | None:
         if snapshot is None or snapshot.timeline_manifest_id is None:
