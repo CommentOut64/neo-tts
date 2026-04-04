@@ -248,7 +248,7 @@ def test_edit_session_render_job_events_and_cancel(test_app_settings):
             lines = response.iter_lines()
             first_event_line = next(lines)
             first_data_line = next(lines)
-            assert first_event_line == "event: progress"
+            assert first_event_line == "event: job_state_changed"
             assert f'"job_id": "{job_id}"' in first_data_line
 
         gate.set()
@@ -285,13 +285,13 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
                 if not line.startswith("data: "):
                     continue
                 payload = line.removeprefix("data: ")
-                if '"status": "cancelling"' in payload:
-                    statuses.append("cancelling")
-                if '"status": "cancelled"' in payload:
-                    statuses.append("cancelled")
+                if '"status": "cancel_requested"' in payload:
+                    statuses.append("cancel_requested")
+                if '"status": "cancelled_partial"' in payload:
+                    statuses.append("cancelled_partial")
                     break
 
-        assert statuses in (["cancelled"], ["cancelling", "cancelled"])
+        assert statuses in (["cancelled_partial"], ["cancel_requested", "cancelled_partial"])
 
 
 def test_edit_session_segment_crud_and_read_models(test_app_settings):

@@ -2,9 +2,12 @@ import pytest
 
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
+
 from backend.app.schemas.edit_session import (
     AudioDeliveryDescriptor,
     BoundaryAssetResponse,
+    CheckpointState,
     CompositionResponse,
     EditableEdgeResponse,
     EditableSegmentResponse,
@@ -171,3 +174,22 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     assert segment.segment_kind == "speech"
     assert edge.pause_duration_seconds == 0.3
     assert edge.boundary_strategy == "latent_overlap_then_equal_power_crossfade"
+
+
+def test_checkpoint_state_rejects_running_partial_status():
+    with pytest.raises(ValidationError, match="running_partial"):
+        CheckpointState(
+            checkpoint_id="ck-1",
+            document_id="doc-1",
+            job_id="job-1",
+            document_version=1,
+            head_snapshot_id="head-1",
+            timeline_manifest_id="timeline-1",
+            working_snapshot_id="work-1",
+            next_segment_cursor=1,
+            completed_segment_ids=["seg-1"],
+            remaining_segment_ids=["seg-2"],
+            status="running_partial",
+            resume_token=None,
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )

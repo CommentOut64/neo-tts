@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from backend.app.schemas.edit_session import AppendSegmentsRequest, CheckpointState
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
@@ -437,4 +438,79 @@ def test_cancel_job_requests_runtime_cancel(tmp_path):
     assert cancelled is True
     assert job is not None
     assert job.cancel_requested is True
-    assert job.status == "cancelling"
+    assert job.status == "cancel_requested"
+
+
+def test_initialize_job_cancel_during_compose_becomes_cancelled_partial(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+
+    original_compose = service._compose  # noqa: SLF001
+
+    def _cancel_then_compose(plan):
+        cancelled = service.cancel_job(plan.job_id)
+        assert cancelled is True
+        return original_compose(plan)
+
+    monkeypatch.setattr(service, "_compose", _cancel_then_compose)
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    job = service.get_job(accepted.job.job_id)
+    checkpoint = service._checkpoint_service.get_current_checkpoint(accepted.job.document_id)  # noqa: SLF001
+
+    assert job is not None
+    assert job.status == "cancelled_partial"
+    assert checkpoint is not None
+    assert checkpoint.status == "cancelled_partial"
+
+
+def test_create_resume_job_accepts_resumable_checkpoint(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    edit_job = service.create_append_job(
+        AppendSegmentsRequest(
+            raw_text="第四句。第五句。",
+            text_language="auto",
+        )
+    )
+    service.pause_job(edit_job.job.job_id)
+    service.run_edit_job(edit_job.job.job_id)
+
+    checkpoint = service._checkpoint_service.get_current_checkpoint(snapshot.document_id)  # noqa: SLF001
+    assert checkpoint is not None
+    service._repository.save_checkpoint(  # noqa: SLF001
+        CheckpointState(
+            checkpoint_id=checkpoint.checkpoint_id,
+            document_id=checkpoint.document_id,
+            job_id=checkpoint.job_id,
+            document_version=checkpoint.document_version,
+            head_snapshot_id=checkpoint.head_snapshot_id,
+            timeline_manifest_id=checkpoint.timeline_manifest_id,
+            working_snapshot_id=checkpoint.working_snapshot_id,
+            next_segment_cursor=checkpoint.next_segment_cursor,
+            completed_segment_ids=list(checkpoint.completed_segment_ids),
+            remaining_segment_ids=list(checkpoint.remaining_segment_ids),
+            status="resumable",
+            resume_token=checkpoint.resume_token,
+            updated_at=checkpoint.updated_at,
+        )
+    )
+
+    resumed = service.create_resume_job(edit_job.job.job_id)
+
+    assert resumed.job.job_id != edit_job.job.job_id
+    assert service._queued_edit_jobs[resumed.job.job_id].job_kind == "resume"  # noqa: SLF001
