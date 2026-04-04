@@ -26,6 +26,7 @@ from backend.app.schemas.edit_session import (
     SegmentAssetResponse,
     SegmentListResponse,
     SwapSegmentsRequest,
+    TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
 )
@@ -197,6 +198,11 @@ def get_baseline(request: Request) -> BaselineSnapshotResponse:
     return _build_edit_session_service(request).get_baseline()
 
 
+@router.get("/timeline", response_model=TimelineManifest)
+def get_timeline(request: Request) -> TimelineManifest:
+    return _build_edit_session_service(request).get_timeline()
+
+
 @router.delete("", status_code=204)
 def delete_session(request: Request) -> Response:
     _build_edit_session_service(request).delete_session()
@@ -350,6 +356,21 @@ def get_boundary_audio(request: Request, boundary_asset_id: str, download: bool 
         request,
         asset_path=request.app.state.edit_asset_store.boundary_asset_path(boundary_asset_id),
         etag=response.audio_delivery.etag,
+        download=download,
+    )
+
+
+@router.get("/assets/blocks/{block_asset_id}/audio")
+def get_block_audio(request: Request, block_asset_id: str, download: bool = False) -> Response:
+    descriptor = _build_formal_audio_descriptor(
+        request,
+        asset_id=block_asset_id,
+        asset_path=request.app.state.edit_asset_store.block_asset_path(block_asset_id),
+    )
+    return _stream_audio_asset(
+        request,
+        asset_path=request.app.state.edit_asset_store.block_asset_path(block_asset_id),
+        etag=descriptor.etag,
         download=download,
     )
 
