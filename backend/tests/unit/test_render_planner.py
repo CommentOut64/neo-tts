@@ -85,6 +85,9 @@ def test_for_segment_update_targets_changed_segment_neighbor_edges_and_blocks():
     assert plan.target_edge_ids == {"edge-seg-1-seg-2", "edge-seg-2-seg-3"}
     assert plan.target_block_ids == _block_ids(*after_segments)
     assert plan.compose_only is False
+    assert plan.earliest_changed_order_key == 2
+    assert plan.timeline_reflow_required is True
+    assert plan.change_reason == "segment_update"
 
 
 def test_for_edge_update_pause_only_skips_boundary_rerender_and_marks_compose_only():
@@ -104,6 +107,9 @@ def test_for_edge_update_pause_only_skips_boundary_rerender_and_marks_compose_on
     assert plan.target_edge_ids == set()
     assert plan.target_block_ids == _block_ids(*segments)
     assert plan.compose_only is True
+    assert plan.earliest_changed_order_key == 1
+    assert plan.timeline_reflow_required is True
+    assert plan.change_reason == "edge_pause_update"
 
 
 def test_for_edge_update_boundary_strategy_change_targets_boundary_rerender():

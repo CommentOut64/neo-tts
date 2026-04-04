@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from backend.app.inference.editable_gateway import EditableInferenceGateway
-from backend.app.inference.editable_types import ReferenceContext
+from backend.app.inference.editable_types import ReferenceContext, ResolvedRenderContext, ResolvedVoiceBinding
 from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
 from backend.app.schemas.edit_session import EditableEdge, EditableSegment, InitializeEditSessionRequest
 
@@ -102,12 +102,11 @@ def _build_inference(*, decoder_frame_count: int = 14) -> GPTSoVITSOptimizedInfe
     return inference
 
 
-def test_build_reference_context_uses_request_reference_fields():
+def test_build_reference_context_uses_resolved_render_context_fields():
     inference = _build_inference()
-    request = InitializeEditSessionRequest(
-        raw_text="第一句。第二句。",
+    resolved_context = ResolvedRenderContext(
         voice_id="voice-demo",
-        model_id="gpt-sovits-v2",
+        model_key="gpt-sovits-v2",
         reference_audio_path="ref.wav",
         reference_text="参考文本",
         reference_language="zh",
@@ -116,9 +115,16 @@ def test_build_reference_context_uses_request_reference_fields():
         top_p=0.9,
         temperature=0.7,
         noise_scale=0.4,
+        resolved_voice_binding=ResolvedVoiceBinding(
+            voice_binding_id="binding-1",
+            voice_id="voice-demo",
+            model_key="gpt-sovits-v2",
+        ),
+        render_profile_id="profile-1",
+        render_profile_fingerprint="profile-fp",
     )
 
-    context = inference.build_reference_context(request)
+    context = inference.build_reference_context(resolved_context)
 
     assert isinstance(context, ReferenceContext)
     assert context.voice_id == "voice-demo"
@@ -217,9 +223,61 @@ def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
     assert inference.vq_model.decode_boundary_prefix_calls[0]["boundary_result_frame_count"] == 6
 
 
+def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
+    inference = _build_inference()
+    context = inference.build_reference_context(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="voice-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+        )
+    )
+    left_asset = inference.render_segment_base(
+        EditableSegment(
+            segment_id="seg-left",
+            document_id="doc-1",
+            order_key=1,
+            raw_text="左段",
+            normalized_text="左段",
+            text_language="zh",
+            render_version=3,
+        ),
+        context,
+    )
+    right_asset = inference.render_segment_base(
+        EditableSegment(
+            segment_id="seg-right",
+            document_id="doc-1",
+            order_key=2,
+            raw_text="右段",
+            normalized_text="右段",
+            text_language="zh",
+            render_version=5,
+        ),
+        context,
+    )
+    edge = EditableEdge(
+        edge_id="edge-1",
+        document_id="doc-1",
+        left_segment_id="seg-left",
+        right_segment_id="seg-right",
+        boundary_strategy="latent_overlap_then_equal_power_crossfade",
+        effective_boundary_strategy="crossfade_only",
+        edge_version=7,
+    )
+
+    boundary_asset = inference.render_boundary_asset(left_asset, right_asset, edge, context)
+
+    assert boundary_asset.boundary_strategy == "crossfade_only"
+    assert boundary_asset.trace["boundary_kind"] == "crossfade_only"
+    assert inference.vq_model.decode_boundary_prefix_calls == []
+
+
 def test_editable_gateway_delegates_to_backend():
     backend = SimpleNamespace(
-        build_reference_context=lambda request: ("context", request.voice_id),
+        build_reference_context=lambda resolved_context: ("context", resolved_context.voice_id),
         render_segment_base=lambda segment, context: ("segment", segment.segment_id, context),
         render_boundary_asset=lambda left_asset, right_asset, edge, context: (
             "boundary",
@@ -246,7 +304,20 @@ def test_editable_gateway_delegates_to_backend():
     )
 
     context = gateway.build_reference_context(
-        InitializeEditSessionRequest(raw_text="x", voice_id="voice-demo")
+        ResolvedRenderContext(
+            voice_id="voice-demo",
+            model_key="model-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-1",
+                voice_id="voice-demo",
+                model_key="model-demo",
+            ),
+            render_profile_id="profile-1",
+            render_profile_fingerprint="fp-1",
+        )
     )
 
     assert context == ("context", "voice-demo")

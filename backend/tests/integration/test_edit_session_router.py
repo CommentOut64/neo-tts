@@ -13,6 +13,7 @@ from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
+    ResolvedRenderContext,
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
@@ -36,30 +37,30 @@ class FakeEditableInferenceBackend:
         self.segment_calls: list[tuple[str, str]] = []
         self.boundary_calls: list[tuple[str, str, str]] = []
 
-    def build_reference_context(self, request: InitializeEditSessionRequest) -> ReferenceContext:
+    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
         return ReferenceContext(
             reference_context_id="ctx-1",
-            voice_id=request.voice_id,
-            model_id=request.model_id,
-            reference_audio_path=request.reference_audio_path or "fake.wav",
-            reference_text=request.reference_text or "参考文本。",
-            reference_language=request.reference_language or "zh",
+            voice_id=resolved_context.voice_id,
+            model_id=resolved_context.model_key,
+            reference_audio_path=resolved_context.reference_audio_path or "fake.wav",
+            reference_text=resolved_context.reference_text or "参考文本。",
+            reference_language=resolved_context.reference_language or "zh",
             reference_semantic_tokens=np.asarray([1, 2, 3], dtype=np.int64),
             reference_spectrogram=torch.ones((1, 3, 3), dtype=torch.float32),
             reference_speaker_embedding=torch.ones((1, 4), dtype=torch.float32),
             inference_config_fingerprint="fingerprint",
-            inference_config={"margin_frame_count": 0},
+            inference_config={"margin_frame_count": 0, "speed": resolved_context.speed},
         )
 
     def render_segment_base(self, segment, context) -> SegmentRenderAssetPayload:
-        del context
         if self.gate is not None:
             if self.wait_timeout is None:
                 self.gate.wait()
             else:
                 self.gate.wait(timeout=self.wait_timeout)
         self.segment_calls.append((segment.segment_id, segment.raw_text))
-        audio = np.asarray([segment.order_key / 10], dtype=np.float32)
+        sample_count = 2 if context.inference_config.get("speed", 1.0) < 1.0 else 1
+        audio = np.asarray([segment.order_key / 10] * sample_count, dtype=np.float32)
         return SegmentRenderAssetPayload(
             render_asset_id=f"render-{segment.segment_id}",
             segment_id=segment.segment_id,
@@ -67,9 +68,9 @@ class FakeEditableInferenceBackend:
             semantic_tokens=[1, 2],
             phone_ids=[11, 12],
             decoder_frame_count=1,
-            audio_sample_count=1,
+            audio_sample_count=sample_count,
             left_margin_sample_count=0,
-            core_sample_count=1,
+            core_sample_count=sample_count,
             right_margin_sample_count=0,
             left_margin_audio=np.zeros(0, dtype=np.float32),
             core_audio=audio,
