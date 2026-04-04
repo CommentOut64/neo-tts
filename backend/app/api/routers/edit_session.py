@@ -11,6 +11,7 @@ from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundE
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
+    AppendSegmentsRequest,
     BaselineSnapshotResponse,
     BoundaryAssetResponse,
     CompositionResponse,
@@ -21,6 +22,7 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    RenderProfilePatchRequest,
     RenderJobAcceptedResponse,
     RenderJobResponse,
     SegmentAssetResponse,
@@ -29,6 +31,7 @@ from backend.app.schemas.edit_session import (
     TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
+    VoiceBindingPatchRequest,
 )
 from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_service import EditSessionService
@@ -233,6 +236,11 @@ def create_segment(request: Request, body: CreateSegmentRequest) -> RenderJobAcc
     return _build_render_job_service(request).create_insert_segment_job(body)
 
 
+@router.post("/append", response_model=RenderJobAcceptedResponse, status_code=202)
+def append_segments(request: Request, body: AppendSegmentsRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_append_job(body)
+
+
 @router.patch("/segments/{segment_id}", response_model=RenderJobAcceptedResponse, status_code=202)
 def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_update_segment_job(segment_id, body)
@@ -268,6 +276,52 @@ def list_edges(request: Request, limit: int = 1000, cursor: int | None = None) -
 @router.patch("/edges/{edge_id}", response_model=RenderJobAcceptedResponse, status_code=202)
 def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_update_edge_job(edge_id, body)
+
+
+@router.patch("/session/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_session_render_profile_job(body)
+
+
+@router.patch("/session/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_session_voice_binding_job(body)
+
+
+@router.patch("/groups/{group_id}/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_group_render_profile(
+    request: Request,
+    group_id: str,
+    body: RenderProfilePatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_group_render_profile_job(group_id, body)
+
+
+@router.patch("/groups/{group_id}/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_group_voice_binding(
+    request: Request,
+    group_id: str,
+    body: VoiceBindingPatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_group_voice_binding_job(group_id, body)
+
+
+@router.patch("/segments/{segment_id}/render-profile", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_segment_render_profile(
+    request: Request,
+    segment_id: str,
+    body: RenderProfilePatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_segment_render_profile_job(segment_id, body)
+
+
+@router.patch("/segments/{segment_id}/voice-binding", response_model=RenderJobAcceptedResponse, status_code=202)
+def patch_segment_voice_binding(
+    request: Request,
+    segment_id: str,
+    body: VoiceBindingPatchRequest,
+) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_patch_segment_voice_binding_job(segment_id, body)
 
 
 @router.get("/composition", response_model=CompositionResponse)
