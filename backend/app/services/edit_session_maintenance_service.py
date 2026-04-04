@@ -42,7 +42,24 @@ class EditSessionMaintenanceService:
         zombie_job_ids: list[str] = []
         active_session = self._repository.get_active_session()
         for job in self._repository.list_non_terminal_jobs():
-            terminal_status = "cancelled" if job.cancel_requested else "failed"
+            checkpoint = self._repository.get_latest_checkpoint(job.document_id)
+            if checkpoint is not None and checkpoint.job_id == job.job_id:
+                if checkpoint.status == "paused" or job.pause_requested:
+                    terminal_status = "paused"
+                    self._repository.save_checkpoint(
+                        checkpoint.model_copy(
+                            update={
+                                "status": "resumable",
+                                "updated_at": datetime.now(timezone.utc),
+                            }
+                        )
+                    )
+                elif checkpoint.status == "cancelled_partial" or job.cancel_requested:
+                    terminal_status = "cancelled_partial"
+                else:
+                    terminal_status = "failed"
+            else:
+                terminal_status = "cancelled_partial" if job.cancel_requested else "failed"
             self._repository.mark_job_terminal(
                 job.job_id,
                 status=terminal_status,

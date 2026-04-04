@@ -8,10 +8,17 @@ import sqlite3
 import threading
 
 from backend.app.inference.editable_types import build_boundary_asset_id
-from backend.app.schemas.edit_session import ActiveDocumentState, DocumentSnapshot, EditableEdge, EditableSegment, RenderJobRecord
+from backend.app.schemas.edit_session import (
+    ActiveDocumentState,
+    CheckpointState,
+    DocumentSnapshot,
+    EditableEdge,
+    EditableSegment,
+    RenderJobRecord,
+)
 
 
-TERMINAL_JOB_STATUSES = {"completed", "cancelled", "failed"}
+TERMINAL_JOB_STATUSES = {"paused", "cancelled_partial", "completed", "failed"}
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,16 @@ class EditSessionRepository:
                     updated_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    checkpoint_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_checkpoints_document_updated
+                ON checkpoints (document_id, updated_at DESC, checkpoint_id DESC);
                 """
             )
 
@@ -281,6 +298,72 @@ class EditSessionRepository:
             return None
         return RenderJobRecord.model_validate_json(row["payload"])
 
+    def save_checkpoint(self, checkpoint: CheckpointState) -> None:
+        payload = self._dump_model(checkpoint)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO checkpoints(checkpoint_id, document_id, updated_at, payload)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(checkpoint_id) DO UPDATE SET
+                    document_id = excluded.document_id,
+                    updated_at = excluded.updated_at,
+                    payload = excluded.payload
+                """,
+                (
+                    checkpoint.checkpoint_id,
+                    checkpoint.document_id,
+                    checkpoint.updated_at.isoformat(),
+                    payload,
+                ),
+            )
+
+    def get_checkpoint(self, checkpoint_id: str) -> CheckpointState | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM checkpoints WHERE checkpoint_id = ?",
+                (checkpoint_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CheckpointState.model_validate_json(row["payload"])
+
+    def get_latest_checkpoint(self, document_id: str) -> CheckpointState | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload
+                FROM checkpoints
+                WHERE document_id = ?
+                ORDER BY updated_at DESC, checkpoint_id DESC
+                LIMIT 1
+                """,
+                (document_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CheckpointState.model_validate_json(row["payload"])
+
+    def get_checkpoint_by_resume_token(self, resume_token: str) -> CheckpointState | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload
+                FROM checkpoints
+                WHERE json_extract(payload, '$.resume_token') = ?
+                ORDER BY updated_at DESC, checkpoint_id DESC
+                LIMIT 1
+                """,
+                (resume_token,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CheckpointState.model_validate_json(row["payload"])
+
+    def delete_checkpoints_for_document(self, document_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM checkpoints WHERE document_id = ?", (document_id,))
+
     def load_recoverable_state(self) -> PersistedRecoverableState | None:
         active_session = self.get_active_session()
         if active_session is None or active_session.head_snapshot_id is None:
@@ -328,12 +411,25 @@ class EditSessionRepository:
 
     def collect_referenced_asset_ids(self) -> ReferencedAssetGraph:
         recoverable = self.load_recoverable_state()
-        if recoverable is None:
-            return ReferencedAssetGraph()
+        snapshots: list[DocumentSnapshot] = []
+        if recoverable is not None:
+            snapshots.append(recoverable.head_snapshot)
+            if recoverable.baseline_snapshot is not None:
+                snapshots.append(recoverable.baseline_snapshot)
 
-        snapshots = [recoverable.head_snapshot]
-        if recoverable.baseline_snapshot is not None:
-            snapshots.append(recoverable.baseline_snapshot)
+        active_session = self.get_active_session()
+        if active_session is not None:
+            checkpoint = self.get_latest_checkpoint(active_session.document_id)
+            if checkpoint is not None:
+                head_snapshot = self.get_snapshot(checkpoint.head_snapshot_id)
+                working_snapshot = self.get_snapshot(checkpoint.working_snapshot_id)
+                if head_snapshot is not None:
+                    snapshots.append(head_snapshot)
+                if working_snapshot is not None:
+                    snapshots.append(working_snapshot)
+
+        if not snapshots:
+            return ReferencedAssetGraph()
 
         graph = ReferencedAssetGraph()
         for snapshot in snapshots:
@@ -374,6 +470,7 @@ class EditSessionRepository:
             connection.execute("DELETE FROM segments")
             connection.execute("DELETE FROM edges")
             connection.execute("DELETE FROM render_jobs")
+            connection.execute("DELETE FROM checkpoints")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_file)
@@ -386,5 +483,7 @@ class EditSessionRepository:
         return (self._project_root / value).resolve()
 
     @staticmethod
-    def _dump_model(model: ActiveDocumentState | DocumentSnapshot | EditableSegment | EditableEdge | RenderJobRecord) -> str:
+    def _dump_model(
+        model: ActiveDocumentState | DocumentSnapshot | EditableSegment | EditableEdge | RenderJobRecord | CheckpointState,
+    ) -> str:
         return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)

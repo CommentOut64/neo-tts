@@ -8,6 +8,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     BaselineSnapshotResponse,
+    CurrentCheckpointResponse,
     DocumentSnapshot,
     EditSessionSnapshotResponse,
     EditableEdgeResponse,
@@ -71,6 +72,7 @@ class EditSessionService:
             progress=0.0,
             message=f"初始化任务已创建，voice={request.voice_id}。",
             cancel_requested=False,
+            pause_requested=False,
             updated_at=now,
         )
         self._repository.upsert_active_session(session)
@@ -178,6 +180,14 @@ class EditSessionService:
         if timeline is None:
             raise EditSessionNotFoundError("Timeline manifest not found.")
         return timeline
+
+    def get_current_checkpoint(self) -> CurrentCheckpointResponse:
+        active_session = self._repository.get_active_session()
+        if active_session is None:
+            return CurrentCheckpointResponse(checkpoint=None)
+        return CurrentCheckpointResponse(
+            checkpoint=self._repository.get_latest_checkpoint(active_session.document_id),
+        )
 
     def require_active_session(self) -> ActiveDocumentState:
         active_session = self._repository.get_active_session()

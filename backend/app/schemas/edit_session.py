@@ -276,19 +276,24 @@ class RenderJobResponse(BaseModel):
         "rendering",
         "composing",
         "committing",
-        "cancelling",
+        "pause_requested",
+        "paused",
+        "cancel_requested",
+        "cancelled_partial",
         "completed",
-        "cancelled",
         "failed",
     ]
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     message: str = ""
     cancel_requested: bool = False
+    pause_requested: bool = False
     current_segment_index: int | None = Field(default=None, ge=0)
     total_segment_count: int | None = Field(default=None, ge=0)
     current_block_index: int | None = Field(default=None, ge=0)
     total_block_count: int | None = Field(default=None, ge=0)
     result_document_version: int | None = None
+    checkpoint_id: str | None = None
+    resume_token: str | None = None
     updated_at: datetime = Field(default_factory=_now_utc)
 
 
@@ -303,6 +308,26 @@ class RenderJobRecord(RenderJobResponse):
 
 class RenderJobAcceptedResponse(BaseModel):
     job: RenderJobResponse
+
+
+class CheckpointState(BaseModel):
+    checkpoint_id: str
+    document_id: str
+    job_id: str
+    document_version: int
+    head_snapshot_id: str
+    timeline_manifest_id: str
+    working_snapshot_id: str
+    next_segment_cursor: int = Field(ge=0)
+    completed_segment_ids: list[str] = Field(default_factory=list)
+    remaining_segment_ids: list[str] = Field(default_factory=list)
+    status: Literal["paused", "cancelled_partial", "resumable"]
+    resume_token: str | None = None
+    updated_at: datetime = Field(default_factory=_now_utc)
+
+
+class CurrentCheckpointResponse(BaseModel):
+    checkpoint: CheckpointState | None = None
 
 
 class PlaybackMapEntry(BaseModel):

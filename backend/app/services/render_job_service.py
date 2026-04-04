@@ -37,6 +37,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     AppendSegmentsRequest,
+    CheckpointState,
     CompositionResponse,
     CreateSegmentRequest,
     DocumentSnapshot,
@@ -70,6 +71,7 @@ from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
+from backend.app.services.checkpoint_service import CheckpointService
 from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
@@ -78,6 +80,14 @@ from backend.app.services.timeline_manifest_service import TimelineManifestServi
 
 class _CancelledJobError(RuntimeError):
     pass
+
+
+class _PartialRenderCommitted(RuntimeError):
+    def __init__(self, *, checkpoint: CheckpointState, status: str, message: str) -> None:
+        super().__init__(message)
+        self.checkpoint = checkpoint
+        self.status = status
+        self.message = message
 
 
 @dataclass
@@ -111,6 +121,7 @@ class RenderPlan:
     change_reason: str | None = None
     skip_render: bool = False
     skip_compose: bool = False
+    emitted_block_ids: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -147,6 +158,7 @@ class RenderJobService:
         segment_group_service: SegmentGroupService | None = None,
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
+        checkpoint_service: CheckpointService | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -168,6 +180,14 @@ class RenderJobService:
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
         self._render_config_resolver = RenderConfigResolver()
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
+        self._checkpoint_service = checkpoint_service or CheckpointService(
+            repository=repository,
+            asset_store=asset_store,
+            gateway=gateway,
+            block_planner=self._block_planner,
+            composition_builder=self._composition_builder,
+            timeline_manifest_service=self._timeline_manifest_service,
+        )
         self._run_jobs_in_background = run_jobs_in_background
         self._preview_ttl_seconds = preview_ttl_seconds
         self._queued_requests: dict[str, InitializeEditSessionRequest] = {}
@@ -194,6 +214,7 @@ class RenderJobService:
             progress=job.progress,
             message=job.message,
             cancel_requested=job.cancel_requested,
+            pause_requested=job.pause_requested,
             result_document_version=None,
             updated_at=job.updated_at,
         )
@@ -535,10 +556,17 @@ class RenderJobService:
                     total_block_count=len(plan.blocks),
                 )
                 self._persist_runtime_job(job_id)
+        except _PartialRenderCommitted:
+            self._persist_runtime_job(job_id)
         except _CancelledJobError:
-            self._rollback_uncommitted_assets(job_id)
-            self._mark_terminal(job_id, status="cancelled", message="渲染任务已取消。")
-            self._mark_session_failed(job.document_id)
+            try:
+                self._commit_partial_after_segment(plan, status="cancelled_partial")
+            except _PartialRenderCommitted:
+                self._persist_runtime_job(job_id)
+            except Exception as exc:
+                self._rollback_uncommitted_assets(job_id)
+                self._mark_terminal(job_id, status="failed", message=str(exc))
+                self._mark_session_failed(job.document_id)
         except Exception as exc:
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
@@ -591,9 +619,16 @@ class RenderJobService:
                     total_block_count=len(plan.blocks),
                 )
                 self._persist_runtime_job(job_id)
+        except _PartialRenderCommitted:
+            self._persist_runtime_job(job_id)
         except _CancelledJobError:
-            self._rollback_uncommitted_assets(job_id)
-            self._mark_terminal(job_id, status="cancelled", message="渲染任务已取消。")
+            try:
+                self._commit_partial_after_segment(plan, status="cancelled_partial")
+            except _PartialRenderCommitted:
+                self._persist_runtime_job(job_id)
+            except Exception as exc:
+                self._rollback_uncommitted_assets(job_id)
+                self._mark_terminal(job_id, status="failed", message=str(exc))
         except Exception as exc:
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
@@ -604,6 +639,68 @@ class RenderJobService:
         accepted = self._runtime.request_cancel(job_id)
         if accepted:
             self._persist_runtime_job(job_id)
+        return accepted
+
+    def pause_job(self, job_id: str) -> bool:
+        accepted = self._runtime.request_pause(job_id)
+        if accepted:
+            self._persist_runtime_job(job_id)
+        return accepted
+
+    def create_resume_job(self, job_id: str) -> RenderJobAcceptedResponse:
+        job = self.get_job(job_id)
+        if job is None:
+            raise EditSessionNotFoundError(f"Render job '{job_id}' not found.")
+        active_session = self._session_service.require_active_session()
+        checkpoint = self._checkpoint_service.get_current_checkpoint(active_session.document_id)
+        if checkpoint is None or checkpoint.job_id != job_id or checkpoint.status not in {"paused", "resumable"}:
+            raise EditSessionNotFoundError(f"Resumable checkpoint for job '{job_id}' not found.")
+        working_snapshot = self._repository.get_snapshot(checkpoint.working_snapshot_id)
+        if working_snapshot is None:
+            raise EditSessionNotFoundError(f"Checkpoint working snapshot for job '{job_id}' not found.")
+        resumed_snapshot = working_snapshot.model_copy(
+            deep=True,
+            update={"document_version": checkpoint.document_version + 1},
+        )
+        remaining_segment_ids = set(checkpoint.remaining_segment_ids)
+        first_remaining_order_key = next(
+            (
+                segment.order_key
+                for segment in sorted(resumed_snapshot.segments, key=lambda item: item.order_key)
+                if segment.segment_id in remaining_segment_ids
+            ),
+            None,
+        )
+        impact = TargetedRenderPlan(
+            target_segment_ids=remaining_segment_ids,
+            target_edge_ids={
+                edge.edge_id
+                for edge in resumed_snapshot.edges
+                if edge.left_segment_id in remaining_segment_ids or edge.right_segment_id in remaining_segment_ids
+            },
+            target_block_ids=set(),
+            compose_only=False,
+            earliest_changed_order_key=first_remaining_order_key,
+            timeline_reflow_required=True,
+            change_reason="resume",
+        )
+        accepted = self._enqueue_edit_job(
+            job_kind="resume",
+            message=f"已创建恢复作业，继续渲染 {len(remaining_segment_ids)} 个剩余段。",
+            snapshot=resumed_snapshot,
+            impact=impact,
+        )
+        resumed_job = self.get_job(accepted.job.job_id)
+        if resumed_job is not None:
+            self._runtime.emit_event(
+                resumed_job.job_id,
+                "job_resumed",
+                {
+                    "source_job_id": job_id,
+                    "checkpoint_id": checkpoint.checkpoint_id,
+                    "remaining_segment_ids": checkpoint.remaining_segment_ids,
+                },
+            )
         return accepted
 
     def get_job(self, job_id: str) -> RenderJobResponse | None:
@@ -822,12 +919,30 @@ class RenderJobService:
             total_segment_count=len(plan.segments),
             message=f"文本切分完成，共 {len(plan.segments)} 段。",
         )
+        self._runtime.emit_event(
+            plan.job_id,
+            "segments_initialized",
+            {
+                "document_id": plan.document_id,
+                "document_version": plan.document_version,
+                "segments": [
+                    {
+                        "segment_id": segment.segment_id,
+                        "order_key": segment.order_key,
+                        "raw_text": segment.raw_text,
+                        "render_status": segment.render_status,
+                    }
+                    for segment in plan.segments
+                ],
+            },
+        )
         self._persist_runtime_job(plan.job_id)
         self._ = normalized_text
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
+        plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.target_segment_ids) or len(plan.segments),
@@ -848,7 +963,6 @@ class RenderJobService:
         self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在渲染段级资产。")
         total_segments = len(plan.segments)
         for index, segment in enumerate(plan.segments, start=1):
-            self._ensure_not_cancelled(plan.job_id)
             asset = self._gateway.render_segment_base(segment, plan.context)
             plan.segment_assets[segment.segment_id] = asset
             segment.render_asset_id = asset.render_asset_id
@@ -863,6 +977,20 @@ class RenderJobService:
                 progress=0.2 + 0.4 * (index / total_segments),
                 message=f"已完成第 {index}/{total_segments} 段渲染。",
             )
+            self._runtime.emit_event(
+                plan.job_id,
+                "segment_completed",
+                {
+                    "segment_id": segment.segment_id,
+                    "order_key": segment.order_key,
+                    "render_asset_id": asset.render_asset_id,
+                    "render_status": segment.render_status,
+                    "effective_duration_samples": segment.effective_duration_samples,
+                },
+            )
+            control_action = self._get_control_action(plan.job_id)
+            if control_action is not None:
+                self._commit_partial_after_segment(plan, status=control_action)
 
         config_snapshot = self._build_temporary_snapshot(plan)
         for edge in plan.edges:
@@ -894,7 +1022,6 @@ class RenderJobService:
         target_total = max(1, len(plan.target_segment_ids))
         completed_targets = 0
         for segment in plan.segments:
-            self._ensure_not_cancelled(plan.job_id)
             if segment.segment_id in plan.target_segment_ids:
                 context = self._get_segment_context(plan=plan, snapshot=config_snapshot, segment=segment)
                 asset = self._gateway.render_segment_base(segment, context)
@@ -903,6 +1030,7 @@ class RenderJobService:
                 segment.render_status = "ready"
                 segment.effective_duration_samples = asset.audio_sample_count
                 self._write_segment_asset(plan.job_id, asset)
+                plan.segment_assets[segment.segment_id] = asset
                 completed_targets += 1
                 self._runtime.update_job(
                     plan.job_id,
@@ -911,11 +1039,25 @@ class RenderJobService:
                     progress=0.2 + 0.25 * (completed_targets / target_total),
                     message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
                 )
+                self._runtime.emit_event(
+                    plan.job_id,
+                    "segment_completed",
+                    {
+                        "segment_id": segment.segment_id,
+                        "order_key": segment.order_key,
+                        "render_asset_id": asset.render_asset_id,
+                        "render_status": segment.render_status,
+                        "effective_duration_samples": segment.effective_duration_samples,
+                    },
+                )
+                control_action = self._get_control_action(plan.job_id)
+                if control_action is not None:
+                    self._commit_partial_after_segment(plan, status=control_action)
             else:
                 if segment.render_asset_id is None:
                     raise EditSessionNotFoundError(f"Segment '{segment.segment_id}' asset is missing.")
                 asset = self._asset_store.load_segment_asset(segment.render_asset_id)
-            plan.segment_assets[segment.segment_id] = asset
+                plan.segment_assets[segment.segment_id] = asset
             segment.assembled_audio_span = (0, asset.audio_sample_count)
             segment.effective_duration_samples = asset.audio_sample_count
 
@@ -1063,6 +1205,15 @@ class RenderJobService:
                 progress=0.7 + 0.15 * (index / max(1, len(plan.blocks))),
                 message=f"已完成第 {index}/{len(plan.blocks)} 个 block 装配。",
             )
+            self._runtime.emit_event(
+                plan.job_id,
+                "block_completed",
+                {
+                    "block_asset_id": block_asset.block_asset_id,
+                    "segment_ids": list(block_asset.segment_ids),
+                    "audio_sample_count": block_asset.audio_sample_count,
+                },
+            )
 
         plan.composition_manifest = self._composition_builder.compose_document(
             document_id=plan.document_id,
@@ -1122,6 +1273,7 @@ class RenderJobService:
         )
         self._repository.save_snapshot(baseline_snapshot)
         self._repository.save_snapshot(head_snapshot)
+        self._checkpoint_service.clear_document_checkpoint(plan.document_id)
         active_session = ActiveDocumentState(
             document_id=plan.document_id,
             session_status="ready",
@@ -1133,6 +1285,17 @@ class RenderJobService:
             updated_at=datetime.now(timezone.utc),
         )
         self._repository.upsert_active_session(active_session)
+        self._runtime.emit_event(
+            plan.job_id,
+            "timeline_committed",
+            {
+                "document_version": plan.document_version,
+                "timeline_version": plan.timeline_manifest.timeline_version,
+                "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
+                "playable_sample_span": list(plan.timeline_manifest.playable_sample_span),
+                "changed_block_asset_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
+            },
+        )
         self._runtime.update_job(
             plan.job_id,
             status="completed",
@@ -1191,6 +1354,7 @@ class RenderJobService:
             edges=plan.edges,
         )
         self._repository.save_snapshot(head_snapshot)
+        self._checkpoint_service.clear_document_checkpoint(plan.document_id)
         self._repository.upsert_active_session(
             active_session.model_copy(
                 update={
@@ -1201,6 +1365,18 @@ class RenderJobService:
                 }
             )
         )
+        if plan.timeline_manifest is not None:
+            self._runtime.emit_event(
+                plan.job_id,
+                "timeline_committed",
+                {
+                    "document_version": plan.document_version,
+                    "timeline_version": plan.timeline_manifest.timeline_version,
+                    "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
+                    "playable_sample_span": list(plan.timeline_manifest.playable_sample_span),
+                    "changed_block_asset_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
+                },
+            )
         self._persist_runtime_job(plan.job_id)
 
     def _build_temporary_snapshot(self, plan: RenderPlan) -> DocumentSnapshot:
@@ -1471,6 +1647,104 @@ class RenderJobService:
             manifest.model_dump(mode="json"),
         )
 
+    def _get_control_action(self, job_id: str) -> str | None:
+        job = self._runtime.get_job(job_id)
+        if job is None:
+            return None
+        if job.cancel_requested:
+            return "cancelled_partial"
+        if job.pause_requested:
+            return "paused"
+        return None
+
+    def _commit_partial_after_segment(self, plan: RenderPlan, *, status: str) -> None:
+        assert plan.context is not None
+        active_session = self._repository.get_active_session()
+        if active_session is None:
+            raise EditSessionNotFoundError("Active edit session not found.")
+        working_snapshot = self._build_temporary_snapshot(plan)
+        segments_by_id = {segment.segment_id: segment for segment in working_snapshot.segments}
+        checkpoint, partial_snapshot = self._checkpoint_service.save_partial_head(
+            document_id=plan.document_id,
+            job_id=plan.job_id,
+            active_session=active_session,
+            full_snapshot=working_snapshot,
+            resolve_boundary_context=lambda edge: self._get_segment_context(
+                plan=plan,
+                snapshot=working_snapshot,
+                segment=segments_by_id[edge.left_segment_id],
+            ),
+            segment_assets=plan.segment_assets,
+            boundary_assets=plan.boundary_assets,
+            status=status,
+        )
+        self._repository.upsert_active_session(
+            active_session.model_copy(
+                update={
+                    "session_status": "ready",
+                    "baseline_snapshot_id": active_session.baseline_snapshot_id or partial_snapshot.snapshot_id,
+                    "head_snapshot_id": partial_snapshot.snapshot_id,
+                    "active_job_id": None,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+        )
+        self._runtime.emit_event(
+            plan.job_id,
+            "checkpoint_saved",
+            checkpoint.model_dump(mode="json"),
+        )
+        timeline = self._asset_store.load_timeline_manifest(checkpoint.timeline_manifest_id)
+        for entry in timeline.block_entries:
+            if entry.block_asset_id in plan.emitted_block_ids:
+                continue
+            self._runtime.emit_event(
+                plan.job_id,
+                "block_completed",
+                {
+                    "block_asset_id": entry.block_asset_id,
+                    "segment_ids": list(entry.segment_ids),
+                    "audio_sample_count": entry.audio_sample_count,
+                },
+            )
+            plan.emitted_block_ids.add(entry.block_asset_id)
+        self._runtime.emit_event(
+            plan.job_id,
+            "timeline_committed",
+            {
+                "document_version": checkpoint.document_version,
+                "timeline_version": timeline.timeline_version,
+                "timeline_manifest_id": timeline.timeline_manifest_id,
+                "playable_sample_span": list(timeline.playable_sample_span),
+                "changed_block_asset_ids": [entry.block_asset_id for entry in timeline.block_entries],
+            },
+        )
+        terminal_event = "job_paused" if status == "paused" else "job_cancelled_partial"
+        terminal_message = "当前段已完成，作业已暂停并提交 partial head。" if status == "paused" else "当前段已完成，作业已取消并保留 partial head。"
+        self._runtime.update_job(
+            plan.job_id,
+            status=status,
+            message=terminal_message,
+            result_document_version=checkpoint.document_version,
+            checkpoint_id=checkpoint.checkpoint_id,
+            resume_token=checkpoint.resume_token,
+        )
+        self._runtime.emit_event(
+            plan.job_id,
+            terminal_event,
+            {
+                "job_id": plan.job_id,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "document_version": checkpoint.document_version,
+                "resume_token": checkpoint.resume_token,
+            },
+        )
+        raise _PartialRenderCommitted(
+            checkpoint=checkpoint,
+            status=status,
+            message=terminal_message,
+        )
+
     def _ensure_not_cancelled(self, job_id: str) -> None:
         job = self._runtime.get_job(job_id)
         if job is not None and job.cancel_requested:
@@ -1493,11 +1767,14 @@ class RenderJobService:
             progress=job.progress,
             message=job.message,
             cancel_requested=job.cancel_requested,
+            pause_requested=job.pause_requested,
             current_segment_index=job.current_segment_index,
             total_segment_count=job.total_segment_count,
             current_block_index=job.current_block_index,
             total_block_count=job.total_block_count,
             result_document_version=job.result_document_version,
+            checkpoint_id=job.checkpoint_id,
+            resume_token=job.resume_token,
             updated_at=job.updated_at,
         )
         self._repository.save_render_job(record)
@@ -1547,6 +1824,7 @@ class RenderJobService:
             progress=0.0,
             message=message,
             cancel_requested=False,
+            pause_requested=False,
             updated_at=now,
         )
         self._queued_edit_jobs[job.job_id] = QueuedEditJob(
@@ -1584,6 +1862,7 @@ class RenderJobService:
                 progress=job.progress,
                 message=job.message,
                 cancel_requested=job.cancel_requested,
+                pause_requested=job.pause_requested,
                 result_document_version=None,
                 updated_at=job.updated_at,
             )

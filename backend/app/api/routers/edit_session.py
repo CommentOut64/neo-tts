@@ -16,6 +16,7 @@ from backend.app.schemas.edit_session import (
     BoundaryAssetResponse,
     CompositionResponse,
     CreateSegmentRequest,
+    CurrentCheckpointResponse,
     EdgeListResponse,
     EditSessionSnapshotResponse,
     InitializeEditSessionRequest,
@@ -176,7 +177,15 @@ def _encode_sse_event(event: str, payload: dict) -> str:
 
 
 def _is_terminal_job_payload(payload: dict) -> bool:
-    return payload.get("status") in {"completed", "cancelled", "failed"}
+    return payload.get("status") in {"paused", "cancelled_partial", "completed", "failed"}
+
+
+def _should_close_live_event_stream(event_type: str, payload: dict) -> bool:
+    if event_type in {"job_paused", "job_cancelled_partial"}:
+        return True
+    if event_type != "job_state_changed":
+        return False
+    return payload.get("status") in {"completed", "failed"}
 
 
 @router.post("/initialize", response_model=RenderJobAcceptedResponse, status_code=202)
@@ -204,6 +213,11 @@ def get_baseline(request: Request) -> BaselineSnapshotResponse:
 @router.get("/timeline", response_model=TimelineManifest)
 def get_timeline(request: Request) -> TimelineManifest:
     return _build_edit_session_service(request).get_timeline()
+
+
+@router.get("/checkpoints/current", response_model=CurrentCheckpointResponse)
+def get_current_checkpoint(request: Request) -> CurrentCheckpointResponse:
+    return _build_edit_session_service(request).get_current_checkpoint()
 
 
 @router.delete("", status_code=204)
@@ -451,14 +465,17 @@ def stream_render_job_events(request: Request, job_id: str) -> StreamingResponse
     def event_stream():
         try:
             if current_job is None and stored_job is not None:
-                yield _encode_sse_event("progress", stored_job.model_dump(mode="json"))
+                payload = stored_job.model_dump(mode="json")
+                yield _encode_sse_event("job_state_changed", payload)
                 if _is_terminal_job_payload(stored_job.model_dump(mode="json")):
                     return
             while True:
                 try:
-                    payload = subscriber.get(timeout=15)
-                    yield _encode_sse_event("progress", payload)
-                    if _is_terminal_job_payload(payload):
+                    envelope = subscriber.get(timeout=15)
+                    event_type = envelope.get("event", "job_state_changed")
+                    payload = envelope.get("data", {})
+                    yield _encode_sse_event(event_type, payload)
+                    if _should_close_live_event_stream(event_type, payload):
                         return
                 except queue.Empty:
                     yield ": keep-alive\n\n"
@@ -478,3 +495,21 @@ def cancel_render_job(request: Request, job_id: str) -> RenderJobResponse:
     updated_job = service.get_job(job_id)
     assert updated_job is not None
     return updated_job
+
+
+@router.post("/render-jobs/{job_id}/pause", response_model=RenderJobResponse)
+def pause_render_job(request: Request, job_id: str) -> RenderJobResponse:
+    service = _build_readonly_render_job_service(request)
+    job = service.get_job(job_id)
+    if job is None:
+        raise EditSessionNotFoundError(f"Render job '{job_id}' not found.")
+    service.pause_job(job_id)
+    updated_job = service.get_job(job_id)
+    assert updated_job is not None
+    return updated_job
+
+
+@router.post("/render-jobs/{job_id}/resume", response_model=RenderJobAcceptedResponse, status_code=202)
+def resume_render_job(request: Request, job_id: str) -> RenderJobAcceptedResponse:
+    service = _build_render_job_service(request)
+    return service.create_resume_job(job_id)

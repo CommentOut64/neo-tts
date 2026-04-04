@@ -10,13 +10,22 @@ from backend.app.schemas.edit_session import RenderJobResponse
 
 
 class EditSessionRuntime:
-    ACTIVE_STATUSES = {"preparing", "rendering", "composing", "committing", "cancelling"}
+    ACTIVE_STATUSES = {
+        "preparing",
+        "rendering",
+        "composing",
+        "committing",
+        "pause_requested",
+        "cancel_requested",
+    }
+    TERMINAL_STATUSES = {"paused", "cancelled_partial", "completed", "failed"}
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, RenderJobResponse] = {}
         self._active_job_id: str | None = None
         self._subscribers: dict[str, set[queue.Queue[dict[str, Any]]]] = {}
+        self._events: dict[str, list[dict[str, Any]]] = {}
 
     def start_job(self, job: RenderJobResponse) -> None:
         with self._lock:
@@ -27,7 +36,8 @@ class EditSessionRuntime:
             started_job.updated_at = datetime.now(timezone.utc)
             self._jobs[started_job.job_id] = started_job
             self._active_job_id = started_job.job_id
-            self._broadcast_locked(started_job.job_id)
+            self._events[started_job.job_id] = []
+            self._append_job_state_event_locked(started_job.job_id)
 
     def update_job(self, job_id: str, **changes: Any) -> None:
         with self._lock:
@@ -43,7 +53,18 @@ class EditSessionRuntime:
             job.updated_at = datetime.now(timezone.utc)
             if job.status not in self.ACTIVE_STATUSES and self._active_job_id == job_id:
                 self._active_job_id = None
-            self._broadcast_locked(job_id)
+            self._append_job_state_event_locked(job_id)
+
+    def request_pause(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status not in self.ACTIVE_STATUSES:
+                return False
+            job.pause_requested = True
+            job.status = "pause_requested"
+            job.updated_at = datetime.now(timezone.utc)
+            self._append_job_state_event_locked(job_id)
+            return True
 
     def request_cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -51,10 +72,16 @@ class EditSessionRuntime:
             if job is None or job.status not in self.ACTIVE_STATUSES:
                 return False
             job.cancel_requested = True
-            job.status = "cancelling"
+            job.status = "cancel_requested"
             job.updated_at = datetime.now(timezone.utc)
-            self._broadcast_locked(job_id)
+            self._append_job_state_event_locked(job_id)
             return True
+
+    def emit_event(self, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        with self._lock:
+            if job_id not in self._jobs:
+                return
+            self._append_event_locked(job_id, event_type, payload)
 
     def assert_can_start(self) -> None:
         if self._active_job_id is None:
@@ -69,9 +96,8 @@ class EditSessionRuntime:
         with self._lock:
             subscribers = self._subscribers.setdefault(job_id, set())
             subscribers.add(subscriber)
-            job = self._jobs.get(job_id)
-            if job is not None:
-                self._put_nowait(subscriber, job.model_dump(mode="json"))
+            for event in self._events.get(job_id, []):
+                self._put_nowait(subscriber, event)
         return subscriber
 
     def unsubscribe(self, job_id: str, subscriber: queue.Queue[dict[str, Any]]) -> None:
@@ -93,22 +119,35 @@ class EditSessionRuntime:
     def reset(self) -> None:
         with self._lock:
             self._jobs.clear()
+            self._events.clear()
             self._subscribers.clear()
             self._active_job_id = None
 
-    def _broadcast_locked(self, job_id: str) -> None:
+    def _append_job_state_event_locked(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
             return
-        payload = job.model_dump(mode="json")
+        self._append_event_locked(job_id, "job_state_changed", job.model_dump(mode="json"))
+
+    def _append_event_locked(self, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        event = {
+            "event": event_type,
+            "data": payload,
+        }
+        history = self._events.setdefault(job_id, [])
+        history.append(event)
+        if len(history) > 256:
+            del history[:-256]
         stale: list[queue.Queue[dict[str, Any]]] = []
         for subscriber in self._subscribers.get(job_id, set()):
             try:
-                self._put_nowait(subscriber, payload)
+                self._put_nowait(subscriber, event)
             except Exception:
                 stale.append(subscriber)
         for subscriber in stale:
-            self._subscribers[job_id].discard(subscriber)
+            subscribers = self._subscribers.get(job_id)
+            if subscribers is not None:
+                subscribers.discard(subscriber)
 
     @staticmethod
     def _put_nowait(subscriber: queue.Queue[dict[str, Any]], payload: dict[str, Any]) -> None:
