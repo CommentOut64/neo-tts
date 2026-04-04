@@ -245,7 +245,9 @@ def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_pa
     service.run_initialize_job(accepted.job.job_id)
 
     assert not (tmp_path / "assets" / "staging" / accepted.job.job_id).exists()
-    assert not any((tmp_path / "assets" / "formal").rglob("*.wav"))
+    assert any((tmp_path / "assets" / "formal" / "segments").rglob("audio.wav"))
+    assert not any((tmp_path / "assets" / "formal" / "boundaries").rglob("audio.wav"))
+    assert not any((tmp_path / "assets" / "formal" / "compositions").rglob("*.wav"))
 
 
 def test_build_fallback_boundary_asset_crossfades_segment_margins_without_model_rerender(tmp_path):
