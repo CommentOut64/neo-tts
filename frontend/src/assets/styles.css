@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
 
 /* === 亮色主题（默认） === */
 :root {
@@ -132,8 +131,50 @@ html.dark {
 .audio-bar:nth-child(4) { animation-delay: 0.45s; }
 .audio-bar:nth-child(5) { animation-delay: 0.6s; }
 
+/* tailwind-scrollbar 移除后的最小兼容：仅覆盖当前项目使用到的工具类 */
+.scrollbar-thin {
+  scrollbar-width: thin;
+}
+
+.scrollbar-thumb-border {
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thumb-border::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 9999px;
+}
+
+.scrollbar-track-transparent::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 @keyframes spin-once {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 .animate-spin-once { animation: spin-once 0.6s ease-in-out; }
+
+/* Custom Element Plus Slider Trigger */
+.el-slider__button {
+  width: 16px !important;
+  height: 16px !important;
+  border: none !important;
+  background-color: var(--color-cta) !important;
+  border-radius: 50% !important;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease !important;
+  /* 恢复默认状态的双重阴影：内圈卡片底色隔离边缘，外围自然投射阴影 */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 0 0 2px var(--color-card) !important;
+}
+
+.el-slider__button-wrapper, .el-slider__button { outline: none !important; }    
+.el-slider__button:hover, .el-slider__button.hover { transform: scale(1.15) !important; box-shadow: 0 3px 6px rgba(0, 0, 0, 0.25), 0 0 0 2px var(--color-card) !important; cursor: grab !important; }
+.el-slider__button:active, .el-slider__button.dragging { transform: scale(1.05) !important; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 2px var(--color-card) !important; cursor: grabbing !important; }
+
+html.dark .el-slider__button { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 0 2px var(--color-card) !important; }
+html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-shadow: 0 3px 6px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--color-card) !important; }
