@@ -72,6 +72,26 @@ class SegmentCompositionEntry:
     segment_id: str
     audio_sample_span: tuple[int, int]
     order_key: int = 0
+    render_asset_id: str | None = None
+
+
+@dataclass(frozen=True)
+class EdgeCompositionEntry:
+    edge_id: str
+    left_segment_id: str
+    right_segment_id: str
+    boundary_strategy: str
+    effective_boundary_strategy: str
+    pause_duration_seconds: float
+    boundary_sample_span: tuple[int, int]
+    pause_sample_span: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class BlockMarkerEntry:
+    marker_type: str
+    sample: int
+    related_id: str
 
 
 @dataclass(frozen=True)
@@ -82,6 +102,13 @@ class BlockCompositionAssetPayload:
     audio: np.ndarray
     audio_sample_count: int
     segment_entries: list[SegmentCompositionEntry]
+    block_asset_id: str = ""
+    edge_entries: list[EdgeCompositionEntry] = field(default_factory=list)
+    marker_entries: list[BlockMarkerEntry] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.block_asset_id:
+            object.__setattr__(self, "block_asset_id", self.block_id)
 
 
 @dataclass(frozen=True)

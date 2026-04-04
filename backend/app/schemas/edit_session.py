@@ -50,6 +50,12 @@ class EditableSegment(BaseModel):
     text_language: str
     render_version: int = 0
     render_asset_id: str | None = None
+    group_id: str | None = None
+    render_profile_id: str | None = None
+    voice_binding_id: str | None = None
+    render_status: Literal["pending", "rendering", "ready", "paused", "failed"] = "ready"
+    segment_revision: int = 1
+    effective_duration_samples: int | None = None
     inference_override: dict[str, Any] = Field(default_factory=dict)
     risk_flags: list[str] = Field(default_factory=list)
     assembled_audio_span: tuple[int, int] | None = None
@@ -96,6 +102,10 @@ class EditableEdge(BaseModel):
     right_segment_id: str
     pause_duration_seconds: float = 0.3
     boundary_strategy: str = "latent_overlap_then_equal_power_crossfade"
+    effective_boundary_strategy: str | None = None
+    pause_sample_count: int | None = None
+    boundary_sample_count: int | None = None
+    edge_status: Literal["pending", "rendering", "ready", "failed"] = "ready"
     edge_version: int = 1
 
 
@@ -138,6 +148,7 @@ class DocumentSnapshot(BaseModel):
     block_ids: list[str] = Field(default_factory=list)
     composition_manifest_id: str | None = None
     playback_map_version: int | None = None
+    timeline_manifest_id: str | None = None
     created_at: datetime = Field(default_factory=_now_utc)
     segments: list[EditableSegment] = Field(default_factory=list)
     edges: list[EditableEdge] = Field(default_factory=list)
@@ -201,6 +212,67 @@ class PlaybackMapResponse(BaseModel):
     composition_manifest_id: str | None = None
     playable_sample_span: tuple[int, int] | None = None
     entries: list[PlaybackMapEntry] = Field(default_factory=list)
+
+
+class TimelineBlockEntry(BaseModel):
+    block_asset_id: str
+    segment_ids: list[str] = Field(default_factory=list)
+    start_sample: int
+    end_sample: int
+    audio_sample_count: int
+    audio_url: str
+
+
+class TimelineSegmentEntry(BaseModel):
+    segment_id: str
+    order_key: int
+    start_sample: int
+    end_sample: int
+    render_status: str = "ready"
+    group_id: str | None = None
+    render_profile_id: str | None = None
+    voice_binding_id: str | None = None
+
+
+class TimelineEdgeEntry(BaseModel):
+    edge_id: str
+    left_segment_id: str
+    right_segment_id: str
+    pause_duration_seconds: float
+    boundary_strategy: str
+    effective_boundary_strategy: str
+    boundary_start_sample: int
+    boundary_end_sample: int
+    pause_start_sample: int
+    pause_end_sample: int
+
+
+class TimelineMarkerEntry(BaseModel):
+    marker_id: str
+    marker_type: Literal[
+        "segment_start",
+        "segment_end",
+        "edge_gap_start",
+        "edge_gap_end",
+        "block_start",
+        "block_end",
+    ]
+    sample: int
+    related_id: str
+
+
+class TimelineManifest(BaseModel):
+    timeline_manifest_id: str
+    document_id: str
+    document_version: int
+    timeline_version: int
+    sample_rate: int
+    playable_sample_span: tuple[int, int]
+    block_entries: list[TimelineBlockEntry] = Field(default_factory=list)
+    segment_entries: list[TimelineSegmentEntry] = Field(default_factory=list)
+    edge_entries: list[TimelineEdgeEntry] = Field(default_factory=list)
+    markers: list[TimelineMarkerEntry] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_now_utc)
 
 
 class CompositionResponse(BaseModel):
@@ -284,6 +356,7 @@ class EditSessionSnapshotResponse(BaseModel):
     total_edge_count: int = 0
     ready_segment_count: int = 0
     ready_block_count: int = 0
+    timeline_manifest_id: str | None = None
     composition_manifest_id: str | None = None
     composition_audio_url: str | None = None
     playable_sample_span: tuple[int, int] | None = None
