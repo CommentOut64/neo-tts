@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -158,7 +158,7 @@ class VoiceRepository:
 
     @staticmethod
     def _now_isoformat() -> str:
-        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _normalize_voice_name(name: str) -> str:

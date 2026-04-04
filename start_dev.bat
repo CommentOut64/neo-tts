@@ -1,10 +1,17 @@
 @echo off
 title GPT-SoVITS Dev Launcher
+set "BACKEND_PYTHON=%~dp0.venv\Scripts\python.exe"
 
 echo ================================================
 echo   GPT-SoVITS Dev Launcher
 echo ================================================
 echo.
+
+if not exist "%BACKEND_PYTHON%" (
+    echo [x] Missing backend virtualenv python: "%BACKEND_PYTHON%"
+    echo     Please create or repair the project .venv before starting dev services.
+    exit /b 1
+)
 
 :: Check if backend port is already in use
 netstat -ano | findstr ":8000 " | findstr "LISTENING" >nul 2>&1
@@ -16,7 +23,7 @@ if %errorlevel%==0 (
 :: Start backend in a separate window
 :start_backend
 echo [1/2] Starting backend on port 8000 (separate window)...
-start "GPT-SoVITS Backend" cmd /k "cd /d %~dp0 && call .venv\Scripts\activate.bat && python -m backend.app.cli --port 8000"
+start "GPT-SoVITS Backend" /D "%~dp0" "%BACKEND_PYTHON%" -m backend.app.cli --port 8000
 
 :: Wait for backend to be ready
 echo      Waiting for backend to be ready...

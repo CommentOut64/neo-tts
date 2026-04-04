@@ -3,6 +3,7 @@ import pytest
 from backend.app.inference.text_processing import (
     normalize_whitespace,
     split_text_segments,
+    split_text_segments_zh_period,
     split_text_segments_official,
 )
 
@@ -39,3 +40,15 @@ def test_split_text_segments_official_supports_cut0():
 def test_split_text_segments_official_rejects_unknown_method():
     with pytest.raises(ValueError, match="Unsupported text_split_method"):
         split_text_segments_official("你好。", text_split_method="cut999")
+
+
+def test_split_text_segments_zh_period_only_splits_on_chinese_period():
+    text = "第一句，带逗号。第二句，还有逗号。第三句，没有别的句号"
+
+    segments = split_text_segments_zh_period(text)
+
+    assert segments == [
+        "第一句，带逗号。",
+        "第二句，还有逗号。",
+        "第三句，没有别的句号",
+    ]

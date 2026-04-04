@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from backend.app.inference import pytorch_optimized
 from backend.app.inference.types import ModelHandle
 
-EngineFactory = Callable[[str, str, str, str], Any]
+if TYPE_CHECKING:
+    from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+
+EngineFactory = Callable[[str, str, str, str], "GPTSoVITSOptimizedInference"]
 WarmupHook = Callable[[Any], None]
 
 
@@ -59,6 +61,8 @@ class PyTorchModelCache:
 
     @staticmethod
     def _build_engine(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str) -> Any:
+        from backend.app.inference import pytorch_optimized
+
         return pytorch_optimized.GPTSoVITSOptimizedInference(
             gpt_path,
             sovits_path,
