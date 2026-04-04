@@ -49,6 +49,7 @@ from backend.app.schemas.edit_session import (
     RenderJobRecord,
     RenderJobResponse,
     SwapSegmentsRequest,
+    TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
 )
@@ -62,6 +63,7 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
 from backend.app.services.segment_service import SegmentService
+from backend.app.services.timeline_manifest_service import TimelineManifestService
 
 
 class _CancelledJobError(RuntimeError):
@@ -83,6 +85,7 @@ class RenderPlan:
     blocks: list[RenderBlock] = field(default_factory=list)
     block_assets: list[BlockCompositionAssetPayload] = field(default_factory=list)
     composition_manifest: DocumentCompositionManifestPayload | None = None
+    timeline_manifest: TimelineManifest | None = None
     target_segment_ids: set[str] = field(default_factory=set)
     target_edge_ids: set[str] = field(default_factory=set)
     target_block_ids: set[str] = field(default_factory=set)
@@ -116,6 +119,7 @@ class RenderJobService:
         block_planner: BlockPlanner | None = None,
         composition_builder: CompositionBuilder | None = None,
         playback_map_service: PlaybackMapService | None = None,
+        timeline_manifest_service: TimelineManifestService | None = None,
         segment_service: SegmentService | None = None,
         edge_service: EdgeService | None = None,
         render_planner: RenderPlanner | None = None,
@@ -131,6 +135,7 @@ class RenderJobService:
         self._block_planner = block_planner or BlockPlanner()
         self._composition_builder = composition_builder or CompositionBuilder()
         self._playback_map_service = playback_map_service or PlaybackMapService()
+        self._timeline_manifest_service = timeline_manifest_service or TimelineManifestService()
         self._edge_service = edge_service or EdgeService(repository=repository)
         self._segment_service = segment_service or SegmentService(
             repository=repository,
@@ -425,6 +430,11 @@ class RenderJobService:
 
     def get_playback_map_response(self) -> PlaybackMapResponse:
         snapshot = self._session_service.get_head_snapshot()
+        if snapshot.timeline_manifest_id is not None:
+            timeline = self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
+            return self._playback_map_service.rebuild(manifest=timeline).model_copy(
+                update={"composition_manifest_id": snapshot.composition_manifest_id}
+            )
         playable_sample_span = (
             (0, max(segment.assembled_audio_span[1] for segment in snapshot.segments if segment.assembled_audio_span is not None))
             if any(segment.assembled_audio_span is not None for segment in snapshot.segments)
@@ -625,6 +635,8 @@ class RenderJobService:
             plan.segment_assets[segment.segment_id] = asset
             segment.render_asset_id = asset.render_asset_id
             segment.assembled_audio_span = (0, asset.audio_sample_count)
+            segment.render_status = "ready"
+            segment.effective_duration_samples = asset.audio_sample_count
             self._write_segment_asset(plan.job_id, asset)
             self._runtime.update_job(
                 plan.job_id,
@@ -640,6 +652,9 @@ class RenderJobService:
             right_asset = plan.segment_assets[edge.right_segment_id]
             boundary_asset = self._gateway.render_boundary_asset(left_asset, right_asset, edge, plan.context)
             plan.boundary_assets[edge.edge_id] = boundary_asset
+            edge.effective_boundary_strategy = edge.boundary_strategy
+            edge.boundary_sample_count = boundary_asset.boundary_sample_count
+            edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
             self._write_boundary_asset(plan.job_id, boundary_asset)
         self._persist_runtime_job(plan.job_id)
 
@@ -660,6 +675,8 @@ class RenderJobService:
                 asset = self._gateway.render_segment_base(segment, plan.context)
                 segment.render_asset_id = asset.render_asset_id
                 segment.assembled_audio_span = (0, asset.audio_sample_count)
+                segment.render_status = "ready"
+                segment.effective_duration_samples = asset.audio_sample_count
                 self._write_segment_asset(plan.job_id, asset)
                 completed_targets += 1
                 self._runtime.update_job(
@@ -675,6 +692,7 @@ class RenderJobService:
                 asset = self._asset_store.load_segment_asset(segment.render_asset_id)
             plan.segment_assets[segment.segment_id] = asset
             segment.assembled_audio_span = (0, asset.audio_sample_count)
+            segment.effective_duration_samples = asset.audio_sample_count
 
         for edge in plan.edges:
             self._ensure_not_cancelled(plan.job_id)
@@ -700,6 +718,9 @@ class RenderJobService:
                     )
                 )
             plan.boundary_assets[edge.edge_id] = boundary_asset
+            edge.effective_boundary_strategy = edge.boundary_strategy
+            edge.boundary_sample_count = boundary_asset.boundary_sample_count
+            edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
         self._persist_runtime_job(plan.job_id)
 
     def _build_fallback_boundary_asset(
@@ -751,26 +772,32 @@ class RenderJobService:
         self._runtime.update_job(plan.job_id, status="composing", progress=0.7, message="正在装配 block 与文档音频。")
         plan.blocks = self._block_planner.build_blocks(plan.segments)
         self._runtime.update_job(plan.job_id, total_block_count=len(plan.blocks))
-        previous_block_ids: set[str] = set()
-        if plan.job_kind != "initialize":
-            previous_block_ids = set(self._session_service.get_head_snapshot().block_ids)
+        previous_timeline = self._load_previous_timeline(plan)
 
         for index, block in enumerate(plan.blocks, start=1):
             block_segments = [plan.segment_assets[segment_id] for segment_id in block.segment_ids]
-            block_edges = [edge for edge in plan.edges if edge.left_segment_id in block.segment_ids and edge.right_segment_id in block.segment_ids]
-            block_boundaries = [
-                plan.boundary_assets[edge.edge_id]
-                for edge in block_edges
-                if edge.edge_id in plan.boundary_assets
+            block_edges = [
+                edge
+                for edge in plan.edges
+                if edge.left_segment_id in block.segment_ids and edge.right_segment_id in block.segment_ids
             ]
-            should_compose_block = (
+            block_boundaries = [plan.boundary_assets[edge.edge_id] for edge in block_edges if edge.edge_id in plan.boundary_assets]
+            force_dirty = (
                 plan.job_kind == "initialize"
                 or block.block_id in plan.target_block_ids
                 or bool(plan.target_segment_ids.intersection(block.segment_ids))
                 or any(edge.edge_id in plan.target_edge_ids for edge in block_edges)
-                or block.block_id not in previous_block_ids
             )
-            if should_compose_block:
+            reusable_block_asset_id = None
+            if not force_dirty:
+                reusable_block_asset_id = self._resolve_reusable_block_asset_id(
+                    previous_timeline=previous_timeline,
+                    block=block,
+                    block_segments=block_segments,
+                    block_edges=block_edges,
+                    block_boundaries=block_boundaries,
+                )
+            if reusable_block_asset_id is None:
                 block_asset = self._composition_builder.compose_block(
                     segments=block_segments,
                     boundaries=block_boundaries,
@@ -779,16 +806,7 @@ class RenderJobService:
                 )
                 self._write_block_asset(plan.job_id, block_asset)
             else:
-                try:
-                    block_asset = self._asset_store.load_block_asset(block.block_id)
-                except (FileNotFoundError, ValueError):
-                    block_asset = self._composition_builder.compose_block(
-                        segments=block_segments,
-                        boundaries=block_boundaries,
-                        edges=block_edges,
-                        block_id=block.block_id,
-                    )
-                    self._write_block_asset(plan.job_id, block_asset)
+                block_asset = self._asset_store.load_block_asset(reusable_block_asset_id)
             plan.block_assets.append(block_asset)
             self._runtime.update_job(
                 plan.job_id,
@@ -804,28 +822,38 @@ class RenderJobService:
             blocks=plan.block_assets,
         )
         self._write_composition_asset(plan.job_id, plan.composition_manifest)
-        playback_map = self._playback_map_service.rebuild(manifest=plan.composition_manifest, segments=plan.segments)
+        temporary_snapshot = self._build_temporary_snapshot(plan)
+        plan.timeline_manifest, playback_map = self._timeline_manifest_service.build(
+            snapshot=temporary_snapshot,
+            blocks=plan.block_assets,
+            sample_rate=self._composition_builder._sample_rate,
+        )
         span_by_segment_id = {entry.segment_id: entry.audio_sample_span for entry in playback_map.entries}
         for segment in plan.segments:
-            segment.assembled_audio_span = span_by_segment_id.get(segment.segment_id)
+            span = span_by_segment_id.get(segment.segment_id)
+            segment.assembled_audio_span = span
+            segment.effective_duration_samples = None if span is None else max(0, span[1] - span[0])
         self._persist_runtime_job(plan.job_id)
 
     def _commit(self, plan: RenderPlan) -> None:
         assert plan.composition_manifest is not None
+        assert plan.timeline_manifest is not None
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="committing", progress=0.9, message="正在提交快照与资产。")
         self._asset_store.promote_staging_tree(plan.job_id, "formal")
+        self._write_timeline_manifest(plan.timeline_manifest)
 
         snapshot_payload = {
             "document_id": plan.document_id,
-            "document_version": 1,
-            "raw_text": plan.request.raw_text,
-            "normalized_text": normalize_whitespace(plan.request.raw_text),
+            "document_version": plan.document_version,
+            "raw_text": "".join(segment.raw_text for segment in plan.segments),
+            "normalized_text": "".join(segment.normalized_text for segment in plan.segments),
             "segment_ids": [segment.segment_id for segment in plan.segments],
             "edge_ids": [edge.edge_id for edge in plan.edges],
-            "block_ids": plan.composition_manifest.block_ids,
+            "block_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
             "composition_manifest_id": plan.composition_manifest.composition_manifest_id,
-            "playback_map_version": 1,
+            "playback_map_version": plan.document_version,
+            "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
             "segments": plan.segments,
             "edges": plan.edges,
         }
@@ -857,7 +885,7 @@ class RenderJobService:
             status="completed",
             progress=1.0,
             message="初始化渲染完成。",
-            result_document_version=1,
+            result_document_version=plan.document_version,
             current_segment_index=len(plan.segments),
             total_segment_count=len(plan.segments),
             current_block_index=len(plan.blocks),
@@ -874,14 +902,19 @@ class RenderJobService:
             self._asset_store.promote_staging_tree(plan.job_id, "formal")
 
         if plan.skip_compose:
-            composition_manifest_id = self._repository.get_snapshot(active_session.baseline_snapshot_id).composition_manifest_id if active_session.baseline_snapshot_id else None
-            block_ids = self._repository.get_snapshot(active_session.baseline_snapshot_id).block_ids if active_session.baseline_snapshot_id else []
-            playback_map_version = self._repository.get_snapshot(active_session.baseline_snapshot_id).playback_map_version if active_session.baseline_snapshot_id else None
+            baseline_snapshot = self._repository.get_snapshot(active_session.baseline_snapshot_id) if active_session.baseline_snapshot_id else None
+            composition_manifest_id = baseline_snapshot.composition_manifest_id if baseline_snapshot is not None else None
+            block_ids = baseline_snapshot.block_ids if baseline_snapshot is not None else []
+            playback_map_version = baseline_snapshot.playback_map_version if baseline_snapshot is not None else None
+            timeline_manifest_id = baseline_snapshot.timeline_manifest_id if baseline_snapshot is not None else None
         else:
             assert plan.composition_manifest is not None
+            assert plan.timeline_manifest is not None
+            self._write_timeline_manifest(plan.timeline_manifest)
             composition_manifest_id = plan.composition_manifest.composition_manifest_id
-            block_ids = plan.composition_manifest.block_ids
+            block_ids = [entry.block_asset_id for entry in plan.timeline_manifest.block_entries]
             playback_map_version = plan.document_version
+            timeline_manifest_id = plan.timeline_manifest.timeline_manifest_id
 
         head_snapshot = DocumentSnapshot(
             snapshot_id=f"head-{uuid4().hex}",
@@ -895,6 +928,7 @@ class RenderJobService:
             block_ids=block_ids,
             composition_manifest_id=composition_manifest_id,
             playback_map_version=playback_map_version,
+            timeline_manifest_id=timeline_manifest_id,
             segments=plan.segments,
             edges=plan.edges,
         )
@@ -910,6 +944,117 @@ class RenderJobService:
             )
         )
         self._persist_runtime_job(plan.job_id)
+
+    def _build_temporary_snapshot(self, plan: RenderPlan) -> DocumentSnapshot:
+        return DocumentSnapshot(
+            snapshot_id=f"staging-{plan.job_id}",
+            document_id=plan.document_id,
+            snapshot_kind="staging",
+            document_version=plan.document_version,
+            raw_text="".join(segment.raw_text for segment in plan.segments),
+            normalized_text="".join(segment.normalized_text for segment in plan.segments),
+            segment_ids=[segment.segment_id for segment in plan.segments],
+            edge_ids=[edge.edge_id for edge in plan.edges],
+            segments=[segment.model_copy(deep=True) for segment in plan.segments],
+            edges=[edge.model_copy(deep=True) for edge in plan.edges],
+        )
+
+    def _load_previous_timeline(self, plan: RenderPlan) -> TimelineManifest | None:
+        if plan.job_kind == "initialize":
+            return None
+        current_snapshot = self._session_service.get_head_snapshot()
+        if current_snapshot.timeline_manifest_id is None:
+            return None
+        return self._asset_store.load_timeline_manifest(current_snapshot.timeline_manifest_id)
+
+    def _resolve_reusable_block_asset_id(
+        self,
+        *,
+        previous_timeline: TimelineManifest | None,
+        block: RenderBlock,
+        block_segments: list[SegmentRenderAssetPayload],
+        block_edges: list[EditableEdge],
+        block_boundaries: list[BoundaryAssetPayload],
+    ) -> str | None:
+        if previous_timeline is None:
+            return None
+        segment_ids = list(block.segment_ids)
+        previous_entry = next(
+            (
+                entry
+                for entry in previous_timeline.block_entries
+                if entry.segment_ids == segment_ids
+            ),
+            None,
+        )
+        if previous_entry is None:
+            return None
+        try:
+            previous_asset = self._asset_store.load_block_asset(previous_entry.block_asset_id)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not self._block_matches_existing_asset(
+            existing_asset=previous_asset,
+            block_segments=block_segments,
+            block_edges=block_edges,
+            block_boundaries=block_boundaries,
+        ):
+            return None
+        return previous_entry.block_asset_id
+
+    def _block_matches_existing_asset(
+        self,
+        *,
+        existing_asset: BlockCompositionAssetPayload,
+        block_segments: list[SegmentRenderAssetPayload],
+        block_edges: list[EditableEdge],
+        block_boundaries: list[BoundaryAssetPayload],
+    ) -> bool:
+        if existing_asset.segment_ids != [segment.segment_id for segment in block_segments]:
+            return False
+        existing_segment_keys = [
+            (entry.segment_id, entry.render_asset_id)
+            for entry in existing_asset.segment_entries
+        ]
+        current_segment_keys = [
+            (segment.segment_id, segment.render_asset_id)
+            for segment in block_segments
+        ]
+        if existing_segment_keys != current_segment_keys:
+            return False
+
+        boundary_by_pair = {
+            (boundary.left_segment_id, boundary.right_segment_id): boundary for boundary in block_boundaries
+        }
+        existing_edge_keys = [
+            (
+                entry.edge_id,
+                entry.left_segment_id,
+                entry.right_segment_id,
+                entry.boundary_strategy,
+                entry.effective_boundary_strategy,
+                entry.pause_duration_seconds,
+                max(0, entry.boundary_sample_span[1] - entry.boundary_sample_span[0]),
+                max(0, entry.pause_sample_span[1] - entry.pause_sample_span[0]),
+            )
+            for entry in existing_asset.edge_entries
+        ]
+        current_edge_keys = []
+        for edge in block_edges:
+            boundary = boundary_by_pair.get((edge.left_segment_id, edge.right_segment_id))
+            current_edge_keys.append(
+                (
+                    edge.edge_id,
+                    edge.left_segment_id,
+                    edge.right_segment_id,
+                    edge.boundary_strategy,
+                    edge.effective_boundary_strategy or edge.boundary_strategy,
+                    edge.pause_duration_seconds,
+                    0 if boundary is None else boundary.boundary_sample_count,
+                    int(self._composition_builder._sample_rate * edge.pause_duration_seconds),
+                )
+            )
+        return existing_edge_keys == current_edge_keys
 
     def _build_segments(
         self,
@@ -958,12 +1103,13 @@ class RenderJobService:
         return edges
 
     def _write_segment_asset(self, job_id: str, asset: SegmentRenderAssetPayload) -> None:
+        del job_id
         audio = np.concatenate([asset.left_margin_audio, asset.core_audio, asset.right_margin_audio]).astype(
             np.float32,
             copy=False,
         )
         wav_bytes = build_wav_bytes(self._composition_builder._sample_rate, float_audio_chunk_to_pcm16_bytes(audio))
-        self._asset_store.write_staging_bytes(job_id, f"segments/{asset.render_asset_id}/audio.wav", wav_bytes)
+        self._asset_store.write_formal_bytes_atomic(f"segments/{asset.render_asset_id}/audio.wav", wav_bytes)
         metadata = {
             "render_asset_id": asset.render_asset_id,
             "segment_id": asset.segment_id,
@@ -977,18 +1123,15 @@ class RenderJobService:
             "right_margin_sample_count": asset.right_margin_sample_count,
             "trace": asset.trace,
         }
-        self._asset_store.write_staging_bytes(
-            job_id,
-            f"segments/{asset.render_asset_id}/metadata.json",
-            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
+        self._asset_store.write_formal_json_atomic(f"segments/{asset.render_asset_id}/metadata.json", metadata)
 
     def _write_boundary_asset(self, job_id: str, asset: BoundaryAssetPayload) -> None:
+        del job_id
         wav_bytes = build_wav_bytes(
             self._composition_builder._sample_rate,
             float_audio_chunk_to_pcm16_bytes(asset.boundary_audio.astype(np.float32, copy=False)),
         )
-        self._asset_store.write_staging_bytes(job_id, f"boundaries/{asset.boundary_asset_id}/audio.wav", wav_bytes)
+        self._asset_store.write_formal_bytes_atomic(f"boundaries/{asset.boundary_asset_id}/audio.wav", wav_bytes)
         metadata = {
             "boundary_asset_id": asset.boundary_asset_id,
             "left_segment_id": asset.left_segment_id,
@@ -1000,20 +1143,18 @@ class RenderJobService:
             "boundary_sample_count": asset.boundary_sample_count,
             "trace": asset.trace,
         }
-        self._asset_store.write_staging_bytes(
-            job_id,
-            f"boundaries/{asset.boundary_asset_id}/metadata.json",
-            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
+        self._asset_store.write_formal_json_atomic(f"boundaries/{asset.boundary_asset_id}/metadata.json", metadata)
 
     def _write_block_asset(self, job_id: str, asset: BlockCompositionAssetPayload) -> None:
+        del job_id
         wav_bytes = build_wav_bytes(
             asset.sample_rate,
             float_audio_chunk_to_pcm16_bytes(asset.audio.astype(np.float32, copy=False)),
         )
-        self._asset_store.write_staging_bytes(job_id, f"blocks/{asset.block_id}/audio.wav", wav_bytes)
+        self._asset_store.write_formal_bytes_atomic(f"blocks/{asset.block_asset_id}/audio.wav", wav_bytes)
         metadata = {
             "block_id": asset.block_id,
+            "block_asset_id": asset.block_asset_id,
             "segment_ids": asset.segment_ids,
             "audio_sample_count": asset.audio_sample_count,
             "segment_entries": [
@@ -1021,15 +1162,33 @@ class RenderJobService:
                     "segment_id": entry.segment_id,
                     "audio_sample_span": list(entry.audio_sample_span),
                     "order_key": entry.order_key,
+                    "render_asset_id": entry.render_asset_id,
                 }
                 for entry in asset.segment_entries
             ],
+            "edge_entries": [
+                {
+                    "edge_id": entry.edge_id,
+                    "left_segment_id": entry.left_segment_id,
+                    "right_segment_id": entry.right_segment_id,
+                    "boundary_strategy": entry.boundary_strategy,
+                    "effective_boundary_strategy": entry.effective_boundary_strategy,
+                    "pause_duration_seconds": entry.pause_duration_seconds,
+                    "boundary_sample_span": list(entry.boundary_sample_span),
+                    "pause_sample_span": list(entry.pause_sample_span),
+                }
+                for entry in asset.edge_entries
+            ],
+            "marker_entries": [
+                {
+                    "marker_type": entry.marker_type,
+                    "sample": entry.sample,
+                    "related_id": entry.related_id,
+                }
+                for entry in asset.marker_entries
+            ],
         }
-        self._asset_store.write_staging_bytes(
-            job_id,
-            f"blocks/{asset.block_id}/metadata.json",
-            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
+        self._asset_store.write_formal_json_atomic(f"blocks/{asset.block_asset_id}/metadata.json", metadata)
 
     def _write_composition_asset(self, job_id: str, manifest: DocumentCompositionManifestPayload) -> None:
         audio = manifest.audio if manifest.audio is not None else np.zeros(0, dtype=np.float32)
@@ -1041,6 +1200,12 @@ class RenderJobService:
             job_id,
             f"compositions/{manifest.composition_manifest_id}/audio.wav",
             wav_bytes,
+        )
+
+    def _write_timeline_manifest(self, manifest: TimelineManifest) -> None:
+        self._asset_store.write_formal_json_atomic(
+            f"timelines/{manifest.timeline_manifest_id}/manifest.json",
+            manifest.model_dump(mode="json"),
         )
 
     def _ensure_not_cancelled(self, job_id: str) -> None:

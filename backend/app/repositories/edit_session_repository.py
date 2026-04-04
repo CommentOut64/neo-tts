@@ -27,6 +27,7 @@ class ReferencedAssetGraph:
     boundary_asset_ids: set[str] = field(default_factory=set)
     block_ids: set[str] = field(default_factory=set)
     composition_manifest_ids: set[str] = field(default_factory=set)
+    timeline_manifest_ids: set[str] = field(default_factory=set)
     preview_asset_ids: set[str] = field(default_factory=set)
 
     def as_relative_asset_paths(self) -> set[str]:
@@ -35,6 +36,7 @@ class ReferencedAssetGraph:
             *{f"boundaries/{asset_id}" for asset_id in self.boundary_asset_ids},
             *{f"blocks/{asset_id}" for asset_id in self.block_ids},
             *{f"compositions/{asset_id}" for asset_id in self.composition_manifest_ids},
+            *{f"timelines/{asset_id}" for asset_id in self.timeline_manifest_ids},
             *{f"previews/{asset_id}" for asset_id in self.preview_asset_ids},
         }
 
@@ -338,6 +340,8 @@ class EditSessionRepository:
             graph.block_ids.update(snapshot.block_ids)
             if snapshot.composition_manifest_id is not None:
                 graph.composition_manifest_ids.add(snapshot.composition_manifest_id)
+            if snapshot.timeline_manifest_id is not None:
+                graph.timeline_manifest_ids.add(snapshot.timeline_manifest_id)
 
             segments_by_id = {segment.segment_id: segment for segment in snapshot.segments}
             for segment in snapshot.segments:

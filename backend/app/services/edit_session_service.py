@@ -14,6 +14,7 @@ from backend.app.schemas.edit_session import (
     EditableSegmentResponse,
     InitializeEditSessionRequest,
     RenderJobResponse,
+    TimelineManifest,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
@@ -91,6 +92,7 @@ class EditSessionService:
             else None
         )
         current_snapshot = head_snapshot or baseline_snapshot
+        timeline = self._load_timeline(current_snapshot)
         active_job = (
             self._runtime.get_job(active_session.active_job_id)
             if active_session.active_job_id is not None
@@ -127,10 +129,11 @@ class EditSessionService:
                 if current_snapshot is not None
                 else 0
             ),
-            ready_block_count=len(current_snapshot.block_ids) if current_snapshot is not None else 0,
+            ready_block_count=len(timeline.block_entries) if timeline is not None else (len(current_snapshot.block_ids) if current_snapshot is not None else 0),
+            timeline_manifest_id=current_snapshot.timeline_manifest_id if current_snapshot is not None else None,
             composition_manifest_id=composition_manifest_id,
             composition_audio_url=composition_audio_url,
-            playable_sample_span=(
+            playable_sample_span=timeline.playable_sample_span if timeline is not None else (
                 (
                     0,
                     max(
@@ -169,8 +172,20 @@ class EditSessionService:
             raise EditSessionNotFoundError("Head snapshot not found.")
         return snapshot
 
+    def get_timeline(self) -> TimelineManifest:
+        snapshot = self.get_head_snapshot()
+        timeline = self._load_timeline(snapshot)
+        if timeline is None:
+            raise EditSessionNotFoundError("Timeline manifest not found.")
+        return timeline
+
     def require_active_session(self) -> ActiveDocumentState:
         active_session = self._repository.get_active_session()
         if active_session is None:
             raise EditSessionNotFoundError("Active edit session not found.")
         return active_session
+
+    def _load_timeline(self, snapshot: DocumentSnapshot | None) -> TimelineManifest | None:
+        if snapshot is None or snapshot.timeline_manifest_id is None:
+            return None
+        return self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)

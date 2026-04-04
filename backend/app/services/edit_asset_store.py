@@ -3,20 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import io
+import os
 from pathlib import Path
 import shutil
 import wave
 import json
+from uuid import uuid4
 
 import numpy as np
 from pydantic import TypeAdapter
 
 from backend.app.inference.editable_types import (
     BlockCompositionAssetPayload,
+    BlockMarkerEntry,
     BoundaryAssetPayload,
+    EdgeCompositionEntry,
     SegmentCompositionEntry,
     SegmentRenderAssetPayload,
 )
+from backend.app.schemas.edit_session import TimelineManifest
 
 
 @dataclass(frozen=True)
@@ -50,11 +55,14 @@ class EditAssetStore:
     def boundary_asset_path(self, boundary_asset_id: str) -> Path:
         return self._formal_root / "boundaries" / self._validate_leaf_name(boundary_asset_id)
 
-    def block_asset_path(self, block_id: str) -> Path:
-        return self._formal_root / "blocks" / self._validate_leaf_name(block_id)
+    def block_asset_path(self, block_asset_id: str) -> Path:
+        return self._formal_root / "blocks" / self._validate_leaf_name(block_asset_id)
 
     def composition_asset_path(self, composition_manifest_id: str) -> Path:
         return self._formal_root / "compositions" / self._validate_leaf_name(composition_manifest_id)
+
+    def timeline_manifest_path(self, timeline_manifest_id: str) -> Path:
+        return self._formal_root / "timelines" / self._validate_leaf_name(timeline_manifest_id)
 
     def preview_asset_path(self, preview_asset_id: str) -> Path:
         return self._formal_root / "previews" / self._validate_leaf_name(preview_asset_id)
@@ -240,6 +248,20 @@ class EditAssetStore:
         target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return target_path
 
+    def write_formal_bytes_atomic(self, relative_path: str, payload: bytes) -> Path:
+        target_path = (self._formal_root / self._validate_relative_path(relative_path)).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_name(f"{target_path.name}.tmp-{uuid4().hex}")
+        temp_path.write_bytes(payload)
+        os.replace(temp_path, target_path)
+        return target_path
+
+    def write_formal_json_atomic(self, relative_path: str, payload: dict) -> Path:
+        return self.write_formal_bytes_atomic(
+            relative_path,
+            json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+
     def load_segment_asset(self, render_asset_id: str) -> SegmentRenderAssetPayload:
         asset_dir = self.segment_asset_path(render_asset_id)
         metadata = self._read_json(asset_dir / "metadata.json")
@@ -285,8 +307,8 @@ class EditAssetStore:
             trace=metadata.get("trace"),
         )
 
-    def load_block_asset(self, block_id: str) -> BlockCompositionAssetPayload:
-        asset_dir = self.block_asset_path(block_id)
+    def load_block_asset(self, block_asset_id: str) -> BlockCompositionAssetPayload:
+        asset_dir = self.block_asset_path(block_asset_id)
         metadata = self._read_json(asset_dir / "metadata.json")
         sample_rate, audio = self.load_wav_asset(asset_dir)
         segment_entries = [
@@ -294,17 +316,46 @@ class EditAssetStore:
                 segment_id=entry["segment_id"],
                 audio_sample_span=tuple(entry["audio_sample_span"]),
                 order_key=int(entry.get("order_key", 0)),
+                render_asset_id=entry.get("render_asset_id"),
             )
             for entry in metadata["segment_entries"]
         ]
+        edge_entries = [
+            EdgeCompositionEntry(
+                edge_id=entry["edge_id"],
+                left_segment_id=entry["left_segment_id"],
+                right_segment_id=entry["right_segment_id"],
+                boundary_strategy=entry["boundary_strategy"],
+                effective_boundary_strategy=entry.get("effective_boundary_strategy", entry["boundary_strategy"]),
+                pause_duration_seconds=float(entry.get("pause_duration_seconds", 0.0)),
+                boundary_sample_span=tuple(entry.get("boundary_sample_span", (0, 0))),
+                pause_sample_span=tuple(entry.get("pause_sample_span", (0, 0))),
+            )
+            for entry in metadata.get("edge_entries", [])
+        ]
+        marker_entries = [
+            BlockMarkerEntry(
+                marker_type=entry["marker_type"],
+                sample=int(entry["sample"]),
+                related_id=entry["related_id"],
+            )
+            for entry in metadata.get("marker_entries", [])
+        ]
         return BlockCompositionAssetPayload(
             block_id=metadata["block_id"],
+            block_asset_id=metadata.get("block_asset_id", metadata["block_id"]),
             segment_ids=list(metadata["segment_ids"]),
             sample_rate=sample_rate,
             audio=audio,
             audio_sample_count=int(metadata["audio_sample_count"]),
             segment_entries=segment_entries,
+            edge_entries=edge_entries,
+            marker_entries=marker_entries,
         )
+
+    def load_timeline_manifest(self, timeline_manifest_id: str) -> TimelineManifest:
+        asset_dir = self.timeline_manifest_path(timeline_manifest_id)
+        return TimelineManifest.model_validate(self._read_json(asset_dir / "manifest.json"))
 
     def load_wav_asset(self, asset_path: Path) -> tuple[int, np.ndarray]:
         wav_path = asset_path / "audio.wav"
