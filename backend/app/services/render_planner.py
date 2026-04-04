@@ -12,6 +12,9 @@ class TargetedRenderPlan:
     target_edge_ids: set[str] = field(default_factory=set)
     target_block_ids: set[str] = field(default_factory=set)
     compose_only: bool = False
+    earliest_changed_order_key: int | None = None
+    timeline_reflow_required: bool = False
+    change_reason: str | None = None
 
 
 class RenderPlanner:
@@ -32,6 +35,9 @@ class RenderPlanner:
             target_edge_ids=self._collect_touching_edge_ids(after_snapshot, {segment_id}),
             target_block_ids=self._collect_block_ids(after_snapshot, neighbor_segment_ids | {segment_id}),
             compose_only=False,
+            earliest_changed_order_key=self._segment_order_key(after_snapshot, segment_id),
+            timeline_reflow_required=True,
+            change_reason="segment_update",
         )
 
     def for_segment_insert(
@@ -48,6 +54,9 @@ class RenderPlanner:
             target_edge_ids=self._collect_touching_edge_ids(after_snapshot, {segment_id}),
             target_block_ids=self._collect_block_ids(after_snapshot, neighbor_segment_ids | {segment_id}),
             compose_only=False,
+            earliest_changed_order_key=self._segment_order_key(after_snapshot, segment_id),
+            timeline_reflow_required=True,
+            change_reason="segment_insert",
         )
 
     def for_segment_delete(
@@ -77,6 +86,12 @@ class RenderPlanner:
             target_edge_ids=target_edge_ids,
             target_block_ids=self._collect_block_ids(after_snapshot, affected_segment_ids),
             compose_only=False,
+            earliest_changed_order_key=min(
+                (self._segment_order_key(after_snapshot, segment_id) for segment_id in affected_segment_ids),
+                default=None,
+            ),
+            timeline_reflow_required=True,
+            change_reason="segment_delete",
         )
 
     def for_edge_update(
@@ -98,6 +113,12 @@ class RenderPlanner:
             target_edge_ids=set() if pause_only else {edge.edge_id},
             target_block_ids=self._collect_block_ids(after_snapshot, changed_segment_ids),
             compose_only=pause_only,
+            earliest_changed_order_key=min(
+                self._segment_order_key(after_snapshot, edge.left_segment_id),
+                self._segment_order_key(after_snapshot, edge.right_segment_id),
+            ),
+            timeline_reflow_required=True,
+            change_reason="edge_pause_update" if pause_only else "edge_boundary_update",
         )
 
     def for_segment_swap(
@@ -128,6 +149,41 @@ class RenderPlanner:
             target_edge_ids=changed_edges,
             target_block_ids=self._collect_block_ids(after_snapshot, changed_segment_ids),
             compose_only=False,
+            earliest_changed_order_key=min(
+                (self._segment_order_key(after_snapshot, segment_id) for segment_id in changed_segment_ids),
+                default=None,
+            ),
+            timeline_reflow_required=True,
+            change_reason="segment_swap",
+        )
+
+    def for_snapshot_change(
+        self,
+        *,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+        changed_segment_ids: set[str],
+        change_reason: str,
+        compose_only: bool = False,
+        target_edge_ids: set[str] | None = None,
+    ) -> TargetedRenderPlan:
+        del before_snapshot
+        effective_edge_ids = (
+            set(target_edge_ids)
+            if target_edge_ids is not None
+            else self._collect_touching_edge_ids(after_snapshot, changed_segment_ids)
+        )
+        return TargetedRenderPlan(
+            target_segment_ids=set(changed_segment_ids),
+            target_edge_ids=effective_edge_ids,
+            target_block_ids=self._collect_block_ids(after_snapshot, changed_segment_ids),
+            compose_only=compose_only,
+            earliest_changed_order_key=min(
+                (self._segment_order_key(after_snapshot, segment_id) for segment_id in changed_segment_ids),
+                default=None,
+            ),
+            timeline_reflow_required=True,
+            change_reason=change_reason,
         )
 
     def _collect_after_neighbor_segment_ids(self, snapshot: DocumentSnapshot, segment_id: str) -> set[str]:
@@ -150,3 +206,10 @@ class RenderPlanner:
     def _collect_block_ids(self, snapshot: DocumentSnapshot, segment_ids: set[str]) -> set[str]:
         blocks = self._block_planner.build_blocks(snapshot.segments)
         return self._block_planner.affected_blocks(changed_segment_ids=segment_ids, all_blocks=blocks)
+
+    @staticmethod
+    def _segment_order_key(snapshot: DocumentSnapshot, segment_id: str) -> int:
+        segment = next((item for item in snapshot.segments if item.segment_id == segment_id), None)
+        if segment is None:
+            raise LookupError(f"Segment '{segment_id}' not found in snapshot.")
+        return segment.order_key

@@ -13,12 +13,15 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
+    ResolvedRenderContext,
+    ResolvedVoiceBinding,
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
     build_render_asset_id,
     fingerprint_inference_config,
     split_segment_audio,
 )
+from backend.app.schemas.edit_session import InitializeEditSessionRequest
 
 def _ensure_gpt_sovits_import_paths() -> None:
     project_root = Path(__file__).resolve().parents[3]
@@ -303,18 +306,50 @@ class GPTSoVITSOptimizedInference:
             audio_16k = refer_audio
         return self.sv_model.compute_embedding3(audio_16k)
 
-    def build_reference_context(self, request) -> ReferenceContext:
-        if not request.reference_audio_path or not request.reference_text or not request.reference_language:
+    @staticmethod
+    def _coerce_resolved_context(
+        request_or_context: ResolvedRenderContext | InitializeEditSessionRequest,
+    ) -> ResolvedRenderContext:
+        if isinstance(request_or_context, ResolvedRenderContext):
+            return request_or_context
+        return ResolvedRenderContext(
+            voice_id=request_or_context.voice_id,
+            model_key=request_or_context.model_id,
+            reference_audio_path=request_or_context.reference_audio_path or "",
+            reference_text=request_or_context.reference_text or "",
+            reference_language=request_or_context.reference_language or "",
+            speed=request_or_context.speed,
+            top_k=request_or_context.top_k,
+            top_p=request_or_context.top_p,
+            temperature=request_or_context.temperature,
+            noise_scale=request_or_context.noise_scale,
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-initialize",
+                voice_id=request_or_context.voice_id,
+                model_key=request_or_context.model_id,
+            ),
+        )
+
+    def build_reference_context(
+        self,
+        request_or_context: ResolvedRenderContext | InitializeEditSessionRequest,
+    ) -> ReferenceContext:
+        resolved_context = self._coerce_resolved_context(request_or_context)
+        if (
+            not resolved_context.reference_audio_path
+            or not resolved_context.reference_text
+            or not resolved_context.reference_language
+        ):
             raise ValueError("Editable inference requires reference_audio_path, reference_text and reference_language.")
 
-        reference_audio_path = self._resolve_reference_audio_path(request.reference_audio_path)
-        reference_text = ensure_sentence_end(request.reference_text, request.reference_language)
+        reference_audio_path = self._resolve_reference_audio_path(resolved_context.reference_audio_path)
+        reference_text = ensure_sentence_end(resolved_context.reference_text, resolved_context.reference_language)
         inference_config = {
-            "speed": request.speed,
-            "top_k": request.top_k,
-            "top_p": request.top_p,
-            "temperature": request.temperature,
-            "noise_scale": request.noise_scale,
+            "speed": resolved_context.speed,
+            "top_k": resolved_context.top_k,
+            "top_p": resolved_context.top_p,
+            "temperature": resolved_context.temperature,
+            "noise_scale": resolved_context.noise_scale,
             "margin_frame_count": 6,
             "boundary_overlap_frame_count": 6,
             "boundary_padding_frame_count": 4,
@@ -326,12 +361,12 @@ class GPTSoVITSOptimizedInference:
         speaker_embedding = self._compute_reference_speaker_embedding(refer_audio)
 
         return ReferenceContext(
-            reference_context_id=f"{request.voice_id}:{fingerprint[:12]}",
-            voice_id=request.voice_id,
-            model_id=request.model_id,
+            reference_context_id=f"{resolved_context.voice_id}:{fingerprint[:12]}",
+            voice_id=resolved_context.voice_id,
+            model_id=resolved_context.model_key,
             reference_audio_path=reference_audio_path,
             reference_text=reference_text,
-            reference_language=request.reference_language,
+            reference_language=resolved_context.reference_language,
             reference_semantic_tokens=prompt_semantic.detach().cpu().numpy(),
             reference_spectrogram=refer_spec,
             reference_speaker_embedding=speaker_embedding,
@@ -429,6 +464,28 @@ class GPTSoVITSOptimizedInference:
         edge,
         context: ReferenceContext,
     ) -> BoundaryAssetPayload:
+        effective_boundary_strategy = getattr(edge, "effective_boundary_strategy", None) or edge.boundary_strategy
+        if effective_boundary_strategy == "crossfade_only":
+            boundary_audio = self._build_crossfade_only_boundary_audio(left_asset, right_asset)
+            return BoundaryAssetPayload(
+                boundary_asset_id=build_boundary_asset_id(
+                    left_segment_id=edge.left_segment_id,
+                    left_render_version=left_asset.render_version,
+                    right_segment_id=edge.right_segment_id,
+                    right_render_version=right_asset.render_version,
+                    edge_version=edge.edge_version,
+                    boundary_strategy=effective_boundary_strategy,
+                ),
+                left_segment_id=edge.left_segment_id,
+                left_render_version=left_asset.render_version,
+                right_segment_id=edge.right_segment_id,
+                right_render_version=right_asset.render_version,
+                edge_version=edge.edge_version,
+                boundary_strategy=effective_boundary_strategy,
+                boundary_sample_count=int(boundary_audio.shape[-1]),
+                boundary_audio=boundary_audio,
+                trace={"boundary_kind": "crossfade_only"},
+            )
         if left_asset.trace is None or "right_margin_frames" not in left_asset.trace:
             raise ValueError("Left segment asset does not contain right_margin_frames for boundary rendering.")
 
@@ -463,18 +520,40 @@ class GPTSoVITSOptimizedInference:
                 right_segment_id=edge.right_segment_id,
                 right_render_version=right_asset.render_version,
                 edge_version=edge.edge_version,
-                boundary_strategy=edge.boundary_strategy,
+                boundary_strategy=effective_boundary_strategy,
             ),
             left_segment_id=edge.left_segment_id,
             left_render_version=left_asset.render_version,
             right_segment_id=edge.right_segment_id,
             right_render_version=right_asset.render_version,
             edge_version=edge.edge_version,
-            boundary_strategy=edge.boundary_strategy,
+            boundary_strategy=effective_boundary_strategy,
             boundary_sample_count=int(boundary_np.shape[-1]),
             boundary_audio=boundary_np,
             trace=merged_trace,
         )
+
+    @staticmethod
+    def _build_crossfade_only_boundary_audio(
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+    ) -> np.ndarray:
+        left_margin = left_asset.right_margin_audio.astype(np.float32, copy=False)
+        right_margin = right_asset.left_margin_audio.astype(np.float32, copy=False)
+        if left_margin.size == 0:
+            return right_margin.copy()
+        if right_margin.size == 0:
+            return left_margin.copy()
+
+        overlap = min(int(left_margin.size), int(right_margin.size))
+        prefix = left_margin[:-overlap]
+        suffix = right_margin[overlap:]
+        theta = np.linspace(0.0, np.pi / 2.0, overlap, endpoint=True, dtype=np.float32)
+        crossfaded = (np.cos(theta) * left_margin[-overlap:] + np.sin(theta) * right_margin[:overlap]).astype(
+            np.float32,
+            copy=False,
+        )
+        return np.concatenate([prefix, crossfaded, suffix]).astype(np.float32, copy=False)
 
     def infer(
         self,

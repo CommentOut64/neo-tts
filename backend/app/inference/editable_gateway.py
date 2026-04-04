@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from backend.app.inference.editable_types import BoundaryAssetPayload, ReferenceContext, SegmentRenderAssetPayload
-from backend.app.schemas.edit_session import EditableEdge, EditableSegment, InitializeEditSessionRequest
+from backend.app.inference.editable_types import (
+    BoundaryAssetPayload,
+    ReferenceContext,
+    ResolvedRenderContext,
+    SegmentRenderAssetPayload,
+)
+from backend.app.schemas.edit_session import EditableEdge, EditableSegment
 
 
 class EditableInferenceBackend(Protocol):
-    def build_reference_context(self, request: InitializeEditSessionRequest) -> ReferenceContext: ...
+    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext: ...
 
     def render_segment_base(
         self,
@@ -28,8 +33,8 @@ class EditableInferenceGateway:
     def __init__(self, backend: EditableInferenceBackend) -> None:
         self._backend = backend
 
-    def build_reference_context(self, request: InitializeEditSessionRequest) -> ReferenceContext:
-        return self._backend.build_reference_context(request)
+    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+        return self._backend.build_reference_context(resolved_context)
 
     def render_segment_base(
         self,

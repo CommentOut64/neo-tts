@@ -31,6 +31,12 @@ class SegmentMutationResult:
     segment: EditableSegment | None
 
 
+@dataclass(frozen=True)
+class SegmentBatchMutationResult:
+    snapshot: DocumentSnapshot
+    segments: list[EditableSegment]
+
+
 class SegmentService:
     def __init__(
         self,
@@ -63,6 +69,9 @@ class SegmentService:
         raw_text: str,
         text_language: str,
         inference_override: dict[str, object],
+        group_id: str | None = None,
+        render_profile_id: str | None = None,
+        voice_binding_id: str | None = None,
         snapshot: DocumentSnapshot | None = None,
     ) -> SegmentMutationResult:
         head_snapshot = snapshot or self._get_head_snapshot()
@@ -83,6 +92,9 @@ class SegmentService:
             text_language=text_language,
             render_version=1,
             render_asset_id=None,
+            group_id=group_id,
+            render_profile_id=render_profile_id,
+            voice_binding_id=voice_binding_id,
             inference_override=dict(inference_override),
             risk_flags=risk_flags,
             assembled_audio_span=None,
@@ -98,6 +110,56 @@ class SegmentService:
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
             segment=inserted_segment,
+        )
+
+    def append_segments(
+        self,
+        *,
+        after_segment_id: str | None,
+        raw_segments: list[str],
+        text_language: str,
+        group_id: str | None = None,
+        snapshot: DocumentSnapshot | None = None,
+    ) -> SegmentBatchMutationResult:
+        head_snapshot = snapshot or self._get_head_snapshot()
+        segments = [item.model_copy(deep=True) for item in head_snapshot.segments]
+        insert_index = len(segments)
+        if after_segment_id is not None:
+            insert_index = next((index + 1 for index, item in enumerate(segments) if item.segment_id == after_segment_id), -1)
+            if insert_index < 0:
+                raise EditSessionNotFoundError(f"Segment '{after_segment_id}' not found.")
+
+        inserted_segments: list[EditableSegment] = []
+        for raw_text in raw_segments:
+            normalized_text, risk_flags = self.describe_segment_text(raw_text)
+            inserted_segments.append(
+                EditableSegment(
+                    segment_id=f"segment-{uuid4().hex}",
+                    document_id=head_snapshot.document_id,
+                    order_key=0,
+                    raw_text=normalized_text,
+                    normalized_text=normalized_text,
+                    text_language=text_language,
+                    render_version=1,
+                    render_asset_id=None,
+                    group_id=group_id,
+                    inference_override={},
+                    risk_flags=risk_flags,
+                    assembled_audio_span=None,
+                )
+            )
+        segments[insert_index:insert_index] = inserted_segments
+        normalized_segments = self._normalize_segment_order(segments)
+        inserted_ids = {segment.segment_id for segment in inserted_segments}
+        normalized_inserted_segments = [segment for segment in normalized_segments if segment.segment_id in inserted_ids]
+        edges = self._edge_service.rebuild_neighbor_edges(
+            normalized_segments,
+            existing_edges=head_snapshot.edges,
+            default_pause_duration_seconds=self._default_pause_duration_seconds(),
+        )
+        return SegmentBatchMutationResult(
+            snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
+            segments=normalized_inserted_segments,
         )
 
     def update_segment(
@@ -146,6 +208,36 @@ class SegmentService:
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
             segment=updated_segment,
+        )
+
+    def update_segment_render_profile(
+        self,
+        segment_id: str,
+        render_profile_id: str | None,
+        *,
+        snapshot: DocumentSnapshot | None = None,
+    ) -> SegmentMutationResult:
+        return self._update_segment_binding_fields(
+            segment_id,
+            snapshot=snapshot,
+            render_profile_id=render_profile_id,
+            voice_binding_id=None,
+            update_voice_binding=False,
+        )
+
+    def update_segment_voice_binding(
+        self,
+        segment_id: str,
+        voice_binding_id: str | None,
+        *,
+        snapshot: DocumentSnapshot | None = None,
+    ) -> SegmentMutationResult:
+        return self._update_segment_binding_fields(
+            segment_id,
+            snapshot=snapshot,
+            render_profile_id=None,
+            voice_binding_id=voice_binding_id,
+            update_voice_binding=True,
         )
 
     def delete_segment(
@@ -215,6 +307,37 @@ class SegmentService:
         if active_session is None or active_session.initialize_request is None:
             return 0.3
         return active_session.initialize_request.pause_duration_seconds
+
+    def _update_segment_binding_fields(
+        self,
+        segment_id: str,
+        *,
+        snapshot: DocumentSnapshot | None,
+        render_profile_id: str | None,
+        voice_binding_id: str | None,
+        update_voice_binding: bool,
+    ) -> SegmentMutationResult:
+        head_snapshot = snapshot or self._get_head_snapshot()
+        segments = [item.model_copy(deep=True) for item in head_snapshot.segments]
+        target_index = next((index for index, item in enumerate(segments) if item.segment_id == segment_id), None)
+        if target_index is None:
+            raise EditSessionNotFoundError(f"Segment '{segment_id}' not found.")
+
+        updated_segment = segments[target_index].model_copy(deep=True)
+        if update_voice_binding:
+            updated_segment.voice_binding_id = voice_binding_id
+        else:
+            updated_segment.render_profile_id = render_profile_id
+        segments[target_index] = updated_segment
+        normalized_segments = self._normalize_segment_order(segments)
+        return SegmentMutationResult(
+            snapshot=self._clone_snapshot(
+                head_snapshot,
+                segments=normalized_segments,
+                edges=[edge.model_copy(deep=True) for edge in head_snapshot.edges],
+            ),
+            segment=next(item for item in normalized_segments if item.segment_id == segment_id),
+        )
 
     @staticmethod
     def _normalize_segment_order(segments: list[EditableSegment]) -> list[EditableSegment]:

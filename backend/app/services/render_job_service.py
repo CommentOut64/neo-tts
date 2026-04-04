@@ -23,6 +23,8 @@ from backend.app.inference.editable_types import (
     PreviewPayload,
     ReferenceContext,
     RenderBlock,
+    ResolvedRenderContext,
+    ResolvedVoiceBinding,
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
@@ -34,6 +36,7 @@ from backend.app.inference.text_processing import (
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
+    AppendSegmentsRequest,
     CompositionResponse,
     CreateSegmentRequest,
     DocumentSnapshot,
@@ -43,7 +46,10 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    RenderProfile,
+    RenderProfilePatchRequest,
     SegmentAssetResponse,
+    SegmentGroup,
     BoundaryAssetResponse,
     RenderJobAcceptedResponse,
     RenderJobRecord,
@@ -52,6 +58,8 @@ from backend.app.schemas.edit_session import (
     TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
+    VoiceBinding,
+    VoiceBindingPatchRequest,
 )
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.services.composition_builder import CompositionBuilder
@@ -63,6 +71,8 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
 from backend.app.services.segment_service import SegmentService
+from backend.app.services.segment_group_service import SegmentGroupService
+from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
 
 
@@ -80,16 +90,25 @@ class RenderPlan:
     context: ReferenceContext | None = None
     segments: list[EditableSegment] = field(default_factory=list)
     edges: list[EditableEdge] = field(default_factory=list)
+    groups: list[SegmentGroup] = field(default_factory=list)
+    render_profiles: list[RenderProfile] = field(default_factory=list)
+    voice_bindings: list[VoiceBinding] = field(default_factory=list)
+    default_render_profile_id: str | None = None
+    default_voice_binding_id: str | None = None
     segment_assets: dict[str, SegmentRenderAssetPayload] = field(default_factory=dict)
     boundary_assets: dict[str, BoundaryAssetPayload] = field(default_factory=dict)
     blocks: list[RenderBlock] = field(default_factory=list)
     block_assets: list[BlockCompositionAssetPayload] = field(default_factory=list)
     composition_manifest: DocumentCompositionManifestPayload | None = None
     timeline_manifest: TimelineManifest | None = None
+    context_cache: dict[str, ReferenceContext] = field(default_factory=dict)
     target_segment_ids: set[str] = field(default_factory=set)
     target_edge_ids: set[str] = field(default_factory=set)
     target_block_ids: set[str] = field(default_factory=set)
     compose_only: bool = False
+    earliest_changed_order_key: int | None = None
+    timeline_reflow_required: bool = False
+    change_reason: str | None = None
     skip_render: bool = False
     skip_compose: bool = False
 
@@ -103,6 +122,9 @@ class QueuedEditJob:
     target_edge_ids: set[str]
     target_block_ids: set[str]
     compose_only: bool = False
+    earliest_changed_order_key: int | None = None
+    timeline_reflow_required: bool = False
+    change_reason: str | None = None
     skip_render: bool = False
     skip_compose: bool = False
 
@@ -122,6 +144,7 @@ class RenderJobService:
         timeline_manifest_service: TimelineManifestService | None = None,
         segment_service: SegmentService | None = None,
         edge_service: EdgeService | None = None,
+        segment_group_service: SegmentGroupService | None = None,
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
         run_jobs_in_background: bool = True,
@@ -141,7 +164,9 @@ class RenderJobService:
             repository=repository,
             edge_service=self._edge_service,
         )
+        self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
+        self._render_config_resolver = RenderConfigResolver()
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._run_jobs_in_background = run_jobs_in_background
         self._preview_ttl_seconds = preview_ttl_seconds
@@ -200,6 +225,81 @@ class RenderJobService:
             job_kind="segment_insert",
             message=f"已创建插段作业，目标段 {mutation.segment.segment_id}。",
             snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
+    def create_append_job(self, body: AppendSegmentsRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_segment_id = body.after_segment_id
+        if after_segment_id is None and before_snapshot.segments:
+            after_segment_id = before_snapshot.segments[-1].segment_id
+
+        working_snapshot = before_snapshot
+        group_id: str | None = body.target_group_id
+        existing_group_segment_ids: set[str] = set()
+        if group_id is None and (body.group_render_profile is not None or body.group_voice_binding is not None):
+            group_mutation = self._segment_group_service.ensure_group(
+                snapshot=working_snapshot,
+                target_group_id=None,
+                created_by="append",
+            )
+            working_snapshot = group_mutation.snapshot
+            group_id = group_mutation.group.group_id
+        elif group_id is not None:
+            group_mutation = self._segment_group_service.ensure_group(
+                snapshot=working_snapshot,
+                target_group_id=group_id,
+                created_by="append",
+            )
+            working_snapshot = group_mutation.snapshot
+            existing_group_segment_ids = set(group_mutation.group.segment_ids)
+
+        group_config_changed = body.group_render_profile is not None or body.group_voice_binding is not None
+        if group_id is not None and body.group_render_profile is not None:
+            working_snapshot = self._segment_group_service.update_group_render_profile(
+                group_id,
+                body.group_render_profile,
+                snapshot=working_snapshot,
+            ).snapshot
+        if group_id is not None and body.group_voice_binding is not None:
+            working_snapshot = self._segment_group_service.update_group_voice_binding(
+                group_id,
+                body.group_voice_binding,
+                snapshot=working_snapshot,
+            ).snapshot
+
+        raw_segments = self._split_raw_segments(body.raw_text, segment_boundary_mode=body.segment_boundary_mode)
+        mutation = self._segment_service.append_segments(
+            after_segment_id=after_segment_id,
+            raw_segments=raw_segments,
+            text_language=body.text_language,
+            group_id=group_id,
+            snapshot=working_snapshot,
+        )
+        if group_id is not None:
+            mutation_snapshot = self._segment_group_service.attach_segments(
+                snapshot=mutation.snapshot,
+                group_id=group_id,
+                segment_ids=[segment.segment_id for segment in mutation.segments],
+            ).snapshot
+        else:
+            mutation_snapshot = mutation.snapshot
+        rerender_existing_segment_ids = existing_group_segment_ids if group_config_changed else set()
+        marked_snapshot = self._mark_segments_for_rerender(
+            snapshot=mutation_snapshot,
+            segment_ids=rerender_existing_segment_ids,
+        )
+        changed_segment_ids = {segment.segment_id for segment in mutation.segments} | rerender_existing_segment_ids
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=marked_snapshot,
+            changed_segment_ids=changed_segment_ids,
+            change_reason="append",
+        )
+        return self._enqueue_edit_job(
+            job_kind="append",
+            message=f"已创建追加作业，新增 {len(mutation.segments)} 个目标段。",
+            snapshot=marked_snapshot,
             impact=impact,
         )
 
@@ -266,6 +366,116 @@ class RenderJobService:
             message=f"已创建边更新作业，目标边 {edge_id}。",
             snapshot=mutation.snapshot,
             impact=impact,
+        )
+
+    def create_patch_session_render_profile_job(self, patch: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_session_render_profile(patch, snapshot=before_snapshot)
+        return self._enqueue_configuration_job(
+            job_kind="session_render_profile_patch",
+            message="已创建会话级渲染参数更新作业。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="session_render_profile_patch",
+        )
+
+    def create_patch_group_render_profile_job(
+        self,
+        group_id: str,
+        patch: RenderProfilePatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_group_render_profile(
+            group_id,
+            patch,
+            snapshot=before_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="group_render_profile_patch",
+            message=f"已创建分组渲染参数更新作业，目标分组 {group_id}。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="group_render_profile_patch",
+        )
+
+    def create_patch_segment_render_profile_job(
+        self,
+        segment_id: str,
+        patch: RenderProfilePatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, profile = self._segment_group_service.create_render_profile(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=patch,
+            base_profile_id=self._resolve_segment_assigned_render_profile_id(before_snapshot, segment_id),
+        )
+        after_snapshot = self._segment_service.update_segment_render_profile(
+            segment_id,
+            profile.render_profile_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="segment_render_profile_patch",
+            message=f"已创建段级渲染参数更新作业，目标段 {segment_id}。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="segment_render_profile_patch",
+        )
+
+    def create_patch_session_voice_binding_job(self, patch: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        return self._enqueue_configuration_job(
+            job_kind="session_voice_binding_patch",
+            message="已创建会话级 voice/model 绑定更新作业。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="session_voice_binding_patch",
+        )
+
+    def create_patch_group_voice_binding_job(
+        self,
+        group_id: str,
+        patch: VoiceBindingPatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_group_voice_binding(
+            group_id,
+            patch,
+            snapshot=before_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="group_voice_binding_patch",
+            message=f"已创建分组 voice/model 绑定更新作业，目标分组 {group_id}。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="group_voice_binding_patch",
+        )
+
+    def create_patch_segment_voice_binding_job(
+        self,
+        segment_id: str,
+        patch: VoiceBindingPatchRequest,
+    ) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, binding = self._segment_group_service.create_voice_binding(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=patch,
+            base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
+        after_snapshot = self._segment_service.update_segment_voice_binding(
+            segment_id,
+            binding.voice_binding_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._enqueue_configuration_job(
+            job_kind="segment_voice_binding_patch",
+            message=f"已创建段级 voice/model 绑定更新作业，目标段 {segment_id}。",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            change_reason="segment_voice_binding_patch",
         )
 
     def create_restore_baseline_job(self) -> RenderJobAcceptedResponse:
@@ -350,10 +560,18 @@ class RenderJobService:
             document_version=queued_job.snapshot.document_version,
             segments=[segment.model_copy(deep=True) for segment in queued_job.snapshot.segments],
             edges=[edge.model_copy(deep=True) for edge in queued_job.snapshot.edges],
+            groups=[group.model_copy(deep=True) for group in queued_job.snapshot.groups],
+            render_profiles=[profile.model_copy(deep=True) for profile in queued_job.snapshot.render_profiles],
+            voice_bindings=[binding.model_copy(deep=True) for binding in queued_job.snapshot.voice_bindings],
+            default_render_profile_id=queued_job.snapshot.default_render_profile_id,
+            default_voice_binding_id=queued_job.snapshot.default_voice_binding_id,
             target_segment_ids=set(queued_job.target_segment_ids),
             target_edge_ids=set(queued_job.target_edge_ids),
             target_block_ids=set(queued_job.target_block_ids),
             compose_only=queued_job.compose_only,
+            earliest_changed_order_key=queued_job.earliest_changed_order_key,
+            timeline_reflow_required=queued_job.timeline_reflow_required,
+            change_reason=queued_job.change_reason,
             skip_render=queued_job.skip_render,
             skip_compose=queued_job.skip_compose,
         )
@@ -584,7 +802,12 @@ class RenderJobService:
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备参考上下文。")
-        plan.context = self._gateway.build_reference_context(plan.request)
+        plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
+        default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
+        plan.render_profiles = [default_render_profile]
+        plan.voice_bindings = [default_voice_binding]
+        plan.default_render_profile_id = default_render_profile.render_profile_id
+        plan.default_voice_binding_id = default_voice_binding.voice_binding_id
         segments = self._split_raw_segments(
             plan.request.raw_text,
             segment_boundary_mode=plan.request.segment_boundary_mode,
@@ -605,11 +828,6 @@ class RenderJobService:
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
-        requires_reference_context = bool(plan.target_segment_ids) or (
-            bool(plan.target_edge_ids) and plan.job_kind != "segment_swap"
-        )
-        if not plan.skip_render and not plan.compose_only and requires_reference_context:
-            plan.context = self._gateway.build_reference_context(plan.request)
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.target_segment_ids) or len(plan.segments),
@@ -646,13 +864,20 @@ class RenderJobService:
                 message=f"已完成第 {index}/{total_segments} 段渲染。",
             )
 
+        config_snapshot = self._build_temporary_snapshot(plan)
         for edge in plan.edges:
             self._ensure_not_cancelled(plan.job_id)
             left_asset = plan.segment_assets[edge.left_segment_id]
             right_asset = plan.segment_assets[edge.right_segment_id]
-            boundary_asset = self._gateway.render_boundary_asset(left_asset, right_asset, edge, plan.context)
+            resolved_edge = self._render_config_resolver.resolve_edge(snapshot=config_snapshot, edge_id=edge.edge_id)
+            boundary_asset = self._gateway.render_boundary_asset(
+                left_asset,
+                right_asset,
+                edge.model_copy(update={"boundary_strategy": resolved_edge.effective_boundary_strategy}),
+                plan.context,
+            )
             plan.boundary_assets[edge.edge_id] = boundary_asset
-            edge.effective_boundary_strategy = edge.boundary_strategy
+            edge.effective_boundary_strategy = resolved_edge.effective_boundary_strategy
             edge.boundary_sample_count = boundary_asset.boundary_sample_count
             edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
             self._write_boundary_asset(plan.job_id, boundary_asset)
@@ -665,14 +890,14 @@ class RenderJobService:
         if not plan.compose_only:
             self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在重渲染受影响资产。")
 
+        config_snapshot = self._build_temporary_snapshot(plan)
         target_total = max(1, len(plan.target_segment_ids))
         completed_targets = 0
         for segment in plan.segments:
             self._ensure_not_cancelled(plan.job_id)
             if segment.segment_id in plan.target_segment_ids:
-                if plan.context is None:
-                    raise SnapshotStateError("Reference context is required for segment re-render.")
-                asset = self._gateway.render_segment_base(segment, plan.context)
+                context = self._get_segment_context(plan=plan, snapshot=config_snapshot, segment=segment)
+                asset = self._gateway.render_segment_base(segment, context)
                 segment.render_asset_id = asset.render_asset_id
                 segment.assembled_audio_span = (0, asset.audio_sample_count)
                 segment.render_status = "ready"
@@ -698,13 +923,27 @@ class RenderJobService:
             self._ensure_not_cancelled(plan.job_id)
             left_asset = plan.segment_assets[edge.left_segment_id]
             right_asset = plan.segment_assets[edge.right_segment_id]
+            resolved_edge = self._render_config_resolver.resolve_edge(snapshot=config_snapshot, edge_id=edge.edge_id)
+            effective_boundary_strategy = resolved_edge.effective_boundary_strategy
             if edge.edge_id in plan.target_edge_ids:
                 if plan.job_kind == "segment_swap":
-                    boundary_asset = self._build_fallback_boundary_asset(left_asset, right_asset, edge)
+                    boundary_asset = self._build_fallback_boundary_asset(
+                        left_asset,
+                        right_asset,
+                        edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
+                    )
                 else:
-                    if plan.context is None:
-                        raise SnapshotStateError("Reference context is required for boundary re-render.")
-                    boundary_asset = self._gateway.render_boundary_asset(left_asset, right_asset, edge, plan.context)
+                    boundary_context = self._get_segment_context(
+                        plan=plan,
+                        snapshot=config_snapshot,
+                        segment=next(item for item in plan.segments if item.segment_id == edge.left_segment_id),
+                    )
+                    boundary_asset = self._gateway.render_boundary_asset(
+                        left_asset,
+                        right_asset,
+                        edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
+                        boundary_context,
+                    )
                 self._write_boundary_asset(plan.job_id, boundary_asset)
             else:
                 boundary_asset = self._asset_store.load_boundary_asset(
@@ -714,11 +953,11 @@ class RenderJobService:
                         right_segment_id=edge.right_segment_id,
                         right_render_version=right_asset.render_version,
                         edge_version=edge.edge_version,
-                        boundary_strategy=edge.boundary_strategy,
+                        boundary_strategy=effective_boundary_strategy,
                     )
                 )
             plan.boundary_assets[edge.edge_id] = boundary_asset
-            edge.effective_boundary_strategy = edge.boundary_strategy
+            edge.effective_boundary_strategy = effective_boundary_strategy
             edge.boundary_sample_count = boundary_asset.boundary_sample_count
             edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
         self._persist_runtime_job(plan.job_id)
@@ -769,7 +1008,16 @@ class RenderJobService:
         if plan.skip_compose:
             return
         self._ensure_not_cancelled(plan.job_id)
-        self._runtime.update_job(plan.job_id, status="composing", progress=0.7, message="正在装配 block 与文档音频。")
+        compose_message = "正在装配 block 与文档音频。"
+        if plan.timeline_reflow_required:
+            if plan.earliest_changed_order_key is not None:
+                compose_message = (
+                    f"正在装配 block 与文档音频，将从第 {plan.earliest_changed_order_key} 段起"
+                    f"按 {plan.change_reason or 'edit'} 重排时间线。"
+                )
+            else:
+                compose_message = f"正在装配 block 与文档音频，按 {plan.change_reason or 'edit'} 重排时间线。"
+        self._runtime.update_job(plan.job_id, status="composing", progress=0.7, message=compose_message)
         plan.blocks = self._block_planner.build_blocks(plan.segments)
         self._runtime.update_job(plan.job_id, total_block_count=len(plan.blocks))
         previous_timeline = self._load_previous_timeline(plan)
@@ -851,6 +1099,11 @@ class RenderJobService:
             "segment_ids": [segment.segment_id for segment in plan.segments],
             "edge_ids": [edge.edge_id for edge in plan.edges],
             "block_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
+            "groups": [group.model_copy(deep=True) for group in plan.groups],
+            "render_profiles": [profile.model_copy(deep=True) for profile in plan.render_profiles],
+            "voice_bindings": [binding.model_copy(deep=True) for binding in plan.voice_bindings],
+            "default_render_profile_id": plan.default_render_profile_id,
+            "default_voice_binding_id": plan.default_voice_binding_id,
             "composition_manifest_id": plan.composition_manifest.composition_manifest_id,
             "playback_map_version": plan.document_version,
             "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
@@ -926,6 +1179,11 @@ class RenderJobService:
             segment_ids=[segment.segment_id for segment in plan.segments],
             edge_ids=[edge.edge_id for edge in plan.edges],
             block_ids=block_ids,
+            groups=[group.model_copy(deep=True) for group in plan.groups],
+            render_profiles=[profile.model_copy(deep=True) for profile in plan.render_profiles],
+            voice_bindings=[binding.model_copy(deep=True) for binding in plan.voice_bindings],
+            default_render_profile_id=plan.default_render_profile_id,
+            default_voice_binding_id=plan.default_voice_binding_id,
             composition_manifest_id=composition_manifest_id,
             playback_map_version=playback_map_version,
             timeline_manifest_id=timeline_manifest_id,
@@ -955,6 +1213,11 @@ class RenderJobService:
             normalized_text="".join(segment.normalized_text for segment in plan.segments),
             segment_ids=[segment.segment_id for segment in plan.segments],
             edge_ids=[edge.edge_id for edge in plan.edges],
+            groups=[group.model_copy(deep=True) for group in plan.groups],
+            render_profiles=[profile.model_copy(deep=True) for profile in plan.render_profiles],
+            voice_bindings=[binding.model_copy(deep=True) for binding in plan.voice_bindings],
+            default_render_profile_id=plan.default_render_profile_id,
+            default_voice_binding_id=plan.default_voice_binding_id,
             segments=[segment.model_copy(deep=True) for segment in plan.segments],
             edges=[edge.model_copy(deep=True) for edge in plan.edges],
         )
@@ -1294,6 +1557,9 @@ class RenderJobService:
             target_edge_ids=set(impact.target_edge_ids),
             target_block_ids=set(impact.target_block_ids),
             compose_only=impact.compose_only,
+            earliest_changed_order_key=impact.earliest_changed_order_key,
+            timeline_reflow_required=impact.timeline_reflow_required,
+            change_reason=impact.change_reason,
             skip_render=skip_render,
             skip_compose=skip_compose,
         )
@@ -1328,6 +1594,185 @@ class RenderJobService:
             worker = threading.Thread(target=self.run_edit_job, args=(job.job_id,), daemon=True)
             worker.start()
         return RenderJobAcceptedResponse(job=self.get_job(job.job_id) or job)
+
+    def _enqueue_configuration_job(
+        self,
+        *,
+        job_kind: str,
+        message: str,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+        change_reason: str,
+    ) -> RenderJobAcceptedResponse:
+        if after_snapshot.document_version <= before_snapshot.document_version:
+            after_snapshot = after_snapshot.model_copy(
+                deep=True,
+                update={"document_version": before_snapshot.document_version + 1},
+            )
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+        marked_snapshot = self._mark_segments_for_rerender(
+            snapshot=after_snapshot,
+            segment_ids=changed_segment_ids,
+        )
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=marked_snapshot,
+            changed_segment_ids=changed_segment_ids,
+            change_reason=change_reason,
+        )
+        return self._enqueue_edit_job(
+            job_kind=job_kind,
+            message=message,
+            snapshot=marked_snapshot,
+            impact=impact,
+        )
+
+    def _collect_changed_segment_ids(
+        self,
+        *,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+    ) -> set[str]:
+        before_segments = {segment.segment_id for segment in before_snapshot.segments}
+        changed_segment_ids: set[str] = set()
+        for segment in after_snapshot.segments:
+            if segment.segment_id not in before_segments:
+                changed_segment_ids.add(segment.segment_id)
+                continue
+            before_resolved = self._render_config_resolver.resolve_segment(
+                snapshot=before_snapshot,
+                segment_id=segment.segment_id,
+            )
+            after_resolved = self._render_config_resolver.resolve_segment(
+                snapshot=after_snapshot,
+                segment_id=segment.segment_id,
+            )
+            if before_resolved.render_profile_fingerprint != after_resolved.render_profile_fingerprint:
+                changed_segment_ids.add(segment.segment_id)
+                continue
+            if before_resolved.model_cache_key != after_resolved.model_cache_key:
+                changed_segment_ids.add(segment.segment_id)
+        return changed_segment_ids
+
+    @staticmethod
+    def _mark_segments_for_rerender(*, snapshot: DocumentSnapshot, segment_ids: set[str]) -> DocumentSnapshot:
+        if not segment_ids:
+            return snapshot
+        next_segments: list[EditableSegment] = []
+        for segment in snapshot.segments:
+            if segment.segment_id not in segment_ids:
+                next_segments.append(segment.model_copy(deep=True))
+                continue
+            next_segments.append(
+                segment.model_copy(
+                    deep=True,
+                    update={
+                        "render_version": segment.render_version + 1,
+                        "render_asset_id": None,
+                        "assembled_audio_span": None,
+                        "effective_duration_samples": None,
+                        "render_status": "pending",
+                    },
+                )
+            )
+        return snapshot.model_copy(deep=True, update={"segments": next_segments})
+
+    def _resolve_segment_assigned_render_profile_id(self, snapshot: DocumentSnapshot, segment_id: str) -> str | None:
+        return self._render_config_resolver.resolve_segment(
+            snapshot=snapshot,
+            segment_id=segment_id,
+        ).render_profile.render_profile_id
+
+    def _resolve_segment_assigned_voice_binding_id(self, snapshot: DocumentSnapshot, segment_id: str) -> str | None:
+        return self._render_config_resolver.resolve_segment(
+            snapshot=snapshot,
+            segment_id=segment_id,
+        ).voice_binding.voice_binding_id
+
+    @staticmethod
+    def _build_default_configuration(request: InitializeEditSessionRequest) -> tuple[RenderProfile, VoiceBinding]:
+        render_profile = RenderProfile(
+            render_profile_id=f"profile-session-{uuid4().hex}",
+            scope="session",
+            name="session-default",
+            speed=request.speed,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            temperature=request.temperature,
+            noise_scale=request.noise_scale,
+            reference_audio_path=request.reference_audio_path,
+            reference_text=request.reference_text,
+            reference_language=request.reference_language,
+        )
+        voice_binding = VoiceBinding(
+            voice_binding_id=f"binding-session-{uuid4().hex}",
+            scope="session",
+            voice_id=request.voice_id,
+            model_key=request.model_id,
+        )
+        return render_profile, voice_binding
+
+    def _get_segment_context(
+        self,
+        *,
+        plan: RenderPlan,
+        snapshot: DocumentSnapshot,
+        segment: EditableSegment,
+    ) -> ReferenceContext:
+        resolved = self._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)
+        cache_key = f"{resolved.model_cache_key}:{resolved.render_profile_fingerprint}"
+        context = plan.context_cache.get(cache_key)
+        if context is not None:
+            return context
+        resolved_context = ResolvedRenderContext(
+            voice_id=resolved.voice_binding.voice_id,
+            model_key=resolved.voice_binding.model_key,
+            reference_audio_path=resolved.render_profile.reference_audio_path or plan.request.reference_audio_path or "",
+            reference_text=resolved.render_profile.reference_text or plan.request.reference_text or "",
+            reference_language=resolved.render_profile.reference_language or plan.request.reference_language or "",
+            speed=resolved.render_profile.speed,
+            top_k=resolved.render_profile.top_k,
+            top_p=resolved.render_profile.top_p,
+            temperature=resolved.render_profile.temperature,
+            noise_scale=resolved.render_profile.noise_scale,
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id=resolved.voice_binding.voice_binding_id,
+                voice_id=resolved.voice_binding.voice_id,
+                model_key=resolved.voice_binding.model_key,
+                gpt_path=resolved.voice_binding.gpt_path,
+                sovits_path=resolved.voice_binding.sovits_path,
+                speaker_meta=dict(resolved.voice_binding.speaker_meta),
+            ),
+            render_profile_id=resolved.render_profile.render_profile_id,
+            render_profile_fingerprint=resolved.render_profile_fingerprint,
+        )
+        context = self._gateway.build_reference_context(resolved_context)
+        plan.context_cache[cache_key] = context
+        return context
+
+    @staticmethod
+    def _build_resolved_context_from_request(request: InitializeEditSessionRequest) -> ResolvedRenderContext:
+        return ResolvedRenderContext(
+            voice_id=request.voice_id,
+            model_key=request.model_id,
+            reference_audio_path=request.reference_audio_path or "",
+            reference_text=request.reference_text or "",
+            reference_language=request.reference_language or "",
+            speed=request.speed,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            temperature=request.temperature,
+            noise_scale=request.noise_scale,
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-session-default",
+                voice_id=request.voice_id,
+                model_key=request.model_id,
+            ),
+            render_profile_id="profile-session-default",
+        )
 
     @staticmethod
     def _require_initialize_request(active_session: ActiveDocumentState) -> InitializeEditSessionRequest:
