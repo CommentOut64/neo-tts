@@ -48,6 +48,7 @@ export function usePlayback() {
 
   function fetchBlock(audioUrl: string): Promise<AudioBuffer> {
     if (blockCache.has(audioUrl)) {
+      console.debug("[playback] reusing cached block", { audioUrl });
       return blockCache.get(audioUrl)!.promise;
     }
 
@@ -58,13 +59,35 @@ export function usePlayback() {
 
     const promise = fetch(fullUrl)
       .then((res) => {
-        if (!res.ok) throw new Error("Fetch block audio failed");
+        console.info("[playback] fetched block response", {
+          audioUrl,
+          fullUrl,
+          status: res.status,
+          contentType: res.headers.get("content-type"),
+        });
+        if (!res.ok) {
+          throw new Error(`Fetch block audio failed: ${res.status}`);
+        }
         return res.arrayBuffer();
       })
-      .then((ab) => getAudioCtx().decodeAudioData(ab))
+      .then((ab) => {
+        console.info("[playback] decoding block", {
+          audioUrl,
+          byteLength: ab.byteLength,
+          timelineSampleRate: sampleRate.value,
+        });
+        return getAudioCtx().decodeAudioData(ab);
+      })
       .then((buffer) => {
         const entry = blockCache.get(audioUrl);
         if (entry) entry.buffer = buffer;
+        console.info("[playback] decoded block", {
+          audioUrl,
+          sampleRate: buffer.sampleRate,
+          length: buffer.length,
+          durationSeconds: buffer.duration,
+          numberOfChannels: buffer.numberOfChannels,
+        });
         return buffer;
       });
 
@@ -151,6 +174,15 @@ export function usePlayback() {
     const block = blockEntries.value[blockIndex];
 
     try {
+      console.info("[playback] scheduling block", {
+        blockIndex,
+        blockAssetId: block.block_asset_id,
+        audioUrl: block.audio_url,
+        startSample: block.start_sample,
+        endSample: block.end_sample,
+        offsetSamplesInBlock,
+        totalSamples: totalSamples.value,
+      });
       const buffer = await fetchBlock(block.audio_url);
       // Check if we are still playing and haven't seeked away
       if (!isPlaying.value) return;
@@ -173,6 +205,15 @@ export function usePlayback() {
       source.buffer = buffer;
       source.connect(ctx.destination);
       source.start(startCtxTime, initialBufferOffset);
+      console.info("[playback] block started", {
+        blockIndex,
+        blockAssetId: block.block_asset_id,
+        contextSampleRate: ctx.sampleRate,
+        bufferSampleRate: buffer.sampleRate,
+        bufferDurationSeconds: buffer.duration,
+        startCtxTime,
+        initialBufferOffset,
+      });
 
       activeNodes.push({ node: source, blockIndex });
 
@@ -214,18 +255,40 @@ export function usePlayback() {
         };
       }
     } catch (e) {
-      console.error("Failed to schedule block", e);
+      console.error("[playback] failed to schedule block", {
+        error: e,
+        blockIndex,
+        blockAssetId: block.block_asset_id,
+        audioUrl: block.audio_url,
+        totalSamples: totalSamples.value,
+        timelineSampleRate: sampleRate.value,
+      });
       pause();
     }
   }
 
   function play() {
-    if (!canMutate.value || isPlaying.value) return;
+    if (!canMutate.value || isPlaying.value) {
+      console.warn("[playback] play ignored", {
+        canMutate: canMutate.value,
+        isPlaying: isPlaying.value,
+        totalSamples: totalSamples.value,
+        blockCount: blockEntries.value.length,
+      });
+      return;
+    }
 
     if (currentSample.value >= totalSamples.value) {
       currentSample.value = 0;
     }
 
+    console.info("[playback] play requested", {
+      currentSample: currentSample.value,
+      totalSamples: totalSamples.value,
+      sampleRate: sampleRate.value,
+      blockCount: blockEntries.value.length,
+      timelineManifestLoaded: timelineManifest.value !== null,
+    });
     isPlaying.value = true;
     const ctx = getAudioCtx();
     startTimeSeconds = ctx.currentTime;
@@ -240,6 +303,11 @@ export function usePlayback() {
       if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
       animationFrameId = requestAnimationFrame(updatePlayState);
     } else {
+      console.warn("[playback] no block found for current sample", {
+        currentSample: currentSample.value,
+        totalSamples: totalSamples.value,
+        blockCount: blockEntries.value.length,
+      });
       isPlaying.value = false;
     }
   }

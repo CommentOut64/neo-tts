@@ -1,6 +1,17 @@
+const STRONG_BOUNDARY_PUNCTUATION = /[。！？.!?]$/
+
+export function ensureTerminalStrongBoundary(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return ''
+  }
+  return STRONG_BOUNDARY_PUNCTUATION.test(trimmed) ? trimmed : `${trimmed}。`
+}
+
 export function computeSegments(text: string): string[] {
-  if (!text) return []
-  const blocks = text.split(/\n+/)
+  const normalizedText = ensureTerminalStrongBoundary(text)
+  if (!normalizedText) return []
+  const blocks = normalizedText.split(/\n+/)
   const result: string[] = []
   
   const puncRegex = /([。！？.!?]+)/

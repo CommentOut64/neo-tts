@@ -1,9 +1,10 @@
 import { ref } from 'vue'
-import { getSnapshot, getTimeline, initializeSession, listSegments } from '@/api/editSession'
+import { deleteSession, getSnapshot, getTimeline, initializeSession, listSegments } from '@/api/editSession'
 import type { EditSessionSnapshot, TimelineManifest, RenderJobSummary, InitializeRequest, RenderJobResponse, EditableSegment } from '@/types/editSession'
 import { useRuntimeState } from './useRuntimeState'
 import { extractStatusCode } from '@/api/requestSupport'
 import { useTimeline } from "./useTimeline";
+import { useInputDraft } from './useInputDraft'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
 
 const sessionStatus = ref<SessionStatus>('empty')
@@ -18,6 +19,33 @@ const segmentsLoaded = ref(false)
 
 export function useEditSession() {
   const runtimeState = useRuntimeState()
+  const inputDraft = useInputDraft()
+
+  function getSnapshotHeadText(data: EditSessionSnapshot | null): string | null {
+    if (!data || data.segments.length === 0) {
+      return null
+    }
+    return data.segments.map((segment) => segment.raw_text).join('')
+  }
+
+  function syncDraftRevisionFromSnapshot(data: EditSessionSnapshot) {
+    const sessionHeadText = getSnapshotHeadText(data)
+    if (!sessionHeadText) {
+      return
+    }
+
+    if (inputDraft.isEmpty.value) {
+      inputDraft.backfillFromSession(sessionHeadText)
+      sourceDraftRevision.value = inputDraft.draftRevision.value
+      inputDraft.markSentToSession(inputDraft.draftRevision.value)
+      return
+    }
+
+    if (inputDraft.text.value === sessionHeadText && sourceDraftRevision.value === null) {
+      sourceDraftRevision.value = inputDraft.draftRevision.value
+      inputDraft.markSentToSession(inputDraft.draftRevision.value)
+    }
+  }
 
   async function discoverSession() {
     try {
@@ -30,16 +58,19 @@ export function useEditSession() {
       if (data.session_status === 'initializing' && activeJob.value) {
         runtimeState.trackJob(activeJob.value.job_id)
       } else if (data.session_status === 'ready') {
+        syncDraftRevisionFromSnapshot(data)
         await refreshTimeline()
       } else {
         segments.value = []
         segmentsLoaded.value = false
+        sourceDraftRevision.value = null
       }
     } catch (err) {
       if (extractStatusCode(err) === 404) {
         sessionStatus.value = 'empty'
         segments.value = []
         segmentsLoaded.value = false
+        sourceDraftRevision.value = null
       } else {
         sessionStatus.value = 'failed'
       }
@@ -69,6 +100,9 @@ export function useEditSession() {
     if (sessionStatus.value !== 'ready') {
       segments.value = []
       segmentsLoaded.value = false
+      if (sessionStatus.value === 'empty') {
+        sourceDraftRevision.value = null
+      }
     }
   }
 
@@ -77,6 +111,16 @@ export function useEditSession() {
     const data = await getTimeline()
     timeline.value = data
     setTimeline(data);
+    console.info('[workspace] timeline refreshed', {
+      timelineManifestId: data.timeline_manifest_id,
+      documentId: data.document_id,
+      documentVersion: data.document_version,
+      sampleRate: data.sample_rate,
+      playableSampleSpan: data.playable_sample_span,
+      blockCount: data.block_entries.length,
+      segmentCount: data.segment_entries.length,
+      firstBlockAudioUrl: data.block_entries[0]?.audio_url ?? null,
+    })
     await loadAllSegments()
   }
 
@@ -103,6 +147,18 @@ export function useEditSession() {
     segmentsLoaded.value = true
   }
 
+  async function clearSession() {
+    await deleteSession()
+    sessionStatus.value = 'empty'
+    snapshot.value = null
+    timeline.value = null
+    documentVersion.value = null
+    activeJob.value = null
+    segments.value = []
+    segmentsLoaded.value = false
+    sourceDraftRevision.value = null
+  }
+
   return {
     sessionStatus,
     snapshot,
@@ -119,5 +175,6 @@ export function useEditSession() {
     refreshSnapshot,
     refreshTimeline,
     loadAllSegments,
+    clearSession,
   }
 }

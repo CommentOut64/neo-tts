@@ -27,8 +27,11 @@ export interface RenderJob extends RenderJobSummary {
 
 export interface EditSessionSnapshot {
   session_status: 'empty' | 'initializing' | 'ready' | 'failed'
+  document_id: string | null
   document_version: number | null
+  total_segment_count: number
   active_job: RenderJobSummary | null
+  segments: EditableSegment[]
 }
 
 export interface EditableSegment {
@@ -136,13 +139,17 @@ export interface TimelineMarkerEntry {
 }
 
 export interface TimelineManifest {
+  timeline_manifest_id: string;
+  document_id: string;
+  document_version: number;
   timeline_version: number;
   sample_rate: number;
-  total_samples: number;
+  playable_sample_span: [number, number];
   block_entries: TimelineBlockEntry[];
   segment_entries: TimelineSegmentEntry[];
   edge_entries: TimelineEdgeEntry[];
   markers: TimelineMarkerEntry[];
+  created_at?: string;
 }
 
 export type RenderJobEventType =
@@ -154,8 +161,6 @@ export type RenderJobEventType =
   | 'job_paused'
   | 'job_resumed'
   | 'job_cancelled_partial'
-  | 'job_completed'
-  | 'job_failed'
 
 export interface SegmentsInitializedPayload {
   document_id: string

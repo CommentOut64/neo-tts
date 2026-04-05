@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import type { Router } from 'vue-router'
 
 const text = ref<string>('')
 const draftRevision = ref<number>(0)
@@ -8,8 +9,8 @@ export function useInputDraft() {
   const hasUnsent = computed(() => draftRevision.value !== lastSentToSessionRevision.value)
   const isEmpty = computed(() => text.value.trim().length === 0)
 
-  function sendToWorkspace() {
-    // router setup
+  function sendToWorkspace(router: Router) {
+    return router.push('/workspace')
   }
 
   function markSentToSession(rev: number) {

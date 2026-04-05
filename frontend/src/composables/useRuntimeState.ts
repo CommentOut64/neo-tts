@@ -68,7 +68,7 @@ export function useRuntimeState() {
             seg.renderStatus = 'completed'
             seg.renderAssetId = compPayload.render_asset_id
           }
-        } else if (type === 'job_completed' || type === 'job_failed' || type === 'job_cancelled_partial') {
+        } else if (type === 'job_paused' || type === 'job_cancelled_partial') {
           void finishInitialRendering()
         }
       },

@@ -42,6 +42,25 @@ export async function listSegments(limit = 1000, cursor: number | null = null): 
   return data
 }
 
+export async function deleteSession(): Promise<void> {
+  await axios.delete('/v1/edit-session')
+}
+
+export async function updateSegment(
+  id: string,
+  updateData: {
+    raw_text?: string
+    text_language?: string
+    inference_override?: Record<string, unknown>
+  },
+): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    `/v1/edit-session/segments/${id}`,
+    updateData,
+  );
+  return unwrapAcceptedRenderJob(data);
+}
+
 export interface RenderJobEventHandlers {
   onEvent?: (type: RenderJobEventType, payload: any) => void
   onError?: (err: Event) => void
@@ -65,8 +84,6 @@ export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEvent
     'job_paused',
     'job_resumed',
     'job_cancelled_partial',
-    'job_completed',
-    'job_failed',
   ]
 
   const listeners = eventTypes.map((eventType) => {
@@ -106,4 +123,3 @@ export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse>
   const { data } = await axios.post<RenderJobResponse>('/v1/edit-session/render-jobs/' + jobId + '/resume')
   return data
 }
-

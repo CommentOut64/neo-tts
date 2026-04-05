@@ -12,7 +12,7 @@ export function useTimeline() {
     () => timelineManifest.value?.sample_rate || 24000,
   );
   const totalSamples = computed(
-    () => timelineManifest.value?.total_samples || 0,
+    () => timelineManifest.value?.playable_sample_span?.[1] || 0,
   );
   const blockEntries = computed(
     () => timelineManifest.value?.block_entries || [],

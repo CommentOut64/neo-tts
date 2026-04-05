@@ -1,4 +1,5 @@
 import type { InitializeRequest, RenderJobAcceptedResponse, RenderJobResponse } from '../types/editSession'
+import { ensureTerminalStrongBoundary } from '../utils/textSegmenter.ts'
 
 export interface WorkspaceInitializeDraft {
   text: string
@@ -20,12 +21,15 @@ export interface VoiceReferenceSource {
   refAudio?: string | null
 }
 
-const SUPPORTED_BOUNDARY_MODES = new Set(['raw_strong_punctuation', 'zh_period'])
+const BOUNDARY_MODE_BY_TEXT_SPLIT_METHOD: Record<string, 'raw_strong_punctuation' | 'zh_period'> = {
+  cut3: 'zh_period',
+  cut5: 'zh_period',
+  raw_strong_punctuation: 'raw_strong_punctuation',
+  zh_period: 'zh_period',
+}
 
 export function normalizeSegmentBoundaryMode(mode: string): 'raw_strong_punctuation' | 'zh_period' {
-  return SUPPORTED_BOUNDARY_MODES.has(mode)
-    ? (mode as 'raw_strong_punctuation' | 'zh_period')
-    : 'raw_strong_punctuation'
+  return BOUNDARY_MODE_BY_TEXT_SPLIT_METHOD[mode] ?? 'zh_period'
 }
 
 export function buildInitializeRequest(
@@ -33,7 +37,7 @@ export function buildInitializeRequest(
   voice?: VoiceReferenceSource,
 ): InitializeRequest {
   const payload: InitializeRequest = {
-    raw_text: draft.text,
+    raw_text: ensureTerminalStrongBoundary(draft.text),
     text_language: draft.textLang,
     voice_id: draft.voiceId,
     speed: draft.speed,
