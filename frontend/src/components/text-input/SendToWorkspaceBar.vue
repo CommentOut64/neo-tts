@@ -13,7 +13,7 @@ function handleHandoff() {
 </script>
 
 <template>
-  <div class="flex items-center justify-between bg-card rounded-card shadow-card py-3 px-5 border border-border/50">
+  <div class="flex items-center justify-between bg-card rounded-card shadow-card py-3 px-5">
     <div class="flex flex-col gap-0.5">
       <span class="text-[13px] font-semibold text-foreground">就绪</span>
       <span class="text-xs text-muted-fg">完成文本准备后，送入语音合成并初始化会话</span>

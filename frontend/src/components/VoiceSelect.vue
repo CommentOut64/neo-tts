@@ -14,9 +14,10 @@ const emit = defineEmits<{
 <template>
   <el-select
     :model-value="modelValue"
-    filterable
     placeholder="选择模型"
-    class="w-full"
+    size="default"
+    class="!w-min"
+    style="min-width: 280px;"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-option
