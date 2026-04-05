@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Plus, Microphone } from '@element-plus/icons-vue'
 import type { VoiceProfile } from '@/types/tts'
-import { deleteVoice, fetchVoices, fetchVoiceDetail, reloadVoices, uploadVoice } from '@/api/tts'
+import { fetchVoices, fetchVoiceDetail, reloadVoices, uploadVoice, deleteVoice } from '@/api/voices'
 import FileUploader from '@/components/FileUploader.vue'
 
 const voices = ref<VoiceProfile[]>([])
