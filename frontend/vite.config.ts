@@ -9,6 +9,15 @@ export default defineConfig({
   resolve: {
     alias: { "@": resolve(__dirname, "src") },
   },
+  optimizeDeps: {
+    include: [
+      '@nuxt/ui > prosemirror-state',
+      '@nuxt/ui > prosemirror-transform',
+      '@nuxt/ui > prosemirror-model',
+      '@nuxt/ui > prosemirror-view',
+      '@nuxt/ui > prosemirror-gapcursor',
+    ],
+  },
   server: {
     port: 5175,
     proxy: {

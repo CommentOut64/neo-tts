@@ -1,97 +1,499 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick } from "vue";
-import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
-// Assuming UEditor and UButton are auto-imported or globally registered by @nuxt/ui module
+import { ref, computed, watch, nextTick } from 'vue'
+import type { JSONContent } from '@tiptap/vue-3'
+import { useEditSession } from '@/composables/useEditSession'
+import { useWorkspaceLightEdit } from '@/composables/useWorkspaceLightEdit'
+import { usePlayback } from '@/composables/usePlayback'
+import { useSegmentSelection } from '@/composables/useSegmentSelection'
+import { useRuntimeState } from '@/composables/useRuntimeState'
+import { buildEditorExtensions } from './workspace-editor/buildEditorExtensions'
+import { segmentDecorationKey } from './workspace-editor/segmentDecoration'
 
-const props = defineProps<{
-  segmentId: string;
-  initialText: string;
-}>();
+// --- composable 实例 ---
+const editSession = useEditSession()
+const lightEdit = useWorkspaceLightEdit()
+const { currentSegmentId, seekToSegment, play } = usePlayback()
+const segmentSelection = useSegmentSelection()
+const runtimeState = useRuntimeState()
 
-const emit = defineEmits<{
-  (e: "exit-edit"): void;
-}>();
+// --- 清空会话 ---
+const isClearing = ref(false)
 
-const lightEdit = useWorkspaceLightEdit();
-
-// Local state
-const isEditing = ref(true);
-const editorContent = ref(props.initialText);
-
-// Initialize editor content with draft if it exists, otherwise initialText
-onMounted(() => {
-  const draft = lightEdit.getDraft(props.segmentId);
-  if (draft !== undefined) {
-    editorContent.value = draft;
+async function handleClearSession() {
+  if (isClearing.value) return
+  isClearing.value = true
+  try {
+    lightEdit.clearAll()
+    await editSession.clearSession()
+  } catch (err) {
+    console.error('清空会话失败', err)
+  } finally {
+    isClearing.value = false
   }
-});
+}
 
-// Auto-focus on mount by UEditor config or manual if required
+// --- 内部状态 ---
+const isEditing = ref(false)
+const segmentIds = ref<string[]>([])
+const docJson = ref<JSONContent>({ type: 'doc', content: [] })
 
-const handleComplete = () => {
-  const currentHtml = editorContent.value?.trim() || ""; // This assumes UEditor outputs HTML or text. For simplicity assumed text/HTML.
-  const cleanedText = currentHtml.replace(/<[^>]*>?/gm, ""); // Strip basic HTML tags if UEditor outputs rich text but we need plain string for backend
-  const finalText = currentHtml.includes("<") ? cleanedText : currentHtml;
+// UEditor ref（通过 expose 拿到 editor 实例）
+const editorRef = ref<{ editor: any } | null>(null)
 
-  if (finalText !== props.initialText) {
-    lightEdit.setDraft(props.segmentId, finalText);
+// 编辑态扩展
+const customExtensions = buildEditorExtensions()
+
+// --- 字数统计 ---
+const charCount = computed(() => {
+  const editor = editorRef.value?.editor
+  if (!editor) return 0
+  return editor.state.doc.textContent.length
+})
+
+// --- 模式标签 ---
+const modeLabel = computed(() => isEditing.value ? '编辑' : '展示')
+
+// --- 文档构建：ready 态 ---
+function rebuildDocFromSegments() {
+  if (isEditing.value) return // 编辑中不重建
+
+  const segs = editSession.segments.value
+  if (!editSession.segmentsLoaded.value || segs.length === 0) {
+    segmentIds.value = []
+    docJson.value = { type: 'doc', content: [{ type: 'paragraph', content: [] }] }
+    pushContentToEditor()
+    return
+  }
+
+  const sorted = [...segs].sort((a, b) => a.order_key - b.order_key)
+  segmentIds.value = sorted.map(s => s.segment_id)
+
+  docJson.value = {
+    type: 'doc',
+    content: sorted.map(s => {
+      const draft = lightEdit.getDraft(s.segment_id)
+      const text = draft !== undefined ? draft : s.raw_text
+      return {
+        type: 'paragraph',
+        content: text ? [{ type: 'text', text }] : []
+      }
+    })
+  }
+  pushContentToEditor()
+}
+
+// --- 文档构建：initializing 态（渐进显示） ---
+function rebuildDocFromProgressiveSegments() {
+  if (isEditing.value) return
+
+  const progressive = runtimeState.progressiveSegments.value
+  if (progressive.length === 0) {
+    segmentIds.value = []
+    docJson.value = { type: 'doc', content: [{ type: 'paragraph', content: [] }] }
+    pushContentToEditor()
+    return
+  }
+
+  segmentIds.value = progressive.map(s => s.segmentId)
+
+  docJson.value = {
+    type: 'doc',
+    content: progressive.map(s => ({
+      type: 'paragraph',
+      content: (s.renderStatus === 'completed' && s.rawText)
+        ? [{ type: 'text', text: s.rawText }]
+        : []
+    }))
+  }
+  pushContentToEditor()
+}
+
+/** 将 docJson 推送到 TipTap 编辑器（model-value 不会驱动已挂载编辑器重渲染） */
+function pushContentToEditor(editorOverride?: any) {
+  nextTick(() => {
+    const editor = editorOverride ?? editorRef.value?.editor
+    if (editor) {
+      editor.commands.setContent(docJson.value)
+      syncDecorationState(editor)
+    }
+  })
+}
+
+// --- 数据源 watcher ---
+
+// ready 态：segments 或 lightEdit 变化时重建
+watch(
+  [() => editSession.segments.value, () => editSession.segmentsLoaded.value, () => lightEdit.dirtySegmentIds.value],
+  () => {
+    if (editSession.sessionStatus.value === 'ready' && !runtimeState.isInitialRendering.value) {
+      rebuildDocFromSegments()
+    }
+  },
+  { deep: true, immediate: true }
+)
+
+// initializing 态：progressiveSegments 变化时重建
+watch(
+  () => runtimeState.progressiveSegments.value,
+  () => {
+    if (runtimeState.isInitialRendering.value) {
+      rebuildDocFromProgressiveSegments()
+    }
+  },
+  { deep: true, immediate: true }
+)
+
+// 状态切换：initializing → ready 时切换数据源
+watch(
+  () => editSession.sessionStatus.value,
+  (status) => {
+    if (status === 'ready' && !runtimeState.isInitialRendering.value) {
+      rebuildDocFromSegments()
+    }
+  }
+)
+
+watch(
+  () => runtimeState.isInitialRendering.value,
+  (isInitialRendering) => {
+    if (!isInitialRendering && editSession.sessionStatus.value === 'ready') {
+      rebuildDocFromSegments()
+    }
+  }
+)
+
+// --- Decoration 状态桥接 ---
+function syncDecorationState(editorOverride?: any) {
+  const editor = editorOverride ?? editorRef.value?.editor
+  if (!editor) return
+
+  editor.storage.segmentDecoration.state = {
+    segmentIds: segmentIds.value,
+    playingId: currentSegmentId.value,
+    selectedIds: segmentSelection.selectedSegmentIds.value,
+    dirtyIds: lightEdit.dirtySegmentIds.value,
+    isEditing: isEditing.value
+  }
+
+  // dispatch 空 tr 触发 decoration 重建
+  editor.view.dispatch(editor.state.tr.setMeta(segmentDecorationKey, true))
+}
+
+watch(
+  [currentSegmentId, () => segmentSelection.selectedSegmentIds.value, () => lightEdit.dirtySegmentIds.value, isEditing, segmentIds],
+  () => nextTick(syncDecorationState),
+  { deep: true }
+)
+
+// editor 创建后：立刻同步当前文档，避免首次渐进内容在 editor 实例可用前丢失。
+function onEditorCreate({ editor }: { editor: any }) {
+  editor.setEditable(isEditing.value)
+  pushContentToEditor(editor)
+}
+
+watch(
+  () => editorRef.value?.editor,
+  (editor) => {
+    if (!editor) return
+    editor.setEditable(isEditing.value)
+    pushContentToEditor(editor)
+  },
+  { immediate: true }
+)
+
+watch(
+  isEditing,
+  (editing) => {
+    const editor = editorRef.value?.editor
+    if (!editor) return
+    editor.setEditable(editing)
+    nextTick(() => syncDecorationState(editor))
+  }
+)
+
+watch(
+  docJson,
+  () => {
+    if (!isEditing.value) {
+      pushContentToEditor()
+    }
+  },
+  { deep: true }
+)
+
+// --- 展示态交互 ---
+
+function findSegmentIdFromEvent(event: MouseEvent): string | null {
+  const target = (event.target as HTMLElement).closest('[data-segment-id]')
+  if (!target) return null
+  return target.getAttribute('data-segment-id')
+}
+
+function onCanvasClick(event: MouseEvent) {
+  if (isEditing.value) return
+
+  const segId = findSegmentIdFromEvent(event)
+  if (!segId) {
+    segmentSelection.clearSelection()
+    return
+  }
+
+  const allIds = segmentIds.value
+
+  if (event.shiftKey) {
+    segmentSelection.rangeSelect(segId, allIds)
+  } else if (event.ctrlKey || event.metaKey) {
+    segmentSelection.toggleSelect(segId)
   } else {
-    // If user edited back to original, maybe clear it? But checking exact string is fine for now.
-    // lightEdit.clearDraft(props.segmentId)
-    // We strictly record the exact final HTML or text as the draft. But since this is "light edit", text is probably sufficient.
-    lightEdit.setDraft(props.segmentId, finalText);
+    segmentSelection.select(segId)
   }
 
-  isEditing.value = false;
-  emit("exit-edit");
-};
+  seekToSegment(segId)
+  play()
+}
 
-const handleCancel = () => {
-  isEditing.value = false;
-  emit("exit-edit");
-};
-
-const handleKeyDown = (e: KeyboardEvent) => {
-  if (e.key === "Escape") {
-    // Save draft and exit on Escape per plan "Esc或完成编辑退出"
-    handleComplete();
+function onCanvasDblClick(event: MouseEvent) {
+  if (isEditing.value) return
+  const segId = findSegmentIdFromEvent(event)
+  if (segId) {
+    enterEditMode()
   }
-};
+}
+
+// --- 编辑态管理 ---
+
+/** 获取后端事实态的段原始文本 */
+function getBackendSegmentText(segId: string): string {
+  const seg = editSession.segments.value.find(s => s.segment_id === segId)
+  return seg?.raw_text ?? ''
+}
+
+function enterEditMode() {
+  if (isEditing.value) return
+
+  segmentSelection.clearSelection()
+  isEditing.value = true
+
+  nextTick(() => {
+    const editor = editorRef.value?.editor
+    if (editor) {
+      editor.commands.focus()
+    }
+    syncDecorationState(editor)
+  })
+}
+
+function commitAndExitEdit() {
+  const editor = editorRef.value?.editor
+  if (!editor) {
+    isEditing.value = false
+    return
+  }
+
+  let paragraphIndex = 0
+  editor.state.doc.forEach((node: any) => {
+    if (node.type.name !== 'paragraph') return
+
+    const segId = segmentIds.value[paragraphIndex]
+    paragraphIndex++
+
+    if (!segId) return
+
+    const currentText = node.textContent
+    const backendText = getBackendSegmentText(segId)
+
+    if (currentText !== backendText) {
+      lightEdit.setDraft(segId, currentText)
+    } else {
+      lightEdit.clearDraft(segId)
+    }
+  })
+
+  isEditing.value = false
+  // 不需要 rebuildDocFromSegments，因为 watch dirtySegmentIds 会触发重建
+}
+
+function discardAndExitEdit() {
+  isEditing.value = false
+  rebuildDocFromSegments()
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isEditing.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    commitAndExitEdit()
+  }
+}
+
+// --- UEditor model 更新回调（编辑态下不重建，避免循环） ---
+function onDocUpdate(_value: any) {
+  // 编辑态下 UEditor 内部已更新 doc，不做额外处理
+  // 退出编辑态时统一从 editor.state.doc 读取
+}
 </script>
 
 <template>
-  <div
-    class="relative w-full border border-primary/40 rounded-md p-2 bg-background shadow-sm focus-within:border-primary/80 transition-colors z-10"
-    @keydown="handleKeyDown"
+  <section
+    class="flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border overflow-hidden flex flex-col"
+    @keydown="onKeyDown"
   >
-    <!-- Inline Nuxt UI Editor -->
-    <!-- UEditor component expected by @nuxt/ui -->
-    <UEditor
-      v-model="editorContent"
-      class="min-h-[40px] text-sm focus:outline-none"
-    />
-
-    <!-- Editor Action Footer -->
-    <div
-      class="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-border/50"
-    >
-      <button
-        type="button"
-        @click="handleCancel"
-        class="px-2 py-1 text-xs font-medium rounded text-muted-fg hover:bg-secondary/50 transition-colors"
-      >
-        取消
-      </button>
-      <button
-        type="button"
-        @click="handleComplete"
-        class="px-3 py-1 space-x-1 text-xs font-semibold rounded bg-blue-500 text-white hover:bg-blue-600 transition-colors shadow-sm"
-      >
+    <!-- 头部区 -->
+    <header class="px-4 py-3 border-b border-border/70 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2">
+        <h3 class="text-sm font-semibold text-foreground">会话正文</h3>
         <span
-          class="i-lucide-check w-3.5 h-3.5 inline-block align-text-bottom"
-        ></span>
-        <span>完成</span>
-      </button>
+          class="text-[10px] font-medium px-1.5 py-0.5 rounded"
+          :class="isEditing
+            ? 'bg-blue-500/10 text-blue-600 border border-blue-500/20'
+            : 'bg-muted text-muted-fg border border-border/50'"
+        >
+          {{ modeLabel }}
+        </span>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <!-- 字数统计 -->
+        <span class="text-xs text-muted-fg">{{ charCount }} 字</span>
+
+        <!-- 展示态：编辑按钮 + 清空按钮 -->
+        <button
+          v-if="!isEditing && segmentIds.length > 0"
+          class="px-2.5 py-1 text-xs font-medium rounded border border-border text-foreground hover:bg-secondary/50 transition-colors"
+          @click="enterEditMode"
+        >
+          编辑正文
+        </button>
+        <button
+          v-if="!isEditing"
+          :disabled="isClearing"
+          class="px-2.5 py-1 text-xs font-medium rounded border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
+          @click="handleClearSession"
+        >
+          {{ isClearing ? '清空中...' : '清空会话' }}
+        </button>
+
+        <!-- 编辑态：完成 / 放弃 -->
+        <template v-if="isEditing">
+          <button
+            class="px-2.5 py-1 text-xs font-medium rounded text-muted-fg hover:bg-secondary/50 transition-colors"
+            @click="discardAndExitEdit"
+          >
+            放弃
+          </button>
+          <button
+            class="px-2.5 py-1 text-xs font-medium rounded bg-blue-500 text-white hover:bg-blue-600 transition-colors shadow-sm"
+            @click="commitAndExitEdit"
+          >
+            完成编辑
+          </button>
+        </template>
+      </div>
+    </header>
+
+    <!-- 中部画布区 -->
+    <div
+      class="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+      @click="onCanvasClick"
+      @dblclick="onCanvasDblClick"
+    >
+      <UEditor
+        ref="editorRef"
+        :model-value="docJson"
+        content-type="json"
+        :on-create="onEditorCreate"
+        :extensions="customExtensions"
+        :starter-kit="{ heading: false, horizontalRule: false, blockquote: false, codeBlock: false }"
+        :placeholder="{ placeholder: '会话正文将在这里显示', mode: 'firstLine' }"
+        :ui="{ base: 'px-3 py-2 min-h-full' }"
+        class="w-full min-h-full"
+        @update:model-value="onDocUpdate"
+      >
+        <!-- 编辑态最小工具条（暂不启用） -->
+      </UEditor>
     </div>
-  </div>
+  </section>
 </template>
+
+<style scoped>
+/* === 连续正文画布基础 === */
+:deep(.ProseMirror) {
+  outline: none;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  color: var(--color-foreground);
+  min-height: 100%;
+  caret-color: var(--color-cta);
+}
+
+/* 编辑态文本选区 */
+:deep(.ProseMirror ::selection) {
+  background: rgba(59, 130, 246, 0.25);
+}
+html.dark :deep(.ProseMirror ::selection) {
+  background: rgba(96, 165, 250, 0.35);
+}
+
+/* === 段落块 === */
+:deep(.ProseMirror .segment-paragraph) {
+  padding: 6px 10px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+  transition: all 0.3s ease;
+  cursor: default;
+}
+
+/* 展示态 hover */
+:deep(.ProseMirror:not(.ProseMirror-focused) .segment-paragraph:hover) {
+  background: rgba(0, 0, 0, 0.03);
+}
+html.dark :deep(.ProseMirror:not(.ProseMirror-focused) .segment-paragraph:hover) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* === 脏段 — 橙色左边框 + 弱底色 === */
+:deep(.segment-dirty) {
+  border-left-color: var(--color-warning) !important;
+  background: rgba(245, 158, 11, 0.06);
+}
+html.dark :deep(.segment-dirty) {
+  background: rgba(245, 158, 11, 0.10);
+}
+
+/* === 播放高亮 — 采用文字高亮，引导阅读视线 === */
+:deep(.segment-playing) {
+  color: var(--color-accent) !important;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+/* === 选择高亮 — 采用背景高亮，暗示操作域 === */
+:deep(.segment-selected) {
+  background: rgba(59, 130, 246, 0.12) !important;
+}
+html.dark :deep(.segment-selected) {
+  background: rgba(96, 165, 250, 0.18) !important;
+}
+
+/* === 编辑态光标区域 === */
+:deep(.ProseMirror-focused .segment-paragraph) {
+  cursor: text;
+}
+
+/* === 移除 UEditor 默认大留白 === */
+:deep(.ProseMirror > *) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+:deep(.ProseMirror p) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* === placeholder === */
+:deep(.ProseMirror .is-editor-empty:first-child::before) {
+  color: var(--color-muted-fg);
+  opacity: 0.5;
+}
+</style>

@@ -63,11 +63,11 @@ export function useRuntimeState() {
           })).sort((a: any, b: any) => a.orderKey - b.orderKey)
         } else if (type === 'segment_completed') {
           const compPayload = payload as SegmentCompletedPayload
-          const seg = progressiveSegments.value.find(s => s.segmentId === compPayload.segment_id)
-          if (seg) {
-            seg.renderStatus = 'completed'
-            seg.renderAssetId = compPayload.render_asset_id
-          }
+          progressiveSegments.value = progressiveSegments.value.map(s =>
+            s.segmentId === compPayload.segment_id
+              ? { ...s, renderStatus: 'completed' as const, renderAssetId: compPayload.render_asset_id }
+              : s
+          )
         } else if (type === 'job_paused' || type === 'job_cancelled_partial') {
           void finishInitialRendering()
         }

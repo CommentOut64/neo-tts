@@ -1,7 +1,9 @@
+import { SegmentDecoration } from './segmentDecoration'
+
+/**
+ * 构建 WorkspaceEditorHost 专用的 TipTap 扩展列表。
+ * 当前只包含段级 Decoration 扩展。
+ */
 export function buildEditorExtensions() {
-  return [
-    // Add any specific tiptap extensions here if needed.
-    // For now, UEditor provides most required standard ones via StarterKit.
-    // E.g., we can filter out images, mentions, etc. if required.
-  ];
+  return [SegmentDecoration]
 }

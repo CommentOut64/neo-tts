@@ -103,17 +103,23 @@ function onSegmentDoubleClick(segmentId: string) {
         <!-- Display Mode -->
         <div
           v-else
-          class="p-3 rounded-lg border transition-colors cursor-pointer select-none"
+          class="p-3 rounded-lg border transition-all duration-300 ease-out cursor-pointer select-none"
           :class="{
-            'bg-accent/10 border-accent text-accent-fg': isCurrentSegment(seg.segment_id),
-            'bg-blue-500/20 border-blue-500 text-foreground': !isCurrentSegment(seg.segment_id) && isSelected(seg.segment_id),
-            'bg-background border-border text-foreground hover:border-accent/50': 
-              !isCurrentSegment(seg.segment_id) && !isSelected(seg.segment_id),
+            // 选中段：采用背景高亮（暗示可操作的作用域）
+            'bg-blue-500/15 border-blue-500/50': isSelected(seg.segment_id),
+            'bg-background border-border hover:border-blue-500/30': !isSelected(seg.segment_id),
+
+            // 播放段：采用文字高亮
+            'text-accent': isCurrentSegment(seg.segment_id),
+            'text-foreground': !isCurrentSegment(seg.segment_id),
           }"
           @click="onSegmentClick($event, seg.segment_id)"
           @dblclick="onSegmentDoubleClick(seg.segment_id)"
         >
-          <span class="text-base break-words">
+          <span 
+            class="break-words transition-all duration-300 ease-out inline-block"
+            :class="isCurrentSegment(seg.segment_id) ? 'text-[1.05rem] font-bold' : 'text-base font-normal'"
+          >
             {{ seg.displayText }}
           </span>
           <DirtySegmentBadge :is-dirty="seg.isDirty" />
