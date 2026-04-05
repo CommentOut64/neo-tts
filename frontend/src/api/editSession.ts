@@ -1,6 +1,7 @@
 import axios from './http'
 import type { 
   EditSessionSnapshot,
+  SegmentListResponse,
   InitializeRequest,
   RenderJobAcceptedResponse,
   RenderJobResponse,
@@ -28,6 +29,16 @@ export async function getRenderJob(jobId: string): Promise<RenderJob> {
 
 export async function getTimeline(): Promise<TimelineManifest> {
   const { data } = await axios.get<TimelineManifest>('/v1/edit-session/timeline')
+  return data
+}
+
+export async function listSegments(limit = 1000, cursor: number | null = null): Promise<SegmentListResponse> {
+  const { data } = await axios.get<SegmentListResponse>('/v1/edit-session/segments', {
+    params: {
+      limit,
+      ...(cursor === null ? {} : { cursor }),
+    },
+  })
   return data
 }
 
@@ -84,3 +95,15 @@ export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEvent
     source.close()
   }
 }
+
+export async function pauseRenderJob(jobId: string): Promise<void> {
+  await axios.post('/v1/edit-session/render-jobs/' + jobId + '/pause')
+}
+export async function cancelRenderJob(jobId: string): Promise<void> {
+  await axios.post('/v1/edit-session/render-jobs/' + jobId + '/cancel')
+}
+export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse> {
+  const { data } = await axios.post<RenderJobResponse>('/v1/edit-session/render-jobs/' + jobId + '/resume')
+  return data
+}
+

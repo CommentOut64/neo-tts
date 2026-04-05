@@ -6,7 +6,12 @@ import type {
   SegmentsInitializedPayload, 
   SegmentCompletedPayload
 } from '@/types/editSession'
-import { subscribeRenderJobEvents, getRenderJob } from '@/api/editSession'
+import {
+  subscribeRenderJobEvents,
+  getRenderJob,
+  pauseRenderJob,
+  cancelRenderJob,
+} from "@/api/editSession";
 
 export type SseConnectionState = 'connected' | 'disconnected' | 'polling'
 
@@ -138,6 +143,18 @@ export function useRuntimeState() {
     }
   }
 
+  async function pauseJob() {
+    if (currentRenderJob.value) {
+      await pauseRenderJob(currentRenderJob.value.job_id);
+    }
+  }
+
+  async function cancelJob() {
+    if (currentRenderJob.value) {
+      await cancelRenderJob(currentRenderJob.value.job_id);
+    }
+  }
+
   return {
     currentRenderJob,
     currentExportJob,
@@ -146,6 +163,8 @@ export function useRuntimeState() {
     isInitialRendering,
     lockedSegmentIds,
     canMutate,
-    trackJob
-  }
+    trackJob,
+    pauseJob,
+    cancelJob,
+  };
 }
