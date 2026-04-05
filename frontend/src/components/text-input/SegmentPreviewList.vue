@@ -20,12 +20,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full bg-card rounded-card shadow-card p-4 overflow-hidden border border-border/50">
+  <div class="flex flex-col bg-card rounded-card shadow-card p-4 overflow-hidden border border-border/50">
     <div class="flex items-center justify-between mb-3 shrink-0">
       <h3 class="text-[13px] font-semibold text-foreground">切分预览 (只读)</h3>
       <span class="text-xs text-muted-fg">{{ segments.length }} 段</span>
     </div>
-    <div class="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+    <div class="flex-1 min-h-0 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
       <div v-if="segments.length === 0" class="text-sm text-muted-fg/60 flex items-center justify-center h-full">
         暂无正文
       </div>

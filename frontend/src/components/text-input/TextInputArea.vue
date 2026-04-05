@@ -25,8 +25,8 @@ function handleInput(val: string) {
 </script>
 
 <template>
-  <div class="relative flex flex-col h-full bg-card rounded-card shadow-card p-4">
-    <div class="flex items-center justify-between mb-3">
+  <div class="flex flex-col h-full bg-card rounded-card shadow-card p-4">
+    <div class="flex items-center justify-between mb-3 shrink-0">
       <h3 class="text-[13px] font-semibold text-foreground">输入稿正文</h3>
       <el-button 
         type="danger" text size="small" :icon="Delete" 
@@ -39,13 +39,36 @@ function handleInput(val: string) {
     <el-input
       :model-value="draft.text.value"
       type="textarea"
-      class="flex-1 w-full text-foreground resize-none"
-      :input-style="{ height: '100%', resize: 'none' }"
+      class="flex-1 min-h-[220px] w-full text-input-textarea"
+      :input-style="{ resize: 'vertical' }"
       placeholder="从这里开始输入要合成的文本..."
       @update:model-value="handleInput"
     />
-    <div class="absolute bottom-6 right-6 text-xs text-muted-fg pointer-events-none bg-card px-1">
+    <div class="flex justify-end mt-2 shrink-0 text-xs text-muted-fg">
       {{ draft.text.value.length }} 字
     </div>
   </div>
 </template>
+
+<style scoped>
+.text-input-textarea :deep(.el-textarea__inner) {
+  height: 100%;
+  min-height: 100% !important;
+  padding: 16px 18px; /* 增加内边距，让文本远离左上角边界 */
+  line-height: 1.6;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  /* limit maximum resize so it doesn't push the bottom bar offscreen */
+  max-height: 50vh !important; 
+}
+.text-input-textarea :deep(.el-textarea__inner)::-webkit-scrollbar {
+  width: 8px;
+}
+.text-input-textarea :deep(.el-textarea__inner)::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 9999px;
+}
+.text-input-textarea :deep(.el-textarea__inner)::-webkit-scrollbar-track {
+  background: transparent;
+}
+</style>
