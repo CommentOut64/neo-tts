@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import queue
 import shutil
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
+from backend.app.core.logging import get_logger
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.inference.types import InferenceCancelledError
 from backend.app.repositories.voice_repository import VoiceRepository
@@ -33,6 +35,7 @@ from backend.app.services.voice_service import VoiceService
 
 
 router = APIRouter(prefix="/v1/audio", tags=["tts"])
+tts_logger = get_logger("tts_router")
 
 
 COMMON_ERROR_RESPONSES = {
@@ -186,7 +189,14 @@ def _build_params_cache_store(request: Request) -> InferenceParamsCacheStore:
     },
 )
 async def text_to_speech(request: Request) -> Response:
-    payload, temporary_files = await _parse_speech_request(request)
+    request_started = time.perf_counter()
+    tts_logger.info("收到 TTS 请求")
+    payload, temporary_files, parse_metrics = await _parse_speech_request(request)
+    tts_logger.info(
+        "TTS 请求体解析完成 content_type={} elapsed_ms={:.2f}",
+        request.headers.get("content-type", ""),
+        parse_metrics["total_ms"],
+    )
     runtime = _build_inference_runtime(request)
     task_id: str | None = None
     cleanup_after_return = True
@@ -204,12 +214,31 @@ async def text_to_speech(request: Request) -> Response:
             message="正在加载音色配置。",
         )
 
+        voice_started = time.perf_counter()
         voice_service = _build_voice_service(request)
         voice_profile = voice_service.get_voice(payload.voice)
+        tts_logger.debug(
+            "音色配置加载完成 voice={} elapsed_ms={:.2f}",
+            payload.voice,
+            (time.perf_counter() - voice_started) * 1000,
+        )
 
+        prepare_started = time.perf_counter()
         tts_service = TtsService()
         prepared_request = tts_service.prepare_request(payload, voice_profile)
+        tts_logger.debug(
+            "推理请求组装完成 voice={} elapsed_ms={:.2f}",
+            payload.voice,
+            (time.perf_counter() - prepare_started) * 1000,
+        )
+
+        engine_started = time.perf_counter()
         inference_engine = _build_inference_engine(request)
+        tts_logger.info(
+            "推理引擎准备完成 voice={} elapsed_ms={:.2f}",
+            payload.voice,
+            (time.perf_counter() - engine_started) * 1000,
+        )
 
         def should_cancel() -> bool:
             assert task_id is not None
@@ -236,6 +265,12 @@ async def text_to_speech(request: Request) -> Response:
             inference_engine=inference_engine,
             progress_callback=progress_callback,
             should_cancel=should_cancel,
+        )
+        tts_logger.info(
+            "推理流已创建 task_id={} sample_rate={} total_setup_ms={:.2f}",
+            task_id,
+            sample_rate,
+            (time.perf_counter() - request_started) * 1000,
         )
 
         if prepared_request.response_format == "wav":
@@ -264,6 +299,12 @@ async def text_to_speech(request: Request) -> Response:
                 result_id=saved_result.result_id,
                 message="推理完成，结果已缓存。",
             )
+            tts_logger.info(
+                "TTS 推理结果已缓存 task_id={} result_id={} total_ms={:.2f}",
+                task_id,
+                saved_result.result_id,
+                (time.perf_counter() - request_started) * 1000,
+            )
 
             response = Response(content=wav_bytes, media_type="audio/wav")
             response.headers["X-Inference-Task-Id"] = task_id
@@ -282,11 +323,18 @@ async def text_to_speech(request: Request) -> Response:
                     if chunk is not None and len(chunk) > 0:
                         yield float_audio_chunk_to_pcm16_bytes(chunk)
                 runtime.mark_completed(task_id=task_id, message="流式推理完成。")
+                tts_logger.info(
+                    "TTS 流式推理完成 task_id={} total_ms={:.2f}",
+                    task_id,
+                    (time.perf_counter() - request_started) * 1000,
+                )
             except InferenceCancelledError:
                 runtime.mark_cancelled(task_id=task_id, message="推理已被强制暂停。")
+                tts_logger.warning("TTS 流式推理被取消 task_id={}", task_id)
                 return
             except Exception as exc:
                 runtime.mark_failed(task_id=task_id, message=f"流式推理异常: {exc}")
+                tts_logger.exception("TTS 流式推理异常 task_id={}", task_id)
                 raise
             finally:
                 _cleanup_temporary_files(temporary_files)
@@ -297,24 +345,29 @@ async def text_to_speech(request: Request) -> Response:
     except LookupError as exc:
         if task_id is not None:
             runtime.mark_failed(task_id=task_id, message=str(exc))
+        tts_logger.warning("TTS 请求失败，音色不存在 voice={} detail={}", payload.voice, exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         if task_id is not None:
             runtime.mark_failed(task_id=task_id, message=str(exc))
+        tts_logger.warning("TTS 请求参数非法 voice={} detail={}", payload.voice, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         if task_id is not None:
             runtime.mark_failed(task_id=task_id, message=f"Inference assets not found: {exc}")
+        tts_logger.error("TTS 推理依赖缺失 voice={} detail={}", payload.voice, exc)
         raise HTTPException(status_code=422, detail=f"Inference assets not found: {exc}") from exc
     except InferenceCancelledError as exc:
         if task_id is not None:
             runtime.mark_cancelled(task_id=task_id, message=str(exc))
+        tts_logger.warning("TTS 推理被取消 task_id={} detail={}", task_id, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
         if task_id is not None:
             runtime.mark_failed(task_id=task_id, message=f"Inference initialization failed: {exc}")
+        tts_logger.exception("TTS 初始化失败 voice={} task_id={}", payload.voice, task_id)
         raise HTTPException(status_code=500, detail=f"Inference initialization failed: {exc}") from exc
     finally:
         if cleanup_after_return:
@@ -465,10 +518,13 @@ def _cleanup_temporary_reference_dirs(request: Request) -> int:
     return removed
 
 
-async def _parse_speech_request(request: Request) -> tuple[SpeechRequest, list[Path]]:
+async def _parse_speech_request(request: Request) -> tuple[SpeechRequest, list[Path], dict[str, float]]:
+    parse_started = time.perf_counter()
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
+        form_started = time.perf_counter()
         form = await request.form()
+        tts_logger.debug("multipart 表单解析完成 elapsed_ms={:.2f}", (time.perf_counter() - form_started) * 1000)
         payload: dict[str, str] = {}
         for key, value in form.items():
             if key == "ref_audio_file":
@@ -482,7 +538,14 @@ async def _parse_speech_request(request: Request) -> tuple[SpeechRequest, list[P
         if ref_audio_file is not None:
             filename = getattr(ref_audio_file, "filename", None)
             _validate_ref_audio_filename(filename)
+            read_started = time.perf_counter()
             raw_bytes = await ref_audio_file.read()
+            tts_logger.debug(
+                "自定义参考音频读取完成 filename={} size_bytes={} elapsed_ms={:.2f}",
+                filename or "reference.wav",
+                len(raw_bytes),
+                (time.perf_counter() - read_started) * 1000,
+            )
             temp_path = _store_temporary_reference_audio(
                 request=request,
                 filename=filename or "reference.wav",
@@ -492,13 +555,17 @@ async def _parse_speech_request(request: Request) -> tuple[SpeechRequest, list[P
             payload["ref_audio"] = str(temp_path)
 
         try:
-            return SpeechRequest.model_validate(payload), temporary_files
+            validated = SpeechRequest.model_validate(payload)
+            return validated, temporary_files, {"total_ms": (time.perf_counter() - parse_started) * 1000}
         except ValidationError as exc:
             raise RequestValidationError(exc.errors()) from exc
 
+    json_started = time.perf_counter()
     body = await request.json()
+    tts_logger.debug("JSON 请求体解析完成 elapsed_ms={:.2f}", (time.perf_counter() - json_started) * 1000)
     try:
-        return SpeechRequest.model_validate(body), []
+        validated = SpeechRequest.model_validate(body)
+        return validated, [], {"total_ms": (time.perf_counter() - parse_started) * 1000}
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
 
@@ -516,10 +583,17 @@ def _store_temporary_reference_audio(*, request: Request, filename: str, payload
     temp_dir = settings.managed_voices_dir
     if not temp_dir.is_absolute():
         temp_dir = settings.project_root / temp_dir
+    write_started = time.perf_counter()
     target_dir = temp_dir / "_temp_refs" / uuid4().hex
     target_dir.mkdir(parents=True, exist_ok=False)
     target_path = target_dir / Path(filename).name
     target_path.write_bytes(payload)
+    tts_logger.debug(
+        "临时参考音频写盘完成 path={} size_bytes={} elapsed_ms={:.2f}",
+        target_path,
+        len(payload),
+        (time.perf_counter() - write_started) * 1000,
+    )
     return target_path
 
 

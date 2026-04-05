@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from backend.app.core.logging import get_logger
 from backend.app.inference.types import ModelHandle
 
 if TYPE_CHECKING:
@@ -10,6 +12,7 @@ if TYPE_CHECKING:
 
 EngineFactory = Callable[[str, str, str, str], "GPTSoVITSOptimizedInference"]
 WarmupHook = Callable[[Any], None]
+model_cache_logger = get_logger("model_cache")
 
 
 class PyTorchModelCache:
@@ -37,6 +40,11 @@ class PyTorchModelCache:
         cache_key = f"{resolved_gpt_path}|{resolved_sovits_path}"
 
         if cache_key not in self._engines:
+            init_started = time.perf_counter()
+            model_cache_logger.info(
+                "模型缓存未命中，开始初始化引擎 cache_key={}",
+                cache_key,
+            )
             engine = self._engine_factory(
                 resolved_gpt_path,
                 resolved_sovits_path,
@@ -51,6 +59,13 @@ class PyTorchModelCache:
                 sovits_path=resolved_sovits_path,
                 engine=engine,
             )
+            model_cache_logger.info(
+                "模型引擎初始化完成 cache_key={} elapsed_ms={:.2f}",
+                cache_key,
+                (time.perf_counter() - init_started) * 1000,
+            )
+        else:
+            model_cache_logger.debug("模型缓存命中 cache_key={}", cache_key)
         return self._engines[cache_key]
 
     def _resolve_path(self, raw_path: str | Path) -> str:
@@ -61,11 +76,23 @@ class PyTorchModelCache:
 
     @staticmethod
     def _build_engine(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str) -> Any:
+        import_started = time.perf_counter()
+        model_cache_logger.info("开始导入 PyTorch 推理模块")
         from backend.app.inference import pytorch_optimized
+        model_cache_logger.info(
+            "PyTorch 推理模块导入完成 elapsed_ms={:.2f}",
+            (time.perf_counter() - import_started) * 1000,
+        )
 
-        return pytorch_optimized.GPTSoVITSOptimizedInference(
+        construct_started = time.perf_counter()
+        engine = pytorch_optimized.GPTSoVITSOptimizedInference(
             gpt_path,
             sovits_path,
             cnhubert_path,
             bert_path,
         )
+        model_cache_logger.info(
+            "PyTorch 推理实例构建完成 elapsed_ms={:.2f}",
+            (time.perf_counter() - construct_started) * 1000,
+        )
+        return engine

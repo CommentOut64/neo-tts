@@ -10,6 +10,7 @@ import torch
 import torchaudio
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 
+from backend.app.core.logging import get_logger
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
@@ -51,6 +52,7 @@ from backend.app.inference.types import InferenceCancelledError
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IS_HALF = DEVICE == "cuda"
+inference_logger = get_logger("pytorch_inference")
 
 
 class DictToAttrRecursive(dict):
@@ -126,21 +128,27 @@ class GPTSoVITSOptimizedInference:
     def __init__(self, gpt_path, sovits_path, cnhubert_base_path, bert_path):
         self.device = DEVICE
         self.is_half = IS_HALF
+        init_started = time.perf_counter()
 
-        print(f"Loading models on {DEVICE} (half precision: {IS_HALF})...")
+        inference_logger.info("Loading models on {} (half precision: {})", DEVICE, IS_HALF)
 
+        ssl_started = time.perf_counter()
         cnhubert.cnhubert_base_path = cnhubert_base_path
         self.ssl_model = cnhubert.get_model()
         if self.is_half:
             self.ssl_model = self.ssl_model.half()
         self.ssl_model = self.ssl_model.to(self.device)
+        inference_logger.info("CNHubert 加载完成 elapsed_ms={:.2f}", (time.perf_counter() - ssl_started) * 1000)
 
+        bert_started = time.perf_counter()
         self.tokenizer = AutoTokenizer.from_pretrained(bert_path)
         self.bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
         if self.is_half:
             self.bert_model = self.bert_model.half()
         self.bert_model = self.bert_model.to(self.device)
+        inference_logger.info("BERT 加载完成 elapsed_ms={:.2f}", (time.perf_counter() - bert_started) * 1000)
 
+        gpt_started = time.perf_counter()
         dict_s1 = torch.load(gpt_path, map_location="cpu")
         self.config = dict_s1["config"]
         self.t2s_model = Text2SemanticLightningModule(self.config, "****", is_train=False)
@@ -149,7 +157,9 @@ class GPTSoVITSOptimizedInference:
             self.t2s_model = self.t2s_model.half()
         self.t2s_model = self.t2s_model.to(self.device)
         self.t2s_model.eval()
+        inference_logger.info("GPT 权重加载完成 elapsed_ms={:.2f}", (time.perf_counter() - gpt_started) * 1000)
 
+        sovits_started = time.perf_counter()
         dict_s2 = load_sovits_new(sovits_path)
         self.hps = DictToAttrRecursive(dict_s2["config"])
         self.hps.model.semantic_frame_rate = "25hz"
@@ -161,7 +171,7 @@ class GPTSoVITSOptimizedInference:
             model_version = "v2Pro"
 
         self.hps.model.version = model_version
-        print(f"Detected SoVITS model version: {model_version}")
+        inference_logger.info("Detected SoVITS model version: {}", model_version)
 
         self.vq_model = SynthesizerTrn(
             self.hps.data.filter_length // 2 + 1,
@@ -175,18 +185,23 @@ class GPTSoVITSOptimizedInference:
         self.vq_model = self.vq_model.to(self.device)
         self.vq_model.eval()
         self.vq_model.load_state_dict(dict_s2["weight"], strict=False)
+        inference_logger.info("SoVITS 权重加载完成 elapsed_ms={:.2f}", (time.perf_counter() - sovits_started) * 1000)
 
+        sv_started = time.perf_counter()
         self.sv_model = SV(self.device, self.is_half)
+        inference_logger.info("声纹模型加载完成 elapsed_ms={:.2f}", (time.perf_counter() - sv_started) * 1000)
 
         self.warmup()
+        inference_logger.info("模型初始化完成 total_ms={:.2f}", (time.perf_counter() - init_started) * 1000)
 
     def warmup(self):
-        print("Warming up models (GPT, SoVITS, BERT, etc.)...")
+        warmup_started = time.perf_counter()
+        inference_logger.info("Warming up models (GPT, SoVITS, BERT, etc.)...")
         try:
             phones, _, _ = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
             _ = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
 
-            print("Warming up GPU kernels...")
+            inference_logger.info("Warming up GPU kernels...")
             with torch.no_grad():
                 dummy_prompt = torch.zeros((1, 1), dtype=torch.long, device=self.device)
                 dummy_bert = torch.zeros(
@@ -221,9 +236,9 @@ class GPTSoVITSOptimizedInference:
                 )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            print("Warmup completed.")
+            inference_logger.info("Warmup completed elapsed_ms={:.2f}", (time.perf_counter() - warmup_started) * 1000)
         except Exception as exc:
-            print(f"Warmup failed (non-critical): {exc}")
+            inference_logger.warning("Warmup failed (non-critical): {}", exc)
 
     def get_bert_feature(self, text, word2ph):
         with torch.no_grad():
@@ -571,7 +586,7 @@ class GPTSoVITSOptimizedInference:
         progress_callback=None,
         should_cancel=None,
     ):
-        print(f"Inferencing: {text} ({text_lang})")
+        inference_logger.info("Inferencing text_lang={} text={}", text_lang, text)
         _emit_progress(progress_callback, status="preparing", progress=0.02, message="推理已启动，正在准备输入。")
         _raise_if_cancelled(should_cancel)
 
@@ -646,7 +661,7 @@ class GPTSoVITSOptimizedInference:
         for index, seg in enumerate(segments):
             _raise_if_cancelled(should_cancel)
             seg = ensure_sentence_end(seg, text_lang)
-            print(f"Processing segment {index + 1}/{len(segments)}: {seg}")
+            inference_logger.debug("Processing segment {}/{}: {}", index + 1, len(segments), seg)
             _emit_progress(
                 progress_callback,
                 status="inferencing",
@@ -738,16 +753,18 @@ class GPTSoVITSOptimizedInference:
         rtf = total_inference_time / total_audio_duration if total_audio_duration > 0 else 0
         gpt_tps = total_gpt_tokens / total_gpt_time if total_gpt_time > 0 else 0
 
-        print("\n--- Inference Performance Summary ---")
-        print(f"Reference Processing:  {t_ref_end - t_ref_start:.3f}s")
-        print(f"Target Text Cleaning:  {total_text_time:.3f}s")
-        print(f"GPT Semantic Gen:      {total_gpt_time:.3f}s ({gpt_tps:.2f} tokens/s)")
-        print(f"SoVITS Audio Decode:   {total_sovits_time:.3f}s")
-        print(f"First Segment Latency: {t_first_segment:.3f}s")
-        print(f"Total Audio Duration:  {total_audio_duration:.3f}s")
-        print(f"Total Inference Time:  {total_inference_time:.3f}s")
-        print(f"Real Time Factor (RTF): {rtf:.4f}")
-        print("-------------------------------------\n")
+        inference_logger.info(
+            "Inference summary ref_proc_s={:.3f} text_clean_s={:.3f} gpt_s={:.3f} gpt_tps={:.2f} sovits_s={:.3f} first_segment_s={:.3f} audio_s={:.3f} total_s={:.3f} rtf={:.4f}",
+            t_ref_end - t_ref_start,
+            total_text_time,
+            total_gpt_time,
+            gpt_tps,
+            total_sovits_time,
+            t_first_segment,
+            total_audio_duration,
+            total_inference_time,
+            rtf,
+        )
         _emit_progress(progress_callback, status="completed", progress=1.0, message="推理完成。")
 
         return audio_final, sr

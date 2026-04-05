@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.app.cli import build_parser
+from backend.app.cli import build_parser, main
 
 
 def test_backend_cli_defaults_to_fastapi_mainline_port():
@@ -23,3 +23,18 @@ def test_start_dev_launcher_targets_fastapi_mainline_port():
 
     assert "8000" in source
     assert "8001" not in source
+
+
+def test_backend_cli_disables_uvicorn_default_log_config(monkeypatch):
+    called: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        called["args"] = args
+        called["kwargs"] = kwargs
+
+    monkeypatch.setattr("backend.app.cli.uvicorn.run", fake_run)
+    monkeypatch.setattr("sys.argv", ["backend.app.cli"])
+
+    main()
+
+    assert called["kwargs"]["log_config"] is None
