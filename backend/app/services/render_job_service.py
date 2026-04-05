@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from backend.app.core.logging import get_logger
 from backend.app.core.exceptions import (
     ActiveRenderJobConflictError,
     AssetNotFoundError,
@@ -84,6 +85,8 @@ from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
+
+render_job_logger = get_logger("render_job_service")
 
 
 class _CancelledJobError(RuntimeError):
@@ -208,6 +211,16 @@ class RenderJobService:
             raise ActiveRenderJobConflictError(str(exc)) from exc
 
         prepared_request = self._session_service.prepare_initialize_request(request)
+        render_job_logger.info(
+            "initialize request prepared voice_id={} model_id={} text_language={} segment_boundary_mode={} reference_audio_path={} reference_language={} reference_text_preview={}",
+            prepared_request.voice_id,
+            prepared_request.model_id,
+            prepared_request.text_language,
+            prepared_request.segment_boundary_mode,
+            prepared_request.reference_audio_path,
+            prepared_request.reference_language,
+            (prepared_request.reference_text or "")[:80],
+        )
         session, job = self._session_service.initialize_document(prepared_request)
         self._queued_requests[job.job_id] = prepared_request
         job_record = RenderJobRecord(
@@ -1032,7 +1045,20 @@ class RenderJobService:
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备参考上下文。")
-        plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
+        resolved_context = self._build_resolved_context_from_request(plan.request)
+        render_job_logger.info(
+            "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
+            resolved_context.voice_id,
+            resolved_context.model_key,
+            resolved_context.reference_audio_path,
+            resolved_context.reference_language,
+            resolved_context.speed,
+            resolved_context.top_k,
+            resolved_context.top_p,
+            resolved_context.temperature,
+            resolved_context.noise_scale,
+        )
+        plan.context = self._gateway.build_reference_context(resolved_context)
         default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
         plan.render_profiles = [default_render_profile]
         plan.voice_bindings = [default_voice_binding]
@@ -1674,6 +1700,17 @@ class RenderJobService:
         )
         wav_bytes = build_wav_bytes(self._composition_builder._sample_rate, float_audio_chunk_to_pcm16_bytes(audio))
         self._asset_store.write_formal_bytes_atomic(f"segments/{asset.render_asset_id}/audio.wav", wav_bytes)
+        render_job_logger.info(
+            "segment asset persisted render_asset_id={} segment_id={} render_version={} sample_rate={} audio_sample_count={} core_sample_count={} left_margin_sample_count={} right_margin_sample_count={}",
+            asset.render_asset_id,
+            asset.segment_id,
+            asset.render_version,
+            self._composition_builder._sample_rate,
+            asset.audio_sample_count,
+            asset.core_sample_count,
+            asset.left_margin_sample_count,
+            asset.right_margin_sample_count,
+        )
         metadata = {
             "render_asset_id": asset.render_asset_id,
             "segment_id": asset.segment_id,
@@ -1716,6 +1753,15 @@ class RenderJobService:
             float_audio_chunk_to_pcm16_bytes(asset.audio.astype(np.float32, copy=False)),
         )
         self._asset_store.write_formal_bytes_atomic(f"blocks/{asset.block_asset_id}/audio.wav", wav_bytes)
+        render_job_logger.info(
+            "block asset persisted block_asset_id={} block_id={} sample_rate={} audio_sample_count={} segment_ids={} edge_count={}",
+            asset.block_asset_id,
+            asset.block_id,
+            asset.sample_rate,
+            asset.audio_sample_count,
+            list(asset.segment_ids),
+            len(asset.edge_entries),
+        )
         metadata = {
             "block_id": asset.block_id,
             "block_asset_id": asset.block_asset_id,
@@ -2164,6 +2210,21 @@ class RenderJobService:
             ),
             render_profile_id=resolved.render_profile.render_profile_id,
             render_profile_fingerprint=resolved.render_profile_fingerprint,
+        )
+        render_job_logger.info(
+            "resolved segment context segment_id={} voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={} render_profile_id={} voice_binding_id={}",
+            segment.segment_id,
+            resolved_context.voice_id,
+            resolved_context.model_key,
+            resolved_context.reference_audio_path,
+            resolved_context.reference_language,
+            resolved_context.speed,
+            resolved_context.top_k,
+            resolved_context.top_p,
+            resolved_context.temperature,
+            resolved_context.noise_scale,
+            resolved_context.render_profile_id,
+            resolved_context.resolved_voice_binding.voice_binding_id,
         )
         context = self._gateway.build_reference_context(resolved_context)
         plan.context_cache[cache_key] = context
