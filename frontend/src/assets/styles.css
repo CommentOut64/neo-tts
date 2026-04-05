@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@nuxt/ui";
 @config "../../tailwind.config.ts";
 
 /* === 亮色主题（默认） === */
@@ -47,7 +48,7 @@
   --el-fill-color-light: #F8FAFC;
   --el-fill-color-blank: #FFFFFF;
   --el-border-radius-base: 8px;
-  --el-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --el-font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --el-font-size-base: 14px;
 }
 

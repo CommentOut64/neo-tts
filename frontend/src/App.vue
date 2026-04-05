@@ -8,10 +8,12 @@ const { isProgressStreamConnected } = useInferenceRuntime()
 </script>
 
 <template>
-  <div class="min-h-screen bg-background">
-    <AppNavbar :status="status" :is-progress-stream-connected="isProgressStreamConnected" />
-    <main class="pt-14">
-      <RouterView />
-    </main>
-  </div>
+  <UApp>
+    <div class="min-h-screen bg-background">
+      <AppNavbar :status="status" :is-progress-stream-connected="isProgressStreamConnected" />
+      <main class="pt-14">
+        <RouterView />
+      </main>
+    </div>
+  </UApp>
 </template>
