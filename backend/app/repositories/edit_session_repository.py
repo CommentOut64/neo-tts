@@ -125,6 +125,7 @@ class EditSessionRepository:
                 );
                 """
             )
+            self._migrate_legacy_snapshot_tables(connection)
 
     def upsert_active_session(self, session: ActiveDocumentState) -> None:
         payload = self._dump_model(session)
@@ -585,6 +586,89 @@ class EditSessionRepository:
         connection = sqlite3.connect(self._db_file)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _migrate_legacy_snapshot_tables(self, connection: sqlite3.Connection) -> None:
+        self._migrate_legacy_snapshot_table(
+            connection,
+            table_name="segments",
+            legacy_primary_key_columns=("segment_id",),
+            create_table_sql="""
+                CREATE TABLE segments (
+                    snapshot_id TEXT NOT NULL,
+                    segment_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    order_key INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY (snapshot_id, segment_id)
+                )
+            """,
+            create_index_sql="""
+                CREATE INDEX idx_segments_document_order
+                ON segments (document_id, snapshot_id, order_key)
+            """,
+            copy_sql="""
+                INSERT INTO segments(snapshot_id, segment_id, document_id, order_key, payload)
+                SELECT snapshot_id, segment_id, document_id, order_key, payload
+                FROM segments_legacy
+            """,
+            drop_index_name="idx_segments_document_order",
+        )
+        self._migrate_legacy_snapshot_table(
+            connection,
+            table_name="edges",
+            legacy_primary_key_columns=("edge_id",),
+            create_table_sql="""
+                CREATE TABLE edges (
+                    snapshot_id TEXT NOT NULL,
+                    edge_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    left_segment_id TEXT NOT NULL,
+                    right_segment_id TEXT NOT NULL,
+                    edge_order_key INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY (snapshot_id, edge_id)
+                )
+            """,
+            create_index_sql="""
+                CREATE INDEX idx_edges_document_order
+                ON edges (document_id, snapshot_id, edge_order_key)
+            """,
+            copy_sql="""
+                INSERT INTO edges(snapshot_id, edge_id, document_id, left_segment_id, right_segment_id, edge_order_key, payload)
+                SELECT snapshot_id, edge_id, document_id, left_segment_id, right_segment_id, edge_order_key, payload
+                FROM edges_legacy
+            """,
+            drop_index_name="idx_edges_document_order",
+        )
+
+    def _migrate_legacy_snapshot_table(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        table_name: str,
+        legacy_primary_key_columns: tuple[str, ...],
+        create_table_sql: str,
+        create_index_sql: str,
+        copy_sql: str,
+        drop_index_name: str,
+    ) -> None:
+        primary_key_columns = self._get_primary_key_columns(connection, table_name)
+        if primary_key_columns != legacy_primary_key_columns:
+            return
+
+        legacy_table_name = f"{table_name}_legacy"
+        connection.execute(f"DROP INDEX IF EXISTS {drop_index_name}")
+        connection.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table_name}")
+        connection.execute(create_table_sql)
+        connection.execute(create_index_sql)
+        connection.execute(copy_sql)
+        connection.execute(f"DROP TABLE {legacy_table_name}")
+
+    @staticmethod
+    def _get_primary_key_columns(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        primary_key_rows = sorted((row for row in rows if row["pk"] > 0), key=lambda row: row["pk"])
+        return tuple(row["name"] for row in primary_key_rows)
 
     def _resolve_path(self, value: Path) -> Path:
         if value.is_absolute():
