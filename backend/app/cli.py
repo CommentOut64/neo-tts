@@ -15,7 +15,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    uvicorn.run("backend.app.main:create_app", factory=True, host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run(
+        "backend.app.main:create_app",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_config=None,
+    )
 
 
 if __name__ == "__main__":

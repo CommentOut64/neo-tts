@@ -8,8 +8,8 @@ from backend.app.core.settings import AppSettings, get_settings
 
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
-    configure_logging()
     app_settings = settings or get_settings()
+    configure_logging(project_root=app_settings.project_root)
     app = FastAPI(title="GPT-SoVITS Rebuild Backend", lifespan=app_lifespan)
     app.state.settings = app_settings
     register_exception_handlers(app)
