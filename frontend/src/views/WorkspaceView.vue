@@ -9,19 +9,21 @@ import WorkspaceEmptyState from '@/components/workspace/WorkspaceEmptyState.vue'
 import WorkspaceInitProgress from '@/components/workspace/WorkspaceInitProgress.vue'
 import WorkspaceFailedState from '@/components/workspace/WorkspaceFailedState.vue'
 import WorkspaceInitForm from '@/components/workspace/WorkspaceInitForm.vue'
-import SegmentListDisplay from '@/components/workspace/SegmentListDisplay.vue'
+import WorkspaceDocumentEditor from '@/components/workspace/WorkspaceDocumentEditor.vue'
 import WaveformStrip from '@/components/workspace/WaveformStrip.vue'
 import TransportControlBar from '@/components/workspace/TransportControlBar.vue'
 import RenderJobProgressBar from '@/components/workspace/RenderJobProgressBar.vue'
 import { fetchVoices } from '@/api/voices'
 import type { VoiceProfile } from '@/types/tts'
 import { useRuntimeState } from '@/composables/useRuntimeState'
+import { EditPen } from '@element-plus/icons-vue'
 
-const { sessionStatus, discoverSession, initialize } = useEditSession()
-const { text } = useInputDraft()
+const { sessionStatus, discoverSession, initialize, clearSession, sourceDraftRevision } = useEditSession()
+const { text, draftRevision, hasUnsent, markSentToSession } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const voices = ref<VoiceProfile[]>([])
 const selectedVoice = computed(() => voices.value.find((voice) => voice.name === initParams.value.voice_id) ?? null)
+const isApplyDisabled = computed(() => !text.value.trim() || !hasUnsent.value)
 
 // Parameter structure updated with reference audio options and initialized to match old behavior
 const initParams = ref({
@@ -33,7 +35,7 @@ const initParams = ref({
   pause_length: 0.3,
   chunk_length: 24,
   text_lang: 'auto',
-  text_split_method: 'cut5',
+  text_split_method: 'cut3',
   ref_source: 'preset' as 'preset' | 'custom',
   custom_ref_file: null as File | null,
   ref_text: '',
@@ -116,7 +118,16 @@ onMounted(async () => {
 
 const handleInit = async () => {
   if (!initParams.value.voice_id || !text.value) return
-  await initialize(buildInitializeRequest({
+  if (sessionStatus.value === 'ready') {
+    try {
+      await clearSession()
+    } catch (err) {
+      ElMessage.error(`清理旧会话失败: ${(err as Error).message}`)
+      return
+    }
+  }
+
+  const accepted = await initialize(buildInitializeRequest({
     text: text.value,
     voiceId: initParams.value.voice_id,
     textLang: initParams.value.text_lang,
@@ -131,6 +142,11 @@ const handleInit = async () => {
     refLang: initParams.value.ref_lang,
     customRefFile: initParams.value.custom_ref_file,
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
+
+  if (accepted) {
+    sourceDraftRevision.value = draftRevision.value
+    markSentToSession(draftRevision.value)
+  }
 }
 
 const handleResetParams = () => {
@@ -176,18 +192,32 @@ const handleSaveParams = async () => {
       <WorkspaceInitProgress v-else-if="sessionStatus === 'initializing'" />
       <WorkspaceFailedState v-else-if="sessionStatus === 'failed'" />
       
-      <div v-else-if="sessionStatus === 'ready'" class="w-full h-full flex flex-col gap-4">
-        <!-- Main editor area placeholder + segment list -->
-        <SegmentListDisplay />
-        
+      <div v-else-if="sessionStatus === 'ready'" class="w-full h-full flex flex-col pt-2 gap-4">
+        <!-- Header with action button -->
+        <div class="flex items-center justify-between shrink-0 mb-1">
+          <h2 class="text-lg font-semibold text-foreground">轨道编辑</h2>
+          <el-button
+            type="primary"
+            :icon="EditPen"
+            :disabled="isApplyDisabled"
+            @click="handleInit"
+          >
+            重新生成时间线
+          </el-button>
+        </div>
+
+        <!-- Full document editor -->
+        <WorkspaceDocumentEditor />
+
         <!-- Waveform visualizer / active segment tracker -->
         <WaveformStrip />
 
-        <!-- Bottom transport control or job progress -->
-        <RenderJobProgressBar v-if="currentRenderJob && !['completed', 'failed', 'cancelled_partial'].includes(currentRenderJob.status)" />
-        <TransportControlBar v-else />
+        <!-- Bottom transport control -->
+        <div class="shrink-0 mb-4 bg-card rounded-card shadow-card border border-border p-4 flex items-center justify-between">
+          <RenderJobProgressBar v-if="currentRenderJob && !['completed', 'failed', 'cancelled_partial'].includes(currentRenderJob.status)" />
+          <TransportControlBar v-else />
+        </div>
       </div>
     </main>
   </div>
 </template>
-
