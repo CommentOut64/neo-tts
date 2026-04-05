@@ -9,13 +9,17 @@ import WorkspaceEmptyState from '@/components/workspace/WorkspaceEmptyState.vue'
 import WorkspaceInitProgress from '@/components/workspace/WorkspaceInitProgress.vue'
 import WorkspaceFailedState from '@/components/workspace/WorkspaceFailedState.vue'
 import WorkspaceInitForm from '@/components/workspace/WorkspaceInitForm.vue'
+import SegmentListDisplay from '@/components/workspace/SegmentListDisplay.vue'
+import WaveformStrip from '@/components/workspace/WaveformStrip.vue'
+import TransportControlBar from '@/components/workspace/TransportControlBar.vue'
+import RenderJobProgressBar from '@/components/workspace/RenderJobProgressBar.vue'
 import { fetchVoices } from '@/api/voices'
 import type { VoiceProfile } from '@/types/tts'
-import { Check } from '@element-plus/icons-vue'
+import { useRuntimeState } from '@/composables/useRuntimeState'
 
 const { sessionStatus, discoverSession, initialize } = useEditSession()
 const { text } = useInputDraft()
-
+const { currentRenderJob } = useRuntimeState()
 const voices = ref<VoiceProfile[]>([])
 const selectedVoice = computed(() => voices.value.find((voice) => voice.name === initParams.value.voice_id) ?? null)
 
@@ -172,11 +176,18 @@ const handleSaveParams = async () => {
       <WorkspaceInitProgress v-else-if="sessionStatus === 'initializing'" />
       <WorkspaceFailedState v-else-if="sessionStatus === 'failed'" />
       
-      <div v-else-if="sessionStatus === 'ready'" class="w-full h-full flex flex-col items-center justify-center gap-2 bg-card rounded-card shadow-card">
-        <el-icon class="text-success text-3xl"><Check /></el-icon>
-        <span class="text-lg font-bold text-foreground">会话已就绪</span>
-        <span class="text-sm text-muted-fg mt-1">时间线创建完成，等待完成后续 Phase</span>
+      <div v-else-if="sessionStatus === 'ready'" class="w-full h-full flex flex-col gap-4">
+        <!-- Main editor area placeholder + segment list -->
+        <SegmentListDisplay />
+        
+        <!-- Waveform visualizer / active segment tracker -->
+        <WaveformStrip />
+
+        <!-- Bottom transport control or job progress -->
+        <RenderJobProgressBar v-if="currentRenderJob && !['completed', 'failed', 'cancelled_partial'].includes(currentRenderJob.status)" />
+        <TransportControlBar v-else />
       </div>
     </main>
   </div>
 </template>
+
