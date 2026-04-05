@@ -1,4 +1,5 @@
 import axios from './http'
+import { resolveApiUrl } from './requestSupport'
 import type {
   CleanupResidualsResponse,
   DeleteSynthesisResultResponse,
@@ -31,11 +32,6 @@ export type SynthesizeSpeechParams = Pick<
   | 'ref_text'
   | 'ref_lang'
 >
-
-function resolveApiUrl(path: string): string {
-  const base = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '')
-  return base ? `${base}${path}` : path
-}
 
 function readHeader(
   headers: Record<string, unknown> | { get?: (name: string) => string | undefined } | undefined,
@@ -118,7 +114,7 @@ export function subscribeInferenceProgress(
   onProgress: (state: InferenceProgressState) => void,
   onError?: (error: Error) => void,
 ): () => void {
-  const source = new EventSource(resolveApiUrl('/v1/audio/inference/progress/stream'))
+  const source = new EventSource(resolveApiUrl('/v1/audio/inference/progress/stream', import.meta.env.VITE_API_BASE_URL || ''))
 
   const handleProgress = (event: MessageEvent<string>) => {
     try {
