@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { Microphone, Setting, Sunny, Moon } from '@element-plus/icons-vue'
+import { Microphone, Setting, Sunny, Moon, EditPen } from '@element-plus/icons-vue'
 import StatusIndicator from './StatusIndicator.vue'
 import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
@@ -15,7 +15,8 @@ const router = useRouter()
 const { isDark, toggleThemeWithTransition } = useTheme()
 
 const navItems = [
-  { path: '/studio', label: '语音合成', icon: Microphone },
+  { path: '/text-input', label: '文本输入', icon: EditPen },
+  { path: '/workspace', label: '语音合成', icon: Microphone },
   { path: '/voices', label: '模型管理', icon: Setting },
 ]
 </script>
@@ -44,8 +45,12 @@ const navItems = [
       </button>
     </div>
     <div class="ml-auto flex items-center gap-3">
+      <!-- 预留导出位和运行态提示位 -->
+      <div id="runtime-state-placeholder"></div>
+      <div id="export-action-placeholder"></div>
+
       <!-- 进度流状态 -->
-      <div v-if="isProgressStreamConnected !== undefined" class="flex items-center gap-1.5">
+      <div v-if="isProgressStreamConnected !== undefined && route.path === '/studio'" class="flex items-center gap-1.5">
         <span
           class="w-1.5 h-1.5 rounded-full"
           :class="isProgressStreamConnected ? 'bg-accent' : 'bg-muted-fg/40'"
