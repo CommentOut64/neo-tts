@@ -165,6 +165,29 @@ def test_audio_speech_accepts_multipart_custom_reference_audio(sample_voice_conf
     assert not Path(app.state.inference_engine.last_request.ref_audio).exists()
 
 
+def test_audio_speech_persists_request_lifecycle_logs(sample_voice_config):
+    settings = _build_settings(sample_voice_config)
+    app = create_app(settings=settings)
+    app.state.inference_engine = FakeInferenceEngine()
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello world",
+            "voice": "demo",
+        },
+    )
+
+    assert response.status_code == 200
+    log_files = list((settings.project_root / "logs").glob("*.log"))
+    assert len(log_files) == 1
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "[INFO] [tts_router] 收到 TTS 请求" in content
+    assert "[INFO] [tts_router] TTS 请求体解析完成" in content
+    assert "[INFO] [tts_router] TTS 推理结果已缓存" in content
+
+
 def test_delete_synthesis_result_endpoint(sample_voice_config):
     settings = _build_settings(sample_voice_config)
     app = create_app(settings=settings)
