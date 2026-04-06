@@ -241,6 +241,41 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert job_id
 
 
+def test_upload_reference_audio_returns_temporary_path(test_app_settings):
+    app = create_app(settings=test_app_settings)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/edit-session/reference-audio",
+            files={
+                "ref_audio_file": ("custom.wav", b"RIFFcustom", "audio/wav"),
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["filename"] == "custom.wav"
+    uploaded_path = Path(data["reference_audio_path"])
+    assert uploaded_path.exists()
+    assert uploaded_path.name == "custom.wav"
+    assert "_temp_refs" in uploaded_path.parts
+
+
+def test_upload_reference_audio_rejects_unsupported_extension(test_app_settings):
+    app = create_app(settings=test_app_settings)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/edit-session/reference-audio",
+            files={
+                "ref_audio_file": ("custom.txt", b"plain-text", "text/plain"),
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "ref_audio_file must use one of: .flac, .mp3, .wav."
+    }
+
+
 def test_initialize_route_does_not_construct_real_backend_before_accepted_response(test_app_settings, monkeypatch):
     constructed: list[tuple[str, str, str, str]] = []
     runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")

@@ -25,6 +25,7 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
       refText: "示例参考文本",
       refLang: "zh",
       customRefFile: null,
+      customRefPath: null,
     },
     {
       refAudio: "voices/demo/reference.wav",
@@ -62,10 +63,34 @@ it("buildInitializeRequest preserves supported boundary modes", () => {
     refText: "",
     refLang: "auto",
     customRefFile: null,
+    customRefPath: null,
   });
 
   expect(payload.segment_boundary_mode).toBe("zh_period");
   expect("reference_audio_path" in payload).toBe(false);
+});
+
+it("buildInitializeRequest uses uploaded custom reference path", () => {
+  const payload = buildInitializeRequest({
+    text: "test",
+    voiceId: "voice-a",
+    textLang: "auto",
+    speed: 1,
+    temperature: 1,
+    topP: 1,
+    topK: 15,
+    pauseLength: 0.3,
+    textSplitMethod: "cut3",
+    refSource: "custom",
+    refText: "自定义参考文本",
+    refLang: "zh",
+    customRefFile: null,
+    customRefPath: "managed_voices/_temp_refs/custom/custom.wav",
+  });
+
+  expect(payload.reference_audio_path).toBe("managed_voices/_temp_refs/custom/custom.wav");
+  expect(payload.reference_text).toBe("自定义参考文本");
+  expect(payload.reference_language).toBe("zh");
 });
 
 it("unwrapAcceptedRenderJob returns nested job payload", () => {
@@ -120,6 +145,39 @@ it("resumeRenderJob unwraps accepted response payload", async () => {
     status: "queued",
     progress: 0,
     message: "resumed",
+  });
+});
+
+it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
+  const post = vi.fn().mockResolvedValue({
+    data: {
+      reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+      filename: "custom.wav",
+    },
+  });
+
+  vi.doMock("../src/api/http.ts", () => ({
+    default: {
+      post,
+      get: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    },
+  }));
+
+  const { uploadEditSessionReferenceAudio } = await import("../src/api/editSession.ts");
+  const file = new File(["RIFFcustom"], "custom.wav", { type: "audio/wav" });
+
+  const response = await uploadEditSessionReferenceAudio(file);
+
+  expect(post).toHaveBeenCalledTimes(1);
+  const [url, body] = post.mock.calls[0] as [string, FormData];
+  expect(url).toBe("/v1/edit-session/reference-audio");
+  expect(body).toBeInstanceOf(FormData);
+  expect(body.get("ref_audio_file")).toBe(file);
+  expect(response).toEqual({
+    reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+    filename: "custom.wav",
   });
 });
 
