@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import threading
+import time
+from typing import Callable
 from uuid import uuid4
 
 import numpy as np
@@ -78,6 +80,7 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
+from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
 from backend.app.services.checkpoint_service import CheckpointService
@@ -133,6 +136,8 @@ class RenderPlan:
     skip_render: bool = False
     skip_compose: bool = False
     emitted_block_ids: set[str] = field(default_factory=set)
+    inference_task_id: str | None = None
+    inference_total_segments: int = 0
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,7 @@ class RenderJobService:
         repository: EditSessionRepository,
         asset_store: EditAssetStore,
         runtime: EditSessionRuntime,
+        inference_runtime: InferenceRuntimeController | None = None,
         session_service: EditSessionService,
         gateway: EditableInferenceGateway,
         block_planner: BlockPlanner | None = None,
@@ -176,6 +182,7 @@ class RenderJobService:
         self._repository = repository
         self._asset_store = asset_store
         self._runtime = runtime
+        self._inference_runtime = inference_runtime
         self._session_service = session_service
         self._gateway = gateway
         self._block_planner = block_planner or BlockPlanner()
@@ -1058,7 +1065,14 @@ class RenderJobService:
             resolved_context.temperature,
             resolved_context.noise_scale,
         )
+        context_started = time.perf_counter()
         plan.context = self._gateway.build_reference_context(resolved_context)
+        render_job_logger.info(
+            "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
+            resolved_context.voice_id,
+            plan.context.reference_context_id,
+            (time.perf_counter() - context_started) * 1000,
+        )
         default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
         plan.render_profiles = [default_render_profile]
         plan.voice_bindings = [default_voice_binding]
@@ -1117,39 +1131,143 @@ class RenderJobService:
             return split_text_segments_zh_period(raw_text)
         raise ValueError(f"Unsupported segment_boundary_mode '{segment_boundary_mode}'.")
 
+    def _start_inference_tracking(self, plan: RenderPlan, *, total_segments: int, message: str) -> None:
+        if self._inference_runtime is None or total_segments <= 0 or plan.inference_task_id is not None:
+            return
+        try:
+            task_id = self._inference_runtime.start_task(message=message)
+        except RuntimeError as exc:
+            render_job_logger.warning("failed to start inference tracking for render job {}: {}", plan.job_id, exc)
+            return
+        plan.inference_task_id = task_id
+        plan.inference_total_segments = total_segments
+        self._inference_runtime.update_progress(
+            task_id=task_id,
+            status="preparing",
+            progress=0.0,
+            message=message,
+            current_segment=0,
+            total_segments=total_segments,
+        )
+
+    def _build_segment_progress_callback(
+        self,
+        plan: RenderPlan,
+        *,
+        current_segment_index: int,
+        total_segments: int,
+    ) -> Callable[[dict], None]:
+        def _progress_callback(event: dict) -> None:
+            if self._inference_runtime is None or plan.inference_task_id is None or total_segments <= 0:
+                return
+
+            raw_progress = event.get("progress")
+            if isinstance(raw_progress, (int, float)):
+                local_progress = max(0.0, min(1.0, float(raw_progress)))
+                global_progress = ((current_segment_index - 1) + local_progress) / total_segments
+            else:
+                global_progress = None
+
+            raw_status = event.get("status")
+            mapped_status = raw_status if raw_status in {"preparing", "inferencing", "cancelling"} else None
+            mapped_current_segment = max(0, current_segment_index - 1)
+            if raw_status == "completed":
+                mapped_status = "inferencing"
+                mapped_current_segment = current_segment_index
+
+            raw_message = event.get("message")
+            self._inference_runtime.update_progress(
+                task_id=plan.inference_task_id,
+                status=mapped_status,
+                progress=global_progress,
+                message=raw_message if isinstance(raw_message, str) else None,
+                current_segment=mapped_current_segment,
+                total_segments=total_segments,
+            )
+
+        return _progress_callback
+
+    def _complete_inference_tracking(self, plan: RenderPlan, *, message: str) -> None:
+        if self._inference_runtime is None or plan.inference_task_id is None:
+            return
+        self._inference_runtime.mark_completed(task_id=plan.inference_task_id, message=message)
+        plan.inference_task_id = None
+
+    def _fail_inference_tracking(self, plan: RenderPlan, message: str) -> None:
+        if self._inference_runtime is None or plan.inference_task_id is None:
+            return
+        self._inference_runtime.mark_failed(task_id=plan.inference_task_id, message=message)
+        plan.inference_task_id = None
+
+    def _cancel_inference_tracking(self, plan: RenderPlan, message: str) -> None:
+        if self._inference_runtime is None or plan.inference_task_id is None:
+            return
+        self._inference_runtime.mark_cancelled(task_id=plan.inference_task_id, message=message)
+        plan.inference_task_id = None
+
     def _render(self, plan: RenderPlan) -> None:
         assert plan.context is not None
         self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在渲染段级资产。")
         total_segments = len(plan.segments)
-        for index, segment in enumerate(plan.segments, start=1):
-            asset = self._gateway.render_segment_base(segment, plan.context)
-            plan.segment_assets[segment.segment_id] = asset
-            segment.render_asset_id = asset.render_asset_id
-            segment.assembled_audio_span = (0, asset.audio_sample_count)
-            segment.render_status = "ready"
-            segment.effective_duration_samples = asset.audio_sample_count
-            self._write_segment_asset(plan.job_id, asset)
-            self._runtime.update_job(
-                plan.job_id,
-                current_segment_index=index,
-                total_segment_count=total_segments,
-                progress=0.2 + 0.4 * (index / total_segments),
-                message=f"已完成第 {index}/{total_segments} 段渲染。",
-            )
-            self._runtime.emit_event(
-                plan.job_id,
-                "segment_completed",
-                {
-                    "segment_id": segment.segment_id,
-                    "order_key": segment.order_key,
-                    "render_asset_id": asset.render_asset_id,
-                    "render_status": segment.render_status,
-                    "effective_duration_samples": segment.effective_duration_samples,
-                },
-            )
-            control_action = self._get_control_action(plan.job_id)
-            if control_action is not None:
-                self._commit_partial_after_segment(plan, status=control_action)
+        self._start_inference_tracking(plan, total_segments=total_segments, message="正在准备本次推理")
+        try:
+            for index, segment in enumerate(plan.segments, start=1):
+                segment_started = time.perf_counter()
+                asset = self._gateway.render_segment_base(
+                    segment,
+                    plan.context,
+                    progress_callback=self._build_segment_progress_callback(
+                        plan,
+                        current_segment_index=index,
+                        total_segments=total_segments,
+                    ),
+                )
+                render_elapsed_ms = (time.perf_counter() - segment_started) * 1000
+                plan.segment_assets[segment.segment_id] = asset
+                segment.render_asset_id = asset.render_asset_id
+                segment.assembled_audio_span = (0, asset.audio_sample_count)
+                segment.render_status = "ready"
+                segment.effective_duration_samples = asset.audio_sample_count
+                write_started = time.perf_counter()
+                self._write_segment_asset(plan.job_id, asset)
+                write_elapsed_ms = (time.perf_counter() - write_started) * 1000
+                render_job_logger.info(
+                    "initialize segment completed segment_id={} index={}/{} render_ms={:.2f} write_ms={:.2f} total_ms={:.2f}",
+                    segment.segment_id,
+                    index,
+                    total_segments,
+                    render_elapsed_ms,
+                    write_elapsed_ms,
+                    (time.perf_counter() - segment_started) * 1000,
+                )
+                self._runtime.update_job(
+                    plan.job_id,
+                    current_segment_index=index,
+                    total_segment_count=total_segments,
+                    progress=0.2 + 0.4 * (index / total_segments),
+                    message=f"已完成第 {index}/{total_segments} 段渲染。",
+                )
+                self._runtime.emit_event(
+                    plan.job_id,
+                    "segment_completed",
+                    {
+                        "segment_id": segment.segment_id,
+                        "order_key": segment.order_key,
+                        "render_asset_id": asset.render_asset_id,
+                        "render_status": segment.render_status,
+                        "effective_duration_samples": segment.effective_duration_samples,
+                    },
+                )
+                control_action = self._get_control_action(plan.job_id)
+                if control_action is not None:
+                    self._commit_partial_after_segment(plan, status=control_action)
+        except _PartialRenderCommitted:
+            raise
+        except Exception as exc:
+            self._fail_inference_tracking(plan, str(exc))
+            raise
+        else:
+            self._complete_inference_tracking(plan, message="本次推理已完成")
 
         config_snapshot = self._build_temporary_snapshot(plan)
         for edge in plan.edges:
@@ -1178,47 +1296,65 @@ class RenderJobService:
             self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在重渲染受影响资产。")
 
         config_snapshot = self._build_temporary_snapshot(plan)
-        target_total = max(1, len(plan.target_segment_ids))
+        total_targets = len(plan.target_segment_ids)
+        target_total = max(1, total_targets)
         completed_targets = 0
-        for segment in plan.segments:
-            if segment.segment_id in plan.target_segment_ids:
-                context = self._get_segment_context(plan=plan, snapshot=config_snapshot, segment=segment)
-                asset = self._gateway.render_segment_base(segment, context)
-                segment.render_asset_id = asset.render_asset_id
+        self._start_inference_tracking(plan, total_segments=total_targets, message="正在准备本次推理")
+        try:
+            for segment in plan.segments:
+                if segment.segment_id in plan.target_segment_ids:
+                    completed_targets += 1
+                    context = self._get_segment_context(plan=plan, snapshot=config_snapshot, segment=segment)
+                    asset = self._gateway.render_segment_base(
+                        segment,
+                        context,
+                        progress_callback=self._build_segment_progress_callback(
+                            plan,
+                            current_segment_index=completed_targets,
+                            total_segments=target_total,
+                        ),
+                    )
+                    segment.render_asset_id = asset.render_asset_id
+                    segment.assembled_audio_span = (0, asset.audio_sample_count)
+                    segment.render_status = "ready"
+                    segment.effective_duration_samples = asset.audio_sample_count
+                    self._write_segment_asset(plan.job_id, asset)
+                    plan.segment_assets[segment.segment_id] = asset
+                    self._runtime.update_job(
+                        plan.job_id,
+                        current_segment_index=completed_targets,
+                        total_segment_count=len(plan.target_segment_ids),
+                        progress=0.2 + 0.25 * (completed_targets / target_total),
+                        message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
+                    )
+                    self._runtime.emit_event(
+                        plan.job_id,
+                        "segment_completed",
+                        {
+                            "segment_id": segment.segment_id,
+                            "order_key": segment.order_key,
+                            "render_asset_id": asset.render_asset_id,
+                            "render_status": segment.render_status,
+                            "effective_duration_samples": segment.effective_duration_samples,
+                        },
+                    )
+                    control_action = self._get_control_action(plan.job_id)
+                    if control_action is not None:
+                        self._commit_partial_after_segment(plan, status=control_action)
+                else:
+                    if segment.render_asset_id is None:
+                        raise EditSessionNotFoundError(f"Segment '{segment.segment_id}' asset is missing.")
+                    asset = self._asset_store.load_segment_asset(segment.render_asset_id)
+                    plan.segment_assets[segment.segment_id] = asset
                 segment.assembled_audio_span = (0, asset.audio_sample_count)
-                segment.render_status = "ready"
                 segment.effective_duration_samples = asset.audio_sample_count
-                self._write_segment_asset(plan.job_id, asset)
-                plan.segment_assets[segment.segment_id] = asset
-                completed_targets += 1
-                self._runtime.update_job(
-                    plan.job_id,
-                    current_segment_index=completed_targets,
-                    total_segment_count=len(plan.target_segment_ids),
-                    progress=0.2 + 0.25 * (completed_targets / target_total),
-                    message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
-                )
-                self._runtime.emit_event(
-                    plan.job_id,
-                    "segment_completed",
-                    {
-                        "segment_id": segment.segment_id,
-                        "order_key": segment.order_key,
-                        "render_asset_id": asset.render_asset_id,
-                        "render_status": segment.render_status,
-                        "effective_duration_samples": segment.effective_duration_samples,
-                    },
-                )
-                control_action = self._get_control_action(plan.job_id)
-                if control_action is not None:
-                    self._commit_partial_after_segment(plan, status=control_action)
-            else:
-                if segment.render_asset_id is None:
-                    raise EditSessionNotFoundError(f"Segment '{segment.segment_id}' asset is missing.")
-                asset = self._asset_store.load_segment_asset(segment.render_asset_id)
-                plan.segment_assets[segment.segment_id] = asset
-            segment.assembled_audio_span = (0, asset.audio_sample_count)
-            segment.effective_duration_samples = asset.audio_sample_count
+        except _PartialRenderCommitted:
+            raise
+        except Exception as exc:
+            self._fail_inference_tracking(plan, str(exc))
+            raise
+        else:
+            self._complete_inference_tracking(plan, message="本次推理已完成")
 
         for edge in plan.edges:
             self._ensure_not_cancelled(plan.job_id)
@@ -1892,6 +2028,7 @@ class RenderJobService:
         )
         terminal_event = "job_paused" if status == "paused" else "job_cancelled_partial"
         terminal_message = "当前段已完成，作业已暂停并提交 partial head。" if status == "paused" else "当前段已完成，作业已取消并保留 partial head。"
+        self._cancel_inference_tracking(plan, terminal_message)
         self._runtime.update_job(
             plan.job_id,
             status=status,

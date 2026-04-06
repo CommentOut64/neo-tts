@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
+import importlib
 import json
 import os
 import time
 import threading
+from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
@@ -28,6 +30,7 @@ from backend.app.schemas.edit_session import (
     RenderJobRecord,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
+from backend.app.services import render_job_service as render_job_service_module
 
 
 class FakeEditableInferenceBackend:
@@ -236,6 +239,42 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert after_delete.json()["session_status"] == "empty"
 
         assert job_id
+
+
+def test_initialize_route_does_not_construct_real_backend_before_accepted_response(test_app_settings, monkeypatch):
+    constructed: list[tuple[str, str, str, str]] = []
+    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+
+    def fake_runtime(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        constructed.append((gpt_path, sovits_path, cnhubert_path, bert_path))
+        return FakeEditableInferenceBackend()
+
+    class _FakeWorkerThread:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "GPTSoVITSOptimizedInference", fake_runtime)
+    monkeypatch.setattr(
+        render_job_service_module,
+        "threading",
+        SimpleNamespace(Thread=_FakeWorkerThread),
+    )
+
+    app = create_app(settings=test_app_settings)
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+
+    assert initialize.status_code == 202
+    assert constructed == []
 
 
 def test_edit_session_render_job_events_and_cancel(test_app_settings):

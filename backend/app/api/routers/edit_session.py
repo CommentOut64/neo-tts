@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
-from backend.app.inference.editable_gateway import EditableInferenceGateway
+from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -81,7 +81,7 @@ class _UnavailableEditableBackend:
     def build_reference_context(self, request):
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
-    def render_segment_base(self, segment, context):
+    def render_segment_base(self, segment, context, *, progress_callback=None):
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
     def render_boundary_asset(self, left_asset, right_asset, edge, context):
@@ -101,7 +101,7 @@ def _resolve_project_path(project_root: Path, raw_path: str) -> str:
     return str((project_root / path).resolve())
 
 
-def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway:
+def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway | LazyEditableInferenceGateway:
     existing = getattr(request.app.state, "editable_inference_gateway", None)
     if existing is not None:
         return existing
@@ -116,15 +116,20 @@ def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInfer
     )
     cache_key = (voice.gpt_path, voice.sovits_path)
     if cache_key not in cache:
-        from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+        resolved_gpt_path = _resolve_project_path(settings.project_root, voice.gpt_path)
+        resolved_sovits_path = _resolve_project_path(settings.project_root, voice.sovits_path)
 
-        backend = GPTSoVITSOptimizedInference(
-            _resolve_project_path(settings.project_root, voice.gpt_path),
-            _resolve_project_path(settings.project_root, voice.sovits_path),
-            settings.cnhubert_base_path,
-            settings.bert_path,
-        )
-        cache[cache_key] = EditableInferenceGateway(backend)
+        def _build_backend():
+            from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+
+            return GPTSoVITSOptimizedInference(
+                resolved_gpt_path,
+                resolved_sovits_path,
+                settings.cnhubert_base_path,
+                settings.bert_path,
+            )
+
+        cache[cache_key] = LazyEditableInferenceGateway(backend_factory=_build_backend)
         request.app.state.editable_inference_gateway_cache = cache
     return cache[cache_key]
 
@@ -148,6 +153,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
+        inference_runtime=request.app.state.inference_runtime,
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
@@ -162,6 +168,7 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
+        inference_runtime=request.app.state.inference_runtime,
         session_service=_build_edit_session_service(request),
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),

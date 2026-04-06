@@ -1,4 +1,5 @@
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
+from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.render_job_service import RenderJobService
 
 
@@ -63,7 +65,17 @@ class _FakeEditableBackend:
             inference_config={"margin_frame_count": 0, "speed": resolved_context.speed},
         )
 
-    def render_segment_base(self, segment, context) -> SegmentRenderAssetPayload:
+    def render_segment_base(self, segment, context, *, progress_callback=None) -> SegmentRenderAssetPayload:
+        if callable(progress_callback):
+            progress_callback(
+                {
+                    "status": "inferencing",
+                    "progress": 0.5,
+                    "message": f"正在推理段 {segment.order_key}",
+                    "current_segment": 0,
+                    "total_segments": 1,
+                }
+            )
         if self.gate is not None:
             self.gate.wait(timeout=2)
         if self.fail_render:
@@ -130,6 +142,7 @@ def _build_service(
         staging_ttl_seconds=60,
     )
     runtime = EditSessionRuntime()
+    inference_runtime = InferenceRuntimeController()
     session_service = EditSessionService(
         repository=repository,
         asset_store=asset_store,
@@ -143,6 +156,7 @@ def _build_service(
         repository=repository,
         asset_store=asset_store,
         runtime=runtime,
+        inference_runtime=inference_runtime,
         session_service=session_service,
         gateway=gateway,
         block_planner=block_planner,
@@ -234,6 +248,37 @@ def test_run_initialize_job_marks_job_failed_when_render_raises(tmp_path):
     assert job is not None
     assert job.status == "failed"
     assert "segment render failed" in job.message
+
+
+def test_run_initialize_job_updates_inference_runtime_while_segment_is_rendering(tmp_path):
+    gate = threading.Event()
+    service = _build_service(tmp_path, gate=gate)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+
+    worker = threading.Thread(target=service.run_initialize_job, args=(accepted.job.job_id,), daemon=True)
+    worker.start()
+
+    deadline = time.time() + 2
+    snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
+    while time.time() < deadline and snapshot.status != "inferencing":
+        time.sleep(0.01)
+        snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
+
+    assert snapshot.status == "inferencing"
+    assert snapshot.progress > 0
+    assert snapshot.total_segments == 1
+
+    gate.set()
+    worker.join(timeout=2)
+
+    final_snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
+    assert final_snapshot.status == "completed"
+    assert final_snapshot.progress == 1.0
 
 
 def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_path):

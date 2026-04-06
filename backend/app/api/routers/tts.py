@@ -286,12 +286,6 @@ async def text_to_speech(request: Request) -> Response:
             # 在线程池中执行推理，避免阻塞事件循环导致 SSE 进度无法推送
             pcm16_chunks = await asyncio.to_thread(_consume_stream)
 
-            runtime.update_progress(
-                task_id=task_id,
-                status="inferencing",
-                progress=0.97,
-                message="正在编码音频并缓存结果。",
-            )
             wav_bytes = build_wav_bytes(sample_rate=sample_rate, pcm16_payload=b"".join(pcm16_chunks))
             saved_result = _build_result_store(request).save_wav(wav_bytes)
             runtime.mark_completed(
