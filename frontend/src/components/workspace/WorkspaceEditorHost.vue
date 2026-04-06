@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
+import { ElMessage } from "element-plus";
 import type { JSONContent } from '@tiptap/vue-3'
 import { useEditSession } from '@/composables/useEditSession'
 import { useWorkspaceLightEdit } from '@/composables/useWorkspaceLightEdit'
@@ -8,6 +9,10 @@ import { useSegmentSelection } from '@/composables/useSegmentSelection'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { buildEditorExtensions } from './workspace-editor/buildEditorExtensions'
 import { segmentDecorationKey } from './workspace-editor/segmentDecoration'
+import {
+  buildSegmentEditorDocument,
+  collectSegmentDraftChanges,
+} from "./workspace-editor/documentModel";
 
 // --- composable 实例 ---
 const editSession = useEditSession()
@@ -69,15 +74,12 @@ function rebuildDocFromSegments() {
   segmentIds.value = sorted.map(s => s.segment_id)
 
   docJson.value = {
-    type: 'doc',
-    content: sorted.map(s => {
-      const draft = lightEdit.getDraft(s.segment_id)
-      const text = draft !== undefined ? draft : s.raw_text
-      return {
-        type: 'paragraph',
-        content: text ? [{ type: 'text', text }] : []
-      }
-    })
+    ...buildSegmentEditorDocument(
+      sorted.map((segment) => ({
+        segmentId: segment.segment_id,
+        text: lightEdit.getDraft(segment.segment_id) ?? segment.raw_text,
+      })),
+    ),
   }
   pushContentToEditor()
 }
@@ -96,15 +98,12 @@ function rebuildDocFromProgressiveSegments() {
 
   segmentIds.value = progressive.map(s => s.segmentId)
 
-  docJson.value = {
-    type: 'doc',
-    content: progressive.map(s => ({
-      type: 'paragraph',
-      content: (s.renderStatus === 'completed' && s.rawText)
-        ? [{ type: 'text', text: s.rawText }]
-        : []
-    }))
-  }
+  docJson.value = buildSegmentEditorDocument(
+    progressive.map((segment) => ({
+      segmentId: segment.segmentId,
+      text: segment.renderStatus === "completed" ? segment.rawText : "",
+    })),
+  )
   pushContentToEditor()
 }
 
@@ -306,24 +305,24 @@ function commitAndExitEdit() {
     return
   }
 
-  let paragraphIndex = 0
-  editor.state.doc.forEach((node: any) => {
-    if (node.type.name !== 'paragraph') return
+  try {
+    const changes = collectSegmentDraftChanges(
+      editor.getJSON(),
+      segmentIds.value,
+      getBackendSegmentText,
+    )
 
-    const segId = segmentIds.value[paragraphIndex]
-    paragraphIndex++
-
-    if (!segId) return
-
-    const currentText = node.textContent
-    const backendText = getBackendSegmentText(segId)
-
-    if (currentText !== backendText) {
-      lightEdit.setDraft(segId, currentText)
-    } else {
-      lightEdit.clearDraft(segId)
-    }
-  })
+    changes.changedDrafts.forEach(([segmentId, text]) => {
+      lightEdit.setDraft(segmentId, text)
+    })
+    changes.clearedSegmentIds.forEach((segmentId) => {
+      lightEdit.clearDraft(segmentId)
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "正文结构异常，无法提交编辑"
+    ElMessage.error(message)
+    return
+  }
 
   isEditing.value = false
   // 不需要 rebuildDocFromSegments，因为 watch dirtySegmentIds 会触发重建

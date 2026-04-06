@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
 
 import {
   findNextSegmentStartSample,
@@ -39,26 +39,20 @@ const segments: TimelineSegmentEntry[] = [
   },
 ];
 
-assert.equal(
-  findPreviousSegmentStartSample(segments, 1500),
-  0,
-  "播放位于第二段中部时，上一段应跳到第一段段头，而不是当前段段头",
-);
+describe("segmentNavigation", () => {
+it("播放位于第二段中部时，上一段跳到第一段段头", () => {
+  expect(findPreviousSegmentStartSample(segments, 1500)).toBe(0);
+});
 
-assert.equal(
-  findPreviousSegmentStartSample(segments, 2000),
-  1000,
-  "播放位于第三段段头时，上一段应跳到第二段段头",
-);
+it("播放位于第三段段头时，上一段跳到第二段段头", () => {
+  expect(findPreviousSegmentStartSample(segments, 2000)).toBe(1000);
+});
 
-assert.equal(
-  findNextSegmentStartSample(segments, 1500, 3000),
-  2000,
-  "播放位于第二段中部时，下一段应跳到第三段段头",
-);
+it("播放位于第二段中部时，下一段跳到第三段段头", () => {
+  expect(findNextSegmentStartSample(segments, 1500, 3000)).toBe(2000);
+});
 
-assert.equal(
-  findNextSegmentStartSample(segments, 2500, 3000),
-  3000,
-  "播放位于最后一段中部时，下一段应跳到时间线末尾",
-);
+it("播放位于最后一段中部时，下一段跳到时间线末尾", () => {
+  expect(findNextSegmentStartSample(segments, 2500, 3000)).toBe(3000);
+});
+});
