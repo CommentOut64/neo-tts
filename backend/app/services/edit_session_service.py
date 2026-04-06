@@ -8,6 +8,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     BaselineSnapshotResponse,
+    ConfigurationCommitResponse,
     CurrentCheckpointResponse,
     DocumentSnapshot,
     EditSessionSnapshotResponse,
@@ -125,6 +126,8 @@ class EditSessionService:
             session_status=active_session.session_status,
             document_id=active_session.document_id,
             document_version=current_snapshot.document_version if current_snapshot is not None else None,
+            default_render_profile_id=current_snapshot.default_render_profile_id if current_snapshot is not None else None,
+            default_voice_binding_id=current_snapshot.default_voice_binding_id if current_snapshot is not None else None,
             baseline_version=baseline_snapshot.document_version if baseline_snapshot is not None else None,
             head_version=head_snapshot.document_version if head_snapshot is not None else None,
             total_segment_count=total_segment_count,
@@ -154,6 +157,63 @@ class EditSessionService:
             active_job=active_job,
             segments=segments,
             edges=edges,
+        )
+
+    def commit_configuration_snapshot(
+        self,
+        *,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+    ) -> ConfigurationCommitResponse:
+        active_session = self.require_active_session()
+        next_document_version = max(before_snapshot.document_version, after_snapshot.document_version)
+        if next_document_version <= before_snapshot.document_version:
+            next_document_version = before_snapshot.document_version + 1
+
+        next_timeline_manifest_id = after_snapshot.timeline_manifest_id
+        next_playback_map_version = after_snapshot.playback_map_version
+        if after_snapshot.timeline_manifest_id is not None:
+            current_timeline = self._asset_store.load_timeline_manifest(after_snapshot.timeline_manifest_id)
+            next_timeline = current_timeline.model_copy(
+                deep=True,
+                update={
+                    "timeline_manifest_id": f"timeline-{uuid4().hex}",
+                    "document_version": next_document_version,
+                    "timeline_version": next_document_version,
+                },
+            )
+            self._asset_store.write_formal_json_atomic(
+                f"timelines/{next_timeline.timeline_manifest_id}/manifest.json",
+                next_timeline.model_dump(mode="json"),
+            )
+            next_timeline_manifest_id = next_timeline.timeline_manifest_id
+            next_playback_map_version = next_document_version
+
+        head_snapshot = after_snapshot.model_copy(
+            deep=True,
+            update={
+                "snapshot_id": f"head-{uuid4().hex}",
+                "snapshot_kind": "head",
+                "document_version": next_document_version,
+                "timeline_manifest_id": next_timeline_manifest_id,
+                "playback_map_version": next_playback_map_version,
+            },
+        )
+        self._repository.save_snapshot(head_snapshot)
+        self._repository.upsert_active_session(
+            active_session.model_copy(
+                update={
+                    "session_status": "ready",
+                    "head_snapshot_id": head_snapshot.snapshot_id,
+                    "active_job_id": None,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+        )
+        return ConfigurationCommitResponse(
+            document_id=head_snapshot.document_id,
+            document_version=head_snapshot.document_version,
+            head_snapshot_id=head_snapshot.snapshot_id,
         )
 
     def delete_session(self) -> None:

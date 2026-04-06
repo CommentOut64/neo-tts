@@ -4,9 +4,13 @@ import json
 from pathlib import Path
 import queue
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
+from backend.app.api.reference_audio_upload import (
+    store_temporary_reference_audio,
+    validate_reference_audio_filename,
+)
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
 from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
 from backend.app.repositories.voice_repository import VoiceRepository
@@ -16,6 +20,7 @@ from backend.app.schemas.edit_session import (
     BoundaryAssetResponse,
     CompositionExportRequest,
     CompositionResponse,
+    ConfigurationCommitResponse,
     CreateSegmentRequest,
     CurrentCheckpointResponse,
     EdgeListResponse,
@@ -29,6 +34,7 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    ReferenceAudioUploadResponse,
     RenderProfilePatchRequest,
     RenderProfileListResponse,
     RenderJobAcceptedResponse,
@@ -239,6 +245,23 @@ def _should_close_export_event_stream(event_type: str, payload: dict) -> bool:
     if event_type != "job_state_changed":
         return False
     return payload.get("status") in {"completed", "failed"}
+
+
+@router.post(
+    "/reference-audio",
+    response_model=ReferenceAudioUploadResponse,
+    summary="上传临时参考音频",
+    description="上传参考音频文件并返回可用于 edit-session 的临时路径。",
+    responses=BAD_REQUEST_RESPONSE,
+)
+async def upload_reference_audio(
+    request: Request,
+    ref_audio_file: UploadFile = File(..., description="参考音频文件，支持 `.wav`、`.mp3`、`.flac`。"),
+) -> ReferenceAudioUploadResponse:
+    filename = validate_reference_audio_filename(ref_audio_file.filename)
+    payload = await ref_audio_file.read()
+    temp_path = store_temporary_reference_audio(request=request, filename=filename, payload=payload)
+    return ReferenceAudioUploadResponse(reference_audio_path=str(temp_path), filename=filename)
 
 
 @router.post(
@@ -508,6 +531,17 @@ def list_edges(
 
 
 @router.patch(
+    "/edges/{edge_id}/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交边参数",
+    description="修改段间停顿或边界策略，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_edge_config(request: Request, edge_id: str, body: UpdateEdgeRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_update_edge(edge_id, body)
+
+
+@router.patch(
     "/edges/{edge_id}",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -520,6 +554,17 @@ def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> Rende
 
 
 @router.patch(
+    "/session/render-profile/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交会话级渲染配置",
+    description="创建新的 session-scope render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_session_render_profile(body)
+
+
+@router.patch(
     "/session/render-profile",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -529,6 +574,17 @@ def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> Rende
 )
 def patch_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_session_render_profile_job(body)
+
+
+@router.patch(
+    "/session/voice-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交会话级音色绑定",
+    description="创建新的 session-scope voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_session_voice_binding(body)
 
 
 @router.patch(
@@ -576,6 +632,21 @@ def patch_group_voice_binding(
 
 
 @router.patch(
+    "/segments/{segment_id}/render-profile/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交段级渲染配置",
+    description="为单个段创建新的 render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segment_render_profile(
+    request: Request,
+    segment_id: str,
+    body: RenderProfilePatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segment_render_profile(segment_id, body)
+
+
+@router.patch(
     "/segments/{segment_id}/render-profile",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -589,6 +660,21 @@ def patch_segment_render_profile(
     body: RenderProfilePatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segment_render_profile_job(segment_id, body)
+
+
+@router.patch(
+    "/segments/{segment_id}/voice-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交段级音色绑定",
+    description="为单个段创建新的 voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segment_voice_binding(
+    request: Request,
+    segment_id: str,
+    body: VoiceBindingPatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segment_voice_binding(segment_id, body)
 
 
 @router.patch(
@@ -608,6 +694,20 @@ def patch_segment_voice_binding(
 
 
 @router.patch(
+    "/segments/render-profile-batch/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交批量段级渲染配置",
+    description="对目标段批量绑定新的 render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segments_render_profile_batch(
+    request: Request,
+    body: SegmentBatchRenderProfilePatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segments_render_profile_batch(body)
+
+
+@router.patch(
     "/segments/render-profile-batch",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -620,6 +720,20 @@ def patch_segments_render_profile_batch(
     body: SegmentBatchRenderProfilePatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segments_render_profile_batch_job(body)
+
+
+@router.patch(
+    "/segments/voice-binding-batch/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交批量段级音色绑定",
+    description="对目标段批量绑定新的 voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segments_voice_binding_batch(
+    request: Request,
+    body: SegmentBatchVoiceBindingPatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segments_voice_binding_batch(body)
 
 
 @router.patch(

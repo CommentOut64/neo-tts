@@ -30,6 +30,17 @@ class InitializeEditSessionRequest(BaseModel):
     )
 
 
+class ReferenceAudioUploadResponse(BaseModel):
+    reference_audio_path: str = Field(description="上传后生成的临时参考音频路径。")
+    filename: str = Field(description="上传文件名。")
+
+
+class ConfigurationCommitResponse(BaseModel):
+    document_id: str = Field(description="当前文档 ID。")
+    document_version: int = Field(description="提交后的 head 文档版本号。")
+    head_snapshot_id: str = Field(description="提交后的 head snapshot ID。")
+
+
 class AudioDeliveryDescriptor(BaseModel):
     asset_id: str = Field(description="音频资产 ID。")
     audio_url: str = Field(description="可直接请求的音频地址。")
@@ -627,6 +638,8 @@ class EditSessionSnapshotResponse(BaseModel):
     session_status: Literal["empty", "initializing", "ready", "failed"] = Field(default="empty", description="当前会话状态。")
     document_id: str | None = Field(default=None, description="当前活动文档 ID。")
     document_version: int | None = Field(default=None, description="当前 head 对应的版本号。")
+    default_render_profile_id: str | None = Field(default=None, description="默认 session-scope render profile ID。")
+    default_voice_binding_id: str | None = Field(default=None, description="默认 session-scope voice binding ID。")
     baseline_version: int | None = Field(default=None, description="baseline 版本号。")
     head_version: int | None = Field(default=None, description="head 版本号。")
     total_segment_count: int = Field(default=0, description="当前版本的段总数。")

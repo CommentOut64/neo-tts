@@ -41,6 +41,7 @@ from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     AppendSegmentsRequest,
     CheckpointState,
+    ConfigurationCommitResponse,
     CompositionResponse,
     CreateSegmentRequest,
     DocumentSnapshot,
@@ -210,6 +211,12 @@ class RenderJobService:
         self._preview_ttl_seconds = preview_ttl_seconds
         self._queued_requests: dict[str, InitializeEditSessionRequest] = {}
         self._queued_edit_jobs: dict[str, QueuedEditJob] = {}
+
+    def _assert_can_commit_configuration(self) -> None:
+        try:
+            self._runtime.assert_can_start()
+        except RuntimeError as exc:
+            raise ActiveRenderJobConflictError(str(exc)) from exc
 
     def create_initialize_job(self, request: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
         try:
@@ -664,6 +671,123 @@ class RenderJobService:
             impact=TargetedRenderPlan(),
             skip_render=True,
             skip_compose=True,
+        )
+
+    def commit_update_edge(self, edge_id: str, patch: UpdateEdgeRequest) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._edge_service.update_edge(edge_id, patch, snapshot=before_snapshot).snapshot
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_session_render_profile(self, patch: RenderProfilePatchRequest) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_session_render_profile(patch, snapshot=before_snapshot)
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_session_voice_binding(self, patch: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_segment_render_profile(
+        self,
+        segment_id: str,
+        patch: RenderProfilePatchRequest,
+    ) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, profile = self._segment_group_service.create_render_profile(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=patch,
+            base_profile_id=self._resolve_segment_assigned_render_profile_id(before_snapshot, segment_id),
+        )
+        after_snapshot = self._segment_service.update_segment_render_profile(
+            segment_id,
+            profile.render_profile_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_segment_voice_binding(
+        self,
+        segment_id: str,
+        patch: VoiceBindingPatchRequest,
+    ) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, binding = self._segment_group_service.create_voice_binding(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=patch,
+            base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
+        after_snapshot = self._segment_service.update_segment_voice_binding(
+            segment_id,
+            binding.voice_binding_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_segments_render_profile_batch(
+        self,
+        body: SegmentBatchRenderProfilePatchRequest,
+    ) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, profile = self._segment_group_service.create_render_profile(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=body.patch,
+            base_profile_id=before_snapshot.default_render_profile_id,
+        )
+        after_snapshot = self._segment_service.update_segments_render_profile(
+            body.segment_ids,
+            profile.render_profile_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+    def commit_patch_segments_voice_binding_batch(
+        self,
+        body: SegmentBatchVoiceBindingPatchRequest,
+    ) -> ConfigurationCommitResponse:
+        self._assert_can_commit_configuration()
+        before_snapshot = self._session_service.get_head_snapshot()
+        working_snapshot, binding = self._segment_group_service.create_voice_binding(
+            snapshot=before_snapshot,
+            scope="segment",
+            patch=body.patch,
+            base_binding_id=before_snapshot.default_voice_binding_id,
+        )
+        after_snapshot = self._segment_service.update_segments_voice_binding(
+            body.segment_ids,
+            binding.voice_binding_id,
+            snapshot=working_snapshot,
+        ).snapshot
+        return self._session_service.commit_configuration_snapshot(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
         )
 
     def run_initialize_job(self, job_id: str) -> None:
