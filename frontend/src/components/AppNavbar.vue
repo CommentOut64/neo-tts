@@ -25,7 +25,7 @@ const navItems = [
   <nav class="fixed top-0 left-0 right-0 z-50 h-14 bg-primary border-b border-border flex items-center px-6">
     <div class="flex items-center gap-2 mr-8">
       <el-icon :size="22" class="text-accent"><Microphone /></el-icon>
-      <span class="text-base font-semibold text-foreground">GPT-SoVITS Studio</span>
+      <span class="text-base font-semibold text-foreground">Neo TTS</span>
     </div>
     <div class="flex items-center gap-1">
       <button
