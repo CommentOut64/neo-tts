@@ -56,7 +56,7 @@ export function useEditSession() {
       activeJob.value = data.active_job
       
       if (data.session_status === 'initializing' && activeJob.value) {
-        runtimeState.trackJob(activeJob.value.job_id)
+        runtimeState.trackJob(activeJob.value, { initialRendering: true })
       } else if (data.session_status === 'ready') {
         syncDraftRevisionFromSnapshot(data)
         await refreshTimeline()
@@ -82,7 +82,7 @@ export function useEditSession() {
       lastInitParams.value = params
       sessionStatus.value = 'initializing'
       const response = await initializeSession(params)
-      runtimeState.trackJob(response.job_id)
+      runtimeState.trackJob(response, { initialRendering: true })
       return response
     } catch (err) {
       sessionStatus.value = 'failed'

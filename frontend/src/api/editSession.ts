@@ -120,6 +120,8 @@ export async function cancelRenderJob(jobId: string): Promise<void> {
   await axios.post('/v1/edit-session/render-jobs/' + jobId + '/cancel')
 }
 export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse> {
-  const { data } = await axios.post<RenderJobResponse>('/v1/edit-session/render-jobs/' + jobId + '/resume')
-  return data
+  const { data } = await axios.post<RenderJobAcceptedResponse>(
+    '/v1/edit-session/render-jobs/' + jobId + '/resume',
+  )
+  return unwrapAcceptedRenderJob(data)
 }
