@@ -103,7 +103,7 @@ function onSegmentDoubleClick(segmentId: string) {
         <!-- Display Mode -->
         <div
           v-else
-          class="p-3 rounded-lg border transition-all duration-300 ease-out cursor-pointer select-none"
+          class="p-3 rounded-lg border transition-colors duration-150 cursor-pointer select-none"
           :class="{
             // 选中段：采用背景高亮（暗示可操作的作用域）
             'bg-blue-500/15 border-blue-500/50': isSelected(seg.segment_id),

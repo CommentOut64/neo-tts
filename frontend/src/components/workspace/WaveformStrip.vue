@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, ref, onUnmounted } from "vue";
 import { usePlayback } from "@/composables/usePlayback";
 import { useTimeline } from "@/composables/useTimeline";
 
-const { isPlaying, currentSample, seekToSample } = usePlayback();
+const { currentSample, seekToSample } = usePlayback();
 const { totalSamples, segmentEntries } = useTimeline();
 
 const containerRef = ref<HTMLElement | null>(null);
 const isDragging = ref(false);
+const dragPreviewSample = ref<number | null>(null);
 
 // Generate a fake waveform path once
 const fakeWaveform = computed(() => {
@@ -24,42 +25,60 @@ const fakeWaveform = computed(() => {
   return bars;
 });
 
+const displayedSample = computed(() => {
+  if (isDragging.value && dragPreviewSample.value !== null) {
+    return dragPreviewSample.value;
+  }
+  return currentSample.value;
+});
+
 // Progress as percentage
 const progressPercent = computed(() => {
   if (totalSamples.value === 0) return 0;
-  return (currentSample.value / totalSamples.value) * 100;
+  return (displayedSample.value / totalSamples.value) * 100;
 });
 
-function handleMouseEvent(e: MouseEvent) {
-  if (!containerRef.value || totalSamples.value === 0) return;
+function getSampleFromMouseEvent(e: MouseEvent): number | null {
+  if (!containerRef.value || totalSamples.value === 0) return null;
 
   const rect = containerRef.value.getBoundingClientRect();
   let x = e.clientX - rect.left;
   x = Math.max(0, Math.min(x, rect.width));
 
   const ratio = x / rect.width;
-  const targetSample = Math.floor(ratio * totalSamples.value);
-  seekToSample(targetSample);
+  return Math.floor(ratio * totalSamples.value);
+}
+
+function updateDragPreview(e: MouseEvent) {
+  const targetSample = getSampleFromMouseEvent(e);
+  if (targetSample === null) return;
+  dragPreviewSample.value = targetSample;
 }
 
 function onMouseDown(e: MouseEvent) {
   isDragging.value = true;
-  handleMouseEvent(e);
+  updateDragPreview(e);
   document.addEventListener("mousemove", onMouseMove);
   document.addEventListener("mouseup", onMouseUp);
 }
 
 function onMouseMove(e: MouseEvent) {
   if (!isDragging.value) return;
-  handleMouseEvent(e);
+  updateDragPreview(e);
 }
 
 function onMouseUp(e: MouseEvent) {
-  if (isDragging.value) {
-    handleMouseEvent(e);
-    isDragging.value = false;
-    document.removeEventListener("mousemove", onMouseMove);
-    document.removeEventListener("mouseup", onMouseUp);
+  if (!isDragging.value) return;
+
+  updateDragPreview(e);
+  const targetSample = dragPreviewSample.value;
+  isDragging.value = false;
+  dragPreviewSample.value = null;
+  document.removeEventListener("mousemove", onMouseMove);
+  document.removeEventListener("mouseup", onMouseUp);
+
+  if (targetSample !== null) {
+    seekToSample(targetSample);
   }
 }
 
@@ -83,23 +102,17 @@ const normalizedSegments = computed(() => {
 
 <template>
   <div
-    class="w-full h-28 bg-card border-none rounded-card shadow-card relative overflow-hidden flex flex-col justify-between shrink-0"
+    class="w-full h-24 bg-card border-none rounded-card shadow-card relative overflow-hidden flex flex-col justify-center shrink-0"
   >
-    <div
-      class="px-4 py-2 flex items-center justify-between text-xs font-semibold text-muted-fg uppercase tracking-wider z-10 shrink-0"
-    >
-      <span>全局波形预览 (Placeholder)</span>
-      <span class="opacity-50">Drag to Seek</span>
-    </div>
-
     <!-- The interactive drag area -->
     <div
       ref="containerRef"
-      class="flex-1 relative mx-4 mb-3 rounded-lg overflow-hidden cursor-pointer select-none group bg-secondary/10"
+      class="h-16 relative mx-4 rounded-lg overflow-hidden cursor-pointer select-none group bg-secondary/10"
       @mousedown="onMouseDown"
     >
-      <!-- Segments backgrounds -->
+      <!-- Segments backgrounds (Temporarily hidden) -->
       <div
+        v-show="false"
         v-for="(seg, idx) in normalizedSegments"
         :key="seg.id"
         class="absolute inset-y-0 transition-colors border-l border-background/20"
@@ -107,19 +120,19 @@ const normalizedSegments = computed(() => {
         :style="{ left: seg.left + '%', width: seg.width + '%' }"
       ></div>
 
-      <!-- Fake waveform bars (Background) -->
+      <!-- Fake waveform bars (Background / Unplayed) -->
       <div
-        class="absolute inset-0 flex items-center justify-between px-1 gap-[2px] opacity-30 pointer-events-none"
+        class="absolute inset-0 flex items-center justify-between px-1 gap-[2px] pointer-events-none"
       >
         <div
           v-for="(h, i) in fakeWaveform"
           :key="i"
-          class="flex-1 bg-foreground rounded-full"
+          class="flex-1 rounded-full bg-foreground/15 transition-colors"
           :style="{ height: h + '%' }"
         ></div>
       </div>
 
-      <!-- Fake waveform bars (Highlighted via clip-path) -->
+      <!-- Fake waveform bars (Highlighted via clip-path / Played) -->
       <div
         class="absolute inset-0 flex items-center justify-between px-1 gap-[2px] pointer-events-none"
         :style="{ clipPath: `inset(0 ${100 - progressPercent}% 0 0)` }"
@@ -127,24 +140,21 @@ const normalizedSegments = computed(() => {
         <div
           v-for="(h, i) in fakeWaveform"
           :key="i"
-          class="flex-1 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+          class="flex-1 rounded-full bg-blue-500/40 transition-colors"
           :style="{ height: h + '%' }"
         ></div>
       </div>
 
-      <!-- Scrubber Line -->
+      <!-- Scrubber Line (Progress Bar) -->
       <div
-        class="absolute top-0 bottom-0 w-[2px] bg-blue-500 pointer-events-none z-20 transition-opacity"
+        class="absolute top-0 bottom-0 w-[2px] bg-blue-500 pointer-events-none z-20"
         :class="
           isDragging
             ? 'opacity-100 shadow-[0_0_8px_rgba(59,130,246,0.8)]'
-            : 'opacity-80 group-hover:opacity-100'
+            : 'opacity-80 group-hover:opacity-100 shadow-none group-hover:shadow-[0_0_8px_rgba(59,130,246,0.5)]'
         "
         :style="{ left: progressPercent + '%' }"
       >
-        <div
-          class="absolute -top-1 -translate-x-[calc(50%-1px)] w-3 h-3 rounded-full bg-blue-500 shadow-sm"
-        />
       </div>
     </div>
   </div>

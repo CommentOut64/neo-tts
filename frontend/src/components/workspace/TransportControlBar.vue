@@ -2,6 +2,10 @@
 import { computed, ref, watch } from "vue";
 import { usePlayback } from "@/composables/usePlayback";
 import { useTimeline } from "@/composables/useTimeline";
+import {
+  findNextSegmentStartSample,
+  findPreviousSegmentStartSample,
+} from "@/utils/segmentNavigation";
 import { ElIcon } from "element-plus";
 import {
   VideoPlay,
@@ -65,34 +69,25 @@ function onTogglePlay() {
 }
 
 function onPrevSegment() {
-  const current = currentSample.value;
-  let targetNode = segmentEntries.value[0]?.start_sample || 0;
-  for (let i = segmentEntries.value.length - 1; i >= 0; i--) {
-    const segStart = segmentEntries.value[i].start_sample;
-    if (segStart < current - sampleRate.value * 0.5) {
-      targetNode = segStart;
-      break;
-    }
-  }
-  seekToSample(targetNode);
+  const targetSample = findPreviousSegmentStartSample(
+    segmentEntries.value,
+    currentSample.value,
+  );
+  seekToSample(targetSample);
 }
 
 function onNextSegment() {
-  const current = currentSample.value;
-  let targetNode = totalSamples.value;
-  for (let i = 0; i < segmentEntries.value.length; i++) {
-    const segStart = segmentEntries.value[i].start_sample;
-    if (segStart > current + sampleRate.value * 0.1) {
-      targetNode = segStart;
-      break;
-    }
-  }
-  seekToSample(targetNode);
+  const targetSample = findNextSegmentStartSample(
+    segmentEntries.value,
+    currentSample.value,
+    totalSamples.value,
+  );
+  seekToSample(targetSample);
 }
 </script>
 
 <template>
-  <div class="h-16 w-full shrink-0 bg-card border-none rounded-card shadow-card px-4 flex items-center gap-4">
+  <div class="h-16 w-full shrink-0 bg-card border border-border rounded-card shadow-card px-4 flex items-center gap-4">
     <div class="flex items-center gap-3">
       <button
         class="w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white hover:bg-blue-600 disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
@@ -128,7 +123,6 @@ function onNextSegment() {
           :show-tooltip="false"
           size="small"
           class="w-full !m-0"
-          :style="{ '--el-slider-main-bg-color': 'var(--color-primary)', '--el-slider-runway-bg-color': 'var(--color-border)' }"
           @input="onSliderInput"
           @change="onSliderChange"
         />

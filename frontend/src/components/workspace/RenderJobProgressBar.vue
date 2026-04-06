@@ -28,7 +28,7 @@ function onCancel() {
 
 <template>
   <div
-    class="h-16 w-full shrink-0 bg-accent/10 border-accent rounded-card shadow-card px-4 flex items-center gap-4"
+    class="h-16 w-full shrink-0 bg-accent/10 border border-accent rounded-card shadow-card px-4 flex items-center gap-4"
   >
     <div class="flex-1 flex flex-col gap-1 pr-6">
       <div

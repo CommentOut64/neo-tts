@@ -33,7 +33,6 @@ declare module 'vue' {
     TtsForm: typeof import('./src/components/TtsForm.vue')['default']
     UApp: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']
     UEditor: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Editor.vue')['default']
-    UEditorToolbar: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/EditorToolbar.vue')['default']
     VoiceSelect: typeof import('./src/components/VoiceSelect.vue')['default']
     WaveformStrip: typeof import('./src/components/workspace/WaveformStrip.vue')['default']
     WorkspaceEditorHost: typeof import('./src/components/workspace/WorkspaceEditorHost.vue')['default']

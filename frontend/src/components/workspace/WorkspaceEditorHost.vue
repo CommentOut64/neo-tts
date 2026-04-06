@@ -254,9 +254,12 @@ function onCanvasClick(event: MouseEvent) {
 
 function onCanvasDblClick(event: MouseEvent) {
   if (isEditing.value) return
+  
   const segId = findSegmentIdFromEvent(event)
   if (segId) {
-    enterEditMode()
+    // 阻止浏览器默认的双击选词行为
+    window.getSelection()?.removeAllRanges()
+    enterEditMode(event)
   }
 }
 
@@ -268,7 +271,7 @@ function getBackendSegmentText(segId: string): string {
   return seg?.raw_text ?? ''
 }
 
-function enterEditMode() {
+function enterEditMode(clickEvent?: MouseEvent) {
   if (isEditing.value) return
 
   segmentSelection.clearSelection()
@@ -277,7 +280,20 @@ function enterEditMode() {
   nextTick(() => {
     const editor = editorRef.value?.editor
     if (editor) {
-      editor.commands.focus()
+      if (clickEvent) {
+        // 利用 TipTap/ProseMirror 的 posAtCoords 将点击坐标转换为光标位置
+        const coords = { left: clickEvent.clientX, top: clickEvent.clientY }
+        const pos = editor.view.posAtCoords(coords)
+        if (pos) {
+          editor.commands.focus()
+          // 插入光标到点击位置，而不是选中文本
+          editor.commands.setTextSelection(pos.pos)
+        } else {
+          editor.commands.focus()
+        }
+      } else {
+        editor.commands.focus()
+      }
     }
     syncDecorationState(editor)
   })
@@ -338,12 +354,12 @@ function onDocUpdate(_value: any) {
     class="flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border overflow-hidden flex flex-col"
     @keydown="onKeyDown"
   >
-    <!-- 头部区 -->
-    <header class="px-4 py-3 border-b border-border/70 flex items-center justify-between shrink-0">
+    <!-- 头部区：固定最小高度以防止切换状态时由于按钮尺寸不同导致行高跳动 -->
+    <header class="px-4 h-12 border-b border-border/70 flex items-center justify-between shrink-0">
       <div class="flex items-center gap-2">
-        <h3 class="text-sm font-semibold text-foreground">会话正文</h3>
+        <h3 class="text-sm font-semibold text-foreground leading-none">会话正文</h3>
         <span
-          class="text-[10px] font-medium px-1.5 py-0.5 rounded"
+          class="text-[10px] font-medium px-1.5 py-0.5 rounded leading-none"
           :class="isEditing
             ? 'bg-blue-500/10 text-blue-600 border border-blue-500/20'
             : 'bg-muted text-muted-fg border border-border/50'"
@@ -352,9 +368,9 @@ function onDocUpdate(_value: any) {
         </span>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center justify-end min-w-[200px] gap-2">
         <!-- 字数统计 -->
-        <span class="text-xs text-muted-fg">{{ charCount }} 字</span>
+        <span class="text-xs text-muted-fg mr-1">{{ charCount }} 字</span>
 
         <!-- 展示态：编辑按钮 + 清空按钮 -->
         <button
@@ -424,7 +440,6 @@ function onDocUpdate(_value: any) {
   line-height: 1.75;
   color: var(--color-foreground);
   min-height: 100%;
-  caret-color: var(--color-cta);
 }
 
 /* 编辑态文本选区 */
@@ -440,7 +455,7 @@ html.dark :deep(.ProseMirror ::selection) {
   padding: 6px 10px;
   border-radius: 4px;
   border-left: 3px solid transparent;
-  transition: all 0.3s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.3s ease, font-size 0.3s ease, font-weight 0.3s ease;
   cursor: default;
 }
 

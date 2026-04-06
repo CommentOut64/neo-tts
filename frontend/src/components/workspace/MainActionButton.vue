@@ -157,7 +157,7 @@ const onClick = () => {
   <button
     :disabled="isDisabled"
     @click="onClick"
-    class="px-4 py-2 rounded-lg font-semibold transition-all duration-300 min-w-[140px] text-center shadow-sm"
+    class="px-4 h-16 rounded-card font-semibold transition-all duration-300 min-w-[140px] text-center shadow-card shrink-0"
     :class="{
       'bg-amber-500 hover:bg-amber-600 text-white':
         !isProcessing && lightEdit.dirtyCount > 0,

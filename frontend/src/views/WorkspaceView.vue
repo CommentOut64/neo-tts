@@ -201,19 +201,22 @@ const handleSaveParams = async () => {
 
         <!-- 底部传输控制 + 主按钮 -->
         <div class="shrink-0 mb-4 flex items-center gap-3">
-          <div class="flex-1 bg-card rounded-card shadow-card border border-border p-4 flex items-center justify-between">
-            <RenderJobProgressBar v-if="currentRenderJob && !['completed', 'failed', 'cancelled_partial'].includes(currentRenderJob.status)" />
-            <TransportControlBar v-else />
-          </div>
-          <MainActionButton v-if="!showReInit" />
+          <!-- 左侧操作按钮（高度 h-16 与控制栏一致） -->
           <button
-            v-else
-            class="px-4 py-2 rounded-lg font-semibold transition-all duration-300 min-w-35 text-center shadow-sm bg-cta hover:bg-cta/90 text-white"
+            v-if="showReInit"
+            class="h-16 px-4 rounded-card font-semibold transition-all duration-300 min-w-35 text-center shadow-card bg-cta hover:bg-cta/90 text-white shrink-0"
             :disabled="!initParams.voice_id || !text"
             @click="handleInit"
           >
             重新生成时间线
           </button>
+          <MainActionButton v-else />
+
+          <!-- 右侧进度/播放控制区域（去除了原本的外层包装 div） -->
+          <div class="flex-1 min-w-0 flex">
+            <RenderJobProgressBar v-if="currentRenderJob && !['completed', 'failed', 'cancelled_partial'].includes(currentRenderJob.status)" />
+            <TransportControlBar v-else />
+          </div>
         </div>
       </div>
     </main>
