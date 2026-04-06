@@ -2,12 +2,23 @@ import axios from './http'
 import type { 
   EditSessionSnapshot,
   SegmentListResponse,
+  EdgeListResponse,
+  GroupListResponse,
   InitializeRequest,
+  ConfigurationCommitResponse,
+  ReferenceAudioUploadResponse,
+  RenderProfileListResponse,
+  RenderProfilePatch,
   RenderJobAcceptedResponse,
   RenderJobResponse,
   RenderJob,
   TimelineManifest,
-  RenderJobEventType
+  RenderJobEventType,
+  VoiceBindingListResponse,
+  VoiceBindingPatch,
+  SegmentBatchRenderProfilePatchBody,
+  SegmentBatchVoiceBindingPatchBody,
+  EdgeUpdateBody,
 } from '@/types/editSession'
 import { unwrapAcceptedRenderJob } from './editSessionContract'
 import { resolveApiUrl } from './requestSupport'
@@ -20,6 +31,13 @@ export async function getSnapshot(): Promise<EditSessionSnapshot> {
 export async function initializeSession(params: InitializeRequest): Promise<RenderJobResponse> {
   const { data } = await axios.post<RenderJobAcceptedResponse>('/v1/edit-session/initialize', params)
   return unwrapAcceptedRenderJob(data)
+}
+
+export async function uploadEditSessionReferenceAudio(file: File): Promise<ReferenceAudioUploadResponse> {
+  const form = new FormData()
+  form.append('ref_audio_file', file)
+  const { data } = await axios.post<ReferenceAudioUploadResponse>('/v1/edit-session/reference-audio', form)
+  return data
 }
 
 export async function getRenderJob(jobId: string): Promise<RenderJob> {
@@ -42,6 +60,31 @@ export async function listSegments(limit = 1000, cursor: number | null = null): 
   return data
 }
 
+export async function listEdges(limit = 1000, cursor: number | null = null): Promise<EdgeListResponse> {
+  const { data } = await axios.get<EdgeListResponse>('/v1/edit-session/edges', {
+    params: {
+      limit,
+      ...(cursor === null ? {} : { cursor }),
+    },
+  })
+  return data
+}
+
+export async function getGroups(): Promise<GroupListResponse> {
+  const { data } = await axios.get<GroupListResponse>('/v1/edit-session/groups')
+  return data
+}
+
+export async function getRenderProfiles(): Promise<RenderProfileListResponse> {
+  const { data } = await axios.get<RenderProfileListResponse>('/v1/edit-session/render-profiles')
+  return data
+}
+
+export async function getVoiceBindings(): Promise<VoiceBindingListResponse> {
+  const { data } = await axios.get<VoiceBindingListResponse>('/v1/edit-session/voice-bindings')
+  return data
+}
+
 export async function deleteSession(): Promise<void> {
   await axios.delete('/v1/edit-session')
 }
@@ -59,6 +102,141 @@ export async function updateSegment(
     updateData,
   );
   return unwrapAcceptedRenderJob(data);
+}
+
+export async function updateEdge(edgeId: string, body: EdgeUpdateBody): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    `/v1/edit-session/edges/${edgeId}`,
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function patchSessionRenderProfile(body: RenderProfilePatch): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    '/v1/edit-session/session/render-profile',
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSessionRenderProfile(body: RenderProfilePatch): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    '/v1/edit-session/session/render-profile/config',
+    body,
+  )
+  return data
+}
+
+export async function patchSessionVoiceBinding(body: VoiceBindingPatch): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    '/v1/edit-session/session/voice-binding',
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSessionVoiceBinding(body: VoiceBindingPatch): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    '/v1/edit-session/session/voice-binding/config',
+    body,
+  )
+  return data
+}
+
+export async function patchSegmentRenderProfile(
+  segmentId: string,
+  body: RenderProfilePatch,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    `/v1/edit-session/segments/${segmentId}/render-profile`,
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSegmentRenderProfile(
+  segmentId: string,
+  body: RenderProfilePatch,
+): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    `/v1/edit-session/segments/${segmentId}/render-profile/config`,
+    body,
+  )
+  return data
+}
+
+export async function patchSegmentVoiceBinding(
+  segmentId: string,
+  body: VoiceBindingPatch,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    `/v1/edit-session/segments/${segmentId}/voice-binding`,
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSegmentVoiceBinding(
+  segmentId: string,
+  body: VoiceBindingPatch,
+): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    `/v1/edit-session/segments/${segmentId}/voice-binding/config`,
+    body,
+  )
+  return data
+}
+
+export async function patchSegmentRenderProfileBatch(
+  body: SegmentBatchRenderProfilePatchBody,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    '/v1/edit-session/segments/render-profile-batch',
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSegmentRenderProfileBatch(
+  body: SegmentBatchRenderProfilePatchBody,
+): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    '/v1/edit-session/segments/render-profile-batch/config',
+    body,
+  )
+  return data
+}
+
+export async function patchSegmentVoiceBindingBatch(
+  body: SegmentBatchVoiceBindingPatchBody,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.patch<RenderJobAcceptedResponse>(
+    '/v1/edit-session/segments/voice-binding-batch',
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function commitSegmentVoiceBindingBatch(
+  body: SegmentBatchVoiceBindingPatchBody,
+): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    '/v1/edit-session/segments/voice-binding-batch/config',
+    body,
+  )
+  return data
+}
+
+export async function commitEdgeConfig(
+  edgeId: string,
+  body: EdgeUpdateBody,
+): Promise<ConfigurationCommitResponse> {
+  const { data } = await axios.patch<ConfigurationCommitResponse>(
+    `/v1/edit-session/edges/${edgeId}/config`,
+    body,
+  )
+  return data
 }
 
 export interface RenderJobEventHandlers {

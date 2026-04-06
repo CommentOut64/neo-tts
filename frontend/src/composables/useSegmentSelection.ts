@@ -5,9 +5,19 @@ const selectedSegmentIds = ref<Set<string>>(new Set());
 const primarySelectedSegmentId = ref<string | null>(null);
 const selectedEdgeId = ref<string | null>(null);
 
+export interface SelectionSnapshot {
+  selectedSegmentIds: string[];
+  primarySelectedSegmentId: string | null;
+  selectedEdgeId: string | null;
+}
+
 export function useSegmentSelection() {
   const isSelected = (id: string): boolean => {
     return selectedSegmentIds.value.has(id);
+  };
+
+  const isEdgeSelected = (id: string): boolean => {
+    return selectedEdgeId.value === id;
   };
 
   const select = (id: string) => {
@@ -65,14 +75,38 @@ export function useSegmentSelection() {
     selectedEdgeId.value = null;
   };
 
+  const selectEdge = (id: string) => {
+    selectedSegmentIds.value.clear();
+    primarySelectedSegmentId.value = null;
+    selectedEdgeId.value = id;
+  };
+
+  const captureSelection = (): SelectionSnapshot => {
+    return {
+      selectedSegmentIds: Array.from(selectedSegmentIds.value),
+      primarySelectedSegmentId: primarySelectedSegmentId.value,
+      selectedEdgeId: selectedEdgeId.value,
+    };
+  };
+
+  const restoreSelection = (snapshot: SelectionSnapshot) => {
+    selectedSegmentIds.value = new Set(snapshot.selectedSegmentIds);
+    primarySelectedSegmentId.value = snapshot.primarySelectedSegmentId;
+    selectedEdgeId.value = snapshot.selectedEdgeId;
+  };
+
   return {
     selectedSegmentIds: computed(() => new Set(selectedSegmentIds.value)), // Expose copy or readonly interface if you prefer
     primarySelectedSegmentId: computed(() => primarySelectedSegmentId.value),
     selectedEdgeId,
     isSelected,
+    isEdgeSelected,
     select,
     toggleSelect,
     rangeSelect,
     clearSelection,
+    selectEdge,
+    captureSelection,
+    restoreSelection,
   };
 }

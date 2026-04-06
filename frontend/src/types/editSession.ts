@@ -30,8 +30,12 @@ export interface EditSessionSnapshot {
   document_id: string | null
   document_version: number | null
   total_segment_count: number
+  total_edge_count?: number
   active_job: RenderJobSummary | null
+  default_render_profile_id?: string | null
+  default_voice_binding_id?: string | null
   segments: EditableSegment[]
+  edges?: EditableEdge[]
 }
 
 export interface EditableSegment {
@@ -57,11 +61,84 @@ export interface EditableSegment {
   assembled_audio_span: [number, number] | null
 }
 
+export interface EditableEdge {
+  edge_id: string
+  document_id: string
+  left_segment_id: string
+  right_segment_id: string
+  pause_duration_seconds: number
+  boundary_strategy: string
+  effective_boundary_strategy: string | null
+  pause_sample_count: number | null
+  boundary_sample_count: number | null
+  edge_status: 'pending' | 'rendering' | 'ready' | 'failed'
+  edge_version: number
+}
+
+export interface SegmentGroup {
+  group_id: string
+  name: string
+  segment_ids: string[]
+  render_profile_id: string | null
+  voice_binding_id: string | null
+  created_by: 'append' | 'batch_patch' | 'manual'
+}
+
+export interface RenderProfile {
+  render_profile_id: string
+  scope: 'session' | 'group' | 'segment'
+  name: string
+  speed: number
+  top_k: number
+  top_p: number
+  temperature: number
+  noise_scale: number
+  reference_audio_path: string | null
+  reference_text: string | null
+  reference_language: string | null
+  extra_overrides: Record<string, unknown>
+}
+
+export interface VoiceBinding {
+  voice_binding_id: string
+  scope: 'session' | 'group' | 'segment'
+  voice_id: string
+  model_key: string
+  sovits_path: string | null
+  gpt_path: string | null
+  speaker_meta: Record<string, unknown>
+}
+
 export interface SegmentListResponse {
   document_id: string
   document_version: number
   items: EditableSegment[]
   next_cursor: number | null
+}
+
+export interface EdgeListResponse {
+  document_id: string
+  document_version: number
+  items: EditableEdge[]
+  next_cursor: number | null
+}
+
+export interface GroupListResponse {
+  document_id: string
+  document_version: number
+  items: SegmentGroup[]
+}
+
+export interface RenderProfileListResponse {
+  document_id: string
+  document_version: number
+  items: RenderProfile[]
+}
+
+export interface VoiceBindingListResponse {
+  document_id: string
+  document_version: number
+  items: VoiceBinding[]
 }
 
 export interface InitializeRequest {
@@ -78,6 +155,53 @@ export interface InitializeRequest {
   pause_duration_seconds?: number
   noise_scale?: number
   segment_boundary_mode?: 'raw_strong_punctuation' | 'zh_period'
+}
+
+export interface ReferenceAudioUploadResponse {
+  reference_audio_path: string
+  filename: string
+}
+
+export interface ConfigurationCommitResponse {
+  document_id: string
+  document_version: number
+  head_snapshot_id: string
+}
+
+export interface RenderProfilePatch {
+  name?: string | null
+  speed?: number | null
+  top_k?: number | null
+  top_p?: number | null
+  temperature?: number | null
+  noise_scale?: number | null
+  reference_audio_path?: string | null
+  reference_text?: string | null
+  reference_language?: string | null
+  extra_overrides?: Record<string, unknown> | null
+}
+
+export interface VoiceBindingPatch {
+  voice_id?: string | null
+  model_key?: string | null
+  sovits_path?: string | null
+  gpt_path?: string | null
+  speaker_meta?: Record<string, unknown> | null
+}
+
+export interface SegmentBatchRenderProfilePatchBody {
+  segment_ids: string[]
+  patch: RenderProfilePatch
+}
+
+export interface SegmentBatchVoiceBindingPatchBody {
+  segment_ids: string[]
+  patch: VoiceBindingPatch
+}
+
+export interface EdgeUpdateBody {
+  pause_duration_seconds?: number | null
+  boundary_strategy?: string | null
 }
 
 export interface RenderJobResponse {

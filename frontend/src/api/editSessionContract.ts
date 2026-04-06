@@ -15,6 +15,7 @@ export interface WorkspaceInitializeDraft {
   refText: string
   refLang: string
   customRefFile: File | null
+  customRefPath: string | null
 }
 
 export interface VoiceReferenceSource {
@@ -50,6 +51,10 @@ export function buildInitializeRequest(
 
   if (draft.refSource === 'preset' && voice?.refAudio) {
     payload.reference_audio_path = voice.refAudio
+  }
+
+  if (draft.refSource === 'custom' && draft.customRefPath) {
+    payload.reference_audio_path = draft.customRefPath
   }
 
   if (draft.refText.trim().length > 0) {

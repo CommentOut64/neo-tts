@@ -40,7 +40,7 @@ let terminalStatusPromise: Promise<
 > | null = null;
 
 const PAUSED_HINT = "已暂停，随时可以继续";
-const RESUMED_HINT = "已恢复，正在接着处理剩余内容";
+const RESUMED_HINT = "已继续，正在接着处理剩余内容";
 
 interface TrackJobOptions {
   initialRendering?: boolean;

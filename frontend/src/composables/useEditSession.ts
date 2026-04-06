@@ -1,6 +1,27 @@
 import { ref } from 'vue'
-import { deleteSession, getSnapshot, getTimeline, initializeSession, listSegments } from '@/api/editSession'
-import type { EditSessionSnapshot, TimelineManifest, RenderJobSummary, InitializeRequest, RenderJobResponse, EditableSegment } from '@/types/editSession'
+import {
+  deleteSession,
+  getGroups,
+  getRenderProfiles,
+  getSnapshot,
+  getTimeline,
+  getVoiceBindings,
+  initializeSession,
+  listEdges,
+  listSegments,
+} from '@/api/editSession'
+import type {
+  EditSessionSnapshot,
+  TimelineManifest,
+  RenderJobSummary,
+  InitializeRequest,
+  RenderJobResponse,
+  EditableSegment,
+  EditableEdge,
+  SegmentGroup,
+  RenderProfile,
+  VoiceBinding,
+} from '@/types/editSession'
 import { useRuntimeState } from './useRuntimeState'
 import { extractStatusCode } from '@/api/requestSupport'
 import { useTimeline } from "./useTimeline";
@@ -16,6 +37,12 @@ const sourceDraftRevision = ref<number | null>(null)
 const lastInitParams = ref<InitializeRequest | null>(null)
 const segments = ref<EditableSegment[]>([])
 const segmentsLoaded = ref(false)
+const edges = ref<EditableEdge[]>([])
+const edgesLoaded = ref(false)
+const groups = ref<SegmentGroup[]>([])
+const renderProfiles = ref<RenderProfile[]>([])
+const voiceBindings = ref<VoiceBinding[]>([])
+const sessionResourcesLoaded = ref(false)
 
 export function useEditSession() {
   const runtimeState = useRuntimeState()
@@ -63,6 +90,12 @@ export function useEditSession() {
       } else {
         segments.value = []
         segmentsLoaded.value = false
+        edges.value = []
+        edgesLoaded.value = false
+        groups.value = []
+        renderProfiles.value = []
+        voiceBindings.value = []
+        sessionResourcesLoaded.value = false
         sourceDraftRevision.value = null
       }
     } catch (err) {
@@ -70,6 +103,12 @@ export function useEditSession() {
         sessionStatus.value = 'empty'
         segments.value = []
         segmentsLoaded.value = false
+        edges.value = []
+        edgesLoaded.value = false
+        groups.value = []
+        renderProfiles.value = []
+        voiceBindings.value = []
+        sessionResourcesLoaded.value = false
         sourceDraftRevision.value = null
       } else {
         sessionStatus.value = 'failed'
@@ -100,6 +139,12 @@ export function useEditSession() {
     if (sessionStatus.value !== 'ready') {
       segments.value = []
       segmentsLoaded.value = false
+      edges.value = []
+      edgesLoaded.value = false
+      groups.value = []
+      renderProfiles.value = []
+      voiceBindings.value = []
+      sessionResourcesLoaded.value = false
       if (sessionStatus.value === 'empty') {
         sourceDraftRevision.value = null
       }
@@ -121,7 +166,7 @@ export function useEditSession() {
       segmentCount: data.segment_entries.length,
       firstBlockAudioUrl: data.block_entries[0]?.audio_url ?? null,
     })
-    await loadAllSegments()
+    await Promise.all([loadAllSegments(), loadAllEdges(), refreshSessionResources()])
   }
 
   async function loadAllSegments() {
@@ -147,6 +192,50 @@ export function useEditSession() {
     segmentsLoaded.value = true
   }
 
+  async function loadAllEdges() {
+    if (sessionStatus.value !== 'ready') {
+      edges.value = []
+      edgesLoaded.value = false
+      return
+    }
+
+    const allEdges: EditableEdge[] = []
+    let cursor: number | null = null
+
+    while (true) {
+      const page = await listEdges(1000, cursor)
+      allEdges.push(...page.items)
+      if (page.next_cursor === null) {
+        break
+      }
+      cursor = page.next_cursor
+    }
+
+    edges.value = allEdges
+    edgesLoaded.value = true
+  }
+
+  async function refreshSessionResources() {
+    if (sessionStatus.value !== 'ready') {
+      groups.value = []
+      renderProfiles.value = []
+      voiceBindings.value = []
+      sessionResourcesLoaded.value = false
+      return
+    }
+
+    const [groupResponse, profileResponse, bindingResponse] = await Promise.all([
+      getGroups(),
+      getRenderProfiles(),
+      getVoiceBindings(),
+    ])
+
+    groups.value = groupResponse.items
+    renderProfiles.value = profileResponse.items
+    voiceBindings.value = bindingResponse.items
+    sessionResourcesLoaded.value = true
+  }
+
   async function clearSession() {
     await deleteSession()
     sessionStatus.value = 'empty'
@@ -156,6 +245,12 @@ export function useEditSession() {
     activeJob.value = null
     segments.value = []
     segmentsLoaded.value = false
+    edges.value = []
+    edgesLoaded.value = false
+    groups.value = []
+    renderProfiles.value = []
+    voiceBindings.value = []
+    sessionResourcesLoaded.value = false
     sourceDraftRevision.value = null
   }
 
@@ -169,12 +264,20 @@ export function useEditSession() {
     lastInitParams,
     segments,
     segmentsLoaded,
+    edges,
+    edgesLoaded,
+    groups,
+    renderProfiles,
+    voiceBindings,
+    sessionResourcesLoaded,
 
     discoverSession,
     initialize,
     refreshSnapshot,
     refreshTimeline,
     loadAllSegments,
+    loadAllEdges,
+    refreshSessionResources,
     clearSession,
   }
 }
