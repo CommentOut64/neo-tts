@@ -87,12 +87,9 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
 <template>
   <section class="bg-card rounded-card p-4 shadow-card">
-    <h3 class="text-[13px] font-semibold text-foreground mb-1">{{ title }}</h3>
-    <p class="text-[12px] text-muted-fg">{{ hint }}</p>
-  </section>
-
-  <section class="bg-card rounded-card p-4 shadow-card">
-    <h3 class="text-[13px] font-semibold text-foreground mb-3">目标音色</h3>
+    <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
+      目标音色<span v-if="panel.dirtyFields.value.has('voiceBinding.voice_id')" class="text-red-500 font-bold ml-0.5">*</span>
+    </h3>
     <VoiceSelect
       :model-value="selectedVoiceId"
       :voices="voices"
@@ -115,7 +112,9 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
   </section>
 
   <section class="bg-card rounded-card p-4 shadow-card">
-    <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
+    <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
+      参考音频<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path') || panel.dirtyFields.value.has('renderProfile.reference_text') || panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
+    </h3>
     <el-radio-group v-model="refSource" class="mb-3">
       <el-radio value="preset">模型预设</el-radio>
       <el-radio value="custom">自定义上传</el-radio>
@@ -148,8 +147,8 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
       </el-upload>
 
       <div class="mt-3">
-        <label class="text-[13px] font-semibold text-foreground block mb-1.5"
-          >参考音频路径</label
+        <label class="text-[13px] font-semibold text-foreground block mb-1.5 flex items-center"
+          >参考音频路径<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-input
           :model-value="
@@ -176,8 +175,8 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
     <div class="mt-3 space-y-3">
       <div>
-        <label class="text-[13px] font-semibold text-foreground block mb-1.5"
-          >参考文本</label
+        <label class="text-[13px] font-semibold text-foreground block mb-1.5 flex items-center"
+          >参考文本<span v-if="panel.dirtyFields.value.has('renderProfile.reference_text')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-input
           :model-value="
@@ -198,8 +197,8 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
       </div>
 
       <div class="flex flex-col gap-1.5 self-start">
-        <label class="text-[13px] font-semibold text-foreground"
-          >参考语言</label
+        <label class="text-[13px] font-semibold text-foreground flex items-center"
+          >参考语言<span v-if="panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-select
           :model-value="
@@ -229,6 +228,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
   <RuntimeInferenceSettingsPanel
     :values="panel.displayValues.value.renderProfile"
+    :dirty-fields="new Set(panel.dirtyFields.value)"
     @update="handleRuntimeUpdate"
   />
 </template>

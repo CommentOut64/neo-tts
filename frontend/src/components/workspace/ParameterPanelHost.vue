@@ -50,11 +50,6 @@ async function handleDiscardAndContinue() {
   <div
     class="space-y-5 w-full h-full overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
   >
-    <SessionParameterPanel v-if="scope === 'session'" :voices="props.voices" />
-    <SegmentParameterPanel v-else-if="scope === 'segment'" :voices="props.voices" />
-    <BatchParameterPanel v-else-if="scope === 'batch'" :voices="props.voices" />
-    <EdgeParameterPanel v-else />
-
     <ParameterDraftBar
       :scope="scope"
       :has-dirty="hasDirty"
@@ -62,6 +57,11 @@ async function handleDiscardAndContinue() {
       @discard="panel.discardDraft()"
       @submit="handleSubmit"
     />
+
+    <SessionParameterPanel v-if="scope === 'session'" :voices="props.voices" />
+    <SegmentParameterPanel v-else-if="scope === 'segment'" :voices="props.voices" />
+    <BatchParameterPanel v-else-if="scope === 'batch'" :voices="props.voices" />
+    <EdgeParameterPanel v-else />
 
     <ParameterDraftConfirm
       :visible="confirmVisible"

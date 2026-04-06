@@ -11,13 +11,6 @@ const edgeValues = computed(() => panel.displayValues.value.edge);
 
 <template>
   <section class="bg-card rounded-card p-4 shadow-card">
-    <h3 class="text-[13px] font-semibold text-foreground mb-1">Edge 参数</h3>
-    <p class="text-[12px] text-muted-fg">
-      调整段间停顿与边界策略。提交后仅持久化配置，不立即触发重推理。
-    </p>
-  </section>
-
-  <section class="bg-card rounded-card p-4 shadow-card">
     <h3 class="text-[13px] font-semibold text-foreground mb-3">停顿与拼接</h3>
 
     <div class="space-y-4">
@@ -29,11 +22,12 @@ const edgeValues = computed(() => panel.displayValues.value.edge);
         :step="0.05"
         unit="s"
         tooltip="控制两段之间的静音时长"
+        :is-dirty="panel.dirtyFields.value.has('edge.pause_duration_seconds')"
         @update:model-value="panel.updateEdgeField('pause_duration_seconds', $event)"
       />
 
       <div class="flex flex-col gap-1.5 self-start">
-        <label class="text-[13px] font-semibold text-foreground">边界策略</label>
+        <label class="text-[13px] font-semibold text-foreground flex items-center">边界策略<span v-if="panel.dirtyFields.value.has('edge.boundary_strategy')" class="text-red-500 font-bold ml-0.5">*</span></label>
         <el-select
           :model-value="edgeValues?.boundary_strategy ?? ''"
           size="small"

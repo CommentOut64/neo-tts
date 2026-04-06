@@ -26,7 +26,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [value: any];
   reset: [];
-  "save-now": [];
 }>();
 
 const selectedVoice = computed(() => {
@@ -59,6 +58,15 @@ function handleVoiceChange(val: string) {
   <div
     class="space-y-5 w-full h-full overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
   >
+    <!-- 顶部状态卡片 -->
+    <section class="bg-card rounded-card p-4 shadow-card">
+      <div class="flex items-center justify-between gap-3">
+        <h3 class="text-sm font-semibold text-foreground flex items-center shrink-0 h-6">
+          全局参数
+        </h3>
+      </div>
+    </section>
+
     <!-- 音色卡片 -->
     <section class="bg-card rounded-card p-4 shadow-card">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">目标音色</h3>
@@ -148,7 +156,6 @@ function handleVoiceChange(val: string) {
         :params="modelValue"
         @update:params="emit('update:modelValue', { ...modelValue, ...$event })"
         @reset="emit('reset')"
-        @save-now="emit('save-now')"
       />
     </section>
   </div>

@@ -61,7 +61,6 @@ const {
   cacheError,
   restoreCache,
   persistCacheWhenIdle,
-  persistCacheNow,
 } = useInferenceParamsCache()
 
 // 缓存恢复守卫
@@ -203,16 +202,6 @@ async function handleDeleteResult(item: AudioHistoryItem) {
   removeFromQueue(item)
 }
 
-// 手动保存配置
-async function handleSaveNow() {
-  try {
-    await persistCacheNow(buildCachePayload())
-    ElMessage.success('配置已保存')
-  } catch (err: unknown) {
-    ElMessage.error(`保存失败: ${(err as Error).message}`)
-  }
-}
-
 // Init
 async function init() {
   try {
@@ -328,7 +317,7 @@ init()
 
         <!-- Inference params -->
         <section class="bg-card rounded-card shadow-card overflow-hidden">
-          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" @save-now="handleSaveNow" />
+          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" />
         </section>
       </aside>
 

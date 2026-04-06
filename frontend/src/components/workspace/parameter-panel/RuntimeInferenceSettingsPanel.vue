@@ -13,6 +13,7 @@ const props = defineProps<{
     temperature: number | typeof MIXED_VALUE | null;
     noise_scale: number | typeof MIXED_VALUE | null;
   };
+  dirtyFields?: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -58,6 +59,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
             unit="x"
             tooltip="语音播放速度"
             :mixed="isMixed(values.speed)"
+            :is-dirty="dirtyFields?.has('renderProfile.speed')"
             @update:model-value="emit('update', 'speed', $event)"
           />
           <ParameterSlider
@@ -68,6 +70,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
             :step="0.05"
             tooltip="控制随机性"
             :mixed="isMixed(values.temperature)"
+            :is-dirty="dirtyFields?.has('renderProfile.temperature')"
             @update:model-value="emit('update', 'temperature', $event)"
           />
           <ParameterSlider
@@ -78,6 +81,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
             :step="0.05"
             tooltip="核采样概率阈值"
             :mixed="isMixed(values.top_p)"
+            :is-dirty="dirtyFields?.has('renderProfile.top_p')"
             @update:model-value="emit('update', 'top_p', $event)"
           />
           <ParameterSlider
@@ -88,6 +92,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
             :step="1"
             tooltip="候选 token 数量"
             :mixed="isMixed(values.top_k)"
+            :is-dirty="dirtyFields?.has('renderProfile.top_k')"
             @update:model-value="emit('update', 'top_k', $event)"
           />
           <ParameterSlider
@@ -98,6 +103,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
             :step="0.05"
             tooltip="控制音色细节扰动"
             :mixed="isMixed(values.noise_scale)"
+            :is-dirty="dirtyFields?.has('renderProfile.noise_scale')"
             @update:model-value="emit('update', 'noise_scale', $event)"
           />
         </div>

@@ -44,7 +44,7 @@ const initParams = ref({
   ref_lang: 'auto'
 })
 
-const { restoreCache, persistCacheWhenIdle, persistCacheNow } = useInferenceParamsCache()
+const { restoreCache, persistCacheWhenIdle } = useInferenceParamsCache()
 const isRestoring = ref(false)
 
 function buildCachePayload(): Record<string, unknown> {
@@ -199,14 +199,6 @@ const handleResetParams = () => {
   }
 }
 
-const handleSaveParams = async () => {
-  try {
-    await persistCacheNow(buildCachePayload())
-    ElMessage.success('配置已保存')
-  } catch (err: unknown) {
-    ElMessage.error(`保存失败: ${(err as Error).message}`)
-  }
-}
 </script>
 
 <template>
@@ -223,7 +215,6 @@ const handleSaveParams = async () => {
         :voices="voices"
         @upload-custom-ref="handleUploadCustomRef"
         @reset="handleResetParams"
-        @save-now="handleSaveParams"
       />
     </aside>
     

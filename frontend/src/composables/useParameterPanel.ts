@@ -49,6 +49,7 @@ const isSubmitting = ref(false);
 const pendingScopeContext = ref<ParameterPanelScopeContext | null>(null);
 const pendingSelectionSnapshot = ref<SelectionSnapshot | null>(null);
 const confirmVisible = ref(false);
+const flashPulse = ref(0);
 const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
   selectedSegmentIds: [],
   primarySelectedSegmentId: null,
@@ -176,46 +177,92 @@ export function useParameterPanel() {
     dirtyFieldSet.value = nextSet;
   }
 
+  function clearDirty(fieldKey: string) {
+    const nextSet = new Set(dirtyFieldSet.value);
+    nextSet.delete(fieldKey);
+    dirtyFieldSet.value = nextSet;
+  }
+
   function updateRenderProfileField<K extends keyof RenderProfilePatch>(
     key: K,
     value: RenderProfilePatch[K],
   ) {
+    const isSameAsOriginal =
+      value ===
+      resolvedValues.value.renderProfile[
+        key as keyof typeof resolvedValues.value.renderProfile
+      ];
+    const nextProfile = { ...draftPatch.value.renderProfile, [key]: value };
+    if (isSameAsOriginal) {
+      delete nextProfile[key];
+    }
+    
     draftPatch.value = {
       ...draftPatch.value,
-      renderProfile: {
-        ...draftPatch.value.renderProfile,
-        [key]: value,
-      },
+      renderProfile: nextProfile,
     };
-    markDirty(`renderProfile.${String(key)}`);
+
+    const fieldKey = `renderProfile.${String(key)}`;
+    if (isSameAsOriginal) {
+      clearDirty(fieldKey);
+    } else {
+      markDirty(fieldKey);
+    }
   }
 
   function updateVoiceBindingField<K extends keyof VoiceBindingPatch>(
     key: K,
     value: VoiceBindingPatch[K],
   ) {
+    const isSameAsOriginal =
+      value ===
+      resolvedValues.value.voiceBinding[
+        key as keyof typeof resolvedValues.value.voiceBinding
+      ];
+    const nextBinding = { ...draftPatch.value.voiceBinding, [key]: value };
+    if (isSameAsOriginal) {
+      delete nextBinding[key];
+    }
+
     draftPatch.value = {
       ...draftPatch.value,
-      voiceBinding: {
-        ...draftPatch.value.voiceBinding,
-        [key]: value,
-      },
+      voiceBinding: nextBinding,
     };
-    markDirty(`voiceBinding.${String(key)}`);
+
+    const fieldKey = `voiceBinding.${String(key)}`;
+    if (isSameAsOriginal) {
+      clearDirty(fieldKey);
+    } else {
+      markDirty(fieldKey);
+    }
   }
 
   function updateEdgeField<K extends keyof EdgeUpdateBody>(
     key: K,
     value: EdgeUpdateBody[K],
   ) {
+    const isSameAsOriginal =
+      resolvedValues.value.edge &&
+      value ===
+        resolvedValues.value.edge[
+          key as keyof typeof resolvedValues.value.edge
+        ];
+    const nextEdge = { ...draftPatch.value.edge, [key]: value };
+    if (isSameAsOriginal) {
+      delete nextEdge[key];
+    }
+
     draftPatch.value = {
       ...draftPatch.value,
-      edge: {
-        ...draftPatch.value.edge,
-        [key]: value,
-      },
+      edge: nextEdge,
     };
-    markDirty(`edge.${String(key)}`);
+
+    const fieldKey = `edge.${String(key)}`;
+    if (isSameAsOriginal) {
+      clearDirty(fieldKey);
+    } else {
+      markDirty(fieldKey);
+    }
   }
 
   function discardDraft() {
@@ -344,6 +391,10 @@ export function useParameterPanel() {
     }
   }
 
+  function triggerFlash() {
+    flashPulse.value++;
+  }
+
   return {
     scopeContext: computed(() => cloneScopeContext(scopeContext.value)),
     resolvedValues,
@@ -354,8 +405,11 @@ export function useParameterPanel() {
     hasDirty,
     isSubmitting,
     confirmVisible,
+    flashPulse: computed(() => flashPulse.value),
     pendingScopeContext: computed(() =>
-      pendingScopeContext.value ? cloneScopeContext(pendingScopeContext.value) : null,
+      pendingScopeContext.value
+        ? cloneScopeContext(pendingScopeContext.value)
+        : null,
     ),
     updateRenderProfileField,
     updateVoiceBindingField,
@@ -365,5 +419,6 @@ export function useParameterPanel() {
     cancelPendingScopeChange,
     discardAndContinue,
     submitAndContinue,
+    triggerFlash,
   };
 }

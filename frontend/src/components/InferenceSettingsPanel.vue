@@ -9,7 +9,6 @@ const props = defineProps<{ params: InferenceParams }>()
 const emit = defineEmits<{
   'update:params': [value: InferenceParams]
   reset: []
-  'save-now': []
 }>()
 
 const expanded = ref(true)
@@ -62,9 +61,8 @@ function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[
               <el-option value="cut5" label="按标点切分 (cut5)" />
             </el-select>
           </div>
-          <div class="flex items-center gap-2 pt-2">
-            <el-button size="small" text class="!text-muted-fg" @click="emit('reset')">恢复默认</el-button>
-            <el-button size="small" text class="!text-muted-fg" @click="emit('save-now')">保存配置</el-button>
+          <div class="pt-2">
+            <el-button size="small" text class="!px-0 !text-muted-fg" @click="emit('reset')">恢复默认</el-button>
           </div>
         </div>
       </div>

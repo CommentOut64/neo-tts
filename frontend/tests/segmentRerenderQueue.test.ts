@@ -11,7 +11,7 @@ describe("createSegmentRerenderQueue", () => {
     const refreshSession = vi.fn(async () => {});
     const setLockedSegments = vi.fn();
     const submitSegmentUpdate = vi
-      .fn<[string, string], Promise<SegmentRerenderJobHandle>>()
+      .fn<[string], Promise<SegmentRerenderJobHandle | null>>()
       .mockImplementation(async (segmentId) => ({
         jobId: `${segmentId}-job`,
         waitForTerminal: async () => "completed",
@@ -19,11 +19,6 @@ describe("createSegmentRerenderQueue", () => {
       }));
 
     const queue = createSegmentRerenderQueue({
-      getDraftText: (segmentId) =>
-        ({
-          "seg-1": "第一段",
-          "seg-2": "第二段",
-        })[segmentId],
       submitSegmentUpdate,
       clearDraft,
       refreshSession,
@@ -32,8 +27,8 @@ describe("createSegmentRerenderQueue", () => {
 
     await queue.run(["seg-1", "seg-2"]);
 
-    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(1, "seg-1", "第一段");
-    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(2, "seg-2", "第二段");
+    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(1, "seg-1");
+    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(2, "seg-2");
     expect(clearDraft).toHaveBeenCalledTimes(2);
     expect(clearDraft).toHaveBeenCalledWith("seg-1");
     expect(clearDraft).toHaveBeenCalledWith("seg-2");
@@ -56,7 +51,7 @@ describe("createSegmentRerenderQueue", () => {
     });
 
     const submitSegmentUpdate = vi
-      .fn<[string, string], Promise<SegmentRerenderJobHandle>>()
+      .fn<[string], Promise<SegmentRerenderJobHandle | null>>()
       .mockImplementationOnce(async () => ({
         jobId: "job-1",
         waitForTerminal: () =>
@@ -72,11 +67,6 @@ describe("createSegmentRerenderQueue", () => {
       }));
 
     const queue = createSegmentRerenderQueue({
-      getDraftText: (segmentId) =>
-        ({
-          "seg-1": "第一段",
-          "seg-2": "第二段",
-        })[segmentId],
       submitSegmentUpdate,
       clearDraft,
       refreshSession,

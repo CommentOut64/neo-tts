@@ -13,6 +13,7 @@ const props = defineProps<{
   mixed?: boolean
   mixedLabel?: string
   fallbackValue?: number
+  isDirty?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -37,7 +38,7 @@ const resolvedValue = computed(() => {
   <div class="space-y-1">
     <div class="flex items-center justify-between">
       <label class="text-[13px] font-semibold text-foreground flex items-center gap-1">
-        {{ label }}
+        {{ label }}<span v-if="isDirty" class="text-red-500 font-bold ml-0.5">*</span>
         <el-tooltip v-if="tooltip" :content="tooltip" placement="top">
           <el-icon :size="14" class="text-muted-fg cursor-help"><QuestionFilled /></el-icon>
         </el-tooltip>

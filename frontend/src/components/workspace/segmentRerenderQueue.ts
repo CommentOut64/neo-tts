@@ -13,11 +13,9 @@ export interface SegmentRerenderJobHandle {
 }
 
 interface CreateSegmentRerenderQueueOptions {
-  getDraftText: (segmentId: string) => string | undefined;
   submitSegmentUpdate: (
     segmentId: string,
-    text: string,
-  ) => Promise<SegmentRerenderJobHandle>;
+  ) => Promise<SegmentRerenderJobHandle | null>;
   clearDraft: (segmentId: string) => void;
   refreshSession: () => Promise<void>;
   setLockedSegments?: (segmentIds: string[]) => void;
@@ -56,16 +54,14 @@ export function createSegmentRerenderQueue(
 
         currentJobIndex.value = index;
         const segmentId = segmentIds[index];
-        const draftText = options.getDraftText(segmentId);
-
-        if (draftText === undefined) {
-          continue;
-        }
 
         options.setLockedSegments?.([segmentId]);
 
         try {
-          activeJob = await options.submitSegmentUpdate(segmentId, draftText);
+          activeJob = await options.submitSegmentUpdate(segmentId);
+          if (activeJob === null) {
+            continue;
+          }
           const status = await activeJob.waitForTerminal();
 
           if (status === "completed") {
