@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { usePlayback } from "../src/composables/usePlayback";
 import { useTimeline } from "../src/composables/useTimeline";
@@ -164,7 +165,15 @@ function buildTimeline(): TimelineManifest {
   };
 }
 
-async function main() {
+describe("usePlayback seek fade", () => {
+afterEach(() => {
+  delete (globalThis as typeof globalThis & { AudioContext?: unknown }).AudioContext;
+  delete (globalThis as typeof globalThis & { fetch?: unknown }).fetch;
+  delete (globalThis as typeof globalThis & { requestAnimationFrame?: unknown }).requestAnimationFrame;
+  delete (globalThis as typeof globalThis & { cancelAnimationFrame?: unknown }).cancelAnimationFrame;
+});
+
+it("seekToSample 会先淡出旧 source，再淡入新 source", async () => {
   FakeAudioContext.instances.length = 0;
 
   Object.defineProperty(globalThis, "AudioContext", {
@@ -207,13 +216,13 @@ async function main() {
   );
 
   const ctx = FakeAudioContext.instances[0];
-  assert.ok(ctx, "应当创建 AudioContext");
+  expect(ctx).toBeTruthy();
 
   ctx.currentTime = 0.25;
   playback.seekToSample(12000);
   await flushMicrotasks();
 
-  assert.equal(ctx.gainNodes.length, 1, "播放器应通过单一 GainNode 输出");
+  expect(ctx.gainNodes.length).toBe(1);
 
   const gainEvents = ctx.gainNodes[0].gain.events;
   const fadeOutEvent = gainEvents.find(
@@ -235,18 +244,16 @@ async function main() {
       event.time > fadeOutEvent!.time,
   );
 
-  assert.ok(fadeOutEvent, "seek 时应先把音量短暂淡出到 0");
-  assert.ok(fadeInStartEvent, "新播放开始前应把增益设置为 0");
-  assert.ok(fadeInEvent, "新播放开始后应短暂淡入回 1");
+  expect(fadeOutEvent).toBeTruthy();
+  expect(fadeInStartEvent).toBeTruthy();
+  expect(fadeInEvent).toBeTruthy();
 
   const oldSource = ctx.sourceNodes[0];
-  assert.ok(
+  expect(
     oldSource.stopCalls.some(
       (call) =>
-        typeof call.when === "number" && call.when >= fadeOutEvent.time,
+        typeof call.when === "number" && call.when >= fadeOutEvent!.time,
     ),
-    "旧 source 应在淡出结束后再停止",
-  );
-}
-
-await main();
+  ).toBe(true);
+});
+});
