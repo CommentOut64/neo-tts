@@ -5,9 +5,11 @@ import { useEditSession } from '@/composables/useEditSession'
 import { useInputDraft } from '@/composables/useInputDraft'
 import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
 import { buildInitializeRequest } from '@/api/editSessionContract'
+import { uploadEditSessionReferenceAudio } from '@/api/editSession'
 import WorkspaceEmptyState from '@/components/workspace/WorkspaceEmptyState.vue'
 import WorkspaceFailedState from '@/components/workspace/WorkspaceFailedState.vue'
 import WorkspaceInitForm from '@/components/workspace/WorkspaceInitForm.vue'
+import ParameterPanelHost from '@/components/workspace/ParameterPanelHost.vue'
 import WorkspaceEditorHost from '@/components/workspace/WorkspaceEditorHost.vue'
 import MainActionButton from '@/components/workspace/MainActionButton.vue'
 import WaveformStrip from '@/components/workspace/WaveformStrip.vue'
@@ -16,13 +18,11 @@ import RenderJobProgressBar from '@/components/workspace/RenderJobProgressBar.vu
 import { fetchVoices } from '@/api/voices'
 import type { VoiceProfile } from '@/types/tts'
 import { useRuntimeState } from '@/composables/useRuntimeState'
-import { useWorkspaceLightEdit } from '@/composables/useWorkspaceLightEdit'
+import { resolveInitializeReferenceAudioPath } from '@/utils/referenceAudioSelection'
 
 const { sessionStatus, discoverSession, initialize, clearSession, sourceDraftRevision } = useEditSession()
-const { text, draftRevision, hasUnsent, markSentToSession } = useInputDraft()
+const { text, draftRevision, markSentToSession } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
-const lightEdit = useWorkspaceLightEdit()
-const showReInit = computed(() => lightEdit.dirtyCount.value === 0)
 const voices = ref<VoiceProfile[]>([])
 const selectedVoice = computed(() => voices.value.find((voice) => voice.name === initParams.value.voice_id) ?? null)
 
@@ -39,6 +39,7 @@ const initParams = ref({
   text_split_method: 'cut3',
   ref_source: 'preset' as 'preset' | 'custom',
   custom_ref_file: null as File | null,
+  custom_ref_path: null as string | null,
   ref_text: '',
   ref_lang: 'auto'
 })
@@ -49,6 +50,7 @@ const isRestoring = ref(false)
 function buildCachePayload(): Record<string, unknown> {
   return {
     ...initParams.value,
+    custom_ref_file: null,
     voice: initParams.value.voice_id,
     refText: initParams.value.ref_text,
     refLang: initParams.value.ref_lang
@@ -103,6 +105,7 @@ onMounted(async () => {
       if (typeof p.chunk_length === 'number') initParams.value.chunk_length = p.chunk_length
       if (typeof p.refText === 'string') initParams.value.ref_text = p.refText
       if (typeof p.refLang === 'string') initParams.value.ref_lang = p.refLang
+      if (typeof p.custom_ref_path === 'string') initParams.value.custom_ref_path = p.custom_ref_path
       
       if (typeof p.ref_source === 'string' && (p.ref_source === 'preset' || p.ref_source === 'custom')) {
         initParams.value.ref_source = p.ref_source
@@ -128,6 +131,24 @@ const handleInit = async () => {
     }
   }
 
+  let customReferenceAudioPath: string | undefined
+  try {
+    customReferenceAudioPath = await resolveInitializeReferenceAudioPath({
+      refSource: initParams.value.ref_source,
+      presetReferenceAudioPath: selectedVoice.value?.ref_audio,
+      customReferenceAudioPath: initParams.value.custom_ref_path,
+      customReferenceAudioFile: initParams.value.custom_ref_file,
+      upload: uploadEditSessionReferenceAudio,
+    })
+  } catch (err) {
+    ElMessage.error(`参考音频上传失败: ${(err as Error).message}`)
+    return
+  }
+
+  if (initParams.value.ref_source === 'custom') {
+    initParams.value.custom_ref_path = customReferenceAudioPath ?? null
+  }
+
   const accepted = await initialize(buildInitializeRequest({
     text: text.value,
     voiceId: initParams.value.voice_id,
@@ -142,11 +163,23 @@ const handleInit = async () => {
     refText: initParams.value.ref_text,
     refLang: initParams.value.ref_lang,
     customRefFile: initParams.value.custom_ref_file,
+    customRefPath: customReferenceAudioPath ?? null,
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
 
   if (accepted) {
     sourceDraftRevision.value = draftRevision.value
     markSentToSession(draftRevision.value)
+  }
+}
+
+const handleUploadCustomRef = async (file: File) => {
+  try {
+    const response = await uploadEditSessionReferenceAudio(file)
+    initParams.value.custom_ref_path = response.reference_audio_path
+    ElMessage.success(`参考音频已上传：${response.filename}`)
+  } catch (err) {
+    initParams.value.custom_ref_path = null
+    ElMessage.error(`参考音频上传失败: ${(err as Error).message}`)
   }
 }
 
@@ -162,6 +195,7 @@ const handleResetParams = () => {
     initParams.value.ref_lang = v.ref_lang || 'auto'
     initParams.value.ref_source = 'preset'
     initParams.value.custom_ref_file = null
+    initParams.value.custom_ref_path = null
   }
 }
 
@@ -179,7 +213,18 @@ const handleSaveParams = async () => {
   <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:flex-row gap-6">
     <!-- Left panel: parameters -->
     <aside class="w-full md:w-[35%] lg:w-[30%] md:max-h-[calc(100vh-8rem)] md:overflow-y-auto space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent pr-1">
-      <WorkspaceInitForm v-model="initParams" :voices="voices" @reset="handleResetParams" @save-now="handleSaveParams" />
+      <ParameterPanelHost
+        v-if="sessionStatus === 'ready'"
+        :voices="voices"
+      />
+      <WorkspaceInitForm
+        v-else
+        v-model="initParams"
+        :voices="voices"
+        @upload-custom-ref="handleUploadCustomRef"
+        @reset="handleResetParams"
+        @save-now="handleSaveParams"
+      />
     </aside>
     
     <!-- Right Panel: State Management -->
@@ -201,16 +246,7 @@ const handleSaveParams = async () => {
 
         <!-- 底部传输控制 + 主按钮 -->
         <div class="shrink-0 mb-4 flex items-center gap-3">
-          <!-- 左侧操作按钮（高度 h-16 与控制栏一致） -->
-          <button
-            v-if="showReInit"
-            class="h-16 px-4 rounded-card font-semibold transition-all duration-300 min-w-35 text-center shadow-card bg-cta hover:bg-cta/90 text-white shrink-0"
-            :disabled="!initParams.voice_id || !text"
-            @click="handleInit"
-          >
-            重新生成时间线
-          </button>
-          <MainActionButton v-else />
+          <MainActionButton :session-status="sessionStatus" />
 
           <!-- 右侧进度/播放控制区域（去除了原本的外层包装 div） -->
           <div class="flex-1 min-w-0 flex">

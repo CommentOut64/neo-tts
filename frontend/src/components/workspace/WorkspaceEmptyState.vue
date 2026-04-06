@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { VideoPlay } from "@element-plus/icons-vue";
+import { resolveMainActionButtonState } from "./mainActionButtonState";
 
-defineProps<{
+const props = defineProps<{
   text: string;
   canSubmit: boolean;
 }>();
@@ -9,6 +11,15 @@ defineProps<{
 const emit = defineEmits<{
   submit: [];
 }>();
+
+const actionState = computed(() =>
+  resolveMainActionButtonState({
+    sessionStatus: "empty",
+    dirtyCount: 0,
+    canInitialize: props.canSubmit,
+    canMutate: true,
+  }),
+);
 </script>
 
 <template>
@@ -42,10 +53,10 @@ const emit = defineEmits<{
           size="large"
           class="px-10"
           :icon="VideoPlay"
-          :disabled="!canSubmit"
+          :disabled="actionState.disabled"
           @click="emit('submit')"
         >
-          生成时间线
+          {{ actionState.label }}
         </el-button>
       </div>
     </div>

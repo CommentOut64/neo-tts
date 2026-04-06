@@ -4,6 +4,7 @@ import type { VoiceProfile } from '@/types/tts'
 defineProps<{
   modelValue: string
   voices: VoiceProfile[]
+  placeholder?: string
 }>()
 
 const emit = defineEmits<{
@@ -14,7 +15,7 @@ const emit = defineEmits<{
 <template>
   <el-select
     :model-value="modelValue"
-    placeholder="选择模型"
+    :placeholder="placeholder ?? '选择模型'"
     size="default"
     class="!w-min"
     style="min-width: 280px;"

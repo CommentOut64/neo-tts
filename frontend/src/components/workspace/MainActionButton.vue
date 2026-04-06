@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { computed } from "vue";
 import { ElMessage } from "element-plus";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { updateSegment } from "@/api/editSession";
-import { useEditSession } from "@/composables/useEditSession";
+import { useEditSession, type SessionStatus } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
 import { createSegmentRerenderQueue } from "./segmentRerenderQueue";
+import { resolveMainActionButtonState } from "./mainActionButtonState";
+
+const props = defineProps<{
+  sessionStatus: SessionStatus;
+}>();
 
 const lightEdit = useWorkspaceLightEdit();
 const { refreshSnapshot, refreshTimeline } = useEditSession();
@@ -42,20 +47,14 @@ const queue = createSegmentRerenderQueue({
   },
 });
 
-const label = computed(() => {
-  if (queue.isCancelling.value) return "取消中...";
-  if (queue.isProcessing.value)
-    return `重推理中 (${queue.currentJobIndex.value + 1}/${queue.totalJobs.value})`;
-  if (lightEdit.dirtyCount.value > 0)
-    return `应用修改 (${lightEdit.dirtyCount.value})`;
-  return "当前已是最新";
-});
-
-const isDisabled = computed(() => {
-  if (queue.isCancelling.value) return true;
-  if (!queue.isProcessing.value && lightEdit.dirtyCount.value === 0) return true;
-  return false;
-});
+const buttonState = computed(() =>
+  resolveMainActionButtonState({
+    sessionStatus: props.sessionStatus,
+    dirtyCount: lightEdit.dirtyCount.value,
+    canInitialize: false,
+    canMutate: runtimeState.canMutate.value,
+  }),
+);
 
 const handleStart = async () => {
   const dirtyIds = Array.from(lightEdit.dirtySegmentIds.value);
@@ -63,44 +62,34 @@ const handleStart = async () => {
   await queue.run(dirtyIds);
 };
 
-const handleCancel = async () => {
-  if (queue.isProcessing.value && !queue.isCancelling.value) {
-    await queue.requestCancel();
-  }
-};
-
 const onClick = async () => {
-  if (queue.isProcessing.value) {
-    await handleCancel();
-  } else {
-    await handleStart();
+  if (buttonState.value.disabled) {
+    return;
   }
+
+  await handleStart();
 };
 </script>
 
 <template>
   <button
-    :disabled="isDisabled"
+    :disabled="buttonState.disabled"
     @click="onClick"
     class="px-4 h-16 rounded-card font-semibold transition-all duration-300 min-w-[140px] text-center shadow-card shrink-0"
     :class="{
+      'bg-cta hover:bg-cta/90 text-white':
+        buttonState.mode === 'init' && !buttonState.disabled,
       'bg-amber-500 hover:bg-amber-600 text-white':
-        !queue.isProcessing && lightEdit.dirtyCount > 0,
-      'bg-red-500 hover:bg-red-600 text-white animate-pulse':
-        queue.isProcessing && !queue.isCancelling,
-      'bg-secondary/50 text-muted-fg cursor-not-allowed': isDisabled,
+        buttonState.mode === 'rerender' && !buttonState.disabled,
+      'bg-secondary/50 text-muted-fg cursor-not-allowed': buttonState.disabled,
     }"
   >
     <div class="flex items-center justify-center gap-2">
       <span
-        v-if="queue.isProcessing && !queue.isCancelling"
-        class="i-lucide-loader-2 animate-spin w-4 h-4"
-      ></span>
-      <span
-        v-if="!queue.isProcessing && lightEdit.dirtyCount > 0"
+        v-if="buttonState.mode === 'rerender' && lightEdit.dirtyCount > 0"
         class="i-lucide-wand-2 w-4 h-4"
       ></span>
-      <span>{{ label }}</span>
+      <span>{{ buttonState.label }}</span>
     </div>
   </button>
 </template>
