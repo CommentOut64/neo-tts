@@ -686,18 +686,28 @@ class RenderJobService:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
         after_snapshot = self._segment_group_service.update_session_render_profile(patch, snapshot=before_snapshot)
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
         )
 
     def commit_patch_session_voice_binding(self, patch: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
         after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
         )
 
     def commit_patch_segment_render_profile(
@@ -718,9 +728,14 @@ class RenderJobService:
             profile.render_profile_id,
             snapshot=working_snapshot,
         ).snapshot
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
         )
 
     def commit_patch_segment_voice_binding(
@@ -741,9 +756,14 @@ class RenderJobService:
             binding.voice_binding_id,
             snapshot=working_snapshot,
         ).snapshot
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
         )
 
     def commit_patch_segments_render_profile_batch(
@@ -763,9 +783,14 @@ class RenderJobService:
             profile.render_profile_id,
             snapshot=working_snapshot,
         ).snapshot
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
         )
 
     def commit_patch_segments_voice_binding_batch(
@@ -785,9 +810,42 @@ class RenderJobService:
             binding.voice_binding_id,
             snapshot=working_snapshot,
         ).snapshot
+        changed_segment_ids = self._collect_changed_segment_ids(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
         return self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
+            pending_segment_ids=changed_segment_ids,
+        )
+
+    def create_rerender_segment_job(self, segment_id: str) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        target_segment = next(
+            (segment for segment in before_snapshot.segments if segment.segment_id == segment_id),
+            None,
+        )
+        if target_segment is None:
+            raise EditSessionNotFoundError(f"Segment '{segment_id}' not found.")
+        after_snapshot = self._mark_segments_for_rerender(
+            snapshot=before_snapshot,
+            segment_ids={segment_id},
+        ).model_copy(
+            deep=True,
+            update={"document_version": before_snapshot.document_version + 1},
+        )
+        impact = self._render_planner.for_snapshot_change(
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            changed_segment_ids={segment_id},
+            change_reason="segment_rerender",
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_rerender",
+            message=f"已创建段重推理作业，目标段 {segment_id}。",
+            snapshot=after_snapshot,
+            impact=impact,
         )
 
     def run_initialize_job(self, job_id: str) -> None:

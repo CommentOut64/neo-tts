@@ -164,23 +164,27 @@ class EditSessionService:
         *,
         before_snapshot: DocumentSnapshot,
         after_snapshot: DocumentSnapshot,
+        pending_segment_ids: set[str] | None = None,
     ) -> ConfigurationCommitResponse:
         active_session = self.require_active_session()
         next_document_version = max(before_snapshot.document_version, after_snapshot.document_version)
         if next_document_version <= before_snapshot.document_version:
             next_document_version = before_snapshot.document_version + 1
 
-        next_timeline_manifest_id = after_snapshot.timeline_manifest_id
-        next_playback_map_version = after_snapshot.playback_map_version
-        if after_snapshot.timeline_manifest_id is not None:
-            current_timeline = self._asset_store.load_timeline_manifest(after_snapshot.timeline_manifest_id)
-            next_timeline = current_timeline.model_copy(
-                deep=True,
-                update={
-                    "timeline_manifest_id": f"timeline-{uuid4().hex}",
-                    "document_version": next_document_version,
-                    "timeline_version": next_document_version,
-                },
+        next_snapshot = (
+            self._mark_segments_pending(after_snapshot, pending_segment_ids)
+            if pending_segment_ids
+            else after_snapshot
+        )
+
+        next_timeline_manifest_id = next_snapshot.timeline_manifest_id
+        next_playback_map_version = next_snapshot.playback_map_version
+        if next_snapshot.timeline_manifest_id is not None:
+            current_timeline = self._asset_store.load_timeline_manifest(next_snapshot.timeline_manifest_id)
+            next_timeline = self._build_committed_timeline_manifest(
+                current_timeline=current_timeline,
+                snapshot=next_snapshot,
+                document_version=next_document_version,
             )
             self._asset_store.write_formal_json_atomic(
                 f"timelines/{next_timeline.timeline_manifest_id}/manifest.json",
@@ -189,7 +193,7 @@ class EditSessionService:
             next_timeline_manifest_id = next_timeline.timeline_manifest_id
             next_playback_map_version = next_document_version
 
-        head_snapshot = after_snapshot.model_copy(
+        head_snapshot = next_snapshot.model_copy(
             deep=True,
             update={
                 "snapshot_id": f"head-{uuid4().hex}",
@@ -214,6 +218,82 @@ class EditSessionService:
             document_id=head_snapshot.document_id,
             document_version=head_snapshot.document_version,
             head_snapshot_id=head_snapshot.snapshot_id,
+        )
+
+    def _build_committed_timeline_manifest(
+        self,
+        *,
+        current_timeline: TimelineManifest,
+        snapshot: DocumentSnapshot,
+        document_version: int,
+    ) -> TimelineManifest:
+        segments_by_id = {segment.segment_id: segment for segment in snapshot.segments}
+        edges_by_id = {edge.edge_id: edge for edge in snapshot.edges}
+        return current_timeline.model_copy(
+            deep=True,
+            update={
+                "timeline_manifest_id": f"timeline-{uuid4().hex}",
+                "document_version": document_version,
+                "timeline_version": document_version,
+                "segment_entries": [
+                    entry.model_copy(
+                        update={
+                            "render_status": segments_by_id.get(entry.segment_id).render_status
+                            if entry.segment_id in segments_by_id
+                            else entry.render_status,
+                            "group_id": segments_by_id.get(entry.segment_id).group_id
+                            if entry.segment_id in segments_by_id
+                            else entry.group_id,
+                            "render_profile_id": segments_by_id.get(entry.segment_id).render_profile_id
+                            if entry.segment_id in segments_by_id
+                            else entry.render_profile_id,
+                            "voice_binding_id": segments_by_id.get(entry.segment_id).voice_binding_id
+                            if entry.segment_id in segments_by_id
+                            else entry.voice_binding_id,
+                        }
+                    )
+                    for entry in current_timeline.segment_entries
+                ],
+                "edge_entries": [
+                    entry.model_copy(
+                        update={
+                            "pause_duration_seconds": edges_by_id.get(entry.edge_id).pause_duration_seconds
+                            if entry.edge_id in edges_by_id
+                            else entry.pause_duration_seconds,
+                            "boundary_strategy": edges_by_id.get(entry.edge_id).boundary_strategy
+                            if entry.edge_id in edges_by_id
+                            else entry.boundary_strategy,
+                            "effective_boundary_strategy": edges_by_id.get(entry.edge_id).effective_boundary_strategy
+                            if entry.edge_id in edges_by_id and edges_by_id.get(entry.edge_id).effective_boundary_strategy
+                            else entry.effective_boundary_strategy,
+                        }
+                    )
+                    for entry in current_timeline.edge_entries
+                ],
+            },
+        )
+
+    @staticmethod
+    def _mark_segments_pending(
+        snapshot: DocumentSnapshot,
+        pending_segment_ids: set[str],
+    ) -> DocumentSnapshot:
+        if not pending_segment_ids:
+            return snapshot
+        return snapshot.model_copy(
+            deep=True,
+            update={
+                "segments": [
+                    segment.model_copy(
+                        update={
+                            "render_status": "pending",
+                        }
+                    )
+                    if segment.segment_id in pending_segment_ids
+                    else segment.model_copy(deep=True)
+                    for segment in snapshot.segments
+                ]
+            },
         )
 
     def delete_session(self) -> None:

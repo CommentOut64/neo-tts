@@ -205,6 +205,11 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
         assert session_profile_commit.json()["document_version"] == 2
         assert len(backend.segment_calls) == baseline_calls
 
+        snapshot_after_session_commit = client.get("/v1/edit-session/snapshot")
+        assert snapshot_after_session_commit.status_code == 200
+        session_segments = snapshot_after_session_commit.json()["segments"]
+        assert any(segment["render_status"] == "pending" for segment in session_segments)
+
         segment_binding_commit = client.patch(
             f"/v1/edit-session/segments/{second_segment_id}/voice-binding/config",
             json={"voice_id": "voice-persisted", "model_key": "model-persisted"},
@@ -219,6 +224,10 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
         assert snapshot_data["document_version"] == 3
         assert snapshot_data["default_render_profile_id"] is not None
         assert snapshot_data["default_voice_binding_id"] is not None
+        committed_segment = next(
+            item for item in snapshot_data["segments"] if item["segment_id"] == second_segment_id
+        )
+        assert committed_segment["render_status"] == "pending"
 
         profiles = client.get("/v1/edit-session/render-profiles")
         assert profiles.status_code == 200
@@ -242,3 +251,57 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
         timeline_data = timeline.json()
         assert timeline_data["document_version"] == 3
         assert tuple(timeline_data["playable_sample_span"]) == initial_span
+        committed_timeline_segment = next(
+            item for item in timeline_data["segment_entries"] if item["segment_id"] == second_segment_id
+        )
+        assert committed_timeline_segment["render_status"] == "pending"
+
+
+def test_segment_rerender_route_consumes_pending_configuration(test_app_settings):
+    backend = FakeEditableInferenceBackend()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(backend)
+
+    with TestClient(app) as client:
+        repository = app.state.edit_session_repository
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        _, second_segment_id = _seed_b2_profile_binding_state(app)
+        baseline_calls = len(backend.segment_calls)
+
+        segment_binding_commit = client.patch(
+            f"/v1/edit-session/segments/{second_segment_id}/voice-binding/config",
+            json={"voice_id": "voice-rerendered", "model_key": "model-rerendered"},
+        )
+        assert segment_binding_commit.status_code == 200
+        assert len(backend.segment_calls) == baseline_calls
+
+        rerender_response = client.post(
+            f"/v1/edit-session/segments/{second_segment_id}/rerender",
+        )
+        assert rerender_response.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 3)
+        assert len(backend.segment_calls) >= baseline_calls + 1
+
+        active_session = repository.get_active_session()
+        assert active_session is not None
+        head_snapshot = repository.get_snapshot(active_session.head_snapshot_id)
+        assert head_snapshot is not None
+        rerendered_segment = next(
+            segment for segment in head_snapshot.segments if segment.segment_id == second_segment_id
+        )
+        assert rerendered_segment.render_status == "ready"
+        assert rerendered_segment.render_asset_id is not None
+
+        resolver = RenderConfigResolver()
+        resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=second_segment_id)
+        assert resolved.voice_binding.voice_id == "voice-rerendered"
+        assert resolved.voice_binding.model_key == "model-rerendered"

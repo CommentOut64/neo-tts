@@ -764,6 +764,18 @@ def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest)
 
 
 @router.post(
+    "/segments/{segment_id}/rerender",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="重推理单个段",
+    description="基于当前 head snapshot 已提交的配置，重新渲染指定段。",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def rerender_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_rerender_segment_job(segment_id)
+
+
+@router.post(
     "/exports/segments",
     response_model=ExportJobAcceptedResponse,
     status_code=202,
