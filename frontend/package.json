@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview"
   },
@@ -27,6 +29,7 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.1",
+    "vitest": "^4.1.2",
     "vue-tsc": "^3.2.6"
   }
 }
