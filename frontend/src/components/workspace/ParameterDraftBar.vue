@@ -110,7 +110,7 @@ watch(
           放弃
         </button>
         <button 
-          class="px-3 py-1 text-xs font-medium rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed bg-blue-500 text-white hover:bg-blue-600"
+          class="hover-state-layer px-3 py-1 text-xs font-medium rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed bg-blue-500 text-white"
           :disabled="!hasDirty || isSubmitting" 
           @click="emit('submit')"
         >

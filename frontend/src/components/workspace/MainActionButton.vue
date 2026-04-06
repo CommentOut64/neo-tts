@@ -109,9 +109,10 @@ const onClick = async () => {
     @click="onClick"
     class="flex justify-center items-center gap-2 px-4 h-16 rounded-card font-semibold transition-all duration-300 min-w-[140px] text-center shadow-card shrink-0"
     :class="{
-      'bg-cta hover:bg-cta/90 text-white':
+      'hover-state-layer': buttonState.mode !== 'rerender',
+      'bg-cta text-white':
         buttonState.mode === 'init' && !buttonState.disabled,
-      'bg-amber-500 hover:bg-amber-600 text-white':
+      'bg-[#fc8c4a] hover:bg-[#e37e2e] dark:bg-[#e37e2e] dark:hover:bg-[#fc8c4a] text-white':
         buttonState.mode === 'rerender' && !buttonState.disabled,
       'bg-secondary/50 text-muted-fg cursor-not-allowed': buttonState.disabled,
     }"

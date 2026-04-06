@@ -28,6 +28,9 @@
   --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.15);
   --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.15);
 
+  /* 状态层：亮色模式下叠加黑色变暗 */
+  --color-state-layer: #000000;
+
   /* Element Plus 变量 */
   --el-color-primary: #3B82F6;
   --el-color-success: #22C55E;
@@ -70,6 +73,9 @@ html.dark {
   --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.25);
   --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.25);
+
+  /* 状态层：暗色模式下叠加白色变亮 */
+  --color-state-layer: #FFFFFF;
 
   /* Element Plus 变量 */
   --el-color-primary: #3B82F6;
@@ -154,7 +160,33 @@ html.dark {
 .scrollbar-track-transparent::-webkit-scrollbar-track {
   background: transparent;
 }
-
+@layer components {
+  /* 统一状态层：为有填充色的按钮提供自适应悬停反馈（亮/暗色自适应亮度叠加） */
+  .hover-state-layer {
+    position: relative;
+    /* overflow: hidden 是为了避免 after 溢出圆角，但有可能会阻断额外的外发光如果按钮本身需要外发光的话，
+       现代浏览器已支持 border-radius 继承和叠加裁剪，所以尽量只依赖 inherit */
+  }
+  
+  .hover-state-layer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-color: var(--color-state-layer);
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+    border-radius: inherit; /* 跟随父元素的圆角 */
+  }
+  
+  .hover-state-layer:not(:disabled):hover::after {
+    opacity: 0.1;
+  }
+  
+  .hover-state-layer:not(:disabled):active::after {
+    opacity: 0.15;
+  }
+}
 @keyframes spin-once {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }

@@ -90,7 +90,7 @@ function onNextSegment() {
   <div class="h-16 w-full shrink-0 bg-card border border-border rounded-card shadow-card px-4 flex items-center gap-4">
     <div class="flex items-center gap-3">
       <button
-        class="w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white hover:bg-blue-600 disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
+        class="hover-state-layer w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
         @click="onPrevSegment"
         title="上一段"
         :disabled="segmentEntries.length === 0"
@@ -98,7 +98,7 @@ function onNextSegment() {
         <el-icon><ArrowLeft /></el-icon>
       </button>
       <button
-        class="w-12 h-12 flex items-center justify-center rounded-xl bg-blue-500 text-white shadow-md hover:bg-blue-600 disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors text-2xl font-bold"
+        class="hover-state-layer w-12 h-12 flex items-center justify-center rounded-xl bg-blue-500 text-white shadow-md disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors text-2xl font-bold"
         @click="onTogglePlay"
         :disabled="totalSamples === 0"
       >
@@ -106,7 +106,7 @@ function onNextSegment() {
         <el-icon v-else class="ml-[2px]"><VideoPlay /></el-icon>
       </button>
       <button
-        class="w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white hover:bg-blue-600 disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
+        class="hover-state-layer w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
         @click="onNextSegment"
         title="下一段"
         :disabled="segmentEntries.length === 0"

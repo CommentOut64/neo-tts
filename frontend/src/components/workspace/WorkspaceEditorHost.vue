@@ -397,7 +397,7 @@ function onDocUpdate(_value: any) {
             放弃
           </button>
           <button
-            class="px-2.5 py-1 text-xs font-medium rounded bg-blue-500 text-white hover:bg-blue-600 transition-colors shadow-sm"
+            class="hover-state-layer px-2.5 py-1 text-xs font-medium rounded bg-blue-500 text-white transition-colors shadow-sm"
             @click="commitAndExitEdit"
           >
             完成编辑
