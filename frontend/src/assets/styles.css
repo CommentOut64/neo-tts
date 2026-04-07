@@ -21,6 +21,7 @@
   --color-info: #3B82F6;
   --color-success: #22C55E;
   --color-error: #EF4444;
+  --color-window-bg: #f4f9ff;
 
   /* 阴影 token */
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
@@ -51,6 +52,8 @@
   --el-fill-color-light: #F8FAFC;
   --el-fill-color-blank: #FFFFFF;
   --el-border-radius-base: 8px;
+  --el-dialog-bg-color: var(--color-window-bg);
+  --el-drawer-bg-color: var(--color-window-bg);
   --el-font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --el-font-size-base: 14px;
 }
@@ -67,6 +70,8 @@ html.dark {
   --color-muted: #272F42;
   --color-muted-fg: #94A3B8;
   --color-border: #475569;
+  /* --color-window-bg: #445469; */
+  --color-window-bg: #2a3441;
 
   /* 阴影 token */
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
@@ -96,6 +101,8 @@ html.dark {
   --el-fill-color: #272F42;
   --el-fill-color-light: #1B2336;
   --el-fill-color-blank: #0F172A;
+  --el-dialog-bg-color: var(--color-window-bg);
+  --el-drawer-bg-color: var(--color-window-bg);
 }
 
 /* === View Transition 主题切换动画 === */
@@ -211,3 +218,11 @@ html.dark {
 
 html.dark .el-slider__button { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 0 2px var(--color-card) !important; }
 html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-shadow: 0 3px 6px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--color-card) !important; }
+
+/* 修复全局 dialog 和 drawer 背景色覆盖 */
+.el-dialog {
+  --el-dialog-bg-color: var(--color-window-bg) !important;
+}
+.el-drawer {
+  --el-drawer-bg-color: var(--color-window-bg) !important;
+}

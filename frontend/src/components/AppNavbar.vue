@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import { computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Microphone, Setting, Sunny, Moon, EditPen } from '@element-plus/icons-vue'
+import { Microphone, Sunny, Moon, Download } from '@element-plus/icons-vue'
 import StatusIndicator from './StatusIndicator.vue'
 import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
+import { useRuntimeState } from '@/composables/useRuntimeState'
+import { useEditSession } from '@/composables/useEditSession'
+import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
+import { isExportBlockedByRenderJob } from './workspace/sessionHandoff'
 
 defineProps<{
   status: ConnectionStatus
@@ -13,12 +18,37 @@ defineProps<{
 const route = useRoute()
 const router = useRouter()
 const { isDark, toggleThemeWithTransition } = useTheme()
+const { currentRenderJob } = useRuntimeState()
+const { snapshot } = useEditSession()
+const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
 
 const navItems = [
-  { path: '/text-input', label: '文本输入', icon: EditPen },
-  { path: '/workspace', label: '语音合成', icon: Microphone },
-  { path: '/voices', label: '模型管理', icon: Setting },
+  { path: '/text-input', label: '文本输入' },
+  { path: '/workspace', label: '语音合成' },
+  { path: '/voices', label: '模型管理' },
 ]
+
+const canOpenExport = computed(() =>
+  route.path === '/workspace' &&
+  snapshot.value?.document_version != null &&
+  !isExportBlockedByRenderJob(currentRenderJob.value),
+)
+
+function navigateTo(path: string) {
+  if (path !== '/workspace') {
+    closeExportDialog()
+  }
+  router.push(path)
+}
+
+watch(
+  () => route.path,
+  (path) => {
+    if (path !== '/workspace' && exportDialogVisible.value) {
+      closeExportDialog()
+    }
+  },
+)
 </script>
 
 <template>
@@ -35,7 +65,7 @@ const navItems = [
         :class="route.path === item.path
           ? 'text-foreground'
           : 'text-muted-fg hover:text-foreground hover:bg-secondary'"
-        @click="router.push(item.path)"
+        @click="navigateTo(item.path)"
       >
         {{ item.label }}
         <span
@@ -45,6 +75,18 @@ const navItems = [
       </button>
     </div>
     <div class="ml-auto flex items-center gap-3">
+      <el-button
+        v-if="route.path === '/workspace'"
+        type="primary"
+        plain
+        size="small"
+        :disabled="!canOpenExport"
+        @click="openExportDialog"
+      >
+        <el-icon class="mr-1"><Download /></el-icon>
+        导出
+      </el-button>
+
       <!-- 预留导出位和运行态提示位 -->
       <div id="runtime-state-placeholder"></div>
       <div id="export-action-placeholder"></div>

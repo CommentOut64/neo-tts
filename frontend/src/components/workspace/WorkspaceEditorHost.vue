@@ -9,10 +9,15 @@ import { useSegmentSelection } from '@/composables/useSegmentSelection'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { buildEditorExtensions } from './workspace-editor/buildEditorExtensions'
 import { segmentDecorationKey } from './workspace-editor/segmentDecoration'
+import ResetSessionDialog from './ResetSessionDialog.vue'
 import {
   buildSegmentEditorDocument,
   collectSegmentDraftChanges,
 } from "./workspace-editor/documentModel";
+
+const emit = defineEmits<{
+  (e: 'backfill-to-text-input'): void
+}>()
 
 // --- composable 实例 ---
 const editSession = useEditSession()
@@ -21,21 +26,7 @@ const { currentSegmentId, seekToSegment, play } = usePlayback()
 const segmentSelection = useSegmentSelection()
 const runtimeState = useRuntimeState()
 
-// --- 清空会话 ---
-const isClearing = ref(false)
-
-async function handleClearSession() {
-  if (isClearing.value) return
-  isClearing.value = true
-  try {
-    lightEdit.clearAll()
-    await editSession.clearSession()
-  } catch (err) {
-    console.error('清空会话失败', err)
-  } finally {
-    isClearing.value = false
-  }
-}
+const resetSessionDialogVisible = ref(false)
 
 // --- 内部状态 ---
 const isEditing = ref(false)
@@ -333,6 +324,12 @@ function discardAndExitEdit() {
   rebuildDocFromSegments()
 }
 
+function handleResetSessionSuccess() {
+  segmentSelection.clearSelection()
+  lightEdit.clearAll()
+  isEditing.value = false
+}
+
 function onKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape' && isEditing.value) {
     event.preventDefault()
@@ -371,7 +368,15 @@ function onDocUpdate(_value: any) {
         <!-- 字数统计 -->
         <span class="text-xs text-muted-fg mr-1">{{ charCount }} 字</span>
 
-        <!-- 展示态：编辑按钮 + 清空按钮 -->
+        <!-- 展示态：返回文本输入 / 编辑 / 清空会话 -->
+        <button
+          v-if="!isEditing"
+          :disabled="segmentIds.length === 0"
+          class="px-2.5 py-1 text-xs font-medium rounded border border-border text-foreground hover:bg-secondary/50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          @click="emit('backfill-to-text-input')"
+        >
+          转到文本输入页继续编辑
+        </button>
         <button
           v-if="!isEditing && segmentIds.length > 0"
           class="px-2.5 py-1 text-xs font-medium rounded border border-border text-foreground hover:bg-secondary/50 transition-colors"
@@ -381,11 +386,10 @@ function onDocUpdate(_value: any) {
         </button>
         <button
           v-if="!isEditing"
-          :disabled="isClearing"
           class="px-2.5 py-1 text-xs font-medium rounded border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
-          @click="handleClearSession"
+          @click="resetSessionDialogVisible = true"
         >
-          {{ isClearing ? '清空中...' : '清空会话' }}
+          清空会话
         </button>
 
         <!-- 编辑态：完成 / 放弃 -->
@@ -427,6 +431,11 @@ function onDocUpdate(_value: any) {
         <!-- 编辑态最小工具条（暂不启用） -->
       </UEditor>
     </div>
+
+    <ResetSessionDialog
+      v-model:visible="resetSessionDialogVisible"
+      @success="handleResetSessionSuccess"
+    />
   </section>
 </template>
 

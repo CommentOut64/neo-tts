@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
 import { useEditSession } from '@/composables/useEditSession'
 import { useInputDraft } from '@/composables/useInputDraft'
 import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
@@ -19,12 +20,48 @@ import { fetchVoices } from '@/api/voices'
 import type { VoiceProfile } from '@/types/tts'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { resolveInitializeReferenceAudioPath } from '@/utils/referenceAudioSelection'
+import { useParameterPanel } from '@/composables/useParameterPanel'
+import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
+import ExportDialog from '@/components/workspace/ExportDialog.vue'
+import ParameterDraftConfirm from '@/components/workspace/ParameterDraftConfirm.vue'
+import { buildSessionHeadText, resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
 
-const { sessionStatus, discoverSession, initialize, clearSession, sourceDraftRevision } = useEditSession()
-const { text, draftRevision, markSentToSession } = useInputDraft()
+const route = useRoute()
+const router = useRouter()
+const {
+  sessionStatus,
+  discoverSession,
+  initialize,
+  clearSession,
+  sourceDraftRevision,
+  snapshot,
+  segments,
+  segmentsLoaded,
+} = useEditSession()
+const {
+  text,
+  draftRevision,
+  lastSentToSessionRevision,
+  markSentToSession,
+  backfillFromSession,
+} = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
+const parameterPanel = useParameterPanel()
+const { exportDialogVisible, closeExportDialog } = useWorkspaceDialogState()
 const voices = ref<VoiceProfile[]>([])
 const selectedVoice = computed(() => voices.value.find((voice) => voice.name === initParams.value.voice_id) ?? null)
+const workspaceEntryAction = computed(() =>
+  resolveWorkspaceEntryAction({
+    sessionStatus: sessionStatus.value,
+    hasInputText: text.value.trim().length > 0,
+    draftRevision: draftRevision.value,
+    lastSentToSessionRevision: lastSentToSessionRevision.value,
+    sourceDraftRevision: sourceDraftRevision.value,
+  }),
+)
+const handoffConfirmVisible = ref(false)
+const promptedRebuildRevision = ref<number | null>(null)
+let pendingGuardedAction: (() => Promise<void>) | null = null
 
 // Parameter structure updated with reference audio options and initialized to match old behavior
 const initParams = ref({
@@ -120,6 +157,59 @@ onMounted(async () => {
   }
 })
 
+onBeforeUnmount(() => {
+  closeExportDialog()
+})
+
+watch(
+  () => route.path,
+  (path) => {
+    if (path !== '/workspace') {
+      closeExportDialog()
+    }
+  },
+)
+
+async function requestParameterDraftResolution(action: () => Promise<void>) {
+  if (!parameterPanel.hasDirty.value) {
+    await action()
+    return
+  }
+
+  pendingGuardedAction = action
+  handoffConfirmVisible.value = true
+}
+
+function clearPendingGuardedAction() {
+  pendingGuardedAction = null
+  handoffConfirmVisible.value = false
+}
+
+async function runPendingGuardedAction() {
+  const action = pendingGuardedAction
+  clearPendingGuardedAction()
+  if (action) {
+    await action()
+  }
+}
+
+async function handleDiscardDraftAndContinue() {
+  parameterPanel.discardDraft()
+  await runPendingGuardedAction()
+}
+
+async function handleSubmitDraftAndContinue() {
+  await parameterPanel.submitDraft()
+  await runPendingGuardedAction()
+}
+
+function getCurrentSessionHeadText() {
+  const sessionSegments = segmentsLoaded.value && segments.value.length > 0
+    ? segments.value
+    : snapshot.value?.segments ?? []
+  return buildSessionHeadText(sessionSegments)
+}
+
 const handleInit = async () => {
   if (!initParams.value.voice_id || !text.value) return
   if (sessionStatus.value === 'ready') {
@@ -172,6 +262,30 @@ const handleInit = async () => {
   }
 }
 
+async function promptWorkspaceRebuild(currentRevision: number) {
+  promptedRebuildRevision.value = currentRevision
+
+  await requestParameterDraftResolution(async () => {
+    try {
+      await ElMessageBox.confirm(
+        '检测到文本输入页已有更新稿，是否用当前输入稿重建语音合成会话？',
+        '用当前输入稿重建会话',
+        {
+          confirmButtonText: '重建会话',
+          cancelButtonText: '暂不重建',
+          type: 'warning',
+          closeOnClickModal: false,
+          closeOnPressEscape: false,
+        },
+      )
+    } catch {
+      return
+    }
+
+    await handleInit()
+  })
+}
+
 const handleUploadCustomRef = async (file: File) => {
   try {
     const response = await uploadEditSessionReferenceAudio(file)
@@ -199,6 +313,38 @@ const handleResetParams = () => {
   }
 }
 
+async function handleBackfillToTextInput() {
+  await requestParameterDraftResolution(async () => {
+    const sessionHeadText = getCurrentSessionHeadText()
+    if (!sessionHeadText.trim()) {
+      ElMessage.warning('当前会话没有可回填的正文')
+      return
+    }
+
+    backfillFromSession(sessionHeadText)
+    await router.push('/text-input')
+  })
+}
+
+watch(
+  () => ({
+    action: workspaceEntryAction.value,
+    status: sessionStatus.value,
+    revision: draftRevision.value,
+  }),
+  async ({ action, status, revision }) => {
+    if (status !== 'ready' || action !== 'rebuild') {
+      return
+    }
+    if (promptedRebuildRevision.value === revision) {
+      return
+    }
+
+    await promptWorkspaceRebuild(revision)
+  },
+  { immediate: true },
+)
+
 </script>
 
 <template>
@@ -222,7 +368,7 @@ const handleResetParams = () => {
     <main class="w-full md:w-[65%] lg:w-[70%] flex flex-col min-w-0 min-h-0 overflow-hidden relative">
       <WorkspaceEmptyState 
         v-if="sessionStatus === 'empty'" 
-        :text="text || '默认文段供测试'" 
+        :text="text" 
         :can-submit="!!initParams.voice_id && !!text"
         @submit="handleInit" 
       />
@@ -230,7 +376,7 @@ const handleResetParams = () => {
       
       <div v-else-if="sessionStatus === 'ready' || sessionStatus === 'initializing'" class="w-full h-full flex flex-col pt-2 gap-3">
         <!-- 主画布：统一 Editor -->
-        <WorkspaceEditorHost />
+        <WorkspaceEditorHost @backfill-to-text-input="handleBackfillToTextInput" />
 
         <!-- 波形可视化 -->
         <WaveformStrip />
@@ -248,4 +394,12 @@ const handleResetParams = () => {
       </div>
     </main>
   </div>
+
+  <ExportDialog v-model:visible="exportDialogVisible" />
+  <ParameterDraftConfirm
+    :visible="handoffConfirmVisible"
+    @cancel="clearPendingGuardedAction"
+    @discard="handleDiscardDraftAndContinue"
+    @submit="handleSubmitDraftAndContinue"
+  />
 </template>

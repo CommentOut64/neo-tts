@@ -34,13 +34,14 @@ const adjacentEdges = computed(() => {
     hint="当前选中段的运行期参数。提交后仅持久化配置，后续推理会继承这些值。"
   />
 
-  <section v-if="adjacentEdges.length > 0" class="bg-card rounded-card p-4 shadow-card">
+  <!-- TODO: 暂时隐藏相邻边设置卡片 -->
+  <section v-if="false && adjacentEdges.length > 0" class="bg-card rounded-card p-4 shadow-card">
     <h3 class="text-[13px] font-semibold text-foreground mb-3">相邻边</h3>
     <div class="flex flex-col gap-2">
       <button
         v-for="edge in adjacentEdges"
         :key="edge.edge_id"
-        class="px-3 py-2 text-left rounded border border-border text-sm text-foreground hover:bg-secondary/50 transition-colors"
+        class="hover-state-layer px-3 py-2 text-left rounded border border-border text-sm text-foreground transition-colors"
         @click="selection.selectEdge(edge.edge_id)"
       >
         {{ edge.left_segment_id }} ↔ {{ edge.right_segment_id }}
