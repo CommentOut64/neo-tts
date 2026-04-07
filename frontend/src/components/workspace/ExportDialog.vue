@@ -202,6 +202,7 @@ onBeforeUnmount(() => {
 
 <template>
   <el-dialog
+    :lock-scroll="false"
     :model-value="visible"
     @update:model-value="emit('update:visible', $event)"
     title="导出音频"

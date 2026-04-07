@@ -12,6 +12,7 @@ const emit = defineEmits<{
 
 <template>
   <el-dialog
+    :lock-scroll="false"
     :model-value="visible"
     title="存在未提交参数"
     width="420px"

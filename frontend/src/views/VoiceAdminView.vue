@@ -105,7 +105,7 @@ async function handleDelete(voice: VoiceProfile) {
     await ElMessageBox.confirm(
       `确定删除模型 "${voice.name}"？此操作不可恢复。`,
       '确认删除',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', lockScroll: false },
     )
     await deleteVoice(voice.name)
     ElMessage.success(`已删除模型: ${voice.name}`)
@@ -175,7 +175,7 @@ onMounted(loadVoices)
     </div>
 
     <!-- Upload dialog -->
-    <el-dialog v-model="uploadDialogVisible" title="上传模型" width="520px" @close="resetUploadForm">
+    <el-dialog :lock-scroll="false" v-model="uploadDialogVisible" title="上传模型" width="520px" @close="resetUploadForm">
       <div class="space-y-4">
         <div>
           <label class="text-[13px] font-semibold text-foreground block mb-1.5">模型名称 *</label>

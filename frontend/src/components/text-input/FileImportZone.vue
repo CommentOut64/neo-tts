@@ -20,7 +20,8 @@ async function handleChange(file: UploadFile) {
       await ElMessageBox.confirm('导入文件会覆盖当前输入内容，确认继续？', '确认覆盖', {
         confirmButtonText: '覆盖',
         cancelButtonText: '取消',
-        type: 'warning'
+        type: 'warning',
+        lockScroll: false
       })
     } catch {
       return false

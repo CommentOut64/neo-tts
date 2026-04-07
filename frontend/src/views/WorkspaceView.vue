@@ -276,6 +276,7 @@ async function promptWorkspaceRebuild(currentRevision: number) {
           type: 'warning',
           closeOnClickModal: false,
           closeOnPressEscape: false,
+          lockScroll: false,
         },
       )
     } catch {

@@ -38,6 +38,7 @@ async function handleConfirm() {
 
 <template>
   <el-dialog
+    :lock-scroll="false"
     :model-value="visible"
     @update:model-value="emit('update:visible', $event)"
     title="清空会话"

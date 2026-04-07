@@ -107,7 +107,7 @@ const normalizedSegments = computed(() => {
     <!-- The interactive drag area -->
     <div
       ref="containerRef"
-      class="h-16 relative mx-4 rounded-lg overflow-hidden cursor-pointer select-none group bg-secondary/10"
+      class="h-16 relative mx-4 overflow-hidden cursor-pointer select-none group bg-secondary/5"
       @mousedown="onMouseDown"
     >
       <!-- Segments backgrounds (Temporarily hidden) -->
@@ -153,7 +153,7 @@ const normalizedSegments = computed(() => {
             ? 'opacity-100 shadow-[0_0_8px_rgba(59,130,246,0.8)]'
             : 'opacity-80 group-hover:opacity-100 shadow-none group-hover:shadow-[0_0_8px_rgba(59,130,246,0.5)]'
         "
-        :style="{ left: progressPercent + '%' }"
+        :style="{ left: progressPercent + '%', transform: `translateX(-${progressPercent}%)` }"
       >
       </div>
     </div>

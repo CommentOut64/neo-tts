@@ -220,6 +220,12 @@ html.dark .el-slider__button { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 0 2
 html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-shadow: 0 3px 6px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--color-card) !important; }
 
 /* 修复全局 dialog 和 drawer 背景色覆盖 */
+
+.el-message-box {
+  background-color: var(--color-window-bg) !important;
+  --el-message-bg-color: var(--color-window-bg) !important;
+  --el-messagebox-bg-color: var(--color-window-bg) !important;
+}
 .el-dialog {
   --el-dialog-bg-color: var(--color-window-bg) !important;
 }
