@@ -312,3 +312,43 @@ export interface ProgressiveSegment {
   renderStatus: 'pending' | 'completed'
   renderAssetId: string | null
 }
+
+export interface ExportSegmentsBody {
+  document_version: number;
+  target_dir: string;
+  overwrite_policy?: "fail" | "replace" | "new_folder";
+}
+
+export type ExportCompositionBody = ExportSegmentsBody;
+
+export interface ExportOutputManifest {
+  export_kind: "segments" | "composition";
+  target_dir: string;
+  files: string[];
+  segment_files: string[];
+  composition_file: string | null;
+  composition_manifest_id: string | null;
+  manifest_file: string;
+  exported_at: string;
+}
+
+export interface ExportJobResponse {
+  export_job_id: string;
+  document_id: string;
+  document_version: number;
+  timeline_manifest_id: string;
+  export_kind: "segments" | "composition";
+  status: "queued" | "exporting" | "completed" | "failed";
+  target_dir: string;
+  overwrite_policy: "fail" | "replace" | "new_folder";
+  progress: number;
+  message: string;
+  output_manifest: ExportOutputManifest | null;
+  staging_dir: string | null;
+  updated_at: string;
+}
+
+export interface ExportJobAcceptedResponse {
+  job: ExportJobResponse;
+}
+

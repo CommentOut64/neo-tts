@@ -5,6 +5,8 @@ const getRenderJob = vi.fn();
 const pauseRenderJob = vi.fn();
 const cancelRenderJob = vi.fn();
 const resumeRenderJob = vi.fn();
+const subscribeExportJobEvents = vi.fn(() => () => {});
+const getExportJob = vi.fn();
 
 vi.mock("@/api/editSession", () => ({
   subscribeRenderJobEvents,
@@ -12,6 +14,8 @@ vi.mock("@/api/editSession", () => ({
   pauseRenderJob,
   cancelRenderJob,
   resumeRenderJob,
+  subscribeExportJobEvents,
+  getExportJob,
 }));
 
 function createDeferred() {
@@ -36,6 +40,9 @@ describe("useRuntimeState", () => {
     pauseRenderJob.mockReset();
     cancelRenderJob.mockReset();
     resumeRenderJob.mockReset();
+    subscribeExportJobEvents.mockReset();
+    subscribeExportJobEvents.mockImplementation(() => () => {});
+    getExportJob.mockReset();
   });
 
   it("trackJob 会立即建立运行态门禁并锁定当前段", async () => {
@@ -316,5 +323,90 @@ describe("useRuntimeState", () => {
         renderAssetId: "asset-2",
       },
     ]);
+  });
+
+  it("render job 到达 completed 后会清空 currentRenderJob 并重新允许变更", async () => {
+    vi.doMock("../src/composables/useEditSession", () => ({
+      useEditSession: () => ({
+        refreshSnapshot: vi.fn(),
+        refreshTimeline: vi.fn(),
+        sessionStatus: { value: "ready" },
+      }),
+    }));
+
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-finished",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.5,
+        message: "running",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-finished",
+      document_id: "doc-1",
+      status: "completed",
+      progress: 1,
+      message: "done",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(runtimeState.currentRenderJob.value).toBeNull();
+    expect(runtimeState.canMutate.value).toBe(true);
+  });
+
+  it("trackExportJob 会跟踪导出进度并在终态后清空 currentExportJob", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackExportJob({
+      export_job_id: "export-1",
+      document_id: "doc-1",
+      document_version: 2,
+      timeline_manifest_id: "timeline-1",
+      export_kind: "segments",
+      status: "queued",
+      target_dir: "exports/demo",
+      overwrite_policy: "fail",
+      progress: 0,
+      message: "queued",
+      output_manifest: null,
+      staging_dir: null,
+      updated_at: "2026-04-07T00:00:00Z",
+    });
+
+    expect(runtimeState.currentExportJob.value?.export_job_id).toBe("export-1");
+
+    const handler = subscribeExportJobEvents.mock.calls[0][1];
+    handler.onProgress?.(0.5, "halfway");
+
+    expect(runtimeState.currentExportJob.value?.progress).toBe(0.5);
+    expect(runtimeState.currentExportJob.value?.message).toBe("halfway");
+
+    handler.onCompleted?.({
+      export_job_id: "export-1",
+      document_id: "doc-1",
+      document_version: 2,
+      timeline_manifest_id: "timeline-1",
+      export_kind: "segments",
+      status: "completed",
+      target_dir: "exports/demo",
+      overwrite_policy: "fail",
+      progress: 1,
+      message: "done",
+      output_manifest: null,
+      staging_dir: null,
+      updated_at: "2026-04-07T00:00:00Z",
+    });
+
+    expect(runtimeState.currentExportJob.value).toBeNull();
   });
 });

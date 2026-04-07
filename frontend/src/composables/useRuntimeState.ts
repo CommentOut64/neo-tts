@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
 import type {
+  ExportJobResponse,
   RenderJob,
   RenderJobResponse,
   RenderJobSummary,
@@ -14,13 +15,16 @@ import {
   pauseRenderJob,
   cancelRenderJob,
   resumeRenderJob,
+  subscribeExportJobEvents,
+  getExportJob,
 } from "@/api/editSession";
 
 export type SseConnectionState = "connected" | "disconnected" | "polling";
 export type TrackedRenderJob = RenderJob | RenderJobResponse | RenderJobSummary;
+export type TrackedExportJob = ExportJobResponse;
 
 const currentRenderJob = ref<TrackedRenderJob | null>(null);
-const currentExportJob = ref<any | null>(null);
+const currentExportJob = ref<TrackedExportJob | null>(null);
 const sseConnectionState = ref<SseConnectionState>("disconnected");
 const progressiveSegments = ref<ProgressiveSegment[]>([]);
 const isInitialRendering = ref<boolean>(false);
@@ -28,6 +32,8 @@ const lockedSegmentIds = ref<Set<string>>(new Set());
 
 let unsubscribeSse: (() => void) | null = null;
 let pollingIntervalId: ReturnType<typeof setInterval> | null = null;
+let unsubscribeExportSse: (() => void) | null = null;
+let exportPollingIntervalId: ReturnType<typeof setInterval> | null = null;
 let finishPromise: Promise<void> | null = null;
 let trackedJobId: string | null = null;
 let trackedJobOptions: TrackJobOptions = {};
@@ -88,13 +94,19 @@ function rememberPausedJob(job: TrackedRenderJob) {
   };
 }
 
+function isTerminalRenderStatus(status: TrackedRenderJob["status"]) {
+  return ["completed", "failed", "cancelled_partial"].includes(status);
+}
+
+function isTerminalExportStatus(status: TrackedExportJob["status"]) {
+  return ["completed", "failed"].includes(status);
+}
+
 export function useRuntimeState() {
   const canMutate = computed(() => {
     return (
       currentRenderJob.value === null ||
-      ["completed", "failed", "cancelled_partial"].includes(
-        currentRenderJob.value.status,
-      )
+      isTerminalRenderStatus(currentRenderJob.value.status)
     );
   });
 
@@ -283,6 +295,9 @@ export function useRuntimeState() {
         }
 
         const keepPausedContext = settledStatus === "paused";
+        if (isTerminalRenderStatus(settledStatus)) {
+          currentRenderJob.value = null;
+        }
         if (!keepPausedContext) {
           progressiveSegments.value = [];
           isInitialRendering.value = false;
@@ -341,6 +356,64 @@ export function useRuntimeState() {
     });
   }
 
+  function clearExportTracking() {
+    if (unsubscribeExportSse) {
+      unsubscribeExportSse();
+      unsubscribeExportSse = null;
+    }
+    if (exportPollingIntervalId) {
+      clearInterval(exportPollingIntervalId);
+      exportPollingIntervalId = null;
+    }
+    currentExportJob.value = null;
+  }
+
+  function trackExportJob(job: TrackedExportJob) {
+    clearExportTracking();
+    currentExportJob.value = { ...job };
+
+    unsubscribeExportSse = subscribeExportJobEvents(job.export_job_id, {
+      onStateChanged(nextJob) {
+        currentExportJob.value = { ...(currentExportJob.value ?? {}), ...nextJob };
+        if (isTerminalExportStatus(nextJob.status)) {
+          clearExportTracking();
+        }
+      },
+      onProgress(progress, message) {
+        if (!currentExportJob.value) {
+          return;
+        }
+        currentExportJob.value = {
+          ...currentExportJob.value,
+          progress,
+          message,
+          status: "exporting",
+        };
+      },
+      onCompleted(nextJob) {
+        currentExportJob.value = { ...nextJob };
+        clearExportTracking();
+      },
+      onError() {
+        if (unsubscribeExportSse) {
+          unsubscribeExportSse();
+          unsubscribeExportSse = null;
+        }
+        exportPollingIntervalId = setInterval(async () => {
+          try {
+            const nextJob = await getExportJob(job.export_job_id);
+            currentExportJob.value = nextJob;
+            if (isTerminalExportStatus(nextJob.status)) {
+              clearExportTracking();
+            }
+          } catch (err) {
+            console.error("Export polling error", err);
+          }
+        }, 2000);
+      },
+    });
+  }
+
   async function waitForJobTerminal(jobId: string) {
     if (trackedJobId !== jobId || terminalStatusPromise === null) {
       throw new Error(`未找到正在跟踪的 job: ${jobId}`);
@@ -358,6 +431,8 @@ export function useRuntimeState() {
     lockedSegmentIds,
     canMutate,
     trackJob,
+    trackExportJob,
+    clearExportTracking,
     pauseJob,
     cancelJob,
     resumeJob,

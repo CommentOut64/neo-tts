@@ -185,22 +185,23 @@ class ExportService:
             raise EditSessionNotFoundError(
                 f"Document version '{job.document_version}' not found for export job '{job.export_job_id}'."
             )
-        target_dir, staging_dir = self._asset_store.prepare_export_staging_dir(
+        export_root_dir, staging_dir = self._asset_store.prepare_export_staging_dir(
             export_job_id=job.export_job_id,
             target_dir=job.target_dir,
         )
         self._update_job(job.export_job_id, staging_dir=str(staging_dir))
         if job.export_kind == "segments":
-            return self._export_segments(job=job, snapshot=snapshot, target_dir=target_dir, staging_dir=staging_dir)
-        return self._export_composition(job=job, snapshot=snapshot, target_dir=target_dir, staging_dir=staging_dir)
+            return self._export_segments(job=job, snapshot=snapshot, export_root_dir=export_root_dir, staging_dir=staging_dir)
+        return self._export_composition(job=job, snapshot=snapshot, export_root_dir=export_root_dir, staging_dir=staging_dir)
 
-    def _export_segments(self, *, job: ExportJobResponse, snapshot, target_dir: Path, staging_dir: Path) -> ExportOutputManifest:
+    def _export_segments(self, *, job: ExportJobResponse, snapshot, export_root_dir: Path, staging_dir: Path) -> ExportOutputManifest:
+        export_dir_name = self._build_export_name(job)
         segment_files: list[str] = []
         total_file_count = len(snapshot.segments) + 1
         for index, segment in enumerate(snapshot.segments, start=1):
             if segment.render_asset_id is None:
                 raise EditSessionNotFoundError(f"Segment '{segment.segment_id}' has no render asset to export.")
-            destination = staging_dir / f"{index:04d}.wav"
+            destination = staging_dir / f"segments-{index}.wav"
             shutil.copy2(self._asset_store.segment_asset_path(segment.render_asset_id) / "audio.wav", destination)
             segment_files.append(str(destination))
             self._emit_export_progress(
@@ -219,20 +220,23 @@ class ExportService:
             "segment_files": [Path(path).name for path in segment_files],
         }
         manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        stored_manifest_path = self._write_export_manifest(job.export_job_id, manifest_payload)
+        manifest_path.unlink(missing_ok=True)
         final_dir = self._asset_store.finalize_export_staging_dir(
             staging_dir=staging_dir,
-            target_dir=target_dir,
+            target_dir=export_root_dir / export_dir_name,
             overwrite_policy=job.overwrite_policy,
         )
         return ExportOutputManifest(
             export_kind="segments",
             target_dir=str(final_dir),
             files=[str(path) for path in sorted(final_dir.iterdir()) if path.is_file()],
-            segment_files=[str(final_dir / f"{index:04d}.wav") for index in range(1, len(segment_files) + 1)],
-            manifest_file=str(final_dir / "manifest.json"),
+            segment_files=[str(final_dir / f"segments-{index}.wav") for index in range(1, len(segment_files) + 1)],
+            manifest_file=str(stored_manifest_path),
         )
 
-    def _export_composition(self, *, job: ExportJobResponse, snapshot, target_dir: Path, staging_dir: Path) -> ExportOutputManifest:
+    def _export_composition(self, *, job: ExportJobResponse, snapshot, export_root_dir: Path, staging_dir: Path) -> ExportOutputManifest:
+        export_name = self._build_export_name(job)
         timeline = self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
         blocks = [self._asset_store.load_block_asset(entry.block_asset_id) for entry in timeline.block_entries]
         composition_manifest = self._composition_builder.compose_document(
@@ -241,7 +245,7 @@ class ExportService:
             blocks=blocks,
         )
         composition_source = self._write_formal_composition_asset(composition_manifest)
-        composition_path = staging_dir / "composition.wav"
+        composition_path = staging_dir / f"{export_name}.wav"
         shutil.copy2(composition_source, composition_path)
         self._emit_export_progress(
             job=job,
@@ -249,7 +253,7 @@ class ExportService:
             total_file_count=2,
             current_path=composition_path,
         )
-        manifest_path = staging_dir / "manifest.json"
+        manifest_path = staging_dir / f"{export_name}.manifest.json"
         manifest_payload = {
             "export_kind": "composition",
             "document_id": snapshot.document_id,
@@ -258,18 +262,32 @@ class ExportService:
             "composition_file": composition_path.name,
         }
         manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        final_dir = self._asset_store.finalize_export_staging_dir(
-            staging_dir=staging_dir,
-            target_dir=target_dir,
+        stored_manifest_path = self._write_export_manifest(job.export_job_id, manifest_payload)
+        manifest_path.unlink(missing_ok=True)
+        final_composition_path = self._asset_store.finalize_export_file(
+            staging_file=composition_path,
+            target_file=export_root_dir / composition_path.name,
             overwrite_policy=job.overwrite_policy,
         )
+        self._asset_store.cleanup_export_staging_dir(staging_dir)
         return ExportOutputManifest(
             export_kind="composition",
-            target_dir=str(final_dir),
-            files=[str(path) for path in sorted(final_dir.iterdir()) if path.is_file()],
-            composition_file=str(final_dir / "composition.wav"),
+            target_dir=str(export_root_dir),
+            files=[str(final_composition_path)],
+            composition_file=str(final_composition_path),
             composition_manifest_id=composition_manifest.composition_manifest_id,
-            manifest_file=str(final_dir / "manifest.json"),
+            manifest_file=str(stored_manifest_path),
+        )
+
+    @staticmethod
+    def _build_export_name(job: ExportJobResponse) -> str:
+        timestamp = job.updated_at.astimezone().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        return f"neo-tts-export-{timestamp}"
+
+    def _write_export_manifest(self, export_job_id: str, payload: dict[str, object]) -> Path:
+        return self._asset_store.write_formal_json_atomic(
+            f"exports/{export_job_id}/manifest.json",
+            payload,
         )
 
     def _emit_export_progress(

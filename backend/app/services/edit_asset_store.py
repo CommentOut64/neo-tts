@@ -274,21 +274,13 @@ class EditAssetStore:
     def resolve_export_target_dir(self, raw_target_dir: str) -> Path:
         raw_path = Path(raw_target_dir)
         if raw_path.is_absolute():
-            resolved = raw_path.resolve()
-        else:
-            if ".." in raw_path.parts:
-                raise ValueError("Export target must not escape the controlled export root.")
-            resolved = (self._export_root / raw_path).resolve()
-        try:
-            resolved.relative_to(self._export_root)
-        except ValueError as exc:
-            raise ValueError("Export target must stay inside the controlled export root.") from exc
-        return resolved
+            return raw_path.resolve()
+        raise ValueError("Export root directory must be an absolute path.")
 
     def prepare_export_staging_dir(self, *, export_job_id: str, target_dir: str | Path) -> tuple[Path, Path]:
         resolved_target = self.resolve_export_target_dir(str(target_dir))
-        resolved_target.parent.mkdir(parents=True, exist_ok=True)
-        staging_dir = resolved_target.parent / f".{resolved_target.name}.tmp-export-{self._validate_leaf_name(export_job_id)}"
+        resolved_target.mkdir(parents=True, exist_ok=True)
+        staging_dir = resolved_target / f".tmp-export-{self._validate_leaf_name(export_job_id)}"
         if staging_dir.exists():
             self._remove_path(staging_dir)
         staging_dir.mkdir(parents=True, exist_ok=False)
@@ -301,7 +293,7 @@ class EditAssetStore:
         target_dir: str | Path,
         overwrite_policy: str,
     ) -> Path:
-        resolved_target = self.resolve_export_target_dir(str(target_dir))
+        resolved_target = Path(target_dir).resolve()
         resolved_staging = Path(staging_dir)
         if not resolved_staging.exists():
             raise FileNotFoundError(f"Export staging directory not found: {resolved_staging}")
@@ -312,6 +304,25 @@ class EditAssetStore:
             raise ValueError(f"Export target already exists: {final_target}")
         os.replace(resolved_staging, final_target)
         return final_target
+
+    def finalize_export_file(
+        self,
+        *,
+        staging_file: str | Path,
+        target_file: str | Path,
+        overwrite_policy: str,
+    ) -> Path:
+        resolved_staging = Path(staging_file)
+        if not resolved_staging.exists():
+            raise FileNotFoundError(f"Export staging file not found: {resolved_staging}")
+        resolved_target = self._resolve_export_destination(Path(target_file).resolve(), overwrite_policy=overwrite_policy)
+        resolved_target.parent.mkdir(parents=True, exist_ok=True)
+        if overwrite_policy == "replace" and resolved_target.exists():
+            self._remove_path(resolved_target)
+        elif overwrite_policy == "fail" and resolved_target.exists():
+            raise ValueError(f"Export target already exists: {resolved_target}")
+        os.replace(resolved_staging, resolved_target)
+        return resolved_target
 
     def cleanup_export_staging_dir(self, staging_dir: str | Path) -> bool:
         path = Path(staging_dir)
@@ -459,7 +470,9 @@ class EditAssetStore:
                 return target_dir
             index = 1
             while True:
-                candidate = target_dir.with_name(f"{target_dir.name}-{index}")
+                suffix = "".join(target_dir.suffixes)
+                base_name = target_dir.name[:-len(suffix)] if suffix else target_dir.name
+                candidate = target_dir.with_name(f"{base_name}-{index}{suffix}")
                 if not candidate.exists():
                     return candidate
                 index += 1

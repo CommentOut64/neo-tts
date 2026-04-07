@@ -1,5 +1,5 @@
 import axios from './http'
-import type { 
+import type {
   EditSessionSnapshot,
   SegmentListResponse,
   EdgeListResponse,
@@ -19,8 +19,15 @@ import type {
   SegmentBatchRenderProfilePatchBody,
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
-} from '@/types/editSession'
-import { unwrapAcceptedRenderJob } from './editSessionContract'
+  ExportSegmentsBody,
+  ExportCompositionBody,
+  ExportJobResponse,
+  ExportJobAcceptedResponse,
+} from "@/types/editSession";
+import {
+  unwrapAcceptedRenderJob,
+  unwrapAcceptedExportJob,
+} from "./editSessionContract";
 import { resolveApiUrl } from './requestSupport'
 
 export async function getSnapshot(): Promise<EditSessionSnapshot> {
@@ -309,4 +316,88 @@ export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse>
     '/v1/edit-session/render-jobs/' + jobId + '/resume',
   )
   return unwrapAcceptedRenderJob(data)
+}
+
+export async function exportSegments(
+  body: ExportSegmentsBody,
+): Promise<ExportJobResponse> {
+  const { data } = await axios.post<ExportJobAcceptedResponse>(
+    "/v1/edit-session/exports/segments",
+    body,
+  );
+  return unwrapAcceptedExportJob(data);
+}
+
+export async function exportComposition(
+  body: ExportCompositionBody,
+): Promise<ExportJobResponse> {
+  const { data } = await axios.post<ExportJobAcceptedResponse>(
+    "/v1/edit-session/exports/composition",
+    body,
+  );
+  return unwrapAcceptedExportJob(data);
+}
+
+export async function getExportJob(jobId: string): Promise<ExportJobResponse> {
+  const { data } = await axios.get<ExportJobResponse>(
+    "/v1/edit-session/exports/" + jobId,
+  );
+  return data;
+}
+
+export type ExportJobEventType =
+  | "job_state_changed"
+  | "export_progress"
+  | "export_completed";
+
+export interface ExportJobEventHandlers {
+  onStateChanged?: (job: ExportJobResponse) => void;
+  onProgress?: (progress: number, message: string) => void;
+  onCompleted?: (job: ExportJobResponse) => void;
+  onError?: (err: unknown) => void;
+  onComplete?: () => void;
+}
+
+export function subscribeExportJobEvents(
+  jobId: string,
+  handlers: ExportJobEventHandlers,
+): () => void {
+  const source = new EventSource(
+    resolveApiUrl(
+      "/v1/edit-session/exports/" + jobId + "/events",
+      import.meta.env.VITE_API_BASE_URL || "",
+    ),
+  );
+
+  const eventTypes: ExportJobEventType[] = [
+    "job_state_changed",
+    "export_progress",
+    "export_completed",
+  ];
+
+  for (const type of eventTypes) {
+    source.addEventListener(type, (e: MessageEvent) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (type === "job_state_changed" && handlers.onStateChanged) {
+          handlers.onStateChanged(payload as ExportJobResponse);
+        } else if (type === "export_progress" && handlers.onProgress) {
+          handlers.onProgress(payload.progress, payload.message);
+        } else if (type === "export_completed" && handlers.onCompleted) {
+          handlers.onCompleted(payload as ExportJobResponse);
+        }
+      } catch (err) {
+        handlers.onError?.(err);
+      }
+    });
+  }
+
+  source.onerror = (err) => {
+    handlers.onError?.(err);
+  };
+
+  return () => {
+    source.close();
+    handlers.onComplete?.();
+  };
 }

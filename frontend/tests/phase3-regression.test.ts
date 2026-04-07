@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildInitializeRequest, unwrapAcceptedRenderJob } from "../src/api/editSessionContract.ts";
+import { buildInitializeRequest, unwrapAcceptedExportJob, unwrapAcceptedRenderJob } from "../src/api/editSessionContract.ts";
 import { ApiRequestError, extractStatusCode, resolveApiUrl, toApiRequestError } from "../src/api/requestSupport.ts";
 
 describe("phase3 regression", () => {
@@ -113,6 +113,29 @@ it("unwrapAcceptedRenderJob returns nested job payload", () => {
   });
 });
 
+it("unwrapAcceptedExportJob returns nested export job payload", () => {
+  const job = unwrapAcceptedExportJob({
+    job: {
+      export_job_id: "export-123",
+      document_id: "doc-1",
+      document_version: 2,
+      timeline_manifest_id: "timeline-1",
+      export_kind: "composition",
+      status: "queued",
+      target_dir: "exports/demo",
+      overwrite_policy: "fail",
+      progress: 0,
+      message: "queued",
+      output_manifest: null,
+      staging_dir: null,
+      updated_at: "2026-04-07T00:00:00Z",
+    },
+  });
+
+  expect(job.export_job_id).toBe("export-123");
+  expect(job.export_kind).toBe("composition");
+});
+
 it("resumeRenderJob unwraps accepted response payload", async () => {
   const post = vi.fn().mockResolvedValue({
     data: {
@@ -179,6 +202,66 @@ it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
     reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
     filename: "custom.wav",
   });
+});
+
+it("subscribeExportJobEvents uses export events endpoint and dispatches progress payload", async () => {
+  const listeners = new Map<string, (event: MessageEvent<string>) => void>();
+
+  class MockEventSource {
+    readonly url: string;
+    onerror: ((event: Event) => void) | null = null;
+
+    constructor(url: string) {
+      this.url = url;
+    }
+
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+      listeners.set(type, listener as (event: MessageEvent<string>) => void);
+    }
+
+    removeEventListener(type: string) {
+      listeners.delete(type);
+    }
+
+    close() {}
+  }
+
+  vi.stubGlobal("EventSource", MockEventSource);
+
+  const { subscribeExportJobEvents } = await import("../src/api/editSession.ts");
+  const onProgress = vi.fn();
+  const onCompleted = vi.fn();
+
+  const dispose = subscribeExportJobEvents("export-1", {
+    onProgress,
+    onCompleted,
+  });
+
+  expect(listeners.has("export_progress")).toBe(true);
+  listeners.get("export_progress")?.({
+    data: JSON.stringify({ progress: 0.5, message: "halfway" }),
+  } as MessageEvent<string>);
+  listeners.get("export_completed")?.({
+    data: JSON.stringify({
+      export_job_id: "export-1",
+      document_id: "doc-1",
+      document_version: 2,
+      timeline_manifest_id: "timeline-1",
+      export_kind: "segments",
+      status: "completed",
+      target_dir: "exports/demo",
+      overwrite_policy: "fail",
+      progress: 1,
+      message: "done",
+      output_manifest: null,
+      staging_dir: null,
+      updated_at: "2026-04-07T00:00:00Z",
+    }),
+  } as MessageEvent<string>);
+
+  expect(onProgress).toHaveBeenCalledWith(0.5, "halfway");
+  expect(onCompleted).toHaveBeenCalled();
+  dispose();
 });
 
 it("toApiRequestError preserves HTTP status and detail text", () => {

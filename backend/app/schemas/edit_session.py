@@ -505,10 +505,10 @@ class VoiceBindingListResponse(BaseModel):
 
 class ExportRequestBase(BaseModel):
     document_version: int = Field(ge=1, description="要导出的已提交 document_version。")
-    target_dir: str = Field(description="导出目标目录，相对路径会解析到受控 export root 下。")
+    target_dir: str = Field(description="导出根目录，强制要求绝对路径。")
     overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(
         default="fail",
-        description="目标目录已存在时的处理策略。",
+        description="自动命名后的最终导出产物发生重名时的处理策略。",
     )
 
 
@@ -544,12 +544,12 @@ class SegmentBatchVoiceBindingPatchRequest(BaseModel):
 
 class ExportOutputManifest(BaseModel):
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
-    target_dir: str = Field(description="最终导出目录。")
-    files: list[str] = Field(default_factory=list, description="导出目录下的全部文件路径。")
+    target_dir: str = Field(description="最终导出落点所在目录；分段导出为自动创建的导出目录，整条导出为用户选择的导出根目录。")
+    files: list[str] = Field(default_factory=list, description="本次导出的全部文件路径。")
     segment_files: list[str] = Field(default_factory=list, description="分段导出的 wav 文件列表。")
     composition_file: str | None = Field(default=None, description="整条音频导出的 wav 文件路径。")
     composition_manifest_id: str | None = Field(default=None, description="若导出类型为 composition，则为对应正式资产 ID。")
-    manifest_file: str = Field(description="导出 manifest.json 路径。")
+    manifest_file: str = Field(description="导出 manifest 文件路径。")
     exported_at: datetime = Field(default_factory=_now_utc, description="导出完成时间。")
 
 
@@ -560,8 +560,8 @@ class ExportJobResponse(BaseModel):
     timeline_manifest_id: str = Field(description="导出使用的 timeline manifest ID。")
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
     status: Literal["queued", "exporting", "completed", "failed"] = Field(description="导出作业当前状态。")
-    target_dir: str = Field(description="解析后的最终目标目录。")
-    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="目标目录冲突时的处理策略。")
+    target_dir: str = Field(description="解析后的导出根目录。")
+    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="自动命名后的最终导出产物发生重名时的处理策略。")
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="当前导出进度，范围 0~1。")
     message: str = Field(default="", description="当前导出进度说明。")
     output_manifest: ExportOutputManifest | None = Field(default=None, description="导出成功后的输出清单。")
