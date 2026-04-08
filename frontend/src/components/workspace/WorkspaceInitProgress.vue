@@ -20,7 +20,7 @@ const completedSegments = computed(() =>
 
 <template>
   <div
-    class="h-full flex flex-col px-8 py-6 overflow-hidden bg-card rounded-card shadow-card"
+    class="h-full flex flex-col px-8 py-6 overflow-hidden bg-card rounded-card shadow-card border border-border dark:border-transparent"
   >
     <div class="flex-none mb-6">
       <h2

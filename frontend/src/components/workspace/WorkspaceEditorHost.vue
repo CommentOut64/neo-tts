@@ -347,11 +347,11 @@ function onDocUpdate(_value: any) {
 
 <template>
   <section
-    class="flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border overflow-hidden flex flex-col"
+    class="flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border dark:border-transparent overflow-hidden flex flex-col"
     @keydown="onKeyDown"
   >
     <!-- 头部区：固定最小高度以防止切换状态时由于按钮尺寸不同导致行高跳动 -->
-    <header class="px-4 h-12 border-b border-border/70 flex items-center justify-between shrink-0">
+    <header class="px-4 h-12 border-b border-border/70 dark:border-border/30 flex items-center justify-between shrink-0">
       <div class="flex items-center gap-2">
         <h3 class="text-sm font-semibold text-foreground leading-none">会话正文</h3>
         <span

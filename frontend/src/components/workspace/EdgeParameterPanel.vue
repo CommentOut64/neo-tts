@@ -10,7 +10,7 @@ const edgeValues = computed(() => panel.displayValues.value.edge);
 </script>
 
 <template>
-  <section class="bg-card rounded-card p-4 shadow-card">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
     <h3 class="text-[13px] font-semibold text-foreground mb-3">停顿与拼接</h3>
 
     <div class="space-y-4">

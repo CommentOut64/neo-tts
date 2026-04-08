@@ -261,7 +261,7 @@ init()
         space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent
       ">
         <!-- Voice select -->
-        <section class="bg-card rounded-card p-4 shadow-card">
+        <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
           <h3 class="text-[13px] font-semibold text-foreground mb-3">模型 (Voice)</h3>
           <VoiceSelect v-model="selectedVoiceName" :voices="voices" />
           <p v-if="selectedVoice" class="text-xs text-muted-fg mt-2">
@@ -270,7 +270,7 @@ init()
         </section>
 
         <!-- Reference audio -->
-        <section class="bg-card rounded-card p-4 shadow-card">
+        <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
           <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
           <el-radio-group v-model="refSource" class="mb-3">
             <el-radio value="preset">模型预设</el-radio>
@@ -316,7 +316,7 @@ init()
         </section>
 
         <!-- Inference params -->
-        <section class="bg-card rounded-card shadow-card overflow-hidden">
+        <section class="bg-card rounded-card shadow-card overflow-hidden border border-border dark:border-transparent">
           <InferenceSettingsPanel v-model:params="params" @reset="resetParams" />
         </section>
       </aside>

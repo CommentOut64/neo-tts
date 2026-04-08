@@ -86,10 +86,10 @@ watch(
 
 <template>
   <section
-    class="bg-card rounded-card p-4 shadow-card transition-all duration-500 border-2 relative"
+    class="bg-card rounded-card p-4 shadow-card transition-all duration-500 relative border border-border dark:border-transparent"
     :class="[
-      hasDirty ? 'border-amber-500/60' : 'border-transparent',
-      isFlashing ? 'animate-flash-alert !border-amber-500' : ''
+      hasDirty ? '!border-amber-500/60 shadow-[0_0_0_1px_rgba(245,158,11,0.6)]' : '',
+      isFlashing ? 'animate-flash-alert !border-amber-500 shadow-[0_0_0_1px_rgba(245,158,11,1)]' : ''
     ]"
   >
     <div class="flex items-center justify-between gap-3">

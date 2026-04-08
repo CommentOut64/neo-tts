@@ -59,7 +59,7 @@ function handleVoiceChange(val: string) {
     class="space-y-5 w-full h-full overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
   >
     <!-- 顶部状态卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-semibold text-foreground flex items-center shrink-0 h-6">
           全局参数
@@ -68,7 +68,7 @@ function handleVoiceChange(val: string) {
     </section>
 
     <!-- 音色卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">目标音色</h3>
       <VoiceSelect
         :model-value="modelValue.voice_id"
@@ -81,7 +81,7 @@ function handleVoiceChange(val: string) {
     </section>
 
     <!-- 参考音频卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
       <el-radio-group
         :model-value="modelValue.ref_source"
@@ -151,7 +151,7 @@ function handleVoiceChange(val: string) {
     </section>
 
     <!-- 合成参数卡片 -->
-    <section class="bg-card rounded-card overflow-hidden shadow-card">
+    <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent">
       <InferenceSettingsPanel
         :params="modelValue"
         @update:params="emit('update:modelValue', { ...modelValue, ...$event })"

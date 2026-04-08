@@ -87,7 +87,7 @@ function onNextSegment() {
 </script>
 
 <template>
-  <div class="h-16 w-full shrink-0 bg-card border border-border rounded-card shadow-card px-4 flex items-center gap-4">
+  <div class="h-16 w-full shrink-0 bg-card border border-border dark:border-transparent rounded-card shadow-card px-4 flex items-center gap-4">
     <div class="flex items-center gap-3">
       <button
         class="hover-state-layer w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"

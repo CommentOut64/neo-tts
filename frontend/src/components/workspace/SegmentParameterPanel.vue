@@ -35,7 +35,7 @@ const adjacentEdges = computed(() => {
   />
 
   <!-- TODO: 暂时隐藏相邻边设置卡片 -->
-  <section v-if="false && adjacentEdges.length > 0" class="bg-card rounded-card p-4 shadow-card">
+  <section v-if="false && adjacentEdges.length > 0" class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
     <h3 class="text-[13px] font-semibold text-foreground mb-3">相邻边</h3>
     <div class="flex flex-col gap-2">
       <button

@@ -86,7 +86,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 </script>
 
 <template>
-  <section class="bg-card rounded-card p-4 shadow-card">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       目标音色<span v-if="panel.dirtyFields.value.has('voiceBinding.voice_id')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
@@ -111,7 +111,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     </p>
   </section>
 
-  <section class="bg-card rounded-card p-4 shadow-card">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       参考音频<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path') || panel.dirtyFields.value.has('renderProfile.reference_text') || panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>

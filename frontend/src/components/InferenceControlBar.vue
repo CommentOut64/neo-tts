@@ -46,7 +46,7 @@ const hasError = computed(() => props.runtimeError != null || props.cacheError !
 </script>
 
 <template>
-  <section v-if="isActive || hasError" class="bg-card rounded-card p-4 shadow-card space-y-3">
+  <section v-if="isActive || hasError" class="bg-card rounded-card p-4 shadow-card space-y-3 border border-border dark:border-transparent">
     <!-- 进度条区域 -->
     <div v-if="isActive">
       <div class="flex items-center justify-between mb-2">
