@@ -2,6 +2,7 @@ import { ref, computed } from "vue";
 import type {
   ExportJobResponse,
   RenderJob,
+  RenderJobCommittedPayload,
   RenderJobResponse,
   RenderJobSummary,
   RenderJobEventType,
@@ -48,6 +49,16 @@ let terminalStatusPromise: Promise<
 const PAUSED_HINT = "已暂停，随时可以继续";
 const RESUMED_HINT = "已继续，正在接着处理剩余内容";
 
+interface RenderJobCommitMetadataShape {
+  committed_document_version?: number | null;
+  committed_timeline_manifest_id?: string | null;
+  committed_playable_sample_span?: [number, number] | null;
+  changed_block_asset_ids?: string[];
+  document_version?: number | null;
+  timeline_manifest_id?: string | null;
+  playable_sample_span?: [number, number] | null;
+}
+
 interface TrackJobOptions {
   initialRendering?: boolean;
   lockedSegmentIds?: string[];
@@ -64,6 +75,105 @@ interface PausedJobContext {
 }
 
 let pausedJobContext: PausedJobContext | null = null;
+const renderJobEventListeners = new Set<
+  (event: { type: RenderJobEventType; payload: any; jobId: string | null }) => void
+>();
+const renderJobCommittedListeners = new Set<
+  (event: { payload: RenderJobCommittedPayload; jobId: string | null }) => void
+>();
+let emittedCommittedSignature: string | null = null;
+
+function emitRenderJobEvent(
+  type: RenderJobEventType,
+  payload: any,
+  fallbackJobId: string | null,
+) {
+  for (const listener of renderJobEventListeners) {
+    listener({
+      type,
+      payload,
+      jobId: currentRenderJob.value?.job_id ?? fallbackJobId,
+    });
+  }
+}
+
+function normalizePlayableSampleSpan(input: unknown): [number, number] | null {
+  if (!Array.isArray(input) || input.length !== 2) {
+    return null;
+  }
+  const [start, end] = input;
+  if (typeof start !== "number" || typeof end !== "number") {
+    return null;
+  }
+  return [start, end];
+}
+
+export function extractCommittedRenderJobPayload(
+  payload: Partial<RenderJobCommitMetadataShape> | null | undefined,
+): RenderJobCommittedPayload | null {
+  if (!payload) {
+    return null;
+  }
+
+  const committedDocumentVersion =
+    typeof payload.committed_document_version === "number"
+      ? payload.committed_document_version
+      : typeof payload.document_version === "number"
+        ? payload.document_version
+        : null;
+  const committedTimelineManifestId =
+    typeof payload.committed_timeline_manifest_id === "string"
+      ? payload.committed_timeline_manifest_id
+      : typeof payload.timeline_manifest_id === "string"
+        ? payload.timeline_manifest_id
+        : null;
+
+  if (committedDocumentVersion === null || committedTimelineManifestId === null) {
+    return null;
+  }
+
+  return {
+    committed_document_version: committedDocumentVersion,
+    committed_timeline_manifest_id: committedTimelineManifestId,
+    committed_playable_sample_span: normalizePlayableSampleSpan(
+      payload.committed_playable_sample_span ?? payload.playable_sample_span,
+    ),
+    changed_block_asset_ids: Array.isArray(payload.changed_block_asset_ids)
+      ? payload.changed_block_asset_ids.filter(
+          (blockAssetId): blockAssetId is string => typeof blockAssetId === "string",
+        )
+      : [],
+  };
+}
+
+function buildCommittedSignature(payload: RenderJobCommittedPayload) {
+  return JSON.stringify(payload);
+}
+
+function applyCommittedPayload(
+  payload: RenderJobCommittedPayload,
+  fallbackJobId: string | null,
+) {
+  if (currentRenderJob.value?.job_id) {
+    currentRenderJob.value = {
+      ...currentRenderJob.value,
+      ...payload,
+    };
+  }
+
+  const signature = buildCommittedSignature(payload);
+  if (signature === emittedCommittedSignature) {
+    return;
+  }
+  emittedCommittedSignature = signature;
+
+  for (const listener of renderJobCommittedListeners) {
+    listener({
+      payload,
+      jobId: currentRenderJob.value?.job_id ?? fallbackJobId,
+    });
+  }
+}
 
 function buildTrackedJobSnapshot(
   job: TrackedRenderJob,
@@ -102,6 +212,12 @@ function isTerminalExportStatus(status: TrackedExportJob["status"]) {
   return ["completed", "failed"].includes(status);
 }
 
+function isSettledRenderStatus(
+  status: TrackedRenderJob["status"],
+): status is "completed" | "failed" | "paused" | "cancelled_partial" {
+  return ["completed", "failed", "paused", "cancelled_partial"].includes(status);
+}
+
 export function useRuntimeState() {
   const canMutate = computed(() => {
     return (
@@ -126,7 +242,14 @@ export function useRuntimeState() {
     trackedJobId = job.job_id;
     trackedJobOptions = options;
     pausedJobContext = null;
+    emittedCommittedSignature = null;
     currentRenderJob.value = buildTrackedJobSnapshot(job, options);
+    const initialCommittedPayload = extractCommittedRenderJobPayload(
+      currentRenderJob.value as Partial<RenderJobCommitMetadataShape>,
+    );
+    if (initialCommittedPayload) {
+      applyCommittedPayload(initialCommittedPayload, job.job_id);
+    }
     progressiveSegments.value = options.preservedProgressiveSegments
       ? [...options.preservedProgressiveSegments]
       : [];
@@ -139,15 +262,18 @@ export function useRuntimeState() {
 
     unsubscribeSse = subscribeRenderJobEvents(job.job_id, {
       onEvent: (type: RenderJobEventType, payload: any) => {
+        emitRenderJobEvent(type, payload, job.job_id);
         if (type === "job_state_changed") {
           currentRenderJob.value = mergeTrackedJobSnapshot(
             payload as RenderJob,
           );
-          if (
-            ["completed", "failed", "paused", "cancelled_partial"].includes(
-              currentRenderJob.value.status,
-            )
-          ) {
+          const committedPayload = extractCommittedRenderJobPayload(
+            payload as Partial<RenderJobCommitMetadataShape>,
+          );
+          if (committedPayload) {
+            applyCommittedPayload(committedPayload, job.job_id);
+          }
+          if (isSettledRenderStatus(currentRenderJob.value.status)) {
             if (currentRenderJob.value.status === "paused") {
               rememberPausedJob(currentRenderJob.value);
             }
@@ -179,6 +305,13 @@ export function useRuntimeState() {
                 }
               : s,
           );
+        } else if (type === "timeline_committed") {
+          const committedPayload = extractCommittedRenderJobPayload(
+            payload as Partial<RenderJobCommitMetadataShape>,
+          );
+          if (committedPayload) {
+            applyCommittedPayload(committedPayload, job.job_id);
+          }
         } else if (type === "job_resumed") {
           if (currentRenderJob.value) {
             currentRenderJob.value = {
@@ -227,11 +360,14 @@ export function useRuntimeState() {
       try {
         const job = await getRenderJob(jobId);
         currentRenderJob.value = mergeTrackedJobSnapshot(job);
-        if (
-          ["completed", "failed", "paused", "cancelled_partial"].includes(
-            job.status,
-          )
-        ) {
+        emitRenderJobEvent("job_state_changed", job, jobId);
+        const committedPayload = extractCommittedRenderJobPayload(
+          job as Partial<RenderJobCommitMetadataShape>,
+        );
+        if (committedPayload) {
+          applyCommittedPayload(committedPayload, jobId);
+        }
+        if (isSettledRenderStatus(job.status)) {
           if (pollingIntervalId) {
             clearInterval(pollingIntervalId);
             pollingIntervalId = null;
@@ -246,6 +382,34 @@ export function useRuntimeState() {
         console.error("Polling error", err);
       }
     }, 2000);
+  }
+
+  async function reconcileTrackedJobTerminal(jobId: string) {
+    if (trackedJobId !== jobId) {
+      return null;
+    }
+
+    const job = await getRenderJob(jobId);
+    currentRenderJob.value = mergeTrackedJobSnapshot(job);
+    emitRenderJobEvent("job_state_changed", job, jobId);
+
+    const committedPayload = extractCommittedRenderJobPayload(
+      job as Partial<RenderJobCommitMetadataShape>,
+    );
+    if (committedPayload) {
+      applyCommittedPayload(committedPayload, jobId);
+    }
+
+    if (!isSettledRenderStatus(job.status)) {
+      return null;
+    }
+
+    if (job.status === "paused") {
+      rememberPausedJob(currentRenderJob.value);
+    }
+    resolveTerminalStatus?.(job.status);
+    await finishTrackedJob(job.job_id, job.status);
+    return job.status;
   }
 
   async function finishTrackedJob(
@@ -422,6 +586,31 @@ export function useRuntimeState() {
     return terminalStatusPromise;
   }
 
+  function onRenderJobEvent(
+    listener: (event: {
+      type: RenderJobEventType;
+      payload: any;
+      jobId: string | null;
+    }) => void,
+  ) {
+    renderJobEventListeners.add(listener);
+    return () => {
+      renderJobEventListeners.delete(listener);
+    };
+  }
+
+  function onRenderJobCommitted(
+    listener: (event: {
+      payload: RenderJobCommittedPayload;
+      jobId: string | null;
+    }) => void,
+  ) {
+    renderJobCommittedListeners.add(listener);
+    return () => {
+      renderJobCommittedListeners.delete(listener);
+    };
+  }
+
   return {
     currentRenderJob,
     currentExportJob,
@@ -436,6 +625,9 @@ export function useRuntimeState() {
     pauseJob,
     cancelJob,
     resumeJob,
+    reconcileTrackedJobTerminal,
     waitForJobTerminal,
+    onRenderJobEvent,
+    onRenderJobCommitted,
   };
 }

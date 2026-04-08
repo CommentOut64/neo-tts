@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { usePlayback } from "@/composables/usePlayback";
 import { useTimeline } from "@/composables/useTimeline";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   findNextSegmentStartSample,
   findPreviousSegmentStartSample,
@@ -16,6 +17,8 @@ import {
 
 const { isPlaying, play, pause, currentSample, seekToSample } = usePlayback();
 const { totalSamples, sampleRate, segmentEntries } = useTimeline();
+const workspaceProcessing = useWorkspaceProcessing();
+const isLocked = computed(() => workspaceProcessing.isInteractionLocked.value);
 
 const sliderPercent = ref(0);
 const isDraggingSlider = ref(false);
@@ -46,7 +49,7 @@ const displayCurrentTime = computed(() => formatTime(currentSample.value));
 const displayTotalTime = computed(() => formatTime(totalSamples.value));
 
 function seekByPercent(percent: number) {
-  if (totalSamples.value === 0) return;
+  if (totalSamples.value === 0 || isLocked.value) return;
   seekToSample((percent / 100) * totalSamples.value);
 }
 
@@ -64,11 +67,13 @@ function onSliderChange(value: number | number[]) {
 }
 
 function onTogglePlay() {
+  if (isLocked.value) return;
   if (isPlaying.value) pause();
   else play();
 }
 
 function onPrevSegment() {
+  if (isLocked.value) return;
   const targetSample = findPreviousSegmentStartSample(
     segmentEntries.value,
     currentSample.value,
@@ -77,6 +82,7 @@ function onPrevSegment() {
 }
 
 function onNextSegment() {
+  if (isLocked.value) return;
   const targetSample = findNextSegmentStartSample(
     segmentEntries.value,
     currentSample.value,
@@ -93,14 +99,14 @@ function onNextSegment() {
         class="hover-state-layer w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
         @click="onPrevSegment"
         title="上一段"
-        :disabled="segmentEntries.length === 0"
+        :disabled="segmentEntries.length === 0 || isLocked"
       >
         <el-icon><ArrowLeft /></el-icon>
       </button>
       <button
         class="hover-state-layer w-12 h-12 flex items-center justify-center rounded-xl bg-blue-500 text-white shadow-md disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors text-2xl font-bold"
         @click="onTogglePlay"
-        :disabled="totalSamples === 0"
+        :disabled="totalSamples === 0 || isLocked"
       >
         <el-icon v-if="isPlaying"><VideoPause /></el-icon>
         <el-icon v-else class="ml-[2px]"><VideoPlay /></el-icon>
@@ -109,7 +115,7 @@ function onNextSegment() {
         class="hover-state-layer w-10 h-10 flex items-center justify-center rounded-xl bg-blue-500 text-white disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-colors shadow-sm"
         @click="onNextSegment"
         title="下一段"
-        :disabled="segmentEntries.length === 0"
+        :disabled="segmentEntries.length === 0 || isLocked"
       >
         <el-icon><ArrowRight /></el-icon>
       </button>
@@ -123,6 +129,7 @@ function onNextSegment() {
           :show-tooltip="false"
           size="small"
           class="w-full !m-0"
+          :disabled="isLocked"
           @input="onSliderInput"
           @change="onSliderChange"
         />

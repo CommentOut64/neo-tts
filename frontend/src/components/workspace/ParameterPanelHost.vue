@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { ElMessage } from "element-plus";
 
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import type { VoiceProfile } from "@/types/tts";
 
 import BatchParameterPanel from "./BatchParameterPanel.vue";
@@ -17,27 +18,37 @@ const props = defineProps<{
 }>();
 
 const panel = useParameterPanel();
+const workspaceProcessing = useWorkspaceProcessing();
 
 const scope = computed(() => panel.scopeContext.value.scope);
 const hasDirty = computed(() => panel.hasDirty.value);
 const isSubmitting = computed(() => panel.isSubmitting.value);
 const confirmVisible = computed(() => panel.confirmVisible.value);
+const isLocked = computed(() => workspaceProcessing.isInteractionLocked.value);
 
 async function handleSubmit() {
   try {
     await panel.submitDraft();
-    ElMessage.success("参数已提交");
+    if (scope.value !== "edge") {
+      ElMessage.success("参数已提交");
+    }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "参数提交失败");
+    if (scope.value !== "edge") {
+      ElMessage.error(error instanceof Error ? error.message : "参数提交失败");
+    }
   }
 }
 
 async function handleSubmitAndContinue() {
   try {
     await panel.submitAndContinue();
-    ElMessage.success("参数已提交");
+    if (scope.value !== "edge") {
+      ElMessage.success("参数已提交");
+    }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "参数提交失败");
+    if (scope.value !== "edge") {
+      ElMessage.error(error instanceof Error ? error.message : "参数提交失败");
+    }
   }
 }
 
@@ -54,6 +65,7 @@ async function handleDiscardAndContinue() {
       :scope="scope"
       :has-dirty="hasDirty"
       :is-submitting="isSubmitting"
+      :disabled="isLocked"
       @discard="panel.discardDraft()"
       @submit="handleSubmit"
     />

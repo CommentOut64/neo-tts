@@ -9,6 +9,7 @@ import { createSegmentRerenderQueue } from "./segmentRerenderQueue";
 import { resolveMainActionButtonState } from "./mainActionButtonState";
 import { resolveRerenderTargets } from "./rerenderTargets";
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 
 const props = defineProps<{
   sessionStatus: SessionStatus;
@@ -19,6 +20,7 @@ const editSession = useEditSession();
 const parameterPanel = useParameterPanel();
 const { refreshSnapshot, refreshTimeline } = editSession;
 const runtimeState = useRuntimeState();
+const workspaceProcessing = useWorkspaceProcessing();
 const rerenderTargets = computed(() =>
   resolveRerenderTargets({
     dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
@@ -77,7 +79,7 @@ const buttonState = computed(() =>
     sessionStatus: props.sessionStatus,
     dirtyCount: rerenderTargets.value.count,
     canInitialize: false,
-    canMutate: runtimeState.canMutate.value,
+    canMutate: runtimeState.canMutate.value && !workspaceProcessing.isInteractionLocked.value,
   }),
 );
 

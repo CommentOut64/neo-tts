@@ -1,16 +1,17 @@
 import { computed, ref, watch } from "vue";
 
 import {
-  commitEdgeConfig,
   commitSegmentRenderProfile,
   commitSegmentRenderProfileBatch,
   commitSegmentVoiceBinding,
   commitSegmentVoiceBindingBatch,
   commitSessionRenderProfile,
   commitSessionVoiceBinding,
+  updateEdge,
 } from "@/api/editSession";
 import { useEditSession } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   useSegmentSelection,
   type SelectionSnapshot,
@@ -88,6 +89,7 @@ function clearDraftState() {
 export function useParameterPanel() {
   const editSession = useEditSession();
   const runtimeState = useRuntimeState();
+  const workspaceProcessing = useWorkspaceProcessing();
   const selection = useSegmentSelection();
   const queue = createParameterPatchQueue();
 
@@ -101,6 +103,17 @@ export function useParameterPanel() {
   const dirtyFields = computed(() => Array.from(dirtyFieldSet.value));
   const dirtyFieldSetReadonly = computed(() => new Set(dirtyFieldSet.value));
   const hasDirty = computed(() => dirtyFieldSet.value.size > 0);
+  const dirtyEdgeIds = computed(() => {
+    if (
+      scopeContext.value.scope !== "edge" ||
+      !scopeContext.value.edgeId ||
+      Object.keys(draftPatch.value.edge).length === 0
+    ) {
+      return new Set<string>();
+    }
+
+    return new Set([scopeContext.value.edgeId]);
+  });
 
   const resolvedValues = computed<ResolvedParameterPanelValues>(() =>
     resolveEffectiveParameters({
@@ -269,6 +282,23 @@ export function useParameterPanel() {
     clearDraftState();
   }
 
+  function buildEdgeSummary(): string {
+    const currentEdge = resolvedValues.value.edge;
+    if (!currentEdge) {
+      return "边界参数调整";
+    }
+
+    if (draftPatch.value.edge.pause_duration_seconds != null) {
+      return `停顿 ${currentEdge.pause_duration_seconds.toFixed(2)} -> ${draftPatch.value.edge.pause_duration_seconds.toFixed(2)}`;
+    }
+
+    if (draftPatch.value.edge.boundary_strategy) {
+      return `边界策略 ${currentEdge.boundary_strategy} -> ${draftPatch.value.edge.boundary_strategy}`;
+    }
+
+    return "边界参数调整";
+  }
+
   function buildPatchTasks() {
     const tasks: Array<{
       kind: "voice-binding" | "render-profile" | "edge";
@@ -324,7 +354,30 @@ export function useParameterPanel() {
       tasks.push({
         kind: "edge",
         submit: async () => {
-          await commitEdgeConfig(scopeContext.value.edgeId!, draftPatch.value.edge);
+          const completion = workspaceProcessing.startEdgeUpdate({
+            summary: buildEdgeSummary(),
+          });
+          let jobResponse;
+          try {
+            jobResponse = await updateEdge(
+              scopeContext.value.edgeId!,
+              draftPatch.value.edge,
+            );
+          } catch (error) {
+            workspaceProcessing.fail(
+              error instanceof Error ? error.message : "停顿调整提交失败",
+            );
+            throw error;
+          }
+          workspaceProcessing.acceptJob({
+            job: jobResponse,
+            jobKind: "edge-compose",
+          });
+          runtimeState.trackJob(jobResponse, {
+            initialRendering: false,
+            refreshSessionOnTerminal: false,
+          });
+          await completion;
         },
       });
     }
@@ -336,7 +389,7 @@ export function useParameterPanel() {
     if (!hasDirty.value) {
       return;
     }
-    if (!runtimeState.canMutate.value) {
+    if (!runtimeState.canMutate.value || workspaceProcessing.isInteractionLocked.value) {
       throw new Error("当前存在活动作业，暂时不能提交参数");
     }
 
@@ -353,9 +406,11 @@ export function useParameterPanel() {
         throw new Error(`参数提交失败，失败阶段为 ${result.failedTaskKind ?? "unknown"}`);
       }
 
-      await editSession.refreshSnapshot();
-      if (editSession.sessionStatus.value === "ready") {
-        await editSession.refreshTimeline();
+      if (scopeContext.value.scope !== "edge") {
+        await editSession.refreshSnapshot();
+        if (editSession.sessionStatus.value === "ready") {
+          await editSession.refreshTimeline();
+        }
       }
       clearDraftState();
       if (pendingScopeContext.value) {
@@ -402,6 +457,7 @@ export function useParameterPanel() {
     draftPatch: computed(() => draftPatch.value),
     dirtyFields: dirtyFieldSetReadonly,
     dirtyFieldList: dirtyFields,
+    dirtyEdgeIds,
     hasDirty,
     isSubmitting,
     confirmVisible,

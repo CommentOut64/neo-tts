@@ -176,6 +176,10 @@ export function usePlayback() {
     clearActiveNodes();
   }
 
+  function pauseForProcessing() {
+    pause();
+  }
+
   function updatePlayState() {
     if (!isPlaying.value) return;
     const ctx = getAudioCtx();
@@ -416,13 +420,20 @@ export function usePlayback() {
     }
   }
 
+  async function warmAudioUrls(audioUrls: string[]) {
+    const uniqueAudioUrls = Array.from(new Set(audioUrls.filter(Boolean)));
+    await Promise.all(uniqueAudioUrls.map((audioUrl) => fetchBlock(audioUrl)));
+  }
+
   return {
     isPlaying: computed(() => isPlaying.value),
     currentSample,
     currentSegmentId,
     play,
     pause,
+    pauseForProcessing,
     seekToSample,
     seekToSegment,
+    warmAudioUrls,
   };
 }
