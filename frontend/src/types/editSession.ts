@@ -4,7 +4,14 @@ export type RenderJobStatus =
   | 'cancel_requested' | 'cancelled_partial'
   | 'completed' | 'failed'
 
-export interface RenderJobSummary {
+export interface RenderJobCommitMetadata {
+  committed_document_version?: number | null
+  committed_timeline_manifest_id?: string | null
+  committed_playable_sample_span?: [number, number] | null
+  changed_block_asset_ids?: string[]
+}
+
+export interface RenderJobSummary extends RenderJobCommitMetadata {
   job_id: string
   status: RenderJobStatus
   progress: number
@@ -29,6 +36,7 @@ export interface EditSessionSnapshot {
   session_status: 'empty' | 'initializing' | 'ready' | 'failed'
   document_id: string | null
   document_version: number | null
+  source_text?: string | null
   total_segment_count: number
   total_edge_count?: number
   active_job: RenderJobSummary | null
@@ -210,6 +218,20 @@ export interface RenderJobResponse {
   status: RenderJobStatus
   progress: number
   message: string
+  cancel_requested?: boolean
+  pause_requested?: boolean
+  current_segment_index?: number | null
+  total_segment_count?: number | null
+  current_block_index?: number | null
+  total_block_count?: number | null
+  result_document_version?: number | null
+  committed_document_version?: number | null
+  committed_timeline_manifest_id?: string | null
+  committed_playable_sample_span?: [number, number] | null
+  changed_block_asset_ids?: string[]
+  checkpoint_id?: string | null
+  resume_token?: string | null
+  updated_at?: string
 }
 
 export interface RenderJobAcceptedResponse {
@@ -285,6 +307,13 @@ export type RenderJobEventType =
   | 'job_paused'
   | 'job_resumed'
   | 'job_cancelled_partial'
+
+export interface RenderJobCommittedPayload {
+  committed_document_version: number
+  committed_timeline_manifest_id: string
+  committed_playable_sample_span: [number, number] | null
+  changed_block_asset_ids: string[]
+}
 
 export interface SegmentsInitializedPayload {
   document_id: string

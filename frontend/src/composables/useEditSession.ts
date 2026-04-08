@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   deleteSession,
   getGroups,
@@ -97,6 +97,10 @@ export function useEditSession() {
     }
     return data.segments.map((segment) => segment.raw_text).join('')
   }
+
+  const sourceText = computed(() => {
+    return snapshot.value?.source_text ?? lastInitParams.value?.raw_text ?? null
+  })
 
   function markDraftAsSyncedToSession() {
     sourceDraftRevision.value = inputDraft.draftRevision.value
@@ -225,6 +229,46 @@ export function useEditSession() {
     await Promise.all([loadAllSegments(), loadAllEdges(), refreshSessionResources()])
   }
 
+  async function refreshFormalSessionState() {
+    const [snapshotData, timelineData] = await Promise.all([
+      getSnapshot(),
+      getTimeline(),
+    ])
+
+    snapshot.value = snapshotData
+    sessionStatus.value = snapshotData.session_status || 'empty'
+    documentVersion.value = snapshotData.document_version
+    activeJob.value = snapshotData.active_job
+
+    timeline.value = timelineData
+    const { setTimeline } = useTimeline()
+    setTimeline(timelineData)
+
+    if (sessionStatus.value !== 'ready') {
+      segments.value = []
+      segmentsLoaded.value = false
+      edges.value = []
+      edgesLoaded.value = false
+      groups.value = []
+      renderProfiles.value = []
+      voiceBindings.value = []
+      sessionResourcesLoaded.value = false
+      return {
+        snapshot: snapshotData,
+        timeline: timelineData,
+        edges: [] as EditableEdge[],
+      }
+    }
+
+    syncDraftRevisionFromSnapshot(snapshotData)
+    await Promise.all([loadAllSegments(), loadAllEdges(), refreshSessionResources()])
+    return {
+      snapshot: snapshot.value,
+      timeline: timeline.value,
+      edges: edges.value,
+    }
+  }
+
   async function loadAllSegments() {
     if (sessionStatus.value !== 'ready') {
       segments.value = []
@@ -318,6 +362,7 @@ export function useEditSession() {
   return {
     sessionStatus,
     snapshot,
+    sourceText,
     timeline,
     documentVersion,
     activeJob,
@@ -336,6 +381,7 @@ export function useEditSession() {
     initialize,
     refreshSnapshot,
     refreshTimeline,
+    refreshFormalSessionState,
     loadAllSegments,
     loadAllEdges,
     refreshSessionResources,
