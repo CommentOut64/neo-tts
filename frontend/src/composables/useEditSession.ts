@@ -25,12 +25,14 @@ import type {
 import { useRuntimeState } from './useRuntimeState'
 import { extractStatusCode } from '@/api/requestSupport'
 import { useTimeline } from "./useTimeline";
-import { useInputDraft } from './useInputDraft'
+import { useInputDraft, type InputDraftSource } from './useInputDraft'
+import { useWorkspaceDraftPersistence } from './useWorkspaceDraftPersistence'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
 
 export interface ResolveInputDraftSyncActionInput {
   sessionHeadText: string | null
   inputText: string
+  inputSource: InputDraftSource
   isInputEmpty: boolean
   draftRevision: number
   lastSentToSessionRevision: number | null
@@ -48,11 +50,16 @@ export function resolveInputDraftSyncAction(
     return 'backfill'
   }
 
+  if (input.inputSource === 'workspace') {
+    return 'noop'
+  }
+
   if (input.inputText === input.sessionHeadText && input.sourceDraftRevision === null) {
     return 'adopt'
   }
 
-  const isTrackingSessionDraft = input.sourceDraftRevision !== null
+  const isTrackingSessionDraft = input.inputSource === 'session'
+    && input.sourceDraftRevision !== null
     && input.draftRevision === input.sourceDraftRevision
     && input.lastSentToSessionRevision === input.draftRevision
 
@@ -82,6 +89,7 @@ const sessionResourcesLoaded = ref(false)
 export function useEditSession() {
   const runtimeState = useRuntimeState()
   const inputDraft = useInputDraft()
+  const workspaceDraftPersistence = useWorkspaceDraftPersistence()
 
   function getSnapshotHeadText(data: EditSessionSnapshot | null): string | null {
     if (!data || data.segments.length === 0) {
@@ -95,25 +103,25 @@ export function useEditSession() {
     inputDraft.markSentToSession(inputDraft.draftRevision.value)
   }
 
+  function syncInputDraftToSessionText(sessionHeadText: string) {
+    inputDraft.backfillFromSession(sessionHeadText)
+    markDraftAsSyncedToSession()
+  }
+
   function syncDraftRevisionFromSnapshot(data: EditSessionSnapshot) {
     const sessionHeadText = getSnapshotHeadText(data)
     const action = resolveInputDraftSyncAction({
       sessionHeadText,
       inputText: inputDraft.text.value,
+      inputSource: inputDraft.source.value,
       isInputEmpty: inputDraft.isEmpty.value,
       draftRevision: inputDraft.draftRevision.value,
       lastSentToSessionRevision: inputDraft.lastSentToSessionRevision.value,
       sourceDraftRevision: sourceDraftRevision.value,
     })
 
-    if (action === 'backfill' && sessionHeadText) {
-      inputDraft.backfillFromSession(sessionHeadText)
-      markDraftAsSyncedToSession()
-      return
-    }
-
-    if (action === 'adopt') {
-      markDraftAsSyncedToSession()
+    if ((action === 'backfill' || action === 'adopt') && sessionHeadText) {
+      syncInputDraftToSessionText(sessionHeadText)
     }
   }
 
@@ -285,6 +293,11 @@ export function useEditSession() {
   }
 
   async function clearSession() {
+    const documentIdToClear = snapshot.value?.document_id ?? segments.value[0]?.document_id ?? null
+    if (documentIdToClear) {
+      workspaceDraftPersistence.clearSnapshot(documentIdToClear)
+    }
+
     await deleteSession()
     sessionStatus.value = 'empty'
     snapshot.value = null
@@ -326,6 +339,7 @@ export function useEditSession() {
     loadAllSegments,
     loadAllEdges,
     refreshSessionResources,
+    syncInputDraftToSessionText,
     clearSession,
   }
 }

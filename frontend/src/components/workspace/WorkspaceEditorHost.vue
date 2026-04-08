@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage } from "element-plus";
 import type { JSONContent } from '@tiptap/vue-3'
 import { useEditSession } from '@/composables/useEditSession'
+import { useInputDraft } from '@/composables/useInputDraft'
 import { useWorkspaceLightEdit } from '@/composables/useWorkspaceLightEdit'
+import { useWorkspaceDraftPersistence } from '@/composables/useWorkspaceDraftPersistence'
 import { usePlayback } from '@/composables/usePlayback'
 import { useSegmentSelection } from '@/composables/useSegmentSelection'
 import { useRuntimeState } from '@/composables/useRuntimeState'
+import { extractWorkspaceEffectiveText } from '@/utils/workspaceEffectiveText'
+import type { WorkspaceDraftMode } from '@/utils/workspaceDraftSnapshot'
 import { buildEditorExtensions } from './workspace-editor/buildEditorExtensions'
 import { segmentDecorationKey } from './workspace-editor/segmentDecoration'
 import ResetSessionDialog from './ResetSessionDialog.vue'
+import { buildSessionHeadText } from './sessionHandoff'
 import {
   buildSegmentEditorDocument,
   collectSegmentDraftChanges,
@@ -19,9 +24,13 @@ const emit = defineEmits<{
   (e: 'backfill-to-text-input'): void
 }>()
 
+const WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS = 200
+
 // --- composable 实例 ---
 const editSession = useEditSession()
+const inputDraft = useInputDraft()
 const lightEdit = useWorkspaceLightEdit()
+const workspaceDraftPersistence = useWorkspaceDraftPersistence()
 const { currentSegmentId, seekToSegment, play } = usePlayback()
 const segmentSelection = useSegmentSelection()
 const runtimeState = useRuntimeState()
@@ -32,12 +41,46 @@ const resetSessionDialogVisible = ref(false)
 const isEditing = ref(false)
 const segmentIds = ref<string[]>([])
 const docJson = ref<JSONContent>({ type: 'doc', content: [] })
+const restoredSessionKey = ref<string | null>(null)
 
 // UEditor ref（通过 expose 拿到 editor 实例）
 const editorRef = ref<{ editor: any } | null>(null)
+let draftPersistTimeoutId: number | null = null
 
 // 编辑态扩展
 const customExtensions = buildEditorExtensions()
+
+const sortedReadySegments = computed(() =>
+  [...editSession.segments.value].sort((left, right) => left.order_key - right.order_key),
+)
+
+const currentDocumentId = computed(() =>
+  sortedReadySegments.value[0]?.document_id ?? editSession.snapshot.value?.document_id ?? null,
+)
+
+const currentDocumentVersion = computed(() => editSession.documentVersion.value)
+const currentSessionHeadText = computed(() => buildSessionHeadText(sortedReadySegments.value))
+const currentSessionSegmentIds = computed(() =>
+  sortedReadySegments.value.map((segment) => segment.segment_id),
+)
+
+const currentSessionKey = computed(() => {
+  if (
+    editSession.sessionStatus.value !== 'ready' ||
+    runtimeState.isInitialRendering.value ||
+    !editSession.segmentsLoaded.value ||
+    !currentDocumentId.value ||
+    currentDocumentVersion.value === null
+  ) {
+    return null
+  }
+
+  return [
+    currentDocumentId.value,
+    String(currentDocumentVersion.value),
+    currentSessionSegmentIds.value.join('|'),
+  ].join('::')
+})
 
 // --- 字数统计 ---
 const charCount = computed(() => {
@@ -48,6 +91,84 @@ const charCount = computed(() => {
 
 // --- 模式标签 ---
 const modeLabel = computed(() => isEditing.value ? '编辑' : '展示')
+
+function clearPendingDraftPersist() {
+  if (draftPersistTimeoutId === null) {
+    return
+  }
+
+  window.clearTimeout(draftPersistTimeoutId)
+  draftPersistTimeoutId = null
+}
+
+onBeforeUnmount(() => {
+  clearPendingDraftPersist()
+})
+
+function buildSegmentDraftRecord(
+  drafts: Map<string, string> = lightEdit.draftTextBySegmentId.value,
+): Record<string, string> {
+  return Object.fromEntries(drafts)
+}
+
+function syncInputBackToSessionIfNeeded() {
+  if (inputDraft.source.value !== 'workspace') {
+    return
+  }
+
+  editSession.syncInputDraftToSessionText(currentSessionHeadText.value)
+}
+
+function syncInputFromWorkspaceEffectiveText(effectiveText: string) {
+  if (
+    effectiveText !== currentSessionHeadText.value ||
+    inputDraft.source.value === 'workspace'
+  ) {
+    inputDraft.syncFromWorkspaceDraft(effectiveText)
+  }
+}
+
+function persistWorkspaceDraftSnapshot(
+  mode: WorkspaceDraftMode,
+  editorDoc: JSONContent,
+  segmentDrafts: Record<string, string> = buildSegmentDraftRecord(),
+) {
+  if (!currentDocumentId.value || currentDocumentVersion.value === null) {
+    return
+  }
+
+  workspaceDraftPersistence.saveSnapshot({
+    schemaVersion: 1,
+    documentId: currentDocumentId.value,
+    documentVersion: currentDocumentVersion.value,
+    segmentIds: [...currentSessionSegmentIds.value],
+    mode,
+    editorDoc,
+    segmentDrafts,
+    effectiveText: extractWorkspaceEffectiveText(editorDoc),
+    updatedAt: new Date().toISOString(),
+  })
+}
+
+function clearPersistedWorkspaceDraft() {
+  if (!currentDocumentId.value) {
+    return
+  }
+
+  workspaceDraftPersistence.clearSnapshot(currentDocumentId.value)
+}
+
+function syncPreviewWorkspaceState(editorDoc: JSONContent) {
+  if (lightEdit.dirtyCount.value === 0) {
+    clearPersistedWorkspaceDraft()
+    syncInputBackToSessionIfNeeded()
+    return
+  }
+
+  const effectiveText = extractWorkspaceEffectiveText(editorDoc)
+  persistWorkspaceDraftSnapshot('preview', editorDoc)
+  syncInputFromWorkspaceEffectiveText(effectiveText)
+}
 
 // --- 文档构建：ready 态 ---
 function rebuildDocFromSegments() {
@@ -73,6 +194,7 @@ function rebuildDocFromSegments() {
     ),
   }
   pushContentToEditor()
+  syncPreviewWorkspaceState(docJson.value)
 }
 
 // --- 文档构建：initializing 态（渐进显示） ---
@@ -110,12 +232,48 @@ function pushContentToEditor(editorOverride?: any) {
 }
 
 // --- 数据源 watcher ---
+watch(
+  currentSessionKey,
+  () => {
+    if (!currentSessionKey.value) {
+      restoredSessionKey.value = null
+      return
+    }
+
+    const snapshot = workspaceDraftPersistence.readCompatibleSnapshot({
+      documentId: currentDocumentId.value!,
+      documentVersion: currentDocumentVersion.value!,
+      segmentIds: currentSessionSegmentIds.value,
+    })
+
+    clearPendingDraftPersist()
+
+    if (snapshot) {
+      isEditing.value = snapshot.mode === 'editing'
+      lightEdit.replaceAllDrafts(snapshot.segmentDrafts)
+      segmentIds.value = [...currentSessionSegmentIds.value]
+      docJson.value = snapshot.editorDoc
+      pushContentToEditor()
+      syncInputFromWorkspaceEffectiveText(snapshot.effectiveText)
+    } else {
+      isEditing.value = false
+      rebuildDocFromSegments()
+    }
+
+    restoredSessionKey.value = currentSessionKey.value
+  },
+  { immediate: true }
+)
 
 // ready 态：segments 或 lightEdit 变化时重建
 watch(
   [() => editSession.segments.value, () => editSession.segmentsLoaded.value, () => lightEdit.dirtySegmentIds.value],
   () => {
-    if (editSession.sessionStatus.value === 'ready' && !runtimeState.isInitialRendering.value) {
+    if (
+      editSession.sessionStatus.value === 'ready' &&
+      !runtimeState.isInitialRendering.value &&
+      restoredSessionKey.value === currentSessionKey.value
+    ) {
       rebuildDocFromSegments()
     }
   },
@@ -131,25 +289,6 @@ watch(
     }
   },
   { deep: true, immediate: true }
-)
-
-// 状态切换：initializing → ready 时切换数据源
-watch(
-  () => editSession.sessionStatus.value,
-  (status) => {
-    if (status === 'ready' && !runtimeState.isInitialRendering.value) {
-      rebuildDocFromSegments()
-    }
-  }
-)
-
-watch(
-  () => runtimeState.isInitialRendering.value,
-  (isInitialRendering) => {
-    if (!isInitialRendering && editSession.sessionStatus.value === 'ready') {
-      rebuildDocFromSegments()
-    }
-  }
 )
 
 // --- Decoration 状态桥接 ---
@@ -292,23 +431,41 @@ function enterEditMode(clickEvent?: MouseEvent) {
 function commitAndExitEdit() {
   const editor = editorRef.value?.editor
   if (!editor) {
+    clearPendingDraftPersist()
     isEditing.value = false
     return
   }
 
   try {
+    const editorDoc = editor.getJSON()
     const changes = collectSegmentDraftChanges(
-      editor.getJSON(),
+      editorDoc,
       segmentIds.value,
       getBackendSegmentText,
     )
 
+    const nextDrafts = new Map(lightEdit.draftTextBySegmentId.value)
     changes.changedDrafts.forEach(([segmentId, text]) => {
-      lightEdit.setDraft(segmentId, text)
+      nextDrafts.set(segmentId, text)
     })
     changes.clearedSegmentIds.forEach((segmentId) => {
-      lightEdit.clearDraft(segmentId)
+      nextDrafts.delete(segmentId)
     })
+
+    clearPendingDraftPersist()
+    docJson.value = editorDoc
+    lightEdit.replaceAllDrafts(nextDrafts)
+    if (nextDrafts.size > 0) {
+      persistWorkspaceDraftSnapshot(
+        'preview',
+        editorDoc,
+        buildSegmentDraftRecord(nextDrafts),
+      )
+      syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(editorDoc))
+    } else {
+      clearPersistedWorkspaceDraft()
+      syncInputBackToSessionIfNeeded()
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "正文结构异常，无法提交编辑"
     ElMessage.error(message)
@@ -320,6 +477,7 @@ function commitAndExitEdit() {
 }
 
 function discardAndExitEdit() {
+  clearPendingDraftPersist()
   isEditing.value = false
   rebuildDocFromSegments()
 }
@@ -327,6 +485,7 @@ function discardAndExitEdit() {
 function handleResetSessionSuccess() {
   segmentSelection.clearSelection()
   lightEdit.clearAll()
+  clearPendingDraftPersist()
   isEditing.value = false
 }
 
@@ -339,9 +498,18 @@ function onKeyDown(event: KeyboardEvent) {
 }
 
 // --- UEditor model 更新回调（编辑态下不重建，避免循环） ---
-function onDocUpdate(_value: any) {
-  // 编辑态下 UEditor 内部已更新 doc，不做额外处理
-  // 退出编辑态时统一从 editor.state.doc 读取
+function onDocUpdate(value: JSONContent) {
+  if (!isEditing.value) {
+    return
+  }
+
+  docJson.value = value
+  clearPendingDraftPersist()
+  draftPersistTimeoutId = window.setTimeout(() => {
+    draftPersistTimeoutId = null
+    persistWorkspaceDraftSnapshot('editing', value)
+    syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(value))
+  }, WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS)
 }
 </script>
 

@@ -4,27 +4,28 @@ const draftTextBySegmentId = ref<Map<string, string>>(new Map());
 const dirtySegmentIds = ref<Set<string>>(new Set());
 
 export function useWorkspaceLightEdit() {
-  const setDraft = (segId: string, text: string) => {
-    draftTextBySegmentId.value.set(segId, text);
-    dirtySegmentIds.value.add(segId);
+  const replaceAllDrafts = (
+    drafts: Record<string, string> | Map<string, string>,
+  ) => {
+    const nextDrafts = drafts instanceof Map ? new Map(drafts) : new Map(Object.entries(drafts));
+    draftTextBySegmentId.value = nextDrafts;
+    dirtySegmentIds.value = new Set(nextDrafts.keys());
+  };
 
-    // trigger reactivity
-    dirtySegmentIds.value = new Set(dirtySegmentIds.value);
-    draftTextBySegmentId.value = new Map(draftTextBySegmentId.value);
+  const setDraft = (segId: string, text: string) => {
+    const nextDrafts = new Map(draftTextBySegmentId.value);
+    nextDrafts.set(segId, text);
+    replaceAllDrafts(nextDrafts);
   };
 
   const clearDraft = (segId: string) => {
-    draftTextBySegmentId.value.delete(segId);
-    dirtySegmentIds.value.delete(segId);
-
-    // trigger reactivity
-    dirtySegmentIds.value = new Set(dirtySegmentIds.value);
-    draftTextBySegmentId.value = new Map(draftTextBySegmentId.value);
+    const nextDrafts = new Map(draftTextBySegmentId.value);
+    nextDrafts.delete(segId);
+    replaceAllDrafts(nextDrafts);
   };
 
   const clearAll = () => {
-    draftTextBySegmentId.value.clear();
-    dirtySegmentIds.value.clear();
+    replaceAllDrafts({});
   };
 
   const getDraft = (segId: string): string | undefined => {
@@ -42,6 +43,7 @@ export function useWorkspaceLightEdit() {
     setDraft,
     clearDraft,
     clearAll,
+    replaceAllDrafts,
     getDraft,
     isDirty,
   };

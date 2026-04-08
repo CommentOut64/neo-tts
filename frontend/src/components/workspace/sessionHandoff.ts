@@ -1,4 +1,5 @@
 import type { ExportJobResponse, RenderJobSummary } from "@/types/editSession";
+import type { InputDraftSource } from "@/composables/useInputDraft";
 
 export type WorkspaceSessionStatus = "empty" | "initializing" | "ready" | "failed";
 export type WorkspaceEntryAction = "idle" | "initialize" | "rebuild";
@@ -6,6 +7,7 @@ export type WorkspaceEntryAction = "idle" | "initialize" | "rebuild";
 interface ResolveWorkspaceEntryActionInput {
   sessionStatus: WorkspaceSessionStatus;
   hasInputText: boolean;
+  inputSource: InputDraftSource;
   draftRevision: number;
   lastSentToSessionRevision: number | null;
   sourceDraftRevision: number | null;
@@ -58,6 +60,10 @@ export function resolveWorkspaceEntryAction(
   }
 
   if (input.sessionStatus !== "ready") {
+    return "idle";
+  }
+
+  if (input.inputSource === "workspace") {
     return "idle";
   }
 

@@ -33,6 +33,7 @@ const {
   discoverSession,
   initialize,
   clearSession,
+  syncInputDraftToSessionText,
   sourceDraftRevision,
   snapshot,
   segments,
@@ -42,8 +43,7 @@ const {
   text,
   draftRevision,
   lastSentToSessionRevision,
-  markSentToSession,
-  backfillFromSession,
+  source,
 } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const parameterPanel = useParameterPanel()
@@ -54,6 +54,7 @@ const workspaceEntryAction = computed(() =>
   resolveWorkspaceEntryAction({
     sessionStatus: sessionStatus.value,
     hasInputText: text.value.trim().length > 0,
+    inputSource: source.value,
     draftRevision: draftRevision.value,
     lastSentToSessionRevision: lastSentToSessionRevision.value,
     sourceDraftRevision: sourceDraftRevision.value,
@@ -265,8 +266,7 @@ const handleInit = async () => {
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
 
   if (accepted) {
-    sourceDraftRevision.value = draftRevision.value
-    markSentToSession(draftRevision.value)
+    syncInputDraftToSessionText(text.value)
   }
 }
 
@@ -330,7 +330,7 @@ async function handleBackfillToTextInput() {
       return
     }
 
-    backfillFromSession(sessionHeadText)
+    syncInputDraftToSessionText(sessionHeadText)
     await router.push('/text-input')
   })
 }
