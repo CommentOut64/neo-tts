@@ -14,6 +14,7 @@ describe("sessionHandoff", () => {
       resolveWorkspaceEntryAction({
         sessionStatus: "empty",
         hasInputText: false,
+        inputSource: "manual",
         draftRevision: 3,
         lastSentToSessionRevision: null,
         sourceDraftRevision: null,
@@ -26,6 +27,7 @@ describe("sessionHandoff", () => {
       resolveWorkspaceEntryAction({
         sessionStatus: "empty",
         hasInputText: true,
+        inputSource: "manual",
         draftRevision: 3,
         lastSentToSessionRevision: 1,
         sourceDraftRevision: null,
@@ -38,6 +40,7 @@ describe("sessionHandoff", () => {
       resolveWorkspaceEntryAction({
         sessionStatus: "ready",
         hasInputText: true,
+        inputSource: "manual",
         draftRevision: 5,
         lastSentToSessionRevision: 4,
         sourceDraftRevision: 4,
@@ -50,7 +53,21 @@ describe("sessionHandoff", () => {
       resolveWorkspaceEntryAction({
         sessionStatus: "ready",
         hasInputText: true,
+        inputSource: "session",
         draftRevision: 5,
+        lastSentToSessionRevision: 5,
+        sourceDraftRevision: 5,
+      }),
+    ).toBe("idle");
+  });
+
+  it("workspace 镜像稿不会被误判成需要 rebuild 的新输入稿", () => {
+    expect(
+      resolveWorkspaceEntryAction({
+        sessionStatus: "ready",
+        hasInputText: true,
+        inputSource: "workspace",
+        draftRevision: 7,
         lastSentToSessionRevision: 5,
         sourceDraftRevision: 5,
       }),

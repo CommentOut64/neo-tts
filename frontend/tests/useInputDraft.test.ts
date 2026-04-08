@@ -42,6 +42,7 @@ describe("useInputDraft", () => {
 
     expect(localStorageMock.getItem("neo-tts-input-draft")).toBeTruthy();
     expect(draft.text.value).toBe("第一句。第二句。");
+    expect(draft.source.value).toBe("manual");
   });
 
   it("刷新后会从 localStorage 恢复正文草稿", async () => {
@@ -60,6 +61,7 @@ describe("useInputDraft", () => {
     expect(draft.text.value).toBe("刷新前的正文");
     expect(draft.draftRevision.value).toBe(3);
     expect(draft.lastSentToSessionRevision.value).toBe(1);
+    expect(draft.source.value).toBe("manual");
   });
 
   it("清空正文时会移除持久化缓存", async () => {
@@ -80,6 +82,30 @@ describe("useInputDraft", () => {
     draft.markSentToSession(draft.draftRevision.value);
 
     expect(draft.text.value).toBe("来自会话的正文");
+    expect(draft.source.value).toBe("session");
     expect(localStorageMock.getItem("neo-tts-input-draft")).toContain("来自会话的正文");
+  });
+
+  it("workspace 草稿会更新输入框，并记录为 workspace 来源", async () => {
+    const { useInputDraft } = await loadUseInputDraftModule();
+    const draft = useInputDraft();
+
+    draft.syncFromWorkspaceDraft("来自 workspace 的正文");
+
+    expect(draft.text.value).toBe("来自 workspace 的正文");
+    expect(draft.source.value).toBe("workspace");
+  });
+
+  it("文本输入页手工改动后，workspace 不会再静默覆盖", async () => {
+    const { useInputDraft } = await loadUseInputDraftModule();
+    const draft = useInputDraft();
+
+    draft.syncFromWorkspaceDraft("旧的 workspace 正文");
+    draft.setText("text-input 自己的新稿");
+    const applied = draft.syncFromWorkspaceDraft("新的 workspace 正文");
+
+    expect(applied).toBe(false);
+    expect(draft.text.value).toBe("text-input 自己的新稿");
+    expect(draft.source.value).toBe("manual");
   });
 });

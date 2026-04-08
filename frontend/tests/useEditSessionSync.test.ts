@@ -8,6 +8,7 @@ describe("useEditSession draft sync", () => {
       resolveInputDraftSyncAction({
         sessionHeadText: "会话正文",
         inputText: "",
+        inputSource: "manual",
         isInputEmpty: true,
         draftRevision: 0,
         lastSentToSessionRevision: null,
@@ -21,6 +22,7 @@ describe("useEditSession draft sync", () => {
       resolveInputDraftSyncAction({
         sessionHeadText: "会话正文",
         inputText: "会话正文",
+        inputSource: "manual",
         isInputEmpty: false,
         draftRevision: 4,
         lastSentToSessionRevision: null,
@@ -34,6 +36,7 @@ describe("useEditSession draft sync", () => {
       resolveInputDraftSyncAction({
         sessionHeadText: "新的会话正文",
         inputText: "旧的会话正文",
+        inputSource: "session",
         isInputEmpty: false,
         draftRevision: 6,
         lastSentToSessionRevision: 6,
@@ -47,10 +50,25 @@ describe("useEditSession draft sync", () => {
       resolveInputDraftSyncAction({
         sessionHeadText: "会话正文",
         inputText: "text-input 自己的新稿",
+        inputSource: "manual",
         isInputEmpty: false,
         draftRevision: 8,
         lastSentToSessionRevision: 6,
         sourceDraftRevision: 6,
+      }),
+    ).toBe("noop");
+  });
+
+  it("当输入框正在镜像 workspace 草稿时，不会被 session 正文覆盖", () => {
+    expect(
+      resolveInputDraftSyncAction({
+        sessionHeadText: "新的会话正文",
+        inputText: "workspace 草稿正文",
+        inputSource: "workspace",
+        isInputEmpty: false,
+        draftRevision: 10,
+        lastSentToSessionRevision: 8,
+        sourceDraftRevision: 8,
       }),
     ).toBe("noop");
   });

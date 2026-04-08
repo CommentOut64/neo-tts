@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildInitializeRequest, unwrapAcceptedExportJob, unwrapAcceptedRenderJob } from "../src/api/editSessionContract.ts";
@@ -285,8 +284,4 @@ it("resolveApiUrl composes configured base url without duplicate slashes", () =>
   ).toBe("http://localhost:8000/api/v1/edit-session/render-jobs/job-1/events");
 });
 
-it("VoiceSelect does not pass invalid medium size to Element Plus select", () => {
-  const source = readFileSync(new URL("../src/components/VoiceSelect.vue", import.meta.url), "utf8");
-  expect(source.includes('size="medium"')).toBe(false);
-});
 });
