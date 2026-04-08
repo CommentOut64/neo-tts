@@ -2,7 +2,6 @@
 import { computed, watch, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
-import { Microphone } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 import { useRuntimeState } from '@/composables/useRuntimeState'
@@ -93,7 +92,15 @@ watch(
 <template>
   <nav class="app-navbar fixed top-0 left-0 right-0 z-50 h-14 border-b flex items-center pl-6 pr-3">
     <div class="flex items-center gap-2 mr-8">
-      <el-icon :size="28" class="text-accent"><Microphone /></el-icon>
+      <div 
+        class="w-8 h-8 transition-colors duration-300" 
+        :class="{
+          'bg-green-500': status === 'online',
+          'bg-yellow-500': status === 'reconnecting',
+          'bg-red-500': status === 'offline'
+        }"
+        style="mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; mask-size: contain; -webkit-mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; -webkit-mask-size: contain;"
+      ></div>
       <span class="text-xl font-bold text-foreground">Neo TTS</span>
     </div>
     <div class="relative flex items-center gap-1">
