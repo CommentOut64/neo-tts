@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { usePlayback } from "../src/composables/usePlayback";
 import { useTimeline } from "../src/composables/useTimeline";
@@ -255,5 +255,34 @@ it("seekToSample 会先淡出旧 source，再淡入新 source", async () => {
         typeof call.when === "number" && call.when >= fadeOutEvent!.time,
     ),
   ).toBe(true);
+});
+
+it("warmAudioUrls 会提前拉取并解码 block 音频", async () => {
+  FakeAudioContext.instances.length = 0;
+
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "audio/wav" },
+    arrayBuffer: async () => new ArrayBuffer(16),
+  }));
+
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    writable: true,
+    value: FakeAudioContext,
+  });
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: fetchMock,
+  });
+
+  const playback = usePlayback();
+  await playback.warmAudioUrls(["/audio/block-99.wav", "/audio/block-100.wav"]);
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock).toHaveBeenNthCalledWith(1, "/audio/block-99.wav");
+  expect(fetchMock).toHaveBeenNthCalledWith(2, "/audio/block-100.wav");
 });
 });

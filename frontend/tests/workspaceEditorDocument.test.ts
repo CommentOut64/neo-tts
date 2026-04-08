@@ -1,34 +1,232 @@
 import { describe, expect, it } from "vitest";
 
+import type { WorkspaceSemanticDocument } from "../src/components/workspace/workspace-editor/layoutTypes";
+import { buildCompositionLayoutDocument } from "../src/components/workspace/workspace-editor/buildCompositionLayoutDocument";
+import { buildListLayoutDocument } from "../src/components/workspace/workspace-editor/buildListLayoutDocument";
 import {
-  buildSegmentEditorDocument,
   collectSegmentDraftChanges,
   normalizeEditorPastedText,
 } from "../src/components/workspace/workspace-editor/documentModel";
 
-describe("workspace editor document model", () => {
-  it("按 segment 顺序构建 paragraph 文档", () => {
-    const doc = buildSegmentEditorDocument([
-      { segmentId: "seg-1", text: "第一段" },
-      { segmentId: "seg-2", text: "第二段" },
-    ]);
+function createSemanticDocument(): WorkspaceSemanticDocument {
+  return {
+    segmentOrder: ["seg-1", "seg-2", "seg-3"],
+    segmentsById: {
+      "seg-1": {
+        segmentId: "seg-1",
+        orderKey: 1,
+        text: "第一段。",
+        renderStatus: "completed",
+        isDirty: false,
+      },
+      "seg-2": {
+        segmentId: "seg-2",
+        orderKey: 2,
+        text: "第二段。",
+        renderStatus: "completed",
+        isDirty: false,
+      },
+      "seg-3": {
+        segmentId: "seg-3",
+        orderKey: 3,
+        text: "第三段。",
+        renderStatus: "completed",
+        isDirty: false,
+      },
+    },
+    edgesByLeftSegmentId: {
+      "seg-1": {
+        edgeId: "edge-1",
+        leftSegmentId: "seg-1",
+        rightSegmentId: "seg-2",
+        pauseDurationSeconds: 0.3,
+        boundaryStrategy: "crossfade",
+      },
+      "seg-2": {
+        edgeId: "edge-2",
+        leftSegmentId: "seg-2",
+        rightSegmentId: "seg-3",
+        pauseDurationSeconds: 0.5,
+        boundaryStrategy: "crossfade",
+      },
+    },
+    sourceBlocks: [
+      {
+        blockId: "block-1",
+        rawLineText: "第一段。第二段。",
+        segmentIds: ["seg-1", "seg-2"],
+      },
+      {
+        blockId: "block-2",
+        rawLineText: "第三段。",
+        segmentIds: ["seg-3"],
+      },
+    ],
+    compositionAvailability: {
+      ready: true,
+      reason: null,
+    },
+  };
+}
 
-    expect(doc).toEqual({
+describe("workspace editor document model", () => {
+  it("列表式 builder 会为文本节点写入 segmentAnchor mark，并保留 pauseBoundary", () => {
+    const plan = buildListLayoutDocument(createSemanticDocument());
+    expect(plan.layoutMode).toBe("list");
+    expect(plan.doc).toEqual({
       type: "doc",
       content: [
-        { type: "paragraph", content: [{ type: "text", text: "第一段" }] },
-        { type: "paragraph", content: [{ type: "text", text: "第二段" }] },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第一段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "pauseBoundary",
+              attrs: {
+                edgeId: "edge-1",
+                leftSegmentId: "seg-1",
+                rightSegmentId: "seg-2",
+                pauseDurationSeconds: 0.3,
+                boundaryStrategy: "crossfade",
+                layoutMode: "list",
+                crossBlock: false,
+              },
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第二段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+            {
+              type: "pauseBoundary",
+              attrs: {
+                edgeId: "edge-2",
+                leftSegmentId: "seg-2",
+                rightSegmentId: "seg-3",
+                pauseDurationSeconds: 0.5,
+                boundaryStrategy: "crossfade",
+                layoutMode: "list",
+                crossBlock: false,
+              },
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第三段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-3" } }],
+            },
+          ],
+        },
       ],
     });
   });
 
-  it("提交编辑时会按 segment 对比后端文本收集变更", () => {
+  it("组合式 builder 可以在同一段落内放多个 segment，并标记跨行 edge", () => {
+    const plan = buildCompositionLayoutDocument(createSemanticDocument());
+
+    expect(plan.layoutMode).toBe("composition");
+    expect(plan.doc).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第一段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "pauseBoundary",
+              attrs: {
+                edgeId: "edge-1",
+                leftSegmentId: "seg-1",
+                rightSegmentId: "seg-2",
+                pauseDurationSeconds: 0.3,
+                boundaryStrategy: "crossfade",
+                layoutMode: "composition",
+                crossBlock: false,
+              },
+            },
+            {
+              type: "text",
+              text: "第二段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+            {
+              type: "pauseBoundary",
+              attrs: {
+                edgeId: "edge-2",
+                leftSegmentId: "seg-2",
+                rightSegmentId: "seg-3",
+                pauseDurationSeconds: 0.5,
+                boundaryStrategy: "crossfade",
+                layoutMode: "composition",
+                crossBlock: true,
+              },
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第三段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-3" } }],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("提交编辑时会按 segmentAnchor 聚合文本，并对比后端文本收集变更", () => {
     const changes = collectSegmentDraftChanges(
       {
         type: "doc",
         content: [
-          { type: "paragraph", content: [{ type: "text", text: "新的第一段" }] },
-          { type: "paragraph", content: [{ type: "text", text: "第二段" }] },
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "新的",
+                marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+              },
+              {
+                type: "text",
+                text: "第一段",
+                marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+              },
+              {
+                type: "pauseBoundary",
+                attrs: {
+                  edgeId: "edge-1",
+                  leftSegmentId: "seg-1",
+                  rightSegmentId: "seg-2",
+                },
+              },
+              {
+                type: "text",
+                text: "第二段",
+                marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+              },
+            ],
+          },
         ],
       },
       ["seg-1", "seg-2"],
@@ -43,20 +241,55 @@ describe("workspace editor document model", () => {
     expect(changes.clearedSegmentIds).toEqual(["seg-2"]);
   });
 
-  it("paragraph 数量和 segment 数量不一致时拒绝提交，避免错位回写", () => {
+  it("segmentAnchor 丢失时拒绝提交，避免错位回写", () => {
     expect(() =>
       collectSegmentDraftChanges(
         {
           type: "doc",
           content: [
-            { type: "paragraph", content: [{ type: "text", text: "第一段" }] },
-            { type: "paragraph", content: [{ type: "text", text: "额外段落" }] },
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "第一段" }],
+            },
           ],
         },
         ["seg-1"],
         () => "第一段",
       ),
-    ).toThrow("编辑器段落结构已变化");
+    ).toThrow("segmentAnchor");
+  });
+
+  it("相邻 segment 之间的 pauseBoundary 丢失时拒绝提交", () => {
+    expect(() =>
+      collectSegmentDraftChanges(
+        {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "text",
+                  text: "第一段",
+                  marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+                },
+                {
+                  type: "text",
+                  text: "第二段",
+                  marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+                },
+              ],
+            },
+          ],
+        },
+        ["seg-1", "seg-2"],
+        (segmentId) =>
+          ({
+            "seg-1": "第一段",
+            "seg-2": "第二段",
+          })[segmentId] ?? "",
+      ),
+    ).toThrow("pauseBoundary");
   });
 
   it("粘贴文本时会把换行折叠为空格，避免生成额外 paragraph", () => {

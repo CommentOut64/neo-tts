@@ -363,6 +363,140 @@ describe("useRuntimeState", () => {
     expect(runtimeState.canMutate.value).toBe(true);
   });
 
+  it("会向外广播 render job SSE 事件，供 workspace processing 消费", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+    const listener = vi.fn();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-events",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.2,
+        message: "running",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    const unsubscribe = runtimeState.onRenderJobEvent(listener);
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+
+    await handler.onEvent("timeline_committed", {
+      document_version: 2,
+      timeline_manifest_id: "timeline-2",
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "timeline_committed",
+      payload: {
+        document_version: 2,
+        timeline_manifest_id: "timeline-2",
+      },
+      jobId: "job-events",
+    });
+
+    unsubscribe();
+  });
+
+  it("会把 job committed 元数据归一化后只广播一次，即使同时收到 timeline_committed 与 job_state_changed", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+    const listener = vi.fn();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-committed",
+        document_id: "doc-1",
+        status: "committing",
+        progress: 0.9,
+        message: "committing",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    runtimeState.onRenderJobCommitted(listener);
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-committed",
+      document_id: "doc-1",
+      status: "committing",
+      progress: 0.95,
+      message: "committing",
+      committed_document_version: 2,
+      committed_timeline_manifest_id: "timeline-2",
+      committed_playable_sample_span: [0, 100],
+      changed_block_asset_ids: ["block-2"],
+    });
+    await handler.onEvent("timeline_committed", {
+      document_version: 2,
+      timeline_manifest_id: "timeline-2",
+      playable_sample_span: [0, 100],
+      changed_block_asset_ids: ["block-2"],
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({
+      jobId: "job-committed",
+      payload: {
+        committed_document_version: 2,
+        committed_timeline_manifest_id: "timeline-2",
+        committed_playable_sample_span: [0, 100],
+        changed_block_asset_ids: ["block-2"],
+      },
+    });
+    expect(runtimeState.currentRenderJob.value).toMatchObject({
+      committed_document_version: 2,
+      committed_timeline_manifest_id: "timeline-2",
+      changed_block_asset_ids: ["block-2"],
+    });
+  });
+
+  it("可以主动对账已跟踪 job 的终态，避免 terminal SSE 丢失后一直锁死", async () => {
+    vi.doMock("../src/composables/useEditSession", () => ({
+      useEditSession: () => ({
+        refreshSnapshot: vi.fn(),
+        refreshTimeline: vi.fn(),
+        sessionStatus: { value: "ready" },
+      }),
+    }));
+
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-reconcile",
+        document_id: "doc-1",
+        status: "committing",
+        progress: 0.9,
+        message: "committing",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    getRenderJob.mockResolvedValue({
+      job_id: "job-reconcile",
+      document_id: "doc-1",
+      status: "completed",
+      progress: 1,
+      message: "done",
+      committed_document_version: 2,
+      committed_timeline_manifest_id: "timeline-2",
+      committed_playable_sample_span: [0, 100],
+      changed_block_asset_ids: ["block-2"],
+    });
+
+    await runtimeState.reconcileTrackedJobTerminal("job-reconcile");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getRenderJob).toHaveBeenCalledWith("job-reconcile");
+    expect(runtimeState.currentRenderJob.value).toBeNull();
+    expect(runtimeState.canMutate.value).toBe(true);
+  });
+
   it("trackExportJob 会跟踪导出进度并在终态后清空 currentExportJob", async () => {
     const { useRuntimeState } = await import("../src/composables/useRuntimeState");
     const runtimeState = useRuntimeState();

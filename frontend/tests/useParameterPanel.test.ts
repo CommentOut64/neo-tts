@@ -1,8 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { nextTick, ref } from "vue";
+import { nextTick } from "vue";
 
-vi.mock("@/composables/useEditSession", () => ({
-  useEditSession: () => ({
+const {
+  editSessionMock,
+  runtimeStateMock,
+  apiMock,
+  processingMock,
+} = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  ...(() => {
+    const { ref } = require("vue");
+    return {
+  editSessionMock: {
+    sessionStatus: ref("ready"),
     snapshot: ref({
       session_status: "ready",
       document_id: "doc-1",
@@ -129,12 +139,60 @@ vi.mock("@/composables/useEditSession", () => ({
     refreshSnapshot: vi.fn(),
     refreshTimeline: vi.fn(),
     refreshSessionResources: vi.fn(),
-  }),
+  },
+  runtimeStateMock: {
+    canMutate: ref(true),
+    trackJob: vi.fn(),
+    waitForJobTerminal: vi.fn(),
+  },
+  processingMock: {
+    startEdgeUpdate: vi.fn(),
+    acceptJob: vi.fn(),
+    isInteractionLocked: ref(false),
+  },
+  apiMock: {
+    commitSessionRenderProfile: vi.fn(),
+    commitSegmentRenderProfile: vi.fn(),
+    commitSegmentRenderProfileBatch: vi.fn(),
+    commitSessionVoiceBinding: vi.fn(),
+    commitSegmentVoiceBinding: vi.fn(),
+    commitSegmentVoiceBindingBatch: vi.fn(),
+    updateEdge: vi.fn(),
+  },
+    };
+  })(),
 }));
+
+vi.mock("@/composables/useEditSession", () => ({
+  useEditSession: () => editSessionMock,
+}));
+
+vi.mock("@/composables/useRuntimeState", () => ({
+  useRuntimeState: () => runtimeStateMock,
+}));
+
+vi.mock("@/composables/useWorkspaceProcessing", () => ({
+  useWorkspaceProcessing: () => processingMock,
+}));
+
+vi.mock("@/api/editSession", () => apiMock);
 
 describe("useParameterPanel", () => {
   beforeEach(async () => {
     vi.resetModules();
+    vi.clearAllMocks();
+    runtimeStateMock.canMutate.value = true;
+    runtimeStateMock.waitForJobTerminal.mockResolvedValue("completed");
+    processingMock.startEdgeUpdate.mockResolvedValue(undefined);
+    apiMock.updateEdge.mockResolvedValue({
+      job_id: "job-edge-1",
+      document_id: "doc-1",
+      status: "queued",
+      progress: 0,
+      message: "queued",
+      updated_at: "2026-04-08T00:00:00Z",
+    });
+    editSessionMock.sessionStatus.value = "ready";
     const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
     useSegmentSelection().clearSelection();
     await nextTick();
@@ -193,5 +251,70 @@ describe("useParameterPanel", () => {
     await nextTick();
 
     expect(panel.displayValues.value.renderProfile.speed).toBe(1);
+  });
+
+  it("edge 提交会走异步更新作业，并把正式刷新交给 workspace processing", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    selection.selectEdge("edge-1");
+    await nextTick();
+
+    panel.updateEdgeField("pause_duration_seconds", 0.47);
+    await panel.submitDraft();
+
+    expect(apiMock.updateEdge).toHaveBeenCalledWith("edge-1", {
+      pause_duration_seconds: 0.47,
+    });
+    expect(runtimeStateMock.trackJob).toHaveBeenCalledWith(
+      expect.objectContaining({ job_id: "job-edge-1" }),
+      {
+        initialRendering: false,
+        refreshSessionOnTerminal: false,
+      },
+    );
+    expect(processingMock.acceptJob).toHaveBeenCalledWith({
+      job: expect.objectContaining({ job_id: "job-edge-1" }),
+      jobKind: "edge-compose",
+    });
+    expect(
+      processingMock.acceptJob.mock.invocationCallOrder[0],
+    ).toBeLessThan(runtimeStateMock.trackJob.mock.invocationCallOrder[0]);
+    expect(processingMock.startEdgeUpdate).toHaveBeenCalledWith({
+      summary: "停顿 0.35 -> 0.47",
+    });
+    expect(runtimeStateMock.waitForJobTerminal).not.toHaveBeenCalled();
+    expect(editSessionMock.refreshSnapshot).not.toHaveBeenCalled();
+    expect(editSessionMock.refreshTimeline).not.toHaveBeenCalled();
+    expect(panel.hasDirty.value).toBe(false);
+  });
+
+  it("edge 草稿会暴露 dirtyEdgeIds，并在恢复原值后清空", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    selection.selectEdge("edge-1");
+    await nextTick();
+
+    expect(Array.from(panel.dirtyEdgeIds.value)).toEqual([]);
+
+    panel.updateEdgeField("pause_duration_seconds", 0.47);
+    await nextTick();
+
+    expect(Array.from(panel.dirtyEdgeIds.value)).toEqual(["edge-1"]);
+
+    panel.updateEdgeField("pause_duration_seconds", 0.35);
+    await nextTick();
+
+    expect(Array.from(panel.dirtyEdgeIds.value)).toEqual([]);
+
+    panel.updateEdgeField("boundary_strategy", "hold");
+    await nextTick();
+
+    expect(Array.from(panel.dirtyEdgeIds.value)).toEqual(["edge-1"]);
   });
 });

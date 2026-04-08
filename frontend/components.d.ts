@@ -27,6 +27,7 @@ declare module 'vue' {
     ParameterDraftConfirm: typeof import('./src/components/workspace/ParameterDraftConfirm.vue')['default']
     ParameterPanelHost: typeof import('./src/components/workspace/ParameterPanelHost.vue')['default']
     ParameterSlider: typeof import('./src/components/ParameterSlider.vue')['default']
+    PauseBoundaryNodeView: typeof import('./src/components/workspace/workspace-editor/PauseBoundaryNodeView.vue')['default']
     RenderJobProgressBar: typeof import('./src/components/workspace/RenderJobProgressBar.vue')['default']
     ResetSessionDialog: typeof import('./src/components/workspace/ResetSessionDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
