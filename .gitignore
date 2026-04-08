@@ -8,6 +8,7 @@ frontend/node_modules/.vite/
 .codex/
 .superpowers/
 .venv/
+.github
 
 /GEMINI.md
 .idea

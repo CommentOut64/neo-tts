@@ -43,6 +43,12 @@ from GPT_SoVITS.module.models import SynthesizerTrn
 from GPT_SoVITS.process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 from GPT_SoVITS.sv import SV
 from backend.app.inference.audio_processing import load_reference_spectrogram
+from backend.app.inference.progress_policy import (
+    PREPARING_BOOTSTRAP_PROGRESS,
+    PREPARING_REFERENCE_READY_PROGRESS,
+    PREPARING_SEGMENTED_PROGRESS,
+    build_segment_progress,
+)
 from backend.app.inference.text_processing import (
     OFFICIAL_SPLIT_PUNCTUATION,
     build_phones_and_bert_features,
@@ -349,6 +355,7 @@ class GPTSoVITSOptimizedInference:
         self,
         request_or_context: ResolvedRenderContext | InitializeEditSessionRequest,
     ) -> ReferenceContext:
+        context_started = time.perf_counter()
         resolved_context = self._coerce_resolved_context(request_or_context)
         if (
             not resolved_context.reference_audio_path
@@ -371,9 +378,24 @@ class GPTSoVITSOptimizedInference:
             "boundary_result_frame_count": 6,
         }
         fingerprint = fingerprint_inference_config(inference_config)
+        prompt_started = time.perf_counter()
         prompt_semantic = self._extract_prompt_semantic(reference_audio_path)
+        prompt_elapsed_ms = (time.perf_counter() - prompt_started) * 1000
+        spec_started = time.perf_counter()
         refer_spec, refer_audio = self.get_spepc(reference_audio_path)
+        spec_elapsed_ms = (time.perf_counter() - spec_started) * 1000
+        speaker_started = time.perf_counter()
         speaker_embedding = self._compute_reference_speaker_embedding(refer_audio)
+        speaker_elapsed_ms = (time.perf_counter() - speaker_started) * 1000
+        inference_logger.info(
+            "Reference context built voice_id={} fingerprint={} prompt_semantic_ms={:.2f} spectrogram_ms={:.2f} speaker_embedding_ms={:.2f} total_ms={:.2f}",
+            resolved_context.voice_id,
+            fingerprint[:12],
+            prompt_elapsed_ms,
+            spec_elapsed_ms,
+            speaker_elapsed_ms,
+            (time.perf_counter() - context_started) * 1000,
+        )
 
         return ReferenceContext(
             reference_context_id=f"{resolved_context.voice_id}:{fingerprint[:12]}",
@@ -393,7 +415,17 @@ class GPTSoVITSOptimizedInference:
         self,
         segment,
         context: ReferenceContext,
+        *,
+        progress_callback=None,
     ) -> SegmentRenderAssetPayload:
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.1,
+            message="正在准备本次推理",
+            current_segment=0,
+            total_segments=1,
+        )
         prompt_phones, prompt_bert, _ = self.get_phones_and_bert(
             context.reference_text,
             context.reference_language,
@@ -405,6 +437,14 @@ class GPTSoVITSOptimizedInference:
             segment.text_language,
             self.hps.model.version,
             default_lang=context.reference_language,
+        )
+        _emit_progress(
+            progress_callback,
+            status="inferencing",
+            progress=0.35,
+            message="正在生成语音内容",
+            current_segment=0,
+            total_segments=1,
         )
 
         prompt = torch.from_numpy(context.reference_semantic_tokens).long().unsqueeze(0).to(self.device)
@@ -425,6 +465,14 @@ class GPTSoVITSOptimizedInference:
             )
             prefix_len = prompt.shape[1]
             pred_semantic = pred_semantic[:, prefix_len:].unsqueeze(0)
+            _emit_progress(
+                progress_callback,
+                status="inferencing",
+                progress=0.7,
+                message="正在生成语音内容",
+                current_segment=0,
+                total_segments=1,
+            )
             audio, trace, encoder_frames = self.vq_model.decode_with_trace(
                 pred_semantic,
                 torch.LongTensor(segment_phones).to(self.device).unsqueeze(0),
@@ -448,6 +496,14 @@ class GPTSoVITSOptimizedInference:
         merged_trace = dict(trace or {})
         merged_trace["left_margin_frames"] = split_result["left_margin_frames"]
         merged_trace["right_margin_frames"] = split_result["right_margin_frames"]
+        _emit_progress(
+            progress_callback,
+            status="completed",
+            progress=1.0,
+            message="正在生成语音内容",
+            current_segment=1,
+            total_segments=1,
+        )
 
         semantic_tokens = pred_semantic.detach().cpu().reshape(-1).tolist()
         return SegmentRenderAssetPayload(
@@ -587,7 +643,12 @@ class GPTSoVITSOptimizedInference:
         should_cancel=None,
     ):
         inference_logger.info("Inferencing text_lang={} text={}", text_lang, text)
-        _emit_progress(progress_callback, status="preparing", progress=0.02, message="推理已启动，正在准备输入。")
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=PREPARING_BOOTSTRAP_PROGRESS,
+            message="推理已启动，正在准备输入。",
+        )
         _raise_if_cancelled(should_cancel)
 
         if self.device == "cuda":
@@ -609,7 +670,7 @@ class GPTSoVITSOptimizedInference:
         _emit_progress(
             progress_callback,
             status="preparing",
-            progress=0.08,
+            progress=PREPARING_SEGMENTED_PROGRESS,
             message=f"文本已切分，共 {len(segments)} 段。",
             current_segment=0,
             total_segments=len(segments),
@@ -644,7 +705,14 @@ class GPTSoVITSOptimizedInference:
             else:
                 audio_16k = refer_audio
             sv_emb = self.sv_model.compute_embedding3(audio_16k)
-        _emit_progress(progress_callback, status="preparing", progress=0.15, message="参考音频特征已准备。")
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=PREPARING_REFERENCE_READY_PROGRESS,
+            message="参考音频特征已准备。",
+            current_segment=0,
+            total_segments=len(segments),
+        )
         _raise_if_cancelled(should_cancel)
 
         phones1, bert1, _ = self.get_phones_and_bert(prompt_text, prompt_lang, self.hps.model.version)
@@ -665,9 +733,9 @@ class GPTSoVITSOptimizedInference:
             _emit_progress(
                 progress_callback,
                 status="inferencing",
-                progress=0.15 + 0.7 * (index / len(segments)),
+                progress=build_segment_progress(completed_segments=index, total_segments=len(segments)),
                 message=f"正在处理第 {index + 1}/{len(segments)} 段。",
-                current_segment=index + 1,
+                current_segment=index,
                 total_segments=len(segments),
             )
 
@@ -733,18 +801,18 @@ class GPTSoVITSOptimizedInference:
 
             if index == 0:
                 t_first_segment = time.perf_counter() - t_all_start
-            _emit_progress(
-                progress_callback,
-                status="inferencing",
-                progress=0.15 + 0.7 * ((index + 1) / len(segments)),
-                message=f"第 {index + 1}/{len(segments)} 段处理完成。",
-                current_segment=index + 1,
-                total_segments=len(segments),
-            )
+            if index < len(segments) - 1:
+                _emit_progress(
+                    progress_callback,
+                    status="inferencing",
+                    progress=build_segment_progress(completed_segments=index + 1, total_segments=len(segments)),
+                    message=f"第 {index + 1}/{len(segments)} 段处理完成。",
+                    current_segment=index + 1,
+                    total_segments=len(segments),
+                )
 
         t_all_end = time.perf_counter()
 
-        _emit_progress(progress_callback, status="inferencing", progress=0.92, message="正在拼接最终音频。")
         _raise_if_cancelled(should_cancel)
         audio_final = np.concatenate(final_audios) if final_audios else np.zeros(0, dtype=np.float32)
 
@@ -765,7 +833,14 @@ class GPTSoVITSOptimizedInference:
             total_inference_time,
             rtf,
         )
-        _emit_progress(progress_callback, status="completed", progress=1.0, message="推理完成。")
+        _emit_progress(
+            progress_callback,
+            status="completed",
+            progress=1.0,
+            message="推理完成。",
+            current_segment=len(segments),
+            total_segments=len(segments),
+        )
 
         return audio_final, sr
 

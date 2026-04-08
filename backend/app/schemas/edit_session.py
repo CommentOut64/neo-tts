@@ -30,6 +30,17 @@ class InitializeEditSessionRequest(BaseModel):
     )
 
 
+class ReferenceAudioUploadResponse(BaseModel):
+    reference_audio_path: str = Field(description="上传后生成的临时参考音频路径。")
+    filename: str = Field(description="上传文件名。")
+
+
+class ConfigurationCommitResponse(BaseModel):
+    document_id: str = Field(description="当前文档 ID。")
+    document_version: int = Field(description="提交后的 head 文档版本号。")
+    head_snapshot_id: str = Field(description="提交后的 head snapshot ID。")
+
+
 class AudioDeliveryDescriptor(BaseModel):
     asset_id: str = Field(description="音频资产 ID。")
     audio_url: str = Field(description="可直接请求的音频地址。")
@@ -494,10 +505,10 @@ class VoiceBindingListResponse(BaseModel):
 
 class ExportRequestBase(BaseModel):
     document_version: int = Field(ge=1, description="要导出的已提交 document_version。")
-    target_dir: str = Field(description="导出目标目录，相对路径会解析到受控 export root 下。")
+    target_dir: str = Field(description="导出根目录，强制要求绝对路径。")
     overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(
         default="fail",
-        description="目标目录已存在时的处理策略。",
+        description="自动命名后的最终导出产物发生重名时的处理策略。",
     )
 
 
@@ -533,12 +544,12 @@ class SegmentBatchVoiceBindingPatchRequest(BaseModel):
 
 class ExportOutputManifest(BaseModel):
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
-    target_dir: str = Field(description="最终导出目录。")
-    files: list[str] = Field(default_factory=list, description="导出目录下的全部文件路径。")
+    target_dir: str = Field(description="最终导出落点所在目录；分段导出为自动创建的导出目录，整条导出为用户选择的导出根目录。")
+    files: list[str] = Field(default_factory=list, description="本次导出的全部文件路径。")
     segment_files: list[str] = Field(default_factory=list, description="分段导出的 wav 文件列表。")
     composition_file: str | None = Field(default=None, description="整条音频导出的 wav 文件路径。")
     composition_manifest_id: str | None = Field(default=None, description="若导出类型为 composition，则为对应正式资产 ID。")
-    manifest_file: str = Field(description="导出 manifest.json 路径。")
+    manifest_file: str = Field(description="导出 manifest 文件路径。")
     exported_at: datetime = Field(default_factory=_now_utc, description="导出完成时间。")
 
 
@@ -549,8 +560,8 @@ class ExportJobResponse(BaseModel):
     timeline_manifest_id: str = Field(description="导出使用的 timeline manifest ID。")
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
     status: Literal["queued", "exporting", "completed", "failed"] = Field(description="导出作业当前状态。")
-    target_dir: str = Field(description="解析后的最终目标目录。")
-    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="目标目录冲突时的处理策略。")
+    target_dir: str = Field(description="解析后的导出根目录。")
+    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="自动命名后的最终导出产物发生重名时的处理策略。")
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="当前导出进度，范围 0~1。")
     message: str = Field(default="", description="当前导出进度说明。")
     output_manifest: ExportOutputManifest | None = Field(default=None, description="导出成功后的输出清单。")
@@ -627,6 +638,8 @@ class EditSessionSnapshotResponse(BaseModel):
     session_status: Literal["empty", "initializing", "ready", "failed"] = Field(default="empty", description="当前会话状态。")
     document_id: str | None = Field(default=None, description="当前活动文档 ID。")
     document_version: int | None = Field(default=None, description="当前 head 对应的版本号。")
+    default_render_profile_id: str | None = Field(default=None, description="默认 session-scope render profile ID。")
+    default_voice_binding_id: str | None = Field(default=None, description="默认 session-scope voice binding ID。")
     baseline_version: int | None = Field(default=None, description="baseline 版本号。")
     head_version: int | None = Field(default=None, description="head 版本号。")
     total_segment_count: int = Field(default=0, description="当前版本的段总数。")

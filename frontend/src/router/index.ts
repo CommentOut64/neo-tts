@@ -1,14 +1,38 @@
+import { defineComponent } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
+import { resolveAppEntryPath } from './resolveAppEntry'
+
+const AppEntryResolvingView = defineComponent({
+  name: 'AppEntryResolvingView',
+  render: () => null,
+})
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/studio' },
+    {
+      path: '/',
+      name: 'AppEntry',
+      component: AppEntryResolvingView,
+      beforeEnter: async () => ({ path: await resolveAppEntryPath(), replace: true }),
+    },
+    {
+      path: '/text-input',
+      name: 'TextInput',
+      component: () => import('@/views/TextInputView.vue'),
+      meta: { title: '文本输入', icon: 'EditPen' },
+    },
+    {
+      path: '/workspace',
+      name: 'Workspace',
+      component: () => import('@/views/WorkspaceView.vue'),
+      meta: { title: '语音合成', icon: 'Microphone' },
+    },
     {
       path: '/studio',
       name: 'TtsStudio',
       component: () => import('@/views/TtsStudioView.vue'),
-      meta: { title: '语音合成', icon: 'Microphone' },
+      meta: { title: '旧版合成', icon: 'Microphone' },
     },
     {
       path: '/voices',

@@ -2,7 +2,8 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { VoiceProfile, AudioHistoryItem } from '@/types/tts'
-import { fetchVoices, synthesizeSpeechWithMeta, deleteSynthesisResult } from '@/api/tts'
+import { synthesizeSpeechWithMeta, deleteSynthesisResult } from '@/api/tts'
+import { fetchVoices } from '@/api/voices'
 import { useAudioQueue } from '@/composables/useAudioQueue'
 import VoiceSelect from '@/components/VoiceSelect.vue'
 import InferenceSettingsPanel from '@/components/InferenceSettingsPanel.vue'
@@ -60,7 +61,6 @@ const {
   cacheError,
   restoreCache,
   persistCacheWhenIdle,
-  persistCacheNow,
 } = useInferenceParamsCache()
 
 // 缓存恢复守卫
@@ -202,16 +202,6 @@ async function handleDeleteResult(item: AudioHistoryItem) {
   removeFromQueue(item)
 }
 
-// 手动保存配置
-async function handleSaveNow() {
-  try {
-    await persistCacheNow(buildCachePayload())
-    ElMessage.success('配置已保存')
-  } catch (err: unknown) {
-    ElMessage.error(`保存失败: ${(err as Error).message}`)
-  }
-}
-
 // Init
 async function init() {
   try {
@@ -271,7 +261,7 @@ init()
         space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent
       ">
         <!-- Voice select -->
-        <section class="bg-card rounded-card p-4 shadow-card">
+        <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
           <h3 class="text-[13px] font-semibold text-foreground mb-3">模型 (Voice)</h3>
           <VoiceSelect v-model="selectedVoiceName" :voices="voices" />
           <p v-if="selectedVoice" class="text-xs text-muted-fg mt-2">
@@ -280,7 +270,7 @@ init()
         </section>
 
         <!-- Reference audio -->
-        <section class="bg-card rounded-card p-4 shadow-card">
+        <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
           <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
           <el-radio-group v-model="refSource" class="mb-3">
             <el-radio value="preset">模型预设</el-radio>
@@ -326,8 +316,8 @@ init()
         </section>
 
         <!-- Inference params -->
-        <section class="bg-card rounded-card shadow-card overflow-hidden">
-          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" @save-now="handleSaveNow" />
+        <section class="bg-card rounded-card shadow-card overflow-hidden border border-border dark:border-transparent animate-fall">
+          <InferenceSettingsPanel v-model:params="params" @reset="resetParams" />
         </section>
       </aside>
 

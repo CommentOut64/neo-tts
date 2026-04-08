@@ -24,7 +24,16 @@ export default {
         info: "var(--color-info)",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        sans: [
+          "PingFang SC",
+          "Microsoft YaHei",
+          "Noto Sans CJK SC",
+          "Source Han Sans SC",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "sans-serif",
+        ],
       },
       borderRadius: { card: "12px", btn: "8px", input: "8px" },
       boxShadow: {
@@ -32,6 +41,15 @@ export default {
         "card-hover": "var(--shadow-card-hover)",
         "glow-accent": "var(--shadow-glow-accent)",
         "glow-cta": "var(--shadow-glow-cta)",
+      },
+      keyframes: {
+        fall: {
+          "0%": { transform: "translate3d(0, -20px, 0)", opacity: "0" },
+          "100%": { transform: "translate3d(0, 0, 0)", opacity: "1" },
+        },
+      },
+      animation: {
+        fall: "fall 0.4s ease-out forwards",
       },
     },
   },

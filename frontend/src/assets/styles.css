@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@nuxt/ui";
 @config "../../tailwind.config.ts";
 
 /* === 亮色主题（默认） === */
@@ -20,12 +21,23 @@
   --color-info: #3B82F6;
   --color-success: #22C55E;
   --color-error: #EF4444;
+  --color-window-bg: #f4f9ff;
+  --app-shell-bg:
+    radial-gradient(120% 55% at 68% 6%, rgba(125, 211, 252, 0.18) 0%, rgba(125, 211, 252, 0.1) 26%, rgba(125, 211, 252, 0.04) 48%, transparent 74%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(248, 250, 252, 0.97) 28%, rgba(241, 245, 249, 0.94) 100%);
+  --app-shell-navbar-solid-bg: rgba(255, 255, 255, 0);
+  --app-shell-navbar-bg: rgba(255, 255, 255, 0);
+  --app-shell-navbar-border: rgba(15, 23, 42, 0.08);
+  --app-shell-navbar-shadow: none;
 
   /* 阴影 token */
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.1);
   --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.15);
   --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.15);
+
+  /* 状态层：亮色模式下叠加黑色变暗 */
+  --color-state-layer: #000000;
 
   /* Element Plus 变量 */
   --el-color-primary: #3B82F6;
@@ -47,7 +59,9 @@
   --el-fill-color-light: #F8FAFC;
   --el-fill-color-blank: #FFFFFF;
   --el-border-radius-base: 8px;
-  --el-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --el-dialog-bg-color: var(--color-window-bg);
+  --el-drawer-bg-color: var(--color-window-bg);
+  --el-font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --el-font-size-base: 14px;
 }
 
@@ -57,18 +71,30 @@ html.dark {
   --color-background: #0F172A;
   --color-primary: #1E293B;
   --color-secondary: #334155;
-  --color-card: #1B2336;
+  --color-card: #1E293B;
   --color-card-fg: #F8FAFC;
   --color-foreground: #F8FAFC;
   --color-muted: #272F42;
   --color-muted-fg: #94A3B8;
   --color-border: #475569;
+  /* --color-window-bg: #445469; */
+  --color-window-bg: #2a3441;
+  --app-shell-bg:
+    radial-gradient(120% 55% at 68% 6%, rgba(56, 189, 248, 0.14) 0%, rgba(59, 130, 246, 0.08) 28%, rgba(56, 189, 248, 0.03) 50%, transparent 76%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.99) 0%, rgba(15, 23, 42, 0.97) 30%, rgba(19, 31, 51, 0.95) 100%);
+  --app-shell-navbar-solid-bg: rgba(15, 23, 42, 0);
+  --app-shell-navbar-bg: rgba(15, 23, 42, 0);
+  --app-shell-navbar-border: rgba(248, 250, 252, 0.08);
+  --app-shell-navbar-shadow: none;
 
   /* 阴影 token */
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.01);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   --shadow-glow-accent: 0 0 12px rgba(34, 197, 94, 0.25);
   --shadow-glow-cta: 0 0 12px rgba(59, 130, 246, 0.25);
+
+  /* 状态层：暗色模式下叠加白色变亮 */
+  --color-state-layer: #FFFFFF;
 
   /* Element Plus 变量 */
   --el-color-primary: #3B82F6;
@@ -89,6 +115,8 @@ html.dark {
   --el-fill-color: #272F42;
   --el-fill-color-light: #1B2336;
   --el-fill-color-blank: #0F172A;
+  --el-dialog-bg-color: var(--color-window-bg);
+  --el-drawer-bg-color: var(--color-window-bg);
 }
 
 /* === View Transition 主题切换动画 === */
@@ -153,7 +181,33 @@ html.dark {
 .scrollbar-track-transparent::-webkit-scrollbar-track {
   background: transparent;
 }
-
+@layer components {
+  /* 统一状态层：为有填充色的按钮提供自适应悬停反馈（亮/暗色自适应亮度叠加） */
+  .hover-state-layer {
+    position: relative;
+    /* overflow: hidden 是为了避免 after 溢出圆角，但有可能会阻断额外的外发光如果按钮本身需要外发光的话，
+       现代浏览器已支持 border-radius 继承和叠加裁剪，所以尽量只依赖 inherit */
+  }
+  
+  .hover-state-layer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-color: var(--color-state-layer);
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+    border-radius: inherit; /* 跟随父元素的圆角 */
+  }
+  
+  .hover-state-layer:not(:disabled):hover::after {
+    opacity: 0.1;
+  }
+  
+  .hover-state-layer:not(:disabled):active::after {
+    opacity: 0.15;
+  }
+}
 @keyframes spin-once {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -178,3 +232,24 @@ html.dark {
 
 html.dark .el-slider__button { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 0 2px var(--color-card) !important; }
 html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-shadow: 0 3px 6px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--color-card) !important; }
+
+/* 修复全局 dialog 和 drawer 背景色覆盖 */
+
+.el-message-box {
+  background-color: var(--color-window-bg) !important;
+  --el-message-bg-color: var(--color-window-bg) !important;
+  --el-messagebox-bg-color: var(--color-window-bg) !important;
+}
+.el-dialog {
+  --el-dialog-bg-color: var(--color-window-bg) !important;
+}
+.el-drawer {
+  --el-drawer-bg-color: var(--color-window-bg) !important;
+}
+
+/* Ensure falling animation uses hardware acceleration reliably to prevent text deformation on Windows */
+.animate-fall {
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+  will-change: transform, opacity;
+}

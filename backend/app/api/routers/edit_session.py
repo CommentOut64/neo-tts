@@ -4,11 +4,15 @@ import json
 from pathlib import Path
 import queue
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
+from backend.app.api.reference_audio_upload import (
+    store_temporary_reference_audio,
+    validate_reference_audio_filename,
+)
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
-from backend.app.inference.editable_gateway import EditableInferenceGateway
+from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -16,6 +20,7 @@ from backend.app.schemas.edit_session import (
     BoundaryAssetResponse,
     CompositionExportRequest,
     CompositionResponse,
+    ConfigurationCommitResponse,
     CreateSegmentRequest,
     CurrentCheckpointResponse,
     EdgeListResponse,
@@ -29,6 +34,7 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    ReferenceAudioUploadResponse,
     RenderProfilePatchRequest,
     RenderProfileListResponse,
     RenderJobAcceptedResponse,
@@ -81,7 +87,7 @@ class _UnavailableEditableBackend:
     def build_reference_context(self, request):
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
-    def render_segment_base(self, segment, context):
+    def render_segment_base(self, segment, context, *, progress_callback=None):
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
     def render_boundary_asset(self, left_asset, right_asset, edge, context):
@@ -101,7 +107,7 @@ def _resolve_project_path(project_root: Path, raw_path: str) -> str:
     return str((project_root / path).resolve())
 
 
-def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway:
+def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway | LazyEditableInferenceGateway:
     existing = getattr(request.app.state, "editable_inference_gateway", None)
     if existing is not None:
         return existing
@@ -116,15 +122,20 @@ def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInfer
     )
     cache_key = (voice.gpt_path, voice.sovits_path)
     if cache_key not in cache:
-        from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+        resolved_gpt_path = _resolve_project_path(settings.project_root, voice.gpt_path)
+        resolved_sovits_path = _resolve_project_path(settings.project_root, voice.sovits_path)
 
-        backend = GPTSoVITSOptimizedInference(
-            _resolve_project_path(settings.project_root, voice.gpt_path),
-            _resolve_project_path(settings.project_root, voice.sovits_path),
-            settings.cnhubert_base_path,
-            settings.bert_path,
-        )
-        cache[cache_key] = EditableInferenceGateway(backend)
+        def _build_backend():
+            from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+
+            return GPTSoVITSOptimizedInference(
+                resolved_gpt_path,
+                resolved_sovits_path,
+                settings.cnhubert_base_path,
+                settings.bert_path,
+            )
+
+        cache[cache_key] = LazyEditableInferenceGateway(backend_factory=_build_backend)
         request.app.state.editable_inference_gateway_cache = cache
     return cache[cache_key]
 
@@ -148,6 +159,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
+        inference_runtime=request.app.state.inference_runtime,
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
@@ -162,6 +174,7 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
+        inference_runtime=request.app.state.inference_runtime,
         session_service=_build_edit_session_service(request),
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),
@@ -232,6 +245,23 @@ def _should_close_export_event_stream(event_type: str, payload: dict) -> bool:
     if event_type != "job_state_changed":
         return False
     return payload.get("status") in {"completed", "failed"}
+
+
+@router.post(
+    "/reference-audio",
+    response_model=ReferenceAudioUploadResponse,
+    summary="上传临时参考音频",
+    description="上传参考音频文件并返回可用于 edit-session 的临时路径。",
+    responses=BAD_REQUEST_RESPONSE,
+)
+async def upload_reference_audio(
+    request: Request,
+    ref_audio_file: UploadFile = File(..., description="参考音频文件，支持 `.wav`、`.mp3`、`.flac`。"),
+) -> ReferenceAudioUploadResponse:
+    filename = validate_reference_audio_filename(ref_audio_file.filename)
+    payload = await ref_audio_file.read()
+    temp_path = store_temporary_reference_audio(request=request, filename=filename, payload=payload)
+    return ReferenceAudioUploadResponse(reference_audio_path=str(temp_path), filename=filename)
 
 
 @router.post(
@@ -501,6 +531,17 @@ def list_edges(
 
 
 @router.patch(
+    "/edges/{edge_id}/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交边参数",
+    description="修改段间停顿或边界策略，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_edge_config(request: Request, edge_id: str, body: UpdateEdgeRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_update_edge(edge_id, body)
+
+
+@router.patch(
     "/edges/{edge_id}",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -513,6 +554,17 @@ def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> Rende
 
 
 @router.patch(
+    "/session/render-profile/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交会话级渲染配置",
+    description="创建新的 session-scope render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_session_render_profile(body)
+
+
+@router.patch(
     "/session/render-profile",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -522,6 +574,17 @@ def patch_edge(request: Request, edge_id: str, body: UpdateEdgeRequest) -> Rende
 )
 def patch_session_render_profile(request: Request, body: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_session_render_profile_job(body)
+
+
+@router.patch(
+    "/session/voice-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交会话级音色绑定",
+    description="创建新的 session-scope voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_session_voice_binding(body)
 
 
 @router.patch(
@@ -569,6 +632,21 @@ def patch_group_voice_binding(
 
 
 @router.patch(
+    "/segments/{segment_id}/render-profile/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交段级渲染配置",
+    description="为单个段创建新的 render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segment_render_profile(
+    request: Request,
+    segment_id: str,
+    body: RenderProfilePatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segment_render_profile(segment_id, body)
+
+
+@router.patch(
     "/segments/{segment_id}/render-profile",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -582,6 +660,21 @@ def patch_segment_render_profile(
     body: RenderProfilePatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segment_render_profile_job(segment_id, body)
+
+
+@router.patch(
+    "/segments/{segment_id}/voice-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交段级音色绑定",
+    description="为单个段创建新的 voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segment_voice_binding(
+    request: Request,
+    segment_id: str,
+    body: VoiceBindingPatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segment_voice_binding(segment_id, body)
 
 
 @router.patch(
@@ -601,6 +694,20 @@ def patch_segment_voice_binding(
 
 
 @router.patch(
+    "/segments/render-profile-batch/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交批量段级渲染配置",
+    description="对目标段批量绑定新的 render profile 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segments_render_profile_batch(
+    request: Request,
+    body: SegmentBatchRenderProfilePatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segments_render_profile_batch(body)
+
+
+@router.patch(
     "/segments/render-profile-batch",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
@@ -613,6 +720,20 @@ def patch_segments_render_profile_batch(
     body: SegmentBatchRenderProfilePatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segments_render_profile_batch_job(body)
+
+
+@router.patch(
+    "/segments/voice-binding-batch/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交批量段级音色绑定",
+    description="对目标段批量绑定新的 voice/model binding 并持久化，但不立即触发重推理。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def commit_segments_voice_binding_batch(
+    request: Request,
+    body: SegmentBatchVoiceBindingPatchRequest,
+) -> ConfigurationCommitResponse:
+    return _build_render_job_service(request).commit_patch_segments_voice_binding_batch(body)
 
 
 @router.patch(
@@ -640,6 +761,18 @@ def patch_segments_voice_binding_batch(
 )
 def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_update_segment_job(segment_id, body)
+
+
+@router.post(
+    "/segments/{segment_id}/rerender",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="重推理单个段",
+    description="基于当前 head snapshot 已提交的配置，重新渲染指定段。",
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def rerender_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_rerender_segment_job(segment_id)
 
 
 @router.post(

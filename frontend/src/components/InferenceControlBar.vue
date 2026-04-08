@@ -46,7 +46,7 @@ const hasError = computed(() => props.runtimeError != null || props.cacheError !
 </script>
 
 <template>
-  <section v-if="isActive || hasError" class="bg-card rounded-card p-4 shadow-card space-y-3">
+  <section v-if="isActive || hasError" class="bg-card rounded-card p-4 shadow-card space-y-3 border border-border dark:border-transparent animate-fall">
     <!-- 进度条区域 -->
     <div v-if="isActive">
       <div class="flex items-center justify-between mb-2">
@@ -77,7 +77,7 @@ const hasError = computed(() => props.runtimeError != null || props.cacheError !
         :percentage="progressPercent"
         :status="progressStatus"
         :stroke-width="8"
-        class="mb-1"
+        class="inference-progress mb-1"
       />
       <p class="text-xs text-muted-fg">{{ statusLabel }}</p>
     </div>
@@ -101,3 +101,9 @@ const hasError = computed(() => props.runtimeError != null || props.cacheError !
     />
   </section>
 </template>
+
+<style scoped>
+.inference-progress :deep(.el-progress-bar__inner) {
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+</style>

@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -354,3 +356,149 @@ def test_repository_lists_non_terminal_jobs_and_marks_terminal(tmp_path: Path):
     assert updated is not None
     assert updated.status == "failed"
     assert updated.message == "recovered on startup"
+
+
+def test_repository_migrates_legacy_snapshot_tables_to_composite_primary_keys(tmp_path: Path):
+    db_file = tmp_path / "edit_session.db"
+    with sqlite3.connect(db_file) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE segments (
+                segment_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                order_key INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX idx_segments_document_order
+            ON segments (document_id, snapshot_id, order_key);
+
+            CREATE TABLE edges (
+                edge_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                left_segment_id TEXT NOT NULL,
+                right_segment_id TEXT NOT NULL,
+                edge_order_key INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX idx_edges_document_order
+            ON edges (document_id, snapshot_id, edge_order_key);
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO segments(segment_id, document_id, snapshot_id, order_key, payload)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "seg-legacy",
+                "doc-legacy",
+                "snap-legacy",
+                1,
+                json.dumps(
+                    EditableSegment(
+                        segment_id="seg-legacy",
+                        document_id="doc-legacy",
+                        order_key=1,
+                        raw_text="旧段。",
+                        normalized_text="旧段。",
+                        text_language="zh",
+                    ).model_dump(mode="json"),
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO edges(edge_id, document_id, snapshot_id, left_segment_id, right_segment_id, edge_order_key, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "edge-legacy",
+                "doc-legacy",
+                "snap-legacy",
+                "seg-legacy",
+                "seg-legacy-2",
+                1,
+                json.dumps(
+                    EditableEdge(
+                        edge_id="edge-legacy",
+                        document_id="doc-legacy",
+                        left_segment_id="seg-legacy",
+                        right_segment_id="seg-legacy-2",
+                    ).model_dump(mode="json"),
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+
+    repository = _build_repository(db_file)
+
+    baseline_snapshot = DocumentSnapshot(
+        snapshot_id="snap-base",
+        document_id="doc-1",
+        snapshot_kind="baseline",
+        document_version=1,
+        raw_text="甲。乙。",
+        normalized_text="甲。乙。",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                raw_text="甲。",
+                normalized_text="甲。",
+                text_language="zh",
+            ),
+            EditableSegment(
+                segment_id="seg-2",
+                document_id="doc-1",
+                order_key=2,
+                raw_text="乙。",
+                normalized_text="乙。",
+                text_language="zh",
+                previous_segment_id="seg-1",
+            ),
+        ],
+        edges=[
+            EditableEdge(
+                edge_id="edge-1",
+                document_id="doc-1",
+                left_segment_id="seg-1",
+                right_segment_id="seg-2",
+            )
+        ],
+    )
+    head_snapshot = baseline_snapshot.model_copy(
+        update={
+            "snapshot_id": "snap-head",
+            "snapshot_kind": "head",
+            "document_version": 2,
+        },
+        deep=True,
+    )
+
+    repository.save_snapshot(baseline_snapshot)
+    repository.save_snapshot(head_snapshot)
+
+    with sqlite3.connect(db_file) as connection:
+        segment_pk = connection.execute("PRAGMA table_info(segments)").fetchall()
+        edge_pk = connection.execute("PRAGMA table_info(edges)").fetchall()
+
+    assert [row[1] for row in segment_pk if row[5] > 0] == ["snapshot_id", "segment_id"]
+    assert [row[1] for row in edge_pk if row[5] > 0] == ["snapshot_id", "edge_id"]
+    assert [segment.segment_id for segment in repository.list_segments("doc-legacy", limit=10, cursor=None, snapshot_id="snap-legacy")] == [
+        "seg-legacy"
+    ]
+    assert [edge.edge_id for edge in repository.list_edges("doc-legacy", limit=10, cursor=None, snapshot_id="snap-legacy")] == [
+        "edge-legacy"
+    ]
+    assert [segment.segment_id for segment in repository.list_segments("doc-1", limit=10, cursor=None, snapshot_id="snap-base")] == [
+        "seg-1",
+        "seg-2",
+    ]
+    assert [segment.segment_id for segment in repository.list_segments("doc-1", limit=10, cursor=None, snapshot_id="snap-head")] == [
+        "seg-1",
+        "seg-2",
+    ]
