@@ -6,8 +6,14 @@ import './assets/styles.css'
 import App from './App.vue'
 import router from './router'
 
-const app = createApp(App)
-app.use(ElementPlus)
-app.use(router)
-app.use(ui)
-app.mount('#app')
+async function bootstrap() {
+  const app = createApp(App)
+  app.use(ElementPlus)
+  app.use(router)
+  app.use(ui)
+
+  await router.isReady()
+  app.mount('#app')
+}
+
+void bootstrap()

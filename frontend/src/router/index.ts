@@ -1,9 +1,21 @@
+import { defineComponent } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
+import { resolveAppEntryPath } from './resolveAppEntry'
+
+const AppEntryResolvingView = defineComponent({
+  name: 'AppEntryResolvingView',
+  render: () => null,
+})
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/text-input' },
+    {
+      path: '/',
+      name: 'AppEntry',
+      component: AppEntryResolvingView,
+      beforeEnter: async () => ({ path: await resolveAppEntryPath(), replace: true }),
+    },
     {
       path: '/text-input',
       name: 'TextInput',

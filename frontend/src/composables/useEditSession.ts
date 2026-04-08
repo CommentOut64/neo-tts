@@ -28,6 +28,41 @@ import { useTimeline } from "./useTimeline";
 import { useInputDraft } from './useInputDraft'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
 
+export interface ResolveInputDraftSyncActionInput {
+  sessionHeadText: string | null
+  inputText: string
+  isInputEmpty: boolean
+  draftRevision: number
+  lastSentToSessionRevision: number | null
+  sourceDraftRevision: number | null
+}
+
+export function resolveInputDraftSyncAction(
+  input: ResolveInputDraftSyncActionInput,
+): 'backfill' | 'adopt' | 'noop' {
+  if (!input.sessionHeadText) {
+    return 'noop'
+  }
+
+  if (input.isInputEmpty) {
+    return 'backfill'
+  }
+
+  if (input.inputText === input.sessionHeadText && input.sourceDraftRevision === null) {
+    return 'adopt'
+  }
+
+  const isTrackingSessionDraft = input.sourceDraftRevision !== null
+    && input.draftRevision === input.sourceDraftRevision
+    && input.lastSentToSessionRevision === input.draftRevision
+
+  if (isTrackingSessionDraft && input.inputText !== input.sessionHeadText) {
+    return 'backfill'
+  }
+
+  return 'noop'
+}
+
 const sessionStatus = ref<SessionStatus>('empty')
 const snapshot = ref<EditSessionSnapshot | null>(null)
 const timeline = ref<TimelineManifest | null>(null)
@@ -55,22 +90,30 @@ export function useEditSession() {
     return data.segments.map((segment) => segment.raw_text).join('')
   }
 
+  function markDraftAsSyncedToSession() {
+    sourceDraftRevision.value = inputDraft.draftRevision.value
+    inputDraft.markSentToSession(inputDraft.draftRevision.value)
+  }
+
   function syncDraftRevisionFromSnapshot(data: EditSessionSnapshot) {
     const sessionHeadText = getSnapshotHeadText(data)
-    if (!sessionHeadText) {
-      return
-    }
+    const action = resolveInputDraftSyncAction({
+      sessionHeadText,
+      inputText: inputDraft.text.value,
+      isInputEmpty: inputDraft.isEmpty.value,
+      draftRevision: inputDraft.draftRevision.value,
+      lastSentToSessionRevision: inputDraft.lastSentToSessionRevision.value,
+      sourceDraftRevision: sourceDraftRevision.value,
+    })
 
-    if (inputDraft.isEmpty.value) {
+    if (action === 'backfill' && sessionHeadText) {
       inputDraft.backfillFromSession(sessionHeadText)
-      sourceDraftRevision.value = inputDraft.draftRevision.value
-      inputDraft.markSentToSession(inputDraft.draftRevision.value)
+      markDraftAsSyncedToSession()
       return
     }
 
-    if (inputDraft.text.value === sessionHeadText && sourceDraftRevision.value === null) {
-      sourceDraftRevision.value = inputDraft.draftRevision.value
-      inputDraft.markSentToSession(inputDraft.draftRevision.value)
+    if (action === 'adopt') {
+      markDraftAsSyncedToSession()
     }
   }
 
@@ -136,6 +179,11 @@ export function useEditSession() {
     sessionStatus.value = data.session_status || 'empty'
     documentVersion.value = data.document_version
     activeJob.value = data.active_job
+    if (sessionStatus.value === 'ready') {
+      syncDraftRevisionFromSnapshot(data)
+      return
+    }
+
     if (sessionStatus.value !== 'ready') {
       segments.value = []
       segmentsLoaded.value = false
