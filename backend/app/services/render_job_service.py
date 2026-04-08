@@ -137,6 +137,7 @@ class RenderPlan:
     skip_render: bool = False
     skip_compose: bool = False
     emitted_block_ids: set[str] = field(default_factory=set)
+    changed_block_asset_ids: set[str] = field(default_factory=set)
     inference_task_id: str | None = None
     inference_total_segments: int = 0
 
@@ -1297,13 +1298,20 @@ class RenderJobService:
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
-        plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
+        if self._should_prepare_edit_reference_context(plan):
+            plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.target_segment_ids) or len(plan.segments),
             message=f"编辑快照准备完成，版本将更新为 {plan.document_version}。",
         )
         self._persist_runtime_job(plan.job_id)
+
+    @staticmethod
+    def _should_prepare_edit_reference_context(plan: RenderPlan) -> bool:
+        if plan.compose_only and not plan.target_segment_ids and not plan.target_edge_ids:
+            return False
+        return True
 
     @staticmethod
     def _split_raw_segments(raw_text: str, *, segment_boundary_mode: str) -> list[str]:
@@ -1565,21 +1573,64 @@ class RenderJobService:
                     )
                 self._write_boundary_asset(plan.job_id, boundary_asset)
             else:
-                boundary_asset = self._asset_store.load_boundary_asset(
-                    build_boundary_asset_id(
-                        left_segment_id=edge.left_segment_id,
-                        left_render_version=left_asset.render_version,
-                        right_segment_id=edge.right_segment_id,
-                        right_render_version=right_asset.render_version,
-                        edge_version=edge.edge_version,
-                        boundary_strategy=effective_boundary_strategy,
-                    )
+                boundary_asset = self._load_or_rebuild_boundary_asset(
+                    plan=plan,
+                    snapshot=config_snapshot,
+                    edge=edge,
+                    left_asset=left_asset,
+                    right_asset=right_asset,
+                    effective_boundary_strategy=effective_boundary_strategy,
                 )
             plan.boundary_assets[edge.edge_id] = boundary_asset
             edge.effective_boundary_strategy = effective_boundary_strategy
             edge.boundary_sample_count = boundary_asset.boundary_sample_count
             edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
         self._persist_runtime_job(plan.job_id)
+
+    def _load_or_rebuild_boundary_asset(
+        self,
+        *,
+        plan: RenderPlan,
+        snapshot: DocumentSnapshot,
+        edge: EditableEdge,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+        effective_boundary_strategy: str,
+    ) -> BoundaryAssetPayload:
+        boundary_asset_id = build_boundary_asset_id(
+            left_segment_id=edge.left_segment_id,
+            left_render_version=left_asset.render_version,
+            right_segment_id=edge.right_segment_id,
+            right_render_version=right_asset.render_version,
+            edge_version=edge.edge_version,
+            boundary_strategy=effective_boundary_strategy,
+        )
+        try:
+            return self._asset_store.load_boundary_asset(boundary_asset_id)
+        except FileNotFoundError:
+            render_job_logger.warning(
+                "boundary asset missing; rebuilding boundary_asset_id={} edge_id={} left_render_version={} right_render_version={} edge_version={} strategy={}",
+                boundary_asset_id,
+                edge.edge_id,
+                left_asset.render_version,
+                right_asset.render_version,
+                edge.edge_version,
+                effective_boundary_strategy,
+            )
+
+        boundary_context = self._get_segment_context(
+            plan=plan,
+            snapshot=snapshot,
+            segment=next(item for item in plan.segments if item.segment_id == edge.left_segment_id),
+        )
+        boundary_asset = self._gateway.render_boundary_asset(
+            left_asset,
+            right_asset,
+            edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
+            boundary_context,
+        )
+        self._write_boundary_asset(plan.job_id, boundary_asset)
+        return boundary_asset
 
     def _build_fallback_boundary_asset(
         self,
@@ -1627,6 +1678,7 @@ class RenderJobService:
         if plan.skip_compose:
             return
         self._ensure_not_cancelled(plan.job_id)
+        plan.changed_block_asset_ids.clear()
         compose_message = "正在装配 block 与文档音频。"
         if plan.timeline_reflow_required:
             if plan.earliest_changed_order_key is not None:
@@ -1672,6 +1724,7 @@ class RenderJobService:
                     block_id=block.block_id,
                 )
                 self._write_block_asset(plan.job_id, block_asset)
+                plan.changed_block_asset_ids.add(block_asset.block_asset_id)
             else:
                 block_asset = self._asset_store.load_block_asset(reusable_block_asset_id)
             plan.block_assets.append(block_asset)
@@ -1757,6 +1810,12 @@ class RenderJobService:
             updated_at=datetime.now(timezone.utc),
         )
         self._repository.upsert_active_session(active_session)
+        committed_block_asset_ids = self._update_job_committed_state(
+            job_id=plan.job_id,
+            document_version=plan.document_version,
+            timeline=plan.timeline_manifest,
+            changed_block_asset_ids=plan.changed_block_asset_ids,
+        )
         self._runtime.emit_event(
             plan.job_id,
             "timeline_committed",
@@ -1765,7 +1824,7 @@ class RenderJobService:
                 "timeline_version": plan.timeline_manifest.timeline_version,
                 "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
                 "playable_sample_span": list(plan.timeline_manifest.playable_sample_span),
-                "changed_block_asset_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
+                "changed_block_asset_ids": committed_block_asset_ids,
             },
         )
         self._runtime.update_job(
@@ -1835,6 +1894,12 @@ class RenderJobService:
             )
         )
         if plan.timeline_manifest is not None:
+            committed_block_asset_ids = self._update_job_committed_state(
+                job_id=plan.job_id,
+                document_version=plan.document_version,
+                timeline=plan.timeline_manifest,
+                changed_block_asset_ids=plan.changed_block_asset_ids,
+            )
             self._runtime.emit_event(
                 plan.job_id,
                 "timeline_committed",
@@ -1843,7 +1908,7 @@ class RenderJobService:
                     "timeline_version": plan.timeline_manifest.timeline_version,
                     "timeline_manifest_id": plan.timeline_manifest.timeline_manifest_id,
                     "playable_sample_span": list(plan.timeline_manifest.playable_sample_span),
-                    "changed_block_asset_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
+                    "changed_block_asset_ids": committed_block_asset_ids,
                 },
             )
         self._persist_runtime_job(plan.job_id)
@@ -1909,6 +1974,38 @@ class RenderJobService:
         ):
             return None
         return previous_entry.block_asset_id
+
+    @staticmethod
+    def _collect_changed_block_asset_ids(
+        *,
+        timeline: TimelineManifest,
+        changed_block_asset_ids: set[str],
+    ) -> list[str]:
+        ordered_block_asset_ids = [entry.block_asset_id for entry in timeline.block_entries]
+        if not changed_block_asset_ids:
+            return ordered_block_asset_ids
+        return [block_asset_id for block_asset_id in ordered_block_asset_ids if block_asset_id in changed_block_asset_ids]
+
+    def _update_job_committed_state(
+        self,
+        *,
+        job_id: str,
+        document_version: int,
+        timeline: TimelineManifest,
+        changed_block_asset_ids: set[str],
+    ) -> list[str]:
+        committed_block_asset_ids = self._collect_changed_block_asset_ids(
+            timeline=timeline,
+            changed_block_asset_ids=changed_block_asset_ids,
+        )
+        self._runtime.update_job(
+            job_id,
+            committed_document_version=document_version,
+            committed_timeline_manifest_id=timeline.timeline_manifest_id,
+            committed_playable_sample_span=timeline.playable_sample_span,
+            changed_block_asset_ids=committed_block_asset_ids,
+        )
+        return committed_block_asset_ids
 
     def _block_matches_existing_asset(
         self,
@@ -2197,6 +2294,12 @@ class RenderJobService:
                 },
             )
             plan.emitted_block_ids.add(entry.block_asset_id)
+        committed_block_asset_ids = self._update_job_committed_state(
+            job_id=plan.job_id,
+            document_version=checkpoint.document_version,
+            timeline=timeline,
+            changed_block_asset_ids=plan.changed_block_asset_ids,
+        )
         self._runtime.emit_event(
             plan.job_id,
             "timeline_committed",
@@ -2205,7 +2308,7 @@ class RenderJobService:
                 "timeline_version": timeline.timeline_version,
                 "timeline_manifest_id": timeline.timeline_manifest_id,
                 "playable_sample_span": list(timeline.playable_sample_span),
-                "changed_block_asset_ids": [entry.block_asset_id for entry in timeline.block_entries],
+                "changed_block_asset_ids": committed_block_asset_ids,
             },
         )
         terminal_event = "job_paused" if status == "paused" else "job_cancelled_partial"
@@ -2263,6 +2366,10 @@ class RenderJobService:
             current_block_index=job.current_block_index,
             total_block_count=job.total_block_count,
             result_document_version=job.result_document_version,
+            committed_document_version=job.committed_document_version,
+            committed_timeline_manifest_id=job.committed_timeline_manifest_id,
+            committed_playable_sample_span=job.committed_playable_sample_span,
+            changed_block_asset_ids=list(job.changed_block_asset_ids),
             checkpoint_id=job.checkpoint_id,
             resume_token=job.resume_token,
             updated_at=job.updated_at,

@@ -358,6 +358,19 @@ class RenderJobResponse(BaseModel):
     current_block_index: int | None = Field(default=None, ge=0, description="当前已完成的 block 计数。")
     total_block_count: int | None = Field(default=None, ge=0, description="本次作业预计处理的 block 总数。")
     result_document_version: int | None = Field(default=None, description="成功完成后提交出的 document_version。")
+    committed_document_version: int | None = Field(default=None, description="已提交正式版本的 document_version。")
+    committed_timeline_manifest_id: str | None = Field(
+        default=None,
+        description="已提交正式版本的 timeline manifest ID。",
+    )
+    committed_playable_sample_span: tuple[int, int] | None = Field(
+        default=None,
+        description="已提交正式版本的可播放 sample 区间。",
+    )
+    changed_block_asset_ids: list[str] = Field(
+        default_factory=list,
+        description="本次提交中真正发生变化的 block asset ID 列表。",
+    )
     checkpoint_id: str | None = Field(default=None, description="若作业暂停或 partial commit，关联的 checkpoint ID。")
     resume_token: str | None = Field(default=None, description="可恢复作业的 resume token。")
     updated_at: datetime = Field(default_factory=_now_utc, description="作业最后更新时间。")
@@ -638,6 +651,10 @@ class EditSessionSnapshotResponse(BaseModel):
     session_status: Literal["empty", "initializing", "ready", "failed"] = Field(default="empty", description="当前会话状态。")
     document_id: str | None = Field(default=None, description="当前活动文档 ID。")
     document_version: int | None = Field(default=None, description="当前 head 对应的版本号。")
+    source_text: str | None = Field(
+        default=None,
+        description="保留原始换行的全文文本，供 WorkspaceEditorHost 组合式布局使用。",
+    )
     default_render_profile_id: str | None = Field(default=None, description="默认 session-scope render profile ID。")
     default_voice_binding_id: str | None = Field(default=None, description="默认 session-scope voice binding ID。")
     baseline_version: int | None = Field(default=None, description="baseline 版本号。")

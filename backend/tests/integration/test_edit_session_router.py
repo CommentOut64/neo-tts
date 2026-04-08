@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import importlib
 import json
 import os
+from pathlib import Path
 import time
 import threading
 from types import SimpleNamespace
@@ -55,7 +56,8 @@ class FakeEditableInferenceBackend:
             inference_config={"margin_frame_count": 0, "speed": resolved_context.speed},
         )
 
-    def render_segment_base(self, segment, context) -> SegmentRenderAssetPayload:
+    def render_segment_base(self, segment, context, *, progress_callback=None) -> SegmentRenderAssetPayload:
+        del progress_callback
         if self.gate is not None:
             if self.wait_timeout is None:
                 self.gate.wait()
@@ -114,13 +116,13 @@ def _wait_until(predicate, *, timeout: float = 3.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
-def _export_composition_for_current_snapshot(client: TestClient, *, target_dir: str) -> dict:
+def _export_composition_for_current_snapshot(client: TestClient, *, target_dir: str | Path) -> dict:
     snapshot = client.get("/v1/edit-session/snapshot").json()
     response = client.post(
         "/v1/edit-session/exports/composition",
         json={
             "document_version": snapshot["document_version"],
-            "target_dir": target_dir,
+            "target_dir": str(target_dir),
             "overwrite_policy": "fail",
         },
     )
@@ -205,7 +207,7 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         initialize = client.post(
             "/v1/edit-session/initialize",
             json={
-                "raw_text": "第一句。第二句。",
+                "raw_text": "第一句。\n第二句。",
                 "voice_id": "demo",
             },
         )
@@ -215,6 +217,7 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         initializing_snapshot = client.get("/v1/edit-session/snapshot")
         assert initializing_snapshot.status_code == 200
         assert initializing_snapshot.json()["session_status"] == "initializing"
+        assert initializing_snapshot.json()["source_text"] == "第一句。\n第二句。"
 
         conflict = client.post(
             "/v1/edit-session/initialize",
@@ -232,11 +235,16 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert baseline.status_code == 200
         assert baseline.json()["baseline_snapshot"]["document_id"] is not None
 
+        ready_snapshot = client.get("/v1/edit-session/snapshot")
+        assert ready_snapshot.status_code == 200
+        assert ready_snapshot.json()["source_text"] == "第一句。\n第二句。"
+
         delete_response = client.delete("/v1/edit-session")
         assert delete_response.status_code == 204
         after_delete = client.get("/v1/edit-session/snapshot")
         assert after_delete.status_code == 200
         assert after_delete.json()["session_status"] == "empty"
+        assert after_delete.json()["source_text"] is None
 
         assert job_id
 
@@ -383,7 +391,8 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
                     statuses.append("cancelled_partial")
                     break
 
-        assert statuses in (["cancelled_partial"], ["cancel_requested", "cancelled_partial"])
+        assert statuses[-1:] == ["cancelled_partial"]
+        assert set(statuses).issubset({"cancel_requested", "cancelled_partial"})
 
 
 def test_edit_session_segment_crud_and_read_models(test_app_settings):
@@ -531,6 +540,7 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         assert updated_snapshot["segments"][0]["raw_text"] == "第一句已修改。"
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 2
+        timeline_before_pause = client.get("/v1/edit-session/timeline").json()
 
         patch_edge = client.patch(
             f"/v1/edit-session/edges/{edge_id}",
@@ -540,7 +550,11 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 3)
 
         paused_snapshot = client.get("/v1/edit-session/snapshot").json()
+        paused_timeline = client.get("/v1/edit-session/timeline").json()
         assert paused_snapshot["edges"][0]["pause_duration_seconds"] == 0.8
+        assert paused_timeline["edge_entries"][0]["pause_duration_seconds"] == 0.8
+        assert paused_timeline["playable_sample_span"][1] > timeline_before_pause["playable_sample_span"][1]
+        assert paused_timeline["block_entries"][0]["audio_url"] != timeline_before_pause["block_entries"][0]["audio_url"]
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 2
 
@@ -602,7 +616,10 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
             boundary_strategy=first_edge["boundary_strategy"],
         )
 
-        composition_payload = _export_composition_for_current_snapshot(client, target_dir="asset-route-composition")
+        composition_payload = _export_composition_for_current_snapshot(
+            client,
+            target_dir=test_app_settings.edit_session_exports_dir / "asset-route-composition",
+        )
         composition_id = composition_payload["composition_manifest_id"]
         refreshed_snapshot = client.get("/v1/edit-session/snapshot").json()
         assert refreshed_snapshot["composition_manifest_id"] == composition_id
