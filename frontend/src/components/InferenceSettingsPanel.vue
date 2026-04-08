@@ -45,9 +45,9 @@ function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[
             <el-select :model-value="params.text_lang" size="small" class="!w-min" style="min-width: 90px;" @update:model-value="update('text_lang', $event)">
               <el-option value="auto" label="自动" />
               <el-option value="zh" label="中文" />
-              <el-option value="en" label="English" />
-              <el-option value="ja" label="日本語" />
-              <el-option value="ko" label="한국어" />
+              <el-option value="en" label="英文" />
+              <el-option value="ja" label="日文" />
+              <el-option value="ko" label="韩文" />
             </el-select>
           </div>
           <div class="flex flex-col gap-3">

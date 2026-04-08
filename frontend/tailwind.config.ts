@@ -42,6 +42,15 @@ export default {
         "glow-accent": "var(--shadow-glow-accent)",
         "glow-cta": "var(--shadow-glow-cta)",
       },
+      keyframes: {
+        fall: {
+          "0%": { transform: "translate3d(0, -20px, 0)", opacity: "0" },
+          "100%": { transform: "translate3d(0, 0, 0)", opacity: "1" },
+        },
+      },
+      animation: {
+        fall: "fall 0.4s ease-out forwards",
+      },
     },
   },
   plugins: [],

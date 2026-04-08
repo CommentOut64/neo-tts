@@ -19,7 +19,7 @@ const canSubmit = computed(() =>
 </script>
 
 <template>
-  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3">合成文本</h3>
     <el-input
       :model-value="text"

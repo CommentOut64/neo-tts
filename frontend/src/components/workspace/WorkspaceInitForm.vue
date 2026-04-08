@@ -59,7 +59,7 @@ function handleVoiceChange(val: string) {
     class="space-y-5 w-full h-full overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
   >
     <!-- 顶部状态卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-semibold text-foreground flex items-center shrink-0 h-6">
           全局参数
@@ -68,7 +68,7 @@ function handleVoiceChange(val: string) {
     </section>
 
     <!-- 音色卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">目标音色</h3>
       <VoiceSelect
         :model-value="modelValue.voice_id"
@@ -81,7 +81,7 @@ function handleVoiceChange(val: string) {
     </section>
 
     <!-- 参考音频卡片 -->
-    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+    <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
       <el-radio-group
         :model-value="modelValue.ref_source"
@@ -143,15 +143,15 @@ function handleVoiceChange(val: string) {
         >
           <el-option value="auto" label="自动" />
           <el-option value="zh" label="中文" />
-          <el-option value="en" label="English" />
-          <el-option value="ja" label="日本語" />
-          <el-option value="ko" label="한국어" />
+          <el-option value="en" label="英文" />
+          <el-option value="ja" label="日文" />
+          <el-option value="ko" label="韩文" />
         </el-select>
       </div>
     </section>
 
     <!-- 合成参数卡片 -->
-    <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent">
+    <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
       <InferenceSettingsPanel
         :params="modelValue"
         @update:params="emit('update:modelValue', { ...modelValue, ...$event })"

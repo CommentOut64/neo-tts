@@ -107,7 +107,7 @@ const onClick = async () => {
   <button
     :disabled="buttonState.disabled"
     @click="onClick"
-    class="flex justify-center items-center gap-2 px-4 h-16 rounded-card font-semibold transition-all duration-300 min-w-[140px] text-center shadow-card shrink-0"
+    class="animate-fall flex justify-center items-center gap-2 px-4 h-16 rounded-card font-semibold transition-all duration-300 min-w-[140px] text-center shadow-card shrink-0"
     :class="{
       'hover-state-layer': buttonState.mode !== 'rerender',
       'bg-cta text-white':

@@ -38,7 +38,7 @@ function isMixed(value: unknown): value is typeof MIXED_VALUE {
 </script>
 
 <template>
-  <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent">
+  <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
     <button
       class="w-full flex items-center justify-between px-4 py-3 text-[13px] font-semibold text-foreground transition-colors"
       @click="expanded = !expanded"

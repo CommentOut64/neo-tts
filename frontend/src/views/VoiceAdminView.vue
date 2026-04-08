@@ -162,7 +162,7 @@ onMounted(loadVoices)
     </el-table>
 
     <!-- Empty state -->
-    <div v-else-if="!loading" class="flex flex-col items-center justify-center py-20 rounded-card bg-card border border-border dark:border-transparent">
+    <div v-else-if="!loading" class="flex flex-col items-center justify-center py-20 rounded-card bg-card border border-border dark:border-transparent animate-fall">
       <div class="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
         <el-icon :size="28" class="text-muted-fg"><Microphone /></el-icon>
       </div>

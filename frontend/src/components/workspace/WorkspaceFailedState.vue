@@ -23,7 +23,7 @@ function onReset() {
 <template>
   <div class="h-full flex flex-col items-center justify-center p-8">
     <div
-      class="max-w-md w-full bg-card rounded-card shadow-card p-6 flex flex-col items-center text-center border border-border dark:border-transparent"
+      class="max-w-md w-full bg-card rounded-card shadow-card p-6 flex flex-col items-center text-center border border-border dark:border-transparent animate-fall"
     >
       <div
         class="w-12 h-12 bg-destructive/10 rounded-full flex items-center justify-center mb-4"

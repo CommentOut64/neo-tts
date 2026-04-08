@@ -102,7 +102,7 @@ const normalizedSegments = computed(() => {
 
 <template>
   <div
-    class="w-full h-24 bg-card border border-border dark:border-transparent rounded-card shadow-card relative overflow-hidden flex flex-col justify-center shrink-0"
+    class="w-full h-24 bg-card border border-border dark:border-transparent rounded-card shadow-card relative overflow-hidden flex flex-col justify-center shrink-0 animate-fall"
   >
     <!-- The interactive drag area -->
     <div

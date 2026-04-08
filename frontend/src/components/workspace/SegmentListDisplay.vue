@@ -83,7 +83,7 @@ function onSegmentDoubleClick(segmentId: string) {
 
 <template>
   <div
-    class="flex-1 w-full bg-card rounded-card shadow-card border border-border p-4 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+    class="flex-1 w-full bg-card rounded-card shadow-card border border-border p-4 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent animate-fall"
     @click.self="segmentSelection.clearSelection()"
   >
     <div class="text-sm font-semibold mb-4 text-muted-fg">时间线片段</div>      

@@ -347,7 +347,7 @@ function onDocUpdate(_value: any) {
 
 <template>
   <section
-    class="flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border dark:border-transparent overflow-hidden flex flex-col"
+    class="animate-fall flex-1 min-h-0 w-full bg-card rounded-card shadow-card border border-border dark:border-transparent overflow-hidden flex flex-col"
     @keydown="onKeyDown"
   >
     <!-- 头部区：固定最小高度以防止切换状态时由于按钮尺寸不同导致行高跳动 -->

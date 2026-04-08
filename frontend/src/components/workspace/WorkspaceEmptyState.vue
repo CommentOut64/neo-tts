@@ -24,7 +24,7 @@ const actionState = computed(() =>
 
 <template>
   <div
-    class="h-full flex flex-col p-6 items-center justify-center bg-card rounded-card shadow-card overflow-hidden border border-border dark:border-transparent"
+    class="h-full flex flex-col p-6 items-center justify-center bg-card rounded-card shadow-card overflow-hidden border border-border dark:border-transparent animate-fall"
   >
     <div class="text-center mb-10 w-full max-w-xl">
       <h2 class="text-2xl font-bold text-foreground mb-4">准备就绪</h2>

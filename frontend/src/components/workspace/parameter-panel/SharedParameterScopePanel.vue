@@ -86,7 +86,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 </script>
 
 <template>
-  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       目标音色<span v-if="panel.dirtyFields.value.has('voiceBinding.voice_id')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
@@ -111,7 +111,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     </p>
   </section>
 
-  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent">
+  <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       参考音频<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path') || panel.dirtyFields.value.has('renderProfile.reference_text') || panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
@@ -218,9 +218,9 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
         >
           <el-option value="auto" label="自动" />
           <el-option value="zh" label="中文" />
-          <el-option value="en" label="English" />
-          <el-option value="ja" label="日本語" />
-          <el-option value="ko" label="한국어" />
+          <el-option value="en" label="英文" />
+          <el-option value="ja" label="日文" />
+          <el-option value="ko" label="韩文" />
         </el-select>
       </div>
     </div>

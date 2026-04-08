@@ -246,3 +246,10 @@ html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-sha
 .el-drawer {
   --el-drawer-bg-color: var(--color-window-bg) !important;
 }
+
+/* Ensure falling animation uses hardware acceleration reliably to prevent text deformation on Windows */
+.animate-fall {
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+  will-change: transform, opacity;
+}
