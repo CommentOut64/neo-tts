@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Any
 import queue
 import threading
+import time
+from typing import Any
 
 from backend.app.schemas.edit_session import RenderJobResponse
 
@@ -115,6 +116,22 @@ class EditSessionRuntime:
             if job is None:
                 return None
             return job.model_copy(deep=True)
+
+    def wait_for_job_terminal(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> RenderJobResponse | None:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            snapshot = self.get_job(job_id)
+            if snapshot is None or snapshot.status in self.TERMINAL_STATUSES:
+                return snapshot
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for render job '{job_id}' to reach a terminal state.")
+            time.sleep(poll_interval_seconds)
 
     def reset(self) -> None:
         with self._lock:

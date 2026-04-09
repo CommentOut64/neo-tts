@@ -372,8 +372,8 @@ def get_voice_bindings(request: Request) -> VoiceBindingListResponse:
 @router.delete(
     "",
     status_code=204,
-    summary="删除当前编辑会话",
-    description="清空当前活动 edit-session、相关持久化记录和本地编辑资产。",
+    summary="结束当前编辑会话",
+    description="安全结束当前活动 edit-session；若存在 active render job，会先请求取消并等待作业收口，再清空会话记录与本地编辑资产。",
 )
 def delete_session(request: Request) -> Response:
     _build_edit_session_service(request).delete_session()

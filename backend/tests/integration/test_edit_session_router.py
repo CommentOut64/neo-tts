@@ -249,6 +249,50 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert job_id
 
 
+def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(
+        FakeEditableInferenceBackend(gate=gate, wait_timeout=None)
+    )
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+
+        delete_result: dict[str, object] = {}
+
+        def _delete_session() -> None:
+            delete_result["response"] = client.delete("/v1/edit-session")
+
+        delete_thread = threading.Thread(target=_delete_session, daemon=True)
+        delete_thread.start()
+
+        def _delete_has_requested_cancel() -> bool:
+            payload = client.get("/v1/edit-session/snapshot").json()
+            active_job = payload.get("active_job")
+            return bool(active_job and active_job.get("status") == "cancel_requested")
+
+        _wait_until(_delete_has_requested_cancel)
+        assert delete_thread.is_alive()
+
+        gate.set()
+        delete_thread.join(timeout=3.0)
+        assert not delete_thread.is_alive()
+
+        delete_response = delete_result["response"]
+        assert delete_response.status_code == 204
+
+        after_delete = client.get("/v1/edit-session/snapshot")
+        assert after_delete.status_code == 200
+        assert after_delete.json()["session_status"] == "empty"
+
+
 def test_upload_reference_audio_returns_temporary_path(test_app_settings):
     app = create_app(settings=test_app_settings)
     with TestClient(app) as client:
