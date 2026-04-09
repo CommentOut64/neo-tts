@@ -130,6 +130,7 @@ const {
         right_segment_id: "seg-2",
         pause_duration_seconds: 0.35,
         boundary_strategy: "crossfade",
+        boundary_strategy_locked: false,
         effective_boundary_strategy: "crossfade",
         pause_sample_count: 20,
         boundary_sample_count: 4,
@@ -360,5 +361,34 @@ describe("useParameterPanel", () => {
     await nextTick();
 
     expect(Array.from(panel.dirtyEdgeIds.value)).toEqual(["edge-1"]);
+  });
+
+  it("锁定边界策略的 edge 会忽略策略修改，只保留停顿可调", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    editSessionMock.edges.value = [
+      {
+        ...editSessionMock.edges.value[0],
+        boundary_strategy: "crossfade_only",
+        boundary_strategy_locked: true,
+        effective_boundary_strategy: "crossfade_only",
+      },
+    ];
+
+    selection.selectEdge("edge-1");
+    await nextTick();
+
+    panel.updateEdgeField("boundary_strategy", "hard_cut");
+    panel.updateEdgeField("pause_duration_seconds", 0.42);
+    await nextTick();
+
+    expect(Array.from(panel.dirtyFields.value)).toEqual([
+      "edge.pause_duration_seconds",
+    ]);
+    expect(panel.displayValues.value.edge?.boundary_strategy).toBe("crossfade_only");
+    expect(panel.displayValues.value.edge?.boundary_strategy_locked).toBe(true);
   });
 });

@@ -253,6 +253,7 @@ function createEdges(): EditableEdge[] {
       right_segment_id: "seg-2",
       pause_duration_seconds: 0.45,
       boundary_strategy: "crossfade",
+      boundary_strategy_locked: true,
       effective_boundary_strategy: "crossfade",
       pause_sample_count: 10,
       boundary_sample_count: 4,
@@ -367,6 +368,7 @@ describe("resolveEffectiveParameters", () => {
 
     expect(resolved.edge?.pause_duration_seconds).toBe(0.45);
     expect(resolved.edge?.boundary_strategy).toBe("crossfade");
+    expect(resolved.edge?.boundary_strategy_locked).toBe(true);
     expect(resolved.edge?.effective_boundary_strategy).toBe("crossfade");
   });
 });

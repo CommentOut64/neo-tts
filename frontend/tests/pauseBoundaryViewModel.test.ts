@@ -43,4 +43,27 @@ describe("pauseBoundaryViewModel", () => {
     expect(normalClass).not.toContain("pause-boundary-dirty");
     expect(normalClass).toContain("border-dashed");
   });
+
+  it("停顿节点 class 只保留无固定高度和更窄左右留白，字号交给宿主层控制", () => {
+    const inlineBoundaryClass = resolvePauseBoundaryChipClass({
+      isCrossBlock: false,
+      isDirty: false,
+    });
+    expect(inlineBoundaryClass).toContain("inline-flex");
+    expect(inlineBoundaryClass).not.toContain("h-6");
+    expect(inlineBoundaryClass).toContain("px-1.5");
+    expect(inlineBoundaryClass).not.toContain("px-2");
+    expect(inlineBoundaryClass).not.toContain("text-[11px]");
+
+    const crossBlockClass = resolvePauseBoundaryChipClass({
+      isCrossBlock: true,
+      isDirty: false,
+    });
+    expect(crossBlockClass).toContain("inline-flex");
+    expect(crossBlockClass).toContain("border-dashed");
+    expect(crossBlockClass).not.toContain("h-6");
+    expect(crossBlockClass).toContain("px-1.5");
+    expect(crossBlockClass).not.toContain("px-2");
+    expect(crossBlockClass).not.toContain("text-[11px]");
+  });
 });

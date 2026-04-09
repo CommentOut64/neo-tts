@@ -30,6 +30,7 @@ describe("workspace end session flow", () => {
         hasPendingTextChanges: false,
         hasPendingRerender: false,
         hasDirtyParameterDraft: false,
+        hasPendingReorderDraft: false,
       }),
     ).toBe("confirm_plain");
   });
@@ -40,6 +41,7 @@ describe("workspace end session flow", () => {
         hasPendingTextChanges: true,
         hasPendingRerender: true,
         hasDirtyParameterDraft: false,
+        hasPendingReorderDraft: false,
       }),
     ).toBe("confirm_with_text_options");
   });
@@ -50,6 +52,7 @@ describe("workspace end session flow", () => {
         hasPendingTextChanges: false,
         hasPendingRerender: false,
         hasDirtyParameterDraft: true,
+        hasPendingReorderDraft: false,
       }),
     ).toBe("confirm_discard_only");
     expect(
@@ -57,8 +60,20 @@ describe("workspace end session flow", () => {
         hasPendingTextChanges: false,
         hasPendingRerender: true,
         hasDirtyParameterDraft: false,
+        hasPendingReorderDraft: false,
       }),
     ).toBe("confirm_discard_only");
+  });
+
+  it("存在未应用重排时应进入应用或放弃的确认", () => {
+    expect(
+      resolveEndSessionGuard({
+        hasPendingTextChanges: false,
+        hasPendingRerender: false,
+        hasDirtyParameterDraft: false,
+        hasPendingReorderDraft: true,
+      }),
+    ).toBe("confirm_apply_reorder");
   });
 
   it("选择继续编辑时不会结束当前会话", () => {
@@ -106,6 +121,22 @@ describe("workspace end session flow", () => {
     });
   });
 
+  it("选择应用更新并结束会话时，会先触发结构更新再结束会话", () => {
+    expect(
+      resolveEndSessionChoiceResult({
+        choice: "apply_updates_and_end_session",
+        appliedText: "正式正文",
+        workingText: "编辑中的正文",
+      }),
+    ).toEqual({
+      shouldEndSession: true,
+      shouldApplyUpdatesBeforeEndSession: true,
+      nextInputText: "正式正文",
+      nextInputSource: "applied_text",
+      nextRoute: "/workspace",
+    });
+  });
+
   it("有文本待重推理内容时会使用更短的结束决策按钮文案", () => {
     expect(endSessionDialogSource).toContain("继续编辑");
     expect(endSessionDialogSource).toContain("放弃修改");
@@ -127,6 +158,14 @@ describe("workspace end session flow", () => {
     expect(endSessionDialogSource).toContain(
       "现在结束会话，这些修改不会进入当前音频。你可以继续编辑，或直接结束当前会话。",
     );
+  });
+
+  it("存在未应用重排时会明确提示可以应用顺序后结束", () => {
+    expect(endSessionDialogSource).toContain("mode === 'confirm_apply_reorder'");
+    expect(endSessionDialogSource).toContain(
+      "当前有未应用的顺序调整。你可以继续编辑、应用调整后结束会话，或放弃调整后结束会话。",
+    );
+    expect(endSessionDialogSource).toContain("应用更新并结束");
   });
 
   it("无待重推理时会显示结束当前会话的普通确认文案", () => {

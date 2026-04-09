@@ -24,7 +24,7 @@ describe("edgeDisplay", () => {
     ]);
 
     expect(formatEdgeBoundaryStrategyLabel("crossfade_only")).toBe(
-      "兼容交叉淡化（Fallback Crossfade）",
+      "简单交叉淡化（Fallback Crossfade）",
     );
     expect(formatEdgeBoundaryStrategyLabel("custom_mode")).toBe(
       "自定义策略（custom_mode）",

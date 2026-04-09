@@ -8,6 +8,7 @@ import type { EditableEdge } from "../src/types/editSession";
 import {
   buildWorkspaceDraftPersistKey,
   buildWorkspaceViewRevisionKey,
+  canStartListReorder,
   cloneWorkspaceSerializable,
   collectPauseBoundaryAttrPatches,
   findCanvasTarget,
@@ -15,6 +16,7 @@ import {
   haveSameEdgeTopology,
   requestLayoutMode,
   resolveWorkspaceSessionItems,
+  shouldShowListReorderHandles,
   shouldBlockEdgeEditing,
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
@@ -24,6 +26,13 @@ const workspaceEditorHostSource = readFileSync(
   resolve(
     dirname(fileURLToPath(import.meta.url)),
     "../src/components/workspace/WorkspaceEditorHost.vue",
+  ),
+  "utf8",
+);
+const pauseBoundaryNodeViewSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/PauseBoundaryNodeView.vue",
   ),
   "utf8",
 );
@@ -175,6 +184,63 @@ describe("workspace editor host layout mode helpers", () => {
     };
 
     expect(findReorderHandleTarget(handleTarget as never)).toBe("seg-2");
+  });
+
+  it("只有展示态且无草稿、无待重推理、无活动作业时才允许开始重排", () => {
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: false,
+        hasPendingRerender: false,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(true);
+
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: false,
+        hasPendingRerender: true,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: true,
+        hasPendingRerender: false,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("已有重排草稿时即使不再允许新开重排，也应继续显示拖拽头供微调", () => {
+    expect(
+      shouldShowListReorderHandles({
+        canStartReorder: false,
+        hasReorderDraft: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldShowListReorderHandles({
+        canStartReorder: false,
+        hasReorderDraft: false,
+      }),
+    ).toBe(false);
   });
 
   it("haveSameEdgeTopology 只看拓扑，不把纯 attrs 变化当成重建", () => {
@@ -350,4 +416,30 @@ describe("workspace editor host layout mode helpers", () => {
     expect(workspaceEditorHostSource).toContain("结束会话");
     expect(workspaceEditorHostSource).not.toContain("清空会话");
   });
+
+  it("停顿节点模板不再通过 align-middle 或 leading-none 做基线补偿", () => {
+    expect(pauseBoundaryNodeViewSource).not.toContain("align-middle");
+    expect(pauseBoundaryNodeViewSource).not.toContain("leading-none");
+  });
+
+  it("停顿节点会把 layoutMode 透传到 DOM", () => {
+    expect(pauseBoundaryNodeViewSource).toContain(":data-layout-mode=");
+  });
+
+  it("宿主层固定停顿节点当前高度，并把字号恢复到 11px", () => {
+    expect(workspaceEditorHostSource).toContain("[data-edge-id] button");
+    expect(workspaceEditorHostSource).toContain(
+      "font-size: 11px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "line-height: normal;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "height: 19.62px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "vertical-align: baseline;",
+    );
+  });
+
 });
