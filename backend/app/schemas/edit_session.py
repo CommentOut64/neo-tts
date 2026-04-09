@@ -276,6 +276,10 @@ class EditableEdge(BaseModel):
         default="latent_overlap_then_equal_power_crossfade",
         description="请求使用的边界拼接策略。",
     )
+    boundary_strategy_locked: bool = Field(
+        default=False,
+        description="该边界策略是否被系统锁定，不允许用户修改。",
+    )
     effective_boundary_strategy: str | None = Field(default=None, description="实际生效的边界策略。")
     pause_sample_count: int | None = Field(default=None, description="当前停顿区间的 sample 数。")
     boundary_sample_count: int | None = Field(default=None, description="当前边界拼接区间的 sample 数。")

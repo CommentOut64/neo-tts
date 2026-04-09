@@ -13,6 +13,7 @@ from backend.app.schemas.edit_session import (
 
 
 DEFAULT_BOUNDARY_STRATEGY = "latent_overlap_then_equal_power_crossfade"
+DEFAULT_REORDER_BOUNDARY_STRATEGY = "crossfade_only"
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,11 @@ class EdgeService:
         if patch.pause_duration_seconds is not None:
             next_edge.pause_duration_seconds = patch.pause_duration_seconds
         if patch.boundary_strategy is not None:
+            if (
+                current_edge.boundary_strategy_locked
+                and patch.boundary_strategy != current_edge.boundary_strategy
+            ):
+                raise ValueError("该拼接边界策略已锁定，暂不支持修改。")
             if patch.boundary_strategy != current_edge.boundary_strategy:
                 next_edge.boundary_strategy = patch.boundary_strategy
                 next_edge.edge_version = current_edge.edge_version + 1
@@ -81,6 +87,8 @@ class EdgeService:
         *,
         existing_edges: list[EditableEdge] | None = None,
         default_pause_duration_seconds: float = 0.3,
+        default_boundary_strategy: str = DEFAULT_BOUNDARY_STRATEGY,
+        lock_new_boundary_strategy: bool = False,
     ) -> list[EditableEdge]:
         if not segments:
             return []
@@ -111,7 +119,8 @@ class EdgeService:
                     left_segment_id=left_segment.segment_id,
                     right_segment_id=right_segment.segment_id,
                     pause_duration_seconds=default_pause_duration_seconds,
-                    boundary_strategy=DEFAULT_BOUNDARY_STRATEGY,
+                    boundary_strategy=default_boundary_strategy,
+                    boundary_strategy_locked=lock_new_boundary_strategy,
                     edge_version=1,
                 )
             )

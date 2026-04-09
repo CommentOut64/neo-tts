@@ -1332,6 +1332,8 @@ class RenderJobService:
 
     @staticmethod
     def _should_prepare_edit_reference_context(plan: RenderPlan) -> bool:
+        if getattr(plan, "job_kind", None) in {"segment_swap", "segment_reorder"}:
+            return False
         if plan.compose_only and not plan.target_segment_ids and not plan.target_edge_ids:
             return False
         return True

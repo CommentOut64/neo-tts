@@ -592,6 +592,10 @@ def test_edit_session_reorder_segments_reorders_without_rerendering_segments(tes
             (reordered_snapshot["segments"][0]["segment_id"], reordered_snapshot["segments"][1]["segment_id"]),
             (reordered_snapshot["segments"][1]["segment_id"], reordered_snapshot["segments"][2]["segment_id"]),
         ]
+        assert reordered_snapshot["edges"][0]["boundary_strategy"] == "crossfade_only"
+        assert reordered_snapshot["edges"][0]["boundary_strategy_locked"] is True
+        assert reordered_snapshot["edges"][1]["boundary_strategy"] == "latent_overlap_then_equal_power_crossfade"
+        assert reordered_snapshot["edges"][1]["boundary_strategy_locked"] is False
         assert len(backend.segment_calls) == baseline_segment_calls
         assert len(backend.boundary_calls) == baseline_boundary_calls
 
@@ -602,6 +606,13 @@ def test_edit_session_reorder_segments_reorders_without_rerendering_segments(tes
             reordered_snapshot["segments"][1]["segment_id"],
             reordered_snapshot["segments"][2]["segment_id"],
         ]
+
+        locked_strategy_response = client.patch(
+            f"/v1/edit-session/edges/{reordered_snapshot['edges'][0]['edge_id']}",
+            json={"boundary_strategy": "hard_cut"},
+        )
+        assert locked_strategy_response.status_code == 400
+        assert "已锁定" in locked_strategy_response.json()["detail"]
 
 
 def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_settings):

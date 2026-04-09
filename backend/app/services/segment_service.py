@@ -287,6 +287,8 @@ class SegmentService:
             normalized_segments,
             existing_edges=head_snapshot.edges,
             default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
         )
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
@@ -332,6 +334,8 @@ class SegmentService:
             normalized_segments,
             existing_edges=head_snapshot.edges,
             default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
         )
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
@@ -361,6 +365,8 @@ class SegmentService:
             normalized_segments,
             existing_edges=head_snapshot.edges,
             default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
         )
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
