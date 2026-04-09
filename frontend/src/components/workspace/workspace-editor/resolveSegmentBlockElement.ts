@@ -5,6 +5,6 @@ export function resolveSegmentBlockElement(
     return null;
   }
 
-  const block = target.closest("[data-segment-id]");
+  const block = target.closest("[data-segment-block]");
   return block instanceof HTMLElement ? block : null;
 }

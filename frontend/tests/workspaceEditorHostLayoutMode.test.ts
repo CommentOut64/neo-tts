@@ -36,6 +36,13 @@ const pauseBoundaryNodeViewSource = readFileSync(
   ),
   "utf8",
 );
+const workspaceEditorHostModelSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/workspaceEditorHostModel.ts",
+  ),
+  "utf8",
+);
 
 function createEdge(
   edgeId: string,
@@ -170,13 +177,13 @@ describe("workspace editor host layout mode helpers", () => {
     });
   });
 
-  it("findReorderHandleTarget 能命中段首拖拽 handle", () => {
+  it("findReorderHandleTarget 会命中新 segmentBlock gutter handle", () => {
     const handleTarget = {
       getAttribute(name: string) {
-        return name === "data-segment-handle-for" ? "seg-2" : null;
+        return name === "data-segment-id" ? "seg-2" : null;
       },
       closest(selector: string) {
-        if (selector === "[data-segment-handle-for]") {
+        if (selector === "[data-segment-block-handle]") {
           return this;
         }
         return null;
@@ -227,13 +234,13 @@ describe("workspace editor host layout mode helpers", () => {
     ).toBe(false);
   });
 
-  it("已有重排草稿时即使不再允许新开重排，也应继续显示拖拽头供微调", () => {
+  it("禁用重排时不再显示拖拽 grip，但行序号仍保留", () => {
     expect(
       shouldShowListReorderHandles({
         canStartReorder: false,
         hasReorderDraft: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldShowListReorderHandles({
@@ -427,7 +434,7 @@ describe("workspace editor host layout mode helpers", () => {
   });
 
   it("宿主层固定停顿节点当前高度，并把字号恢复到 11px", () => {
-    expect(workspaceEditorHostSource).toContain("[data-edge-id] button");
+    expect(workspaceEditorHostSource).toContain("[data-pause-boundary] button");
     expect(workspaceEditorHostSource).toContain(
       "font-size: 11px;",
     );
@@ -440,6 +447,57 @@ describe("workspace editor host layout mode helpers", () => {
     expect(workspaceEditorHostSource).toContain(
       "vertical-align: baseline;",
     );
+  });
+
+  it("宿主层不再依赖旧 widget handle 和 paragraph padding-left 维持列表式 gutter", () => {
+    expect(workspaceEditorHostSource).not.toContain(
+      "editor.storage.listReorderHandleDecoration.state",
+    );
+    expect(workspaceEditorHostSource).not.toContain("padding-left: 38px;");
+    expect(workspaceEditorHostSource).toContain("segment-block-gutter");
+    expect(workspaceEditorHostSource).toContain("segment-block-content");
+    expect(workspaceEditorHostModelSource).toContain(
+      "[data-segment-block-handle]",
+    );
+    expect(workspaceEditorHostModelSource).not.toContain(
+      "[data-segment-handle-for]",
+    );
+  });
+
+  it("编辑态可隐藏 gutter 内容，但结构列宽必须保留", () => {
+    expect(workspaceEditorHostSource).toContain("segment-block-gutter");
+    expect(workspaceEditorHostSource).toMatch(
+      /segment-block-gutter[\s\S]*(width|min-width):/,
+    );
+    expect(workspaceEditorHostSource).toContain("showReorderHandle: canStartFreshReorder.value");
+    expect(workspaceEditorHostSource).toMatch(
+      /segment-line-editing[\s\S]*segment-reorder-line-number[\s\S]*opacity:\s*0/,
+    );
+  });
+
+  it("禁用重排时只隐藏 grip，不隐藏行序号", () => {
+    expect(workspaceEditorHostSource).toContain(
+      '.segment-reorder-handle[data-visible="false"] .segment-reorder-grip',
+    );
+    expect(workspaceEditorHostSource).not.toContain(
+      '.segment-reorder-handle[data-visible="false"] .segment-reorder-line-number',
+    );
+  });
+
+  it("列表式左侧强调线改为装饰层绘制，避免 border-left 挤压正文布局", () => {
+    expect(workspaceEditorHostSource).toMatch(
+      /:deep\(\.ProseMirror \.segment-block\)::before/,
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "--segment-block-accent-width: 3px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "--segment-block-accent-color: color-mix(in srgb, var(--color-accent) 58%, transparent);",
+    );
+    expect(workspaceEditorHostSource).not.toContain(
+      "border-left: 3px solid var(--color-warning);",
+    );
+    expect(workspaceEditorHostSource).not.toContain("border-left-color:");
   });
 
 });

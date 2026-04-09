@@ -116,8 +116,8 @@ export function findCanvasTarget(
 export function findReorderHandleTarget(
   target: ClosestCapableTarget | null,
 ): string | null {
-  const handleTarget = target?.closest("[data-segment-handle-for]");
-  return handleTarget?.getAttribute("data-segment-handle-for") ?? null;
+  const handleTarget = target?.closest("[data-segment-block-handle]");
+  return handleTarget?.getAttribute("data-segment-id") ?? null;
 }
 
 export function canStartListReorder(input: {
@@ -146,7 +146,7 @@ export function shouldShowListReorderHandles(input: {
   canStartReorder: boolean;
   hasReorderDraft: boolean;
 }): boolean {
-  return input.canStartReorder || input.hasReorderDraft;
+  return input.canStartReorder;
 }
 
 export function haveSameEdgeTopology(

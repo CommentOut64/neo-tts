@@ -1,5 +1,9 @@
 import type { JSONContent } from "@tiptap/vue-3";
 
+import {
+  extractOrderedSegmentTextsFromListViewDoc,
+  normalizeListViewDocToSourceDoc,
+} from "./list/normalizeListViewDocToSourceDoc";
 import type { WorkspaceSemanticEdge } from "./layoutTypes";
 import { buildWorkspaceSourceDoc } from "./sourceDocModel";
 
@@ -39,10 +43,18 @@ function readSegmentAnchorId(node: JSONContent): string | null {
     : null;
 }
 
+function isListViewDoc(doc: JSONContent): boolean {
+  return (doc.content ?? []).some((node) => node.type === "segmentBlock");
+}
+
 export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
   doc: JSONContent,
   orderedSegmentIds: string[],
 ): WorkspaceSourceDocTextEntry[] {
+  if (isListViewDoc(doc)) {
+    return extractOrderedSegmentTextsFromListViewDoc(doc, orderedSegmentIds);
+  }
+
   if (orderedSegmentIds.length === 0) {
     return [];
   }
@@ -134,6 +146,10 @@ export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
 export function normalizeWorkspaceViewDocToSourceDoc(
   input: NormalizeWorkspaceViewDocInput,
 ): JSONContent {
+  if (isListViewDoc(input.viewDoc)) {
+    return normalizeListViewDocToSourceDoc(input);
+  }
+
   const segmentTexts = extractOrderedSegmentTextsFromWorkspaceViewDoc(
     input.viewDoc,
     input.orderedSegmentIds,

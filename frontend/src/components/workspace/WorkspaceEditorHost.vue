@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import type { JSONContent } from "@tiptap/vue-3";
 
@@ -57,7 +57,6 @@ import {
   haveSameEdgeTopology,
   resolveWorkspaceSessionItems,
   requestLayoutMode,
-  shouldShowListReorderHandles,
   shouldBlockEdgeEditing,
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "./workspace-editor/workspaceEditorHostModel";
@@ -70,7 +69,7 @@ const REORDER_DRAFT_LOCK_MESSAGE = "请先应用或放弃当前顺序调整";
 const editSession = useEditSession();
 const lightEdit = useWorkspaceLightEdit();
 const workspaceDraftPersistence = useWorkspaceDraftPersistence();
-const { currentSegmentId, play, seekToSegment } = usePlayback();
+const { currentSegmentId, isPlaying, play, pause, seekToSegment } = usePlayback();
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
@@ -326,13 +325,6 @@ const canStartFreshReorder = computed(() =>
     isInteractionLocked: workspaceProcessing.isInteractionLocked.value,
   }),
 );
-const shouldShowReorderHandles = computed(() =>
-  shouldShowListReorderHandles({
-    canStartReorder: canStartFreshReorder.value,
-    hasReorderDraft: hasReorderDraft.value,
-  }),
-);
-
 const renderPlan = computed(() =>
   buildWorkspaceRenderPlan(semanticDocument.value, effectiveLayoutMode.value),
 );
@@ -345,7 +337,7 @@ const charCount = computed(() => {
   const editor = editorRef.value?.editor;
   return editor ? editor.state.doc.textContent.length : 0;
 });
-const modeLabel = computed(() => (isEditing.value ? "编辑" : "展示"));
+const modeLabel = computed(() => (isEditing.value ? "编辑态" : "展示态"));
 const compositionAvailable = computed(
   () => semanticDocument.value.compositionAvailability.ready,
 );
@@ -484,7 +476,30 @@ const unregisterReorderDraftActions = reorderDraft.registerActions({
   discardDraft: () => discardReorderDraft(true),
 });
 
+function handleGlobalKeyDown(event: KeyboardEvent) {
+  if (event.key === " " && !isEditing.value && !isInteractionLocked.value) {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const activeTag = activeElement?.tagName.toLowerCase();
+    const isInputArea = activeTag === "input" || activeTag === "textarea" || activeElement?.isContentEditable;
+
+    if (!isInputArea) {
+      event.preventDefault(); // 阻止空格键导致的页面滚动
+      event.stopPropagation();
+      if (isPlaying.value) {
+        pause();
+      } else {
+        play();
+      }
+    }
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleGlobalKeyDown);
+});
+
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleGlobalKeyDown);
   clearPendingDraftPersist();
   unregisterReorderDraftActions();
 });
@@ -709,6 +724,7 @@ function syncDecorationState(editorOverride?: any) {
   editor.storage.segmentDecoration.state = {
     layoutMode: effectiveLayoutMode.value,
     renderMap: renderMap.value,
+    showReorderHandle: canStartFreshReorder.value,
     playingId: currentSegmentId.value,
     selectedIds: segmentSelection.selectedSegmentIds.value,
     dirtyIds: lightEdit.dirtySegmentIds.value,
@@ -719,28 +735,24 @@ function syncDecorationState(editorOverride?: any) {
     dropIntent: listReorder.dropIntent.value,
     isSubmittingReorder: reorderDraft.isSubmitting.value,
   };
-  editor.storage.listReorderHandleDecoration.state = {
-    layoutMode: effectiveLayoutMode.value,
-    renderMap:
-      !isEditing.value && shouldShowReorderHandles.value ? renderMap.value : null,
-    selectedIds: segmentSelection.selectedSegmentIds.value,
-    draggingSegmentId: listReorder.draggingSegmentId.value,
-    mode: listReorder.mode.value,
-  };
 
   editor.view.dispatch(editor.state.tr.setMeta(segmentDecorationKey, true));
 }
 
 function isEditorSnapshotCompatible(editorDoc: JSONContent): boolean {
-  const extracted = extractRenderMapFromDoc(
-    editorDoc,
-    currentSessionSegmentIds.value,
-    effectiveLayoutMode.value,
-  );
-  return (
-    currentSessionSegmentIds.value.length === 0 ||
-    extracted.segmentRanges.length > 0
-  );
+  if (currentSessionSegmentIds.value.length === 0) {
+    return true;
+  }
+
+  try {
+    extractOrderedSegmentTextsFromWorkspaceViewDoc(
+      editorDoc,
+      currentSessionSegmentIds.value,
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requestNextLayoutMode(nextMode: WorkspaceEditorLayoutMode) {
@@ -1030,6 +1042,8 @@ function onCanvasPointerDown(event: PointerEvent) {
   }
 }
 
+let clickPlayTimer: ReturnType<typeof setTimeout> | null = null;
+
 function onCanvasClick(event: MouseEvent) {
   if (listReorder.consumeClickSuppression()) {
     event.preventDefault();
@@ -1069,11 +1083,27 @@ function onCanvasClick(event: MouseEvent) {
     segmentSelection.select(target.segmentId);
   }
 
-  seekToSegment(target.segmentId);
-  play();
+  const segmentId = target.segmentId;
+
+  if (clickPlayTimer !== null) {
+    clearTimeout(clickPlayTimer);
+    clickPlayTimer = null;
+  }
+
+  clickPlayTimer = setTimeout(() => {
+    clickPlayTimer = null;
+    if (isEditing.value) return;
+    seekToSegment(segmentId);
+    play();
+  }, 250);
 }
 
 function onCanvasDblClick(event: MouseEvent) {
+  if (clickPlayTimer !== null) {
+    clearTimeout(clickPlayTimer);
+    clickPlayTimer = null;
+  }
+
   if (listReorder.consumeClickSuppression()) {
     event.preventDefault();
     event.stopPropagation();
@@ -1338,26 +1368,28 @@ watch(isEditing, (editing) => {
     @keydown="onKeyDown"
   >
     <header
-      class="flex h-12 shrink-0 items-center justify-between border-b border-border/70 px-4 dark:border-border/30"
+      class="flex h-12 shrink-0 items-center justify-between border-b border-border/70 px-4 dark:border-border/30 relative"
     >
       <div class="flex min-w-0 items-center gap-2">
         <h3 class="text-sm font-semibold leading-none text-foreground">
           会话正文
         </h3>
-        <!-- <span
-          class="rounded px-1.5 py-0.5 text-[10px] font-medium leading-none"
-          :class="isEditing
-            ? 'border border-blue-500/20 bg-blue-500/10 text-blue-600'
-            : 'border border-border/50 bg-muted text-muted-fg'"
-        >
-          {{ modeLabel }}
-        </span> -->
+        <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+          <span
+            class="rounded px-2.5 py-1 text-xs font-medium leading-none"
+            :class="isEditing
+              ? 'border border-blue-400/20 bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400'
+              : 'border border-border/50 bg-muted/50 text-muted-fg'"
+          >
+            {{ modeLabel }}
+          </span>
+        </div>
         <div class="inline-flex overflow-hidden rounded border border-border">
           <button
             type="button"
             class="px-2.5 py-1 text-xs transition-colors"
             :class="effectiveLayoutMode === 'list'
-              ? 'bg-foreground text-background'
+              ? 'bg-blue-500 text-white'
               : 'bg-transparent text-foreground'"
             :disabled="isEditing || isInteractionLocked"
             @click="requestNextLayoutMode('list')"
@@ -1368,7 +1400,7 @@ watch(isEditing, (editing) => {
             type="button"
             class="px-2.5 py-1 text-xs transition-colors"
             :class="effectiveLayoutMode === 'composition'
-              ? 'bg-foreground text-background'
+              ? 'bg-blue-500 text-white'
               : 'bg-transparent text-foreground'"
             :disabled="isEditing || !compositionAvailable || isInteractionLocked"
             @click="requestNextLayoutMode('composition')"
@@ -1443,7 +1475,6 @@ watch(isEditing, (editing) => {
         :on-create="onEditorCreate"
         :extensions="customExtensions"
         :starter-kit="{ heading: false, horizontalRule: false, blockquote: false, codeBlock: false }"
-        :placeholder="{ placeholder: '会话正文将在这里显示', mode: 'firstLine' }"
         :ui="{ base: 'px-3 py-2 min-h-full' }"
         class="min-h-full w-full"
         @update:model-value="onDocUpdate"
@@ -1483,6 +1514,10 @@ watch(isEditing, (editing) => {
   font-size: 0.9375rem;
   line-height: 1.75;
   outline: none;
+}
+
+:deep(.ProseMirror[contenteditable="false"]) {
+  cursor: default;
 }
 
 :deep(.ProseMirror ::selection) {
@@ -1548,10 +1583,13 @@ html.dark :deep(.segment-selected) {
   background: rgba(96, 165, 250, 0.18);
 }
 
-:deep(.ProseMirror p.segment-line) {
+:deep(.ProseMirror .segment-block) {
+  --segment-block-accent-width: 0px;
+  --segment-block-accent-color: transparent;
   position: relative;
+  display: flex;
+  align-items: stretch;
   border-radius: 8px;
-  padding-left: 38px;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
@@ -1559,24 +1597,43 @@ html.dark :deep(.segment-selected) {
     border-color 0.15s ease;
 }
 
+:deep(.ProseMirror .segment-block)::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--segment-block-accent-width);
+  background: var(--segment-block-accent-color);
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+  pointer-events: none;
+}
+
 .editor-layout-list :deep(.ProseMirror) {
   width: max-content;
   min-width: 100%;
 }
 
-.editor-layout-list :deep(.ProseMirror p.segment-line) {
+.editor-layout-list :deep(.ProseMirror .segment-block) {
   white-space: nowrap;
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-handle) {
-  position: absolute;
-  left: 6px;
-  top: 50%;
-  z-index: 2;
+:deep(.ProseMirror .segment-block-gutter) {
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+:deep(.ProseMirror .segment-block-content) {
+  min-width: 0;
+  padding: 6px 10px 6px 0;
+}
+
+:deep(.ProseMirror .segment-block .segment-reorder-handle) {
   display: inline-flex;
   height: 24px;
   width: 24px;
-  transform: translateY(-50%) translateZ(0);
+  transform: translateZ(0);
   will-change: transform, opacity, background-color;
   align-items: center;
   justify-content: center;
@@ -1590,7 +1647,7 @@ html.dark :deep(.segment-selected) {
     transform 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-line-number) {
+:deep(.ProseMirror .segment-block .segment-reorder-line-number) {
   position: absolute;
   inset: 0;
   display: flex;
@@ -1603,7 +1660,7 @@ html.dark :deep(.segment-selected) {
   transition: opacity 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-grip) {
+:deep(.ProseMirror .segment-block .segment-reorder-grip) {
   position: absolute;
   inset: 0;
   display: flex;
@@ -1613,116 +1670,130 @@ html.dark :deep(.segment-selected) {
   transition: opacity 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover) {
+:deep(.ProseMirror .segment-block .segment-reorder-handle:hover) {
   background: rgba(148, 163, 184, 0.12);
   color: var(--color-foreground);
 }
 
-html.dark :deep(.ProseMirror p.segment-line .segment-reorder-handle:hover) {
+html.dark :deep(.ProseMirror .segment-block .segment-reorder-handle:hover) {
   background: rgba(148, 163, 184, 0.18);
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover .segment-reorder-line-number),
-:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging .segment-reorder-line-number) {
+:deep(.ProseMirror .segment-block .segment-reorder-handle:hover .segment-reorder-line-number) {
   opacity: 0;
 }
 
-:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover .segment-reorder-grip),
-:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging .segment-reorder-grip) {
+:deep(.ProseMirror .segment-block .segment-reorder-handle:hover .segment-reorder-grip) {
   opacity: 0.9;
 }
 
-:deep(.ProseMirror p.segment-line-dirty) {
-  border-left: 3px solid var(--color-warning);
+:deep(.ProseMirror .segment-block .segment-reorder-handle[data-visible="false"]) {
+  pointer-events: none;
+}
+
+:deep(.ProseMirror .segment-block .segment-reorder-handle[data-visible="false"] .segment-reorder-grip) {
+  opacity: 0;
+}
+
+:deep(.ProseMirror .segment-block.segment-line-editing .segment-reorder-handle) {
+  pointer-events: none;
+}
+
+:deep(.ProseMirror .segment-block.segment-line-editing .segment-reorder-line-number),
+:deep(.ProseMirror .segment-block.segment-line-editing .segment-reorder-grip) {
+  opacity: 0;
+}
+
+:deep(.ProseMirror .segment-block.segment-line-dirty) {
+  --segment-block-accent-width: 3px;
+  --segment-block-accent-color: var(--color-warning);
   background: rgba(245, 158, 11, 0.06);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-dirty) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-dirty) {
   background: rgba(245, 158, 11, 0.10);
 }
 
-:deep(.ProseMirror p.segment-line-selected) {
+:deep(.ProseMirror .segment-block.segment-line-selected) {
   background: rgba(59, 130, 246, 0.12);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-selected) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-selected) {
   background: rgba(96, 165, 250, 0.18);
 }
 
-:deep(.ProseMirror p.segment-line-playing) {
+:deep(.ProseMirror .segment-block.segment-line-playing) {
   color: var(--color-accent);
   font-weight: 700;
 }
 
-:deep(.ProseMirror p.segment-line-reorder-source) {
+:deep(.ProseMirror .segment-block.segment-line-reorder-source) {
   background: rgba(59, 130, 246, 0.08);
   box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-reorder-source) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-reorder-source) {
   background: rgba(96, 165, 250, 0.14);
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.28);
 }
 
-:deep(.ProseMirror p.segment-line-reorder-source .segment-reorder-handle),
-:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging) {
+:deep(.ProseMirror .segment-block.segment-line-reorder-source .segment-reorder-handle) {
   background: rgba(59, 130, 246, 0.14);
   color: rgb(37 99 235);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-reorder-source .segment-reorder-handle),
-html.dark :deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-reorder-source .segment-reorder-handle) {
   background: rgba(96, 165, 250, 0.2);
   color: rgb(147 197 253);
 }
 
-:deep(.ProseMirror p.segment-line-drop-swap) {
+:deep(.ProseMirror .segment-block.segment-line-drop-swap) {
   box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.38);
   background: rgba(14, 165, 233, 0.08);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-drop-swap) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-drop-swap) {
   box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.42);
   background: rgba(56, 189, 248, 0.12);
 }
 
-:deep(.ProseMirror p.segment-line-drop-before) {
+:deep(.ProseMirror .segment-block.segment-line-drop-before) {
   box-shadow: inset 0 2px 0 0 rgba(14, 165, 233, 0.8);
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
 
-:deep(.ProseMirror p.segment-line-drop-after) {
+:deep(.ProseMirror .segment-block.segment-line-drop-after) {
   box-shadow: inset 0 -2px 0 0 rgba(14, 165, 233, 0.8);
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
 
-html.dark :deep(.ProseMirror p.segment-line-drop-before) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-drop-before) {
   box-shadow: inset 0 2px 0 0 rgba(56, 189, 248, 0.86);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-drop-after) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-drop-after) {
   box-shadow: inset 0 -2px 0 0 rgba(56, 189, 248, 0.86);
 }
 
-:deep(.ProseMirror p.segment-line-submitting) {
+:deep(.ProseMirror .segment-block.segment-line-submitting) {
   opacity: 0.72;
 }
 
-:deep(.ProseMirror p.segment-line-editing-playing) {
+:deep(.ProseMirror .segment-block.segment-line-editing-playing) {
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-  border-left-color: color-mix(in srgb, var(--color-accent) 58%, transparent);
+  --segment-block-accent-color: color-mix(in srgb, var(--color-accent) 58%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-editing-playing) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-editing-playing) {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
-  border-left-color: color-mix(in srgb, var(--color-accent) 64%, transparent);
+  --segment-block-accent-color: color-mix(in srgb, var(--color-accent) 64%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
-:deep(.ProseMirror p.segment-line-editing-playing [data-pause-boundary] button) {
+:deep(.ProseMirror .segment-block.segment-line-editing-playing [data-pause-boundary] button) {
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: var(--color-accent);
@@ -1750,19 +1821,19 @@ html.dark :deep(.ProseMirror p.segment-line-editing-playing) {
     box-shadow 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line-selected [data-pause-boundary] button) {
+:deep(.ProseMirror .segment-block.segment-line-selected [data-pause-boundary] button) {
   background: rgba(59, 130, 246, 0.12);
   border-color: rgba(59, 130, 246, 0.28);
   color: rgb(37 99 235);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-selected [data-pause-boundary] button) {
+html.dark :deep(.ProseMirror .segment-block.segment-line-selected [data-pause-boundary] button) {
   background: rgba(96, 165, 250, 0.18);
   border-color: rgba(96, 165, 250, 0.3);
   color: rgb(147 197 253);
 }
 
-:deep(.ProseMirror p.segment-line-playing [data-pause-boundary] button) {
+:deep(.ProseMirror .segment-block.segment-line-playing [data-pause-boundary] button) {
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: var(--color-accent);

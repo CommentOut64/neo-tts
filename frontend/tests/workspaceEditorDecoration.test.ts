@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { extractRenderMapFromDoc } from "../src/components/workspace/workspace-editor/extractRenderMapFromDoc";
@@ -6,8 +10,30 @@ import {
   type SegmentDecorationState,
 } from "../src/components/workspace/workspace-editor/segmentDecoration";
 
+const extractRenderMapSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/extractRenderMapFromDoc.ts",
+  ),
+  "utf8",
+);
+const segmentDecorationSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/segmentDecoration.ts",
+  ),
+  "utf8",
+);
+const layoutTypesSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/layoutTypes.ts",
+  ),
+  "utf8",
+);
+
 describe("workspace editor decoration", () => {
-  it("列表式会为单段 paragraph 提取整行范围，供整行高亮使用", () => {
+  it("组合视图 renderMap 仍提取 segmentRanges 和 edgeAnchors，但不再保留列表式 block range", () => {
     const renderMap = (extractRenderMapFromDoc as any)(
       {
         type: "doc",
@@ -48,16 +74,16 @@ describe("workspace editor decoration", () => {
       "list",
     );
 
-    expect(renderMap.segmentBlockRanges).toEqual([
+    expect("segmentBlockRanges" in renderMap).toBe(false);
+    expect(renderMap.edgeAnchors).toEqual([
       {
-        segmentId: "seg-1",
-        from: 0,
-        to: 7,
-      },
-      {
-        segmentId: "seg-2",
-        from: 7,
-        to: 13,
+        edgeId: "edge-1",
+        leftSegmentId: "seg-1",
+        rightSegmentId: "seg-2",
+        from: 5,
+        to: 6,
+        layoutMode: "list",
+        crossBlock: false,
       },
     ]);
   });
@@ -213,16 +239,20 @@ describe("workspace editor decoration", () => {
     expect(bySegmentId["seg-1"].to).toBeLessThan(bySegmentId["seg-2"].from);
   });
 
-  it("列表式 decoration 会输出整行 class，而不是文本 fragment", () => {
+  it("列表式重构后，源码中不应再保留旧的 renderMap block range 路径", () => {
+    expect(extractRenderMapSource).not.toContain("segmentBlockRanges");
+    expect(extractRenderMapSource).not.toContain("collectParagraphSegmentIds");
+    expect(layoutTypesSource).not.toContain("SegmentBlockRange");
+    expect(layoutTypesSource).not.toContain("segmentBlockRanges");
+    expect(segmentDecorationSource).not.toContain("state.renderMap.segmentBlockRanges");
+  });
+
+  it("列表式基础状态不再走旧的纯 spec 路径，而由 node decoration / NodeView 承担", () => {
     const state = {
       layoutMode: "list",
       renderMap: {
         orderedSegmentIds: ["seg-1", "seg-2"],
         segmentRanges: [],
-        segmentBlockRanges: [
-          { segmentId: "seg-1", from: 0, to: 7 },
-          { segmentId: "seg-2", from: 7, to: 13 },
-        ],
         edgeAnchors: [],
       },
       playingId: "seg-1",
@@ -234,14 +264,7 @@ describe("workspace editor decoration", () => {
 
     const specs = buildSegmentDecorationSpecs(state);
 
-    expect(specs).toHaveLength(2);
-    expect(specs[0].from).toBe(0);
-    expect(specs[0].to).toBe(7);
-    expect(specs[0].attrs.class).toContain("segment-line");
-    expect(specs[0].attrs.class).toContain("segment-line-playing");
-    expect(specs[0].attrs.class).toContain("segment-line-dirty");
-    expect(specs[0].attrs.class).not.toContain("segment-fragment");
-    expect(specs[1].attrs.class).toContain("segment-line-selected");
+    expect(specs).toEqual([]);
   });
 
   it("组合式编辑态不应保留 dirty 背景高亮", () => {
@@ -291,13 +314,12 @@ describe("workspace editor decoration", () => {
     expect(specs[0].attrs.class).not.toContain("segment-dirty");
   });
 
-  it("列表式编辑态播放段应切为整行绿色背景高亮，并压过 dirty", () => {
+  it("列表式编辑态样式不再通过 buildSegmentDecorationSpecs 直接生成", () => {
     const state = {
       layoutMode: "list",
       renderMap: {
         orderedSegmentIds: ["seg-1"],
         segmentRanges: [],
-        segmentBlockRanges: [{ segmentId: "seg-1", from: 0, to: 7 }],
         edgeAnchors: [],
       },
       playingId: "seg-1",
@@ -309,23 +331,15 @@ describe("workspace editor decoration", () => {
 
     const specs = buildSegmentDecorationSpecs(state);
 
-    expect(specs).toHaveLength(1);
-    expect(specs[0].attrs.class).toContain("segment-line");
-    expect(specs[0].attrs.class).toContain("segment-line-dirty");
-    expect(specs[0].attrs.class).toContain("segment-line-editing-playing");
-    expect(specs[0].attrs.class).not.toContain("segment-line-playing");
+    expect(specs).toEqual([]);
   });
 
-  it("列表式拖拽时会给源段和落点段叠加 reorder class", () => {
+  it("列表式拖拽态不再通过旧的 list spec 数组暴露", () => {
     const state = {
       layoutMode: "list",
       renderMap: {
         orderedSegmentIds: ["seg-1", "seg-2"],
         segmentRanges: [],
-        segmentBlockRanges: [
-          { segmentId: "seg-1", from: 0, to: 7 },
-          { segmentId: "seg-2", from: 7, to: 13 },
-        ],
         edgeAnchors: [],
       },
       playingId: null,
@@ -341,18 +355,15 @@ describe("workspace editor decoration", () => {
 
     const specs = buildSegmentDecorationSpecs(state);
 
-    expect(specs[0].attrs.class).toContain("segment-line-reorder-source");
-    expect(specs[1].attrs.class).toContain("segment-line-drop-before");
-    expect(specs[1].attrs.class).not.toContain("segment-line-drop-swap");
+    expect(specs).toEqual([]);
   });
 
-  it("列表式提交重排时会附加 submitting class", () => {
+  it("列表式提交重排的状态类也改由 node decoration / NodeView 路径承担", () => {
     const state = {
       layoutMode: "list",
       renderMap: {
         orderedSegmentIds: ["seg-1"],
         segmentRanges: [],
-        segmentBlockRanges: [{ segmentId: "seg-1", from: 0, to: 7 }],
         edgeAnchors: [],
       },
       playingId: null,
@@ -368,7 +379,6 @@ describe("workspace editor decoration", () => {
 
     const specs = buildSegmentDecorationSpecs(state);
 
-    expect(specs).toHaveLength(1);
-    expect(specs[0].attrs.class).toContain("segment-line-submitting");
+    expect(specs).toEqual([]);
   });
 });
