@@ -6,6 +6,7 @@ const {
   runtimeStateMock,
   apiMock,
   processingMock,
+  elementPlusMock,
 } = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   ...(() => {
@@ -148,6 +149,7 @@ const {
   processingMock: {
     startEdgeUpdate: vi.fn(),
     acceptJob: vi.fn(),
+    fail: vi.fn(),
     isInteractionLocked: ref(false),
   },
   apiMock: {
@@ -157,7 +159,11 @@ const {
     commitSessionVoiceBinding: vi.fn(),
     commitSegmentVoiceBinding: vi.fn(),
     commitSegmentVoiceBindingBatch: vi.fn(),
+    commitEdgeConfig: vi.fn(),
     updateEdge: vi.fn(),
+  },
+  elementPlusMock: {
+    warning: vi.fn(),
   },
     };
   })(),
@@ -176,6 +182,9 @@ vi.mock("@/composables/useWorkspaceProcessing", () => ({
 }));
 
 vi.mock("@/api/editSession", () => apiMock);
+vi.mock("element-plus", () => ({
+  ElMessage: elementPlusMock,
+}));
 
 describe("useParameterPanel", () => {
   beforeEach(async () => {
@@ -184,6 +193,11 @@ describe("useParameterPanel", () => {
     runtimeStateMock.canMutate.value = true;
     runtimeStateMock.waitForJobTerminal.mockResolvedValue("completed");
     processingMock.startEdgeUpdate.mockResolvedValue(undefined);
+    apiMock.commitEdgeConfig.mockResolvedValue({
+      document_id: "doc-1",
+      document_version: 2,
+      head_snapshot_id: "snapshot-2",
+    });
     apiMock.updateEdge.mockResolvedValue({
       job_id: "job-edge-1",
       document_id: "doc-1",
@@ -194,7 +208,9 @@ describe("useParameterPanel", () => {
     });
     editSessionMock.sessionStatus.value = "ready";
     const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const { useWorkspaceLightEdit } = await import("../src/composables/useWorkspaceLightEdit");
     useSegmentSelection().clearSelection();
+    useWorkspaceLightEdit().clearAll();
     await nextTick();
   });
 
@@ -253,7 +269,7 @@ describe("useParameterPanel", () => {
     expect(panel.displayValues.value.renderProfile.speed).toBe(1);
   });
 
-  it("edge 提交会走异步更新作业，并把正式刷新交给 workspace processing", async () => {
+  it("安全 edge 提交会走异步更新作业，并把正式刷新交给 workspace processing", async () => {
     const { useParameterPanel } = await import("../src/composables/useParameterPanel");
     const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
     const panel = useParameterPanel();
@@ -268,6 +284,14 @@ describe("useParameterPanel", () => {
     expect(apiMock.updateEdge).toHaveBeenCalledWith("edge-1", {
       pause_duration_seconds: 0.47,
     });
+    expect(apiMock.commitEdgeConfig).not.toHaveBeenCalled();
+    expect(processingMock.startEdgeUpdate).toHaveBeenCalledWith({
+      summary: "停顿 0.35 -> 0.47",
+    });
+    expect(processingMock.acceptJob).toHaveBeenCalledWith({
+      job: expect.objectContaining({ job_id: "job-edge-1" }),
+      jobKind: "edge-compose",
+    });
     expect(runtimeStateMock.trackJob).toHaveBeenCalledWith(
       expect.objectContaining({ job_id: "job-edge-1" }),
       {
@@ -275,20 +299,40 @@ describe("useParameterPanel", () => {
         refreshSessionOnTerminal: false,
       },
     );
-    expect(processingMock.acceptJob).toHaveBeenCalledWith({
-      job: expect.objectContaining({ job_id: "job-edge-1" }),
-      jobKind: "edge-compose",
-    });
-    expect(
-      processingMock.acceptJob.mock.invocationCallOrder[0],
-    ).toBeLessThan(runtimeStateMock.trackJob.mock.invocationCallOrder[0]);
-    expect(processingMock.startEdgeUpdate).toHaveBeenCalledWith({
-      summary: "停顿 0.35 -> 0.47",
-    });
     expect(runtimeStateMock.waitForJobTerminal).not.toHaveBeenCalled();
     expect(editSessionMock.refreshSnapshot).not.toHaveBeenCalled();
     expect(editSessionMock.refreshTimeline).not.toHaveBeenCalled();
     expect(panel.hasDirty.value).toBe(false);
+  });
+
+  it("影响脏段的 edge 提交会被拦截，并提示先重推理", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const { useWorkspaceLightEdit } = await import("../src/composables/useWorkspaceLightEdit");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+    const lightEdit = useWorkspaceLightEdit();
+
+    lightEdit.replaceAllDrafts({
+      "seg-2": "第二句（未重推理）",
+    });
+    selection.selectEdge("edge-1");
+    await nextTick();
+
+    panel.updateEdgeField("pause_duration_seconds", 0.47);
+
+    await expect(panel.submitDraft()).rejects.toThrow(
+      "该停顿会影响待重推理段，请先重推理",
+    );
+
+    expect(elementPlusMock.warning).toHaveBeenCalledWith(
+      "该停顿会影响待重推理段，请先重推理",
+    );
+    expect(apiMock.commitEdgeConfig).not.toHaveBeenCalled();
+    expect(apiMock.updateEdge).not.toHaveBeenCalled();
+    expect(editSessionMock.refreshSnapshot).not.toHaveBeenCalled();
+    expect(editSessionMock.refreshTimeline).not.toHaveBeenCalled();
+    expect(panel.hasDirty.value).toBe(true);
   });
 
   it("edge 草稿会暴露 dirtyEdgeIds，并在恢复原值后清空", async () => {

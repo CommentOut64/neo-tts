@@ -1,5 +1,7 @@
 import type { JSONContent } from "@tiptap/vue-3";
 
+import type { WorkspaceCompositionLayoutHints } from "./compositionLayoutHints";
+
 export type WorkspaceEditorLayoutMode = "list" | "composition";
 
 export interface WorkspaceSemanticSegment {
@@ -89,6 +91,7 @@ export interface WorkspaceSemanticEdgeInput {
 
 export interface BuildWorkspaceSemanticDocumentInput {
   sourceText: string | null;
+  compositionLayoutHints?: WorkspaceCompositionLayoutHints | null;
   segments: WorkspaceSemanticSegmentInput[];
   edges?: WorkspaceSemanticEdgeInput[];
   dirtySegmentIds?: ReadonlySet<string>;

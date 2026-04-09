@@ -12,7 +12,7 @@ import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPersistence";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { useParameterPanel } from "@/composables/useParameterPanel";
-import type { EditableEdge } from "@/types/editSession";
+import type { EditableEdge, EditableSegment } from "@/types/editSession";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
 
@@ -21,17 +21,32 @@ import { buildSessionHeadText } from "./sessionHandoff";
 import { buildEditorExtensions } from "./workspace-editor/buildEditorExtensions";
 import { buildWorkspaceSemanticDocument } from "./workspace-editor/buildWorkspaceSemanticDocument";
 import {
-  buildWorkspaceRenderPlan,
-  collectSegmentDraftChanges,
-} from "./workspace-editor/documentModel";
+  areCompositionLayoutHintsCompatible,
+  buildCompositionLayoutHintsFromSourceBlocks,
+  buildCompositionLayoutHintsFromViewDoc,
+  type WorkspaceCompositionLayoutHints,
+} from "./workspace-editor/compositionLayoutHints";
+import { buildWorkspaceRenderPlan } from "./workspace-editor/documentModel";
 import { extractRenderMapFromDoc } from "./workspace-editor/extractRenderMapFromDoc";
 import type { WorkspaceEditorLayoutMode } from "./workspace-editor/layoutTypes";
+import type { WorkspaceSemanticEdge } from "./workspace-editor/layoutTypes";
+import { createEmptyWorkspaceSourceDoc, buildWorkspaceSourceDoc } from "./workspace-editor/sourceDocModel";
+import {
+  extractOrderedSegmentTextsFromWorkspaceViewDoc,
+  normalizeWorkspaceViewDocToSourceDoc,
+} from "./workspace-editor/sourceDocNormalizer";
 import { segmentDecorationKey } from "./workspace-editor/segmentDecoration";
 import {
+  buildWorkspaceDraftPersistKey,
+  buildWorkspaceViewRevisionKey,
+  cloneWorkspaceSerializable,
   collectPauseBoundaryAttrPatches,
   findCanvasTarget,
   haveSameEdgeTopology,
+  resolveWorkspaceSessionItems,
   requestLayoutMode,
+  shouldBlockEdgeEditing,
+  shouldPreserveLocalTextDraftsOnVersionChange,
 } from "./workspace-editor/workspaceEditorHostModel";
 
 const emit = defineEmits<{
@@ -54,19 +69,52 @@ const parameterPanel = useParameterPanel();
 
 const resetSessionDialogVisible = ref(false);
 const isEditing = ref(false);
-const docJson = ref<JSONContent>({
-  type: "doc",
-  content: [{ type: "paragraph", content: [] }],
-});
+const sourceDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
+const currentViewDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
 const layoutMode = ref<WorkspaceEditorLayoutMode>("composition");
 const restoredSessionKey = ref<string | null>(null);
+const sourceDocSessionKey = ref<string | null>(null);
+const editingSourceDocBaseline = ref<JSONContent | null>(null);
+const compositionLayoutHints = ref<WorkspaceCompositionLayoutHints | null>(null);
+const editingCompositionLayoutHintsBaseline =
+  ref<WorkspaceCompositionLayoutHints | null>(null);
+const sourceDocRevision = ref(0);
+const edgeTopologyRevision = ref(0);
+const layoutHintRevision = ref(0);
+const editNormalizationError = ref<string | null>(null);
 const renderMap = ref<ReturnType<typeof extractRenderMapFromDoc> | null>(null);
 const editorRef = ref<{ editor: any } | null>(null);
+const lastSessionSegments = ref<
+  Array<Pick<EditableSegment, "segment_id" | "order_key" | "raw_text">>
+>([]);
+const lastSessionEdges = ref<EditableEdge[]>([]);
 
 let draftPersistTimeoutId: number | null = null;
+let lastPersistKey: string | null = null;
+let lastAppliedViewKey: string | null = null;
+let sourceDocSerialized = JSON.stringify(sourceDoc.value);
+let compositionLayoutHintsSerialized = JSON.stringify(compositionLayoutHints.value);
+
+const sessionSegments = computed<EditableSegment[]>(() =>
+  resolveWorkspaceSessionItems({
+    snapshotDocumentVersion: editSession.snapshot.value?.document_version,
+    currentDocumentVersion: currentDocumentVersion.value,
+    snapshotItems: editSession.snapshot.value?.segments,
+    liveItems: editSession.segments.value,
+  }),
+);
 
 const sortedReadySegments = computed(() =>
-  [...editSession.segments.value].sort((left, right) => left.order_key - right.order_key),
+  [...sessionSegments.value].sort((left, right) => left.order_key - right.order_key),
+);
+
+const sessionEdges = computed<EditableEdge[]>(() =>
+  resolveWorkspaceSessionItems({
+    snapshotDocumentVersion: editSession.snapshot.value?.document_version,
+    currentDocumentVersion: currentDocumentVersion.value,
+    snapshotItems: editSession.snapshot.value?.edges,
+    liveItems: editSession.edges.value,
+  }),
 );
 
 const currentDocumentId = computed(
@@ -82,6 +130,15 @@ const currentSessionHeadText = computed(() =>
 );
 const currentSessionSegmentIds = computed(() =>
   sortedReadySegments.value.map((segment) => segment.segment_id),
+);
+const workspaceEdges = computed<WorkspaceSemanticEdge[]>(() =>
+  sessionEdges.value.map((edge) => ({
+    edgeId: edge.edge_id,
+    leftSegmentId: edge.left_segment_id,
+    rightSegmentId: edge.right_segment_id,
+    pauseDurationSeconds: edge.pause_duration_seconds,
+    boundaryStrategy: edge.boundary_strategy,
+  })),
 );
 
 const currentSessionKey = computed(() => {
@@ -102,24 +159,52 @@ const currentSessionKey = computed(() => {
   ].join("::");
 });
 
+const sourceDocSegmentTexts = computed(() => {
+  if (
+    editSession.sessionStatus.value !== "ready" ||
+    currentSessionKey.value === null ||
+    sourceDocSessionKey.value !== currentSessionKey.value
+  ) {
+    return sortedReadySegments.value.map((segment) => ({
+      segmentId: segment.segment_id,
+      orderKey: segment.order_key,
+      text: segment.raw_text,
+    }));
+  }
+
+  const extracted = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+    sourceDoc.value,
+    currentSessionSegmentIds.value,
+  );
+
+  return extracted.map(({ segmentId, text }, index) => ({
+    segmentId,
+    orderKey: sortedReadySegments.value[index]?.order_key ?? index + 1,
+    text,
+  }));
+});
+
+const sourceDocSegmentDrafts = computed<Record<string, string>>(() =>
+  Object.fromEntries(
+    sourceDocSegmentTexts.value
+      .filter(({ segmentId, text }) => text !== getBackendSegmentText(segmentId))
+      .map(({ segmentId, text }) => [segmentId, text]),
+  ),
+);
+
 const semanticDocument = computed(() => {
   if (editSession.sessionStatus.value === "ready") {
     return buildWorkspaceSemanticDocument({
       sourceText: editSession.sourceText.value,
-      segments: sortedReadySegments.value.map((segment) => ({
-        segmentId: segment.segment_id,
-        orderKey: segment.order_key,
-        text: lightEdit.getDraft(segment.segment_id) ?? segment.raw_text,
+      compositionLayoutHints: compositionLayoutHints.value,
+      segments: sourceDocSegmentTexts.value.map((segment) => ({
+        segmentId: segment.segmentId,
+        orderKey: segment.orderKey,
+        text: segment.text,
         renderStatus: "completed",
       })),
-      edges: editSession.edges.value.map((edge) => ({
-        edgeId: edge.edge_id,
-        leftSegmentId: edge.left_segment_id,
-        rightSegmentId: edge.right_segment_id,
-        pauseDurationSeconds: edge.pause_duration_seconds,
-        boundaryStrategy: edge.boundary_strategy,
-      })),
-      dirtySegmentIds: lightEdit.dirtySegmentIds.value,
+      edges: workspaceEdges.value,
+      dirtySegmentIds: new Set(Object.keys(sourceDocSegmentDrafts.value)),
     });
   }
 
@@ -171,36 +256,18 @@ const compositionAvailable = computed(
 const isInteractionLocked = computed(
   () => workspaceProcessing.isInteractionLocked.value,
 );
-
-const structuralDocSignature = computed(() =>
-  JSON.stringify({
+const activeViewKey = computed(() =>
+  buildWorkspaceViewRevisionKey({
     layoutMode: effectiveLayoutMode.value,
-    blocks: semanticDocument.value.sourceBlocks,
-    segments: semanticDocument.value.segmentOrder.map((segmentId) => {
-      const segment = semanticDocument.value.segmentsById[segmentId];
-      return {
-        segmentId,
-        text: segment?.text ?? "",
-        renderStatus: segment?.renderStatus ?? "pending",
-      };
-    }),
-    edgeTopology: semanticDocument.value.segmentOrder
-      .map((segmentId) => semanticDocument.value.edgesByLeftSegmentId[segmentId])
-      .filter(Boolean)
-      .map((edge) => ({
-        edgeId: edge.edgeId,
-        leftSegmentId: edge.leftSegmentId,
-        rightSegmentId: edge.rightSegmentId,
-      })),
+    sourceDocRevision: sourceDocRevision.value,
+    edgeTopologyRevision: edgeTopologyRevision.value,
+    layoutHintRevision: layoutHintRevision.value,
   }),
 );
 
 const customExtensions = buildEditorExtensions({
   onActivateEdge(edgeId) {
-    if (isEditing.value || !edgeId) {
-      return;
-    }
-    segmentSelection.selectEdge(edgeId);
+    activateEdgeSelection(edgeId);
   },
 });
 
@@ -218,9 +285,111 @@ onBeforeUnmount(() => {
 });
 
 function buildSegmentDraftRecord(
-  drafts: Map<string, string> = lightEdit.draftTextBySegmentId.value,
+  drafts: Record<string, string> = sourceDocSegmentDrafts.value,
 ): Record<string, string> {
-  return Object.fromEntries(drafts);
+  return { ...drafts };
+}
+
+function setSourceDoc(nextDoc: JSONContent) {
+  const nextSerialized = JSON.stringify(nextDoc);
+  if (nextSerialized === sourceDocSerialized) {
+    return false;
+  }
+
+  sourceDoc.value = nextDoc;
+  sourceDocSerialized = nextSerialized;
+  sourceDocRevision.value += 1;
+  lastAppliedViewKey = null;
+  return true;
+}
+
+function setCompositionLayoutHints(
+  nextHints: WorkspaceCompositionLayoutHints | null,
+) {
+  const nextSerialized = JSON.stringify(nextHints);
+  if (nextSerialized === compositionLayoutHintsSerialized) {
+    return false;
+  }
+
+  compositionLayoutHints.value = nextHints;
+  compositionLayoutHintsSerialized = nextSerialized;
+  layoutHintRevision.value += 1;
+  lastAppliedViewKey = null;
+  return true;
+}
+
+function resolveSourceTextStatus(
+  reason: string | null,
+): WorkspaceCompositionLayoutHints["sourceTextStatus"] {
+  if (reason === "missing_source_text") {
+    return "missing";
+  }
+
+  return reason === null ? "aligned" : "detached";
+}
+
+function buildWorkingCopyCompositionLayoutHints(): WorkspaceCompositionLayoutHints {
+  return {
+    basis: "working_copy",
+    segmentIdsByBlock:
+      currentSessionSegmentIds.value.length > 0
+        ? [[...currentSessionSegmentIds.value]]
+        : [],
+    sourceTextStatus: editSession.sourceText.value ? "detached" : "missing",
+  };
+}
+
+function syncCompositionLayoutHintsFromSemanticDocument() {
+  setCompositionLayoutHints(buildCompositionLayoutHintsFromSourceBlocks({
+    sourceBlocks: semanticDocument.value.sourceBlocks,
+    basis:
+      semanticDocument.value.compositionAvailability.reason === null
+        ? "source_text"
+        : "working_copy",
+    sourceTextStatus: resolveSourceTextStatus(
+      semanticDocument.value.compositionAvailability.reason,
+    ),
+  }));
+}
+
+function updateCompositionLayoutHintsForEditingView(viewDoc: JSONContent) {
+  if (effectiveLayoutMode.value === "composition") {
+    setCompositionLayoutHints(buildCompositionLayoutHintsFromViewDoc({
+      viewDoc,
+      basis: "working_copy",
+      sourceTextStatus: editSession.sourceText.value ? "detached" : "missing",
+    }));
+    return;
+  }
+
+  if (
+    areCompositionLayoutHintsCompatible(
+      compositionLayoutHints.value,
+      currentSessionSegmentIds.value,
+    )
+  ) {
+    return;
+  }
+
+  setCompositionLayoutHints(buildWorkingCopyCompositionLayoutHints());
+}
+
+function syncEditingSourceState(viewDoc: JSONContent): boolean {
+  try {
+    setSourceDoc(normalizeWorkspaceViewDocToSourceDoc({
+      viewDoc,
+      orderedSegmentIds: currentSessionSegmentIds.value,
+      edges: workspaceEdges.value,
+    }));
+    sourceDocSessionKey.value = currentSessionKey.value;
+    updateCompositionLayoutHintsForEditingView(viewDoc);
+    editNormalizationError.value = null;
+    return true;
+  } catch (error) {
+    editNormalizationError.value =
+      error instanceof Error ? error.message : "正文结构异常，暂时无法同步编辑结果";
+    return false;
+  }
 }
 
 function syncInputBackToSessionIfNeeded() {
@@ -249,17 +418,33 @@ function persistWorkspaceDraftSnapshot(
     return;
   }
 
-  workspaceDraftPersistence.saveSnapshot({
-    schemaVersion: 1,
+  const persistKey = buildWorkspaceDraftPersistKey({
+    documentVersion: currentDocumentVersion.value,
+    mode,
+    sourceDocRevision: sourceDocRevision.value,
+    layoutHintRevision: layoutHintRevision.value,
+  });
+  const scopedPersistKey = `${currentDocumentId.value}:${persistKey}`;
+  if (lastPersistKey === scopedPersistKey) {
+    return;
+  }
+
+  const saved = workspaceDraftPersistence.saveSnapshot({
+    schemaVersion: 2,
     documentId: currentDocumentId.value,
     documentVersion: currentDocumentVersion.value,
     segmentIds: [...currentSessionSegmentIds.value],
     mode,
     editorDoc,
+    sourceDoc: sourceDoc.value,
     segmentDrafts,
-    effectiveText: extractWorkspaceEffectiveText(editorDoc),
+    effectiveText: extractWorkspaceEffectiveText(sourceDoc.value),
+    compositionLayoutHints: compositionLayoutHints.value,
     updatedAt: new Date().toISOString(),
   });
+  if (saved) {
+    lastPersistKey = scopedPersistKey;
+  }
 }
 
 function clearPersistedWorkspaceDraft() {
@@ -267,6 +452,7 @@ function clearPersistedWorkspaceDraft() {
     return;
   }
 
+  lastPersistKey = null;
   workspaceDraftPersistence.clearSnapshot(currentDocumentId.value);
 }
 
@@ -277,14 +463,16 @@ function syncPreviewWorkspaceState(editorDoc: JSONContent) {
     return;
   }
 
-  const effectiveText = extractWorkspaceEffectiveText(editorDoc);
+  const effectiveText = extractWorkspaceEffectiveText(sourceDoc.value);
   persistWorkspaceDraftSnapshot("preview", editorDoc);
   syncInputFromWorkspaceEffectiveText(effectiveText);
 }
 
 function pushContentToEditor(
   editorOverride?: any,
-  docOverride: JSONContent = docJson.value,
+  docOverride: JSONContent = currentViewDoc.value,
+  viewKeyOverride: string = activeViewKey.value,
+  force = false,
 ) {
   nextTick(() => {
     const editor = editorOverride ?? editorRef.value?.editor;
@@ -292,7 +480,12 @@ function pushContentToEditor(
       return;
     }
 
+    if (!force && lastAppliedViewKey === viewKeyOverride) {
+      return;
+    }
+
     editor.commands.setContent(docOverride);
+    lastAppliedViewKey = viewKeyOverride;
     renderMap.value = extractRenderMapFromDoc(
       editor.getJSON(),
       renderPlan.value.renderMap.orderedSegmentIds,
@@ -302,13 +495,13 @@ function pushContentToEditor(
   });
 }
 
-function syncDisplayDocument() {
+function syncDisplayDocument(force = false) {
   if (isEditing.value) {
     return;
   }
 
-  docJson.value = renderPlan.value.doc;
-  pushContentToEditor(undefined, renderPlan.value.doc);
+  currentViewDoc.value = renderPlan.value.doc;
+  pushContentToEditor(undefined, renderPlan.value.doc, activeViewKey.value, force);
 
   if (
     editSession.sessionStatus.value === "ready" &&
@@ -362,7 +555,7 @@ function requestNextLayoutMode(nextMode: WorkspaceEditorLayoutMode) {
 }
 
 function getBackendSegmentText(segmentId: string): string {
-  const segment = editSession.segments.value.find(
+  const segment = sortedReadySegments.value.find(
     (item) => item.segment_id === segmentId,
   );
   return segment?.raw_text ?? "";
@@ -411,7 +604,7 @@ function syncPauseBoundaryAttrsInEditor(nextEdges: EditableEdge[]) {
 
 function onEditorCreate({ editor }: { editor: any }) {
   editor.setEditable(isEditing.value);
-  pushContentToEditor(editor);
+  pushContentToEditor(editor, currentViewDoc.value, activeViewKey.value, true);
 }
 
 function enterEditMode(clickEvent?: MouseEvent) {
@@ -424,6 +617,11 @@ function enterEditMode(clickEvent?: MouseEvent) {
   }
 
   segmentSelection.clearSelection();
+  editingSourceDocBaseline.value = cloneWorkspaceSerializable(sourceDoc.value);
+  editingCompositionLayoutHintsBaseline.value = compositionLayoutHints.value
+    ? cloneWorkspaceSerializable(compositionLayoutHints.value)
+    : null;
+  editNormalizationError.value = null;
   isEditing.value = true;
 
   nextTick(() => {
@@ -453,6 +651,8 @@ function commitAndExitEdit() {
   const editor = editorRef.value?.editor;
   if (!editor) {
     clearPendingDraftPersist();
+    editingSourceDocBaseline.value = null;
+    editingCompositionLayoutHintsBaseline.value = null;
     isEditing.value = false;
     nextTick(syncDisplayDocument);
     return;
@@ -460,31 +660,30 @@ function commitAndExitEdit() {
 
   try {
     const editorDoc = editor.getJSON();
-    const changes = collectSegmentDraftChanges(
-      editorDoc,
-      renderPlan.value.renderMap.orderedSegmentIds,
-      getBackendSegmentText,
+    const nextSourceDoc = normalizeWorkspaceViewDocToSourceDoc({
+      viewDoc: editorDoc,
+      orderedSegmentIds: currentSessionSegmentIds.value,
+      edges: workspaceEdges.value,
+    });
+    const nextDrafts = Object.fromEntries(
+      extractOrderedSegmentTextsFromWorkspaceViewDoc(
+        nextSourceDoc,
+        currentSessionSegmentIds.value,
+      )
+        .filter(({ segmentId, text }) => text !== getBackendSegmentText(segmentId))
+        .map(({ segmentId, text }) => [segmentId, text]),
     );
 
-    const nextDrafts = new Map(lightEdit.draftTextBySegmentId.value);
-    changes.changedDrafts.forEach(([segmentId, text]) => {
-      nextDrafts.set(segmentId, text);
-    });
-    changes.clearedSegmentIds.forEach((segmentId) => {
-      nextDrafts.delete(segmentId);
-    });
-
     clearPendingDraftPersist();
-    docJson.value = editorDoc;
+    currentViewDoc.value = editorDoc;
+    setSourceDoc(nextSourceDoc);
+    sourceDocSessionKey.value = currentSessionKey.value;
+    updateCompositionLayoutHintsForEditingView(editorDoc);
     lightEdit.replaceAllDrafts(nextDrafts);
 
-    if (nextDrafts.size > 0) {
-      persistWorkspaceDraftSnapshot(
-        "preview",
-        editorDoc,
-        buildSegmentDraftRecord(nextDrafts),
-      );
-      syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(editorDoc));
+    if (Object.keys(nextDrafts).length > 0) {
+      persistWorkspaceDraftSnapshot("preview", editorDoc, nextDrafts);
+      syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(nextSourceDoc));
     } else {
       clearPersistedWorkspaceDraft();
       syncInputBackToSessionIfNeeded();
@@ -496,12 +695,22 @@ function commitAndExitEdit() {
     return;
   }
 
+  editingSourceDocBaseline.value = null;
+  editingCompositionLayoutHintsBaseline.value = null;
   isEditing.value = false;
   nextTick(syncDisplayDocument);
 }
 
 function discardAndExitEdit() {
   clearPendingDraftPersist();
+  if (editingSourceDocBaseline.value) {
+    setSourceDoc(editingSourceDocBaseline.value);
+    sourceDocSessionKey.value = currentSessionKey.value;
+  }
+  setCompositionLayoutHints(editingCompositionLayoutHintsBaseline.value);
+  editingSourceDocBaseline.value = null;
+  editingCompositionLayoutHintsBaseline.value = null;
+  editNormalizationError.value = null;
   isEditing.value = false;
   nextTick(syncDisplayDocument);
 }
@@ -510,6 +719,10 @@ function handleResetSessionSuccess() {
   segmentSelection.clearSelection();
   lightEdit.clearAll();
   clearPendingDraftPersist();
+  editingSourceDocBaseline.value = null;
+  editingCompositionLayoutHintsBaseline.value = null;
+  setCompositionLayoutHints(null);
+  editNormalizationError.value = null;
   isEditing.value = false;
   nextTick(syncDisplayDocument);
 }
@@ -527,12 +740,15 @@ function onDocUpdate(value: JSONContent) {
     return;
   }
 
-  docJson.value = value;
+  currentViewDoc.value = value;
   clearPendingDraftPersist();
+  if (!syncEditingSourceState(value)) {
+    return;
+  }
   draftPersistTimeoutId = window.setTimeout(() => {
     draftPersistTimeoutId = null;
     persistWorkspaceDraftSnapshot("editing", value);
-    syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(value));
+    syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(sourceDoc.value));
   }, WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS);
 }
 
@@ -551,7 +767,7 @@ function onCanvasClick(event: MouseEvent) {
   }
 
   if (target.type === "edge" && target.edgeId) {
-    segmentSelection.selectEdge(target.edgeId);
+    activateEdgeSelection(target.edgeId);
     return;
   }
 
@@ -588,14 +804,43 @@ function onCanvasDblClick(event: MouseEvent) {
   }
 }
 
+function activateEdgeSelection(edgeId: string | null) {
+  if (isEditing.value || !edgeId) {
+    return;
+  }
+
+  if (
+    shouldBlockEdgeEditing({
+      edgeId,
+      edges: sessionEdges.value,
+      dirtySegmentIds: lightEdit.dirtySegmentIds.value,
+    })
+  ) {
+    ElMessage.warning("该停顿会影响待重推理段，请先重推理");
+    return;
+  }
+
+  segmentSelection.selectEdge(edgeId);
+}
+
 watch(
   currentSessionKey,
-  () => {
+  (nextSessionKey, previousSessionKey) => {
     if (!currentSessionKey.value) {
       restoredSessionKey.value = null;
+      setSourceDoc(createEmptyWorkspaceSourceDoc());
+      currentViewDoc.value = createEmptyWorkspaceSourceDoc();
+      sourceDocSessionKey.value = null;
+      editingSourceDocBaseline.value = null;
+      editingCompositionLayoutHintsBaseline.value = null;
+      setCompositionLayoutHints(null);
+      lastPersistKey = null;
+      lastSessionSegments.value = [];
+      lastSessionEdges.value = [];
       return;
     }
 
+    lastPersistKey = null;
     const snapshot = workspaceDraftPersistence.readCompatibleSnapshot({
       documentId: currentDocumentId.value!,
       documentVersion: currentDocumentVersion.value!,
@@ -604,6 +849,12 @@ watch(
 
     clearPendingDraftPersist();
     if (snapshot) {
+      setSourceDoc(snapshot.sourceDoc);
+      sourceDocSessionKey.value = currentSessionKey.value;
+      setCompositionLayoutHints(snapshot.compositionLayoutHints);
+      if (snapshot.compositionLayoutHints === null) {
+        syncCompositionLayoutHintsFromSemanticDocument();
+      }
       lightEdit.replaceAllDrafts(snapshot.segmentDrafts);
       syncInputFromWorkspaceEffectiveText(snapshot.effectiveText);
 
@@ -612,20 +863,96 @@ watch(
         isEditorSnapshotCompatible(snapshot.editorDoc)
       ) {
         isEditing.value = true;
-        docJson.value = snapshot.editorDoc;
-        pushContentToEditor(undefined, snapshot.editorDoc);
+        editNormalizationError.value = null;
+        editingSourceDocBaseline.value = cloneWorkspaceSerializable(snapshot.sourceDoc);
+        editingCompositionLayoutHintsBaseline.value =
+          snapshot.compositionLayoutHints
+            ? cloneWorkspaceSerializable(snapshot.compositionLayoutHints)
+            : null;
+        currentViewDoc.value = snapshot.editorDoc;
+        pushContentToEditor(undefined, snapshot.editorDoc, activeViewKey.value, true);
       } else {
+        editingSourceDocBaseline.value = null;
+        editingCompositionLayoutHintsBaseline.value = null;
+        editNormalizationError.value = null;
         isEditing.value = false;
         syncDisplayDocument();
       }
     } else {
-      isEditing.value = false;
-      syncDisplayDocument();
+      if (
+        shouldPreserveLocalTextDraftsOnVersionChange({
+          previousSessionKey,
+          nextSessionKey,
+          isEditing: isEditing.value,
+          dirtySegmentIds: lightEdit.dirtySegmentIds.value,
+          previousSegments: lastSessionSegments.value,
+          nextSegments: sortedReadySegments.value.map((segment) => ({
+            segment_id: segment.segment_id,
+            order_key: segment.order_key,
+            raw_text: segment.raw_text,
+          })),
+          previousEdges: lastSessionEdges.value,
+          nextEdges: sessionEdges.value,
+        })
+      ) {
+        sourceDocSessionKey.value = currentSessionKey.value;
+        editingSourceDocBaseline.value = null;
+        editingCompositionLayoutHintsBaseline.value = null;
+        editNormalizationError.value = null;
+        isEditing.value = false;
+        syncDisplayDocument();
+      } else {
+        setSourceDoc(buildWorkspaceSourceDoc({
+          segments: sortedReadySegments.value.map((segment) => ({
+            segmentId: segment.segment_id,
+            orderKey: segment.order_key,
+            text: segment.raw_text,
+          })),
+          edges: workspaceEdges.value,
+        }));
+        sourceDocSessionKey.value = currentSessionKey.value;
+        editingSourceDocBaseline.value = null;
+        editingCompositionLayoutHintsBaseline.value = null;
+        setCompositionLayoutHints(null);
+        editNormalizationError.value = null;
+        isEditing.value = false;
+        syncCompositionLayoutHintsFromSemanticDocument();
+        syncDisplayDocument();
+      }
     }
 
+    lastSessionSegments.value = sortedReadySegments.value.map((segment) => ({
+      segment_id: segment.segment_id,
+      order_key: segment.order_key,
+      raw_text: segment.raw_text,
+    }));
+    lastSessionEdges.value = sessionEdges.value.map((edge) => ({ ...edge }));
     restoredSessionKey.value = currentSessionKey.value;
   },
   { immediate: true },
+);
+
+watch(
+  sourceDocSegmentDrafts,
+  (nextDrafts) => {
+    lightEdit.replaceAllDrafts(nextDrafts);
+  },
+  { immediate: true, deep: true },
+);
+
+watch(
+  [
+    sourceDocSegmentTexts,
+    () => runtimeState.progressiveSegments.value,
+    () => editSession.sessionStatus.value,
+    () => runtimeState.isInitialRendering.value,
+  ],
+  () => {
+    if (!isEditing.value) {
+      syncDisplayDocument(true);
+    }
+  },
+  { immediate: true, deep: true },
 );
 
 watch(
@@ -639,7 +966,7 @@ watch(
 );
 
 watch(
-  structuralDocSignature,
+  activeViewKey,
   () => {
     if (!isEditing.value) {
       syncDisplayDocument();
@@ -652,6 +979,8 @@ watch(
   () => editSession.edges.value,
   (nextEdges, previousEdges) => {
     if (!haveSameEdgeTopology(nextEdges, previousEdges)) {
+      edgeTopologyRevision.value += 1;
+      lastAppliedViewKey = null;
       if (!isEditing.value) {
         syncDisplayDocument();
       }
@@ -685,7 +1014,7 @@ watch(
       return;
     }
     editor.setEditable(isEditing.value);
-    pushContentToEditor(editor);
+    pushContentToEditor(editor, currentViewDoc.value, activeViewKey.value, true);
   },
   { immediate: true },
 );
@@ -713,14 +1042,14 @@ watch(isEditing, (editing) => {
         <h3 class="text-sm font-semibold leading-none text-foreground">
           会话正文
         </h3>
-        <span
+        <!-- <span
           class="rounded px-1.5 py-0.5 text-[10px] font-medium leading-none"
           :class="isEditing
             ? 'border border-blue-500/20 bg-blue-500/10 text-blue-600'
             : 'border border-border/50 bg-muted text-muted-fg'"
         >
           {{ modeLabel }}
-        </span>
+        </span> -->
         <div class="inline-flex overflow-hidden rounded border border-border">
           <button
             type="button"
@@ -812,7 +1141,7 @@ watch(isEditing, (editing) => {
     >
       <UEditor
         ref="editorRef"
-        :model-value="docJson"
+        :model-value="currentViewDoc"
         content-type="json"
         :on-create="onEditorCreate"
         :extensions="customExtensions"
@@ -893,7 +1222,6 @@ html.dark :deep(.segment-selected) {
 }
 
 :deep(.ProseMirror p.segment-line) {
-  border-left: 3px solid transparent;
   border-radius: 8px;
   transition:
     background-color 0.15s ease,
@@ -903,7 +1231,7 @@ html.dark :deep(.segment-selected) {
 }
 
 :deep(.ProseMirror p.segment-line-dirty) {
-  border-left-color: var(--color-warning) !important;
+  border-left: 3px solid var(--color-warning);
   background: rgba(245, 158, 11, 0.06);
 }
 

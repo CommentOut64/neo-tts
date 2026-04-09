@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useEditSession } from '@/composables/useEditSession'
 import { useRuntimeState } from '@/composables/useRuntimeState'
@@ -18,6 +18,7 @@ const editSession = useEditSession()
 const runtimeState = useRuntimeState()
 const workspaceProcessing = useWorkspaceProcessing()
 const isResetting = ref(false)
+const isInteractionLocked = computed(() => workspaceProcessing.isInteractionLocked.value)
 
 async function handleConfirm() {
   try {
@@ -58,7 +59,7 @@ async function handleConfirm() {
     <template #footer>
       <div class="flex justify-end gap-2">
         <el-button @click="emit('update:visible', false)" :disabled="isResetting">取消</el-button>
-        <el-button type="danger" @click="handleConfirm" :loading="isResetting" :disabled="workspaceProcessing.isInteractionLocked">确认清空</el-button>
+        <el-button type="danger" @click="handleConfirm" :loading="isResetting" :disabled="isInteractionLocked">确认清空</el-button>
       </div>
     </template>
   </el-dialog>

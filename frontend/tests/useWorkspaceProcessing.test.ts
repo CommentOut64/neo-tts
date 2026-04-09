@@ -415,16 +415,19 @@ describe("useWorkspaceProcessing", () => {
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(processing.isInteractionLocked.value).toBe(true);
     expect(elementPlusMock.success).not.toHaveBeenCalled();
     expect(resolved).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1999);
+    expect(processing.isInteractionLocked.value).toBe(true);
     expect(elementPlusMock.success).not.toHaveBeenCalled();
     expect(resolved).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
     await completion;
 
+    expect(processing.isInteractionLocked.value).toBe(false);
     expect(elementPlusMock.success).toHaveBeenCalledWith(
       expect.objectContaining({
         message: "停顿调整已完成",

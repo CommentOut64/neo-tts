@@ -65,7 +65,7 @@ describe("workspace semantic document", () => {
     });
   });
 
-  it("source_text 缺失时组合式不可用", () => {
+  it("source_text 缺失时仍会退化生成 working copy blocks", () => {
     const semanticDocument = buildWorkspaceSemanticDocument({
       sourceText: null,
       segments: [
@@ -75,18 +75,38 @@ describe("workspace semantic document", () => {
           text: "第一句。",
           renderStatus: "completed",
         },
+        {
+          segmentId: "seg-2",
+          orderKey: 2,
+          text: "第二句。",
+          renderStatus: "completed",
+        },
       ],
-      edges: [],
+      edges: [
+        {
+          edgeId: "edge-1",
+          leftSegmentId: "seg-1",
+          rightSegmentId: "seg-2",
+          pauseDurationSeconds: 0.3,
+          boundaryStrategy: "crossfade",
+        },
+      ],
     });
 
-    expect(semanticDocument.sourceBlocks).toEqual([]);
+    expect(semanticDocument.sourceBlocks).toEqual([
+      {
+        blockId: "working-copy-block-1",
+        rawLineText: "第一句。第二句。",
+        segmentIds: ["seg-1", "seg-2"],
+      },
+    ]);
     expect(semanticDocument.compositionAvailability).toEqual({
-      ready: false,
+      ready: true,
       reason: "missing_source_text",
     });
   });
 
-  it("source_text 对齐失败时组合式不可用", () => {
+  it("source_text 对齐失败时仍可退化为 working copy blocks", () => {
     const semanticDocument = buildWorkspaceSemanticDocument({
       sourceText: "第一句。\n第三句。",
       segments: [
@@ -106,10 +126,59 @@ describe("workspace semantic document", () => {
       edges: [],
     });
 
-    expect(semanticDocument.sourceBlocks).toEqual([]);
+    expect(semanticDocument.sourceBlocks).toEqual([
+      {
+        blockId: "working-copy-block-1",
+        rawLineText: "第一句。第二句。",
+        segmentIds: ["seg-1", "seg-2"],
+      },
+    ]);
     expect(semanticDocument.compositionAvailability).toEqual({
-      ready: false,
+      ready: true,
       reason: "source_text_mismatch",
+    });
+  });
+
+  it("存在 compositionLayoutHints 时优先复用 block 分组", () => {
+    const semanticDocument = buildWorkspaceSemanticDocument({
+      sourceText: "第一句。\n第三句。",
+      compositionLayoutHints: {
+        basis: "working_copy",
+        segmentIdsByBlock: [["seg-1"], ["seg-2"]],
+        sourceTextStatus: "detached",
+      },
+      segments: [
+        {
+          segmentId: "seg-1",
+          orderKey: 1,
+          text: "第一句。",
+          renderStatus: "completed",
+        },
+        {
+          segmentId: "seg-2",
+          orderKey: 2,
+          text: "第二句。",
+          renderStatus: "completed",
+        },
+      ],
+      edges: [],
+    });
+
+    expect(semanticDocument.sourceBlocks).toEqual([
+      {
+        blockId: "hint-block-1",
+        rawLineText: "第一句。",
+        segmentIds: ["seg-1"],
+      },
+      {
+        blockId: "hint-block-2",
+        rawLineText: "第二句。",
+        segmentIds: ["seg-2"],
+      },
+    ]);
+    expect(semanticDocument.compositionAvailability).toEqual({
+      ready: true,
+      reason: "detached_hints",
     });
   });
 

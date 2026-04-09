@@ -7,6 +7,11 @@ import {
   collectSegmentDraftChanges,
   normalizeEditorPastedText,
 } from "../src/components/workspace/workspace-editor/documentModel";
+import { SegmentAnchorMark } from "../src/components/workspace/workspace-editor/segmentAnchorMark";
+import {
+  extractOrderedSegmentTextsFromWorkspaceViewDoc,
+  normalizeWorkspaceViewDocToSourceDoc,
+} from "../src/components/workspace/workspace-editor/sourceDocNormalizer";
 
 function createSemanticDocument(): WorkspaceSemanticDocument {
   return {
@@ -70,6 +75,10 @@ function createSemanticDocument(): WorkspaceSemanticDocument {
 }
 
 describe("workspace editor document model", () => {
+  it("segmentAnchor mark 在编辑态必须保持 inclusive，避免新输入字符丢失锚点", () => {
+    expect((SegmentAnchorMark as any).config.inclusive).toBe(true);
+  });
+
   it("列表式 builder 会为文本节点写入 segmentAnchor mark，并保留 pauseBoundary", () => {
     const plan = buildListLayoutDocument(createSemanticDocument());
     expect(plan.layoutMode).toBe("list");
@@ -192,6 +201,145 @@ describe("workspace editor document model", () => {
         },
       ],
     });
+  });
+
+  it("组合式 builder 在 source_text 失配后仍会生成组合式视图，而不是退回列表式", () => {
+    const plan = buildCompositionLayoutDocument({
+      segmentOrder: ["seg-1", "seg-2"],
+      segmentsById: {
+        "seg-1": {
+          segmentId: "seg-1",
+          orderKey: 1,
+          text: "第一段。",
+          renderStatus: "completed",
+          isDirty: false,
+        },
+        "seg-2": {
+          segmentId: "seg-2",
+          orderKey: 2,
+          text: "第二段。",
+          renderStatus: "completed",
+          isDirty: false,
+        },
+      },
+      edgesByLeftSegmentId: {
+        "seg-1": {
+          edgeId: "edge-1",
+          leftSegmentId: "seg-1",
+          rightSegmentId: "seg-2",
+          pauseDurationSeconds: 0.3,
+          boundaryStrategy: "crossfade",
+        },
+      },
+      sourceBlocks: [
+        {
+          blockId: "working-copy-block-1",
+          rawLineText: "第一段。第二段。",
+          segmentIds: ["seg-1", "seg-2"],
+        },
+      ],
+      compositionAvailability: {
+        ready: true,
+        reason: "source_text_mismatch",
+      },
+    });
+
+    expect(plan.layoutMode).toBe("composition");
+    expect(plan.doc).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "第一段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "pauseBoundary",
+              attrs: {
+                edgeId: "edge-1",
+                leftSegmentId: "seg-1",
+                rightSegmentId: "seg-2",
+                pauseDurationSeconds: 0.3,
+                boundaryStrategy: "crossfade",
+                layoutMode: "composition",
+                crossBlock: false,
+              },
+            },
+            {
+              type: "text",
+              text: "第二段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("会把组合式编辑视图规范化回列表形 canonical sourceDoc", () => {
+    const semanticDocument = createSemanticDocument();
+    const compositionView = buildCompositionLayoutDocument(semanticDocument);
+
+    expect(
+      normalizeWorkspaceViewDocToSourceDoc({
+        viewDoc: compositionView.doc,
+        orderedSegmentIds: semanticDocument.segmentOrder,
+        edges: Object.values(semanticDocument.edgesByLeftSegmentId),
+      }),
+    ).toEqual(
+      buildListLayoutDocument({
+        ...semanticDocument,
+        sourceBlocks: semanticDocument.segmentOrder.map((segmentId, index) => ({
+          blockId: `canonical-block-${index + 1}`,
+          rawLineText: semanticDocument.segmentsById[segmentId]?.text ?? "",
+          segmentIds: [segmentId],
+        })),
+      }).doc,
+    );
+  });
+
+  it("编辑中出现临时未带 segmentAnchor 的文本节点时，仍能归并回相邻 segment", () => {
+    expect(
+      extractOrderedSegmentTextsFromWorkspaceViewDoc(
+        {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "新" },
+                {
+                  type: "text",
+                  text: "第一段",
+                  marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+                },
+                {
+                  type: "pauseBoundary",
+                  attrs: {
+                    edgeId: "edge-1",
+                    leftSegmentId: "seg-1",
+                    rightSegmentId: "seg-2",
+                  },
+                },
+                { type: "text", text: "更" },
+                {
+                  type: "text",
+                  text: "第二段",
+                  marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+                },
+              ],
+            },
+          ],
+        },
+        ["seg-1", "seg-2"],
+      ),
+    ).toEqual([
+      { segmentId: "seg-1", text: "新第一段" },
+      { segmentId: "seg-2", text: "更第二段" },
+    ]);
   });
 
   it("提交编辑时会按 segmentAnchor 聚合文本，并对比后端文本收集变更", () => {

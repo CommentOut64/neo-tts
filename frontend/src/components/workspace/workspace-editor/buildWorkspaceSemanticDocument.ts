@@ -5,6 +5,7 @@ import type {
   WorkspaceSemanticSegment,
   WorkspaceSourceBlock,
 } from "./layoutTypes";
+import { areCompositionLayoutHintsCompatible } from "./compositionLayoutHints";
 
 function normalizeAlignmentText(text: string): string {
   return text.replace(/\r/g, "").trim();
@@ -14,8 +15,37 @@ function splitSourceLines(sourceText: string): string[] {
   return sourceText.replace(/\r\n/g, "\n").split("\n");
 }
 
+function buildSourceBlocksFromHints(
+  segmentIdsByBlock: string[][],
+  segmentsById: Record<string, WorkspaceSemanticSegment>,
+): WorkspaceSourceBlock[] {
+  return segmentIdsByBlock.map((segmentIds, index) => ({
+    blockId: `hint-block-${index + 1}`,
+    rawLineText: segmentIds.map((segmentId) => segmentsById[segmentId]?.text ?? "").join(""),
+    segmentIds: [...segmentIds],
+  }));
+}
+
+function buildWorkingCopyBlocks(
+  segmentOrder: string[],
+  segmentsById: Record<string, WorkspaceSemanticSegment>,
+): WorkspaceSourceBlock[] {
+  if (segmentOrder.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      blockId: "working-copy-block-1",
+      rawLineText: segmentOrder.map((segmentId) => segmentsById[segmentId]?.text ?? "").join(""),
+      segmentIds: [...segmentOrder],
+    },
+  ];
+}
+
 function resolveSourceBlocks(
   sourceText: string | null,
+  compositionLayoutHints: BuildWorkspaceSemanticDocumentInput["compositionLayoutHints"],
   segmentOrder: string[],
   segmentsById: Record<string, WorkspaceSemanticSegment>,
 ): {
@@ -23,10 +53,29 @@ function resolveSourceBlocks(
   ready: boolean;
   reason: string | null;
 } {
+  if (
+    compositionLayoutHints &&
+    areCompositionLayoutHintsCompatible(compositionLayoutHints, segmentOrder)
+  ) {
+    return {
+      sourceBlocks: buildSourceBlocksFromHints(
+        compositionLayoutHints.segmentIdsByBlock,
+        segmentsById,
+      ),
+      ready: true,
+      reason:
+        compositionLayoutHints.sourceTextStatus === "detached"
+          ? "detached_hints"
+          : compositionLayoutHints.sourceTextStatus === "missing"
+            ? "missing_source_text"
+            : null,
+    };
+  }
+
   if (!sourceText) {
     return {
-      sourceBlocks: [],
-      ready: false,
+      sourceBlocks: buildWorkingCopyBlocks(segmentOrder, segmentsById),
+      ready: segmentOrder.length > 0,
       reason: "missing_source_text",
     };
   }
@@ -54,8 +103,8 @@ function resolveSourceBlocks(
       const segment = segmentsById[segmentId];
       if (!segment) {
         return {
-          sourceBlocks: [],
-          ready: false,
+          sourceBlocks: buildWorkingCopyBlocks(segmentOrder, segmentsById),
+          ready: segmentOrder.length > 0,
           reason: "source_text_mismatch",
         };
       }
@@ -70,8 +119,8 @@ function resolveSourceBlocks(
 
       if (!normalizedLineText.startsWith(buffer)) {
         return {
-          sourceBlocks: [],
-          ready: false,
+          sourceBlocks: buildWorkingCopyBlocks(segmentOrder, segmentsById),
+          ready: segmentOrder.length > 0,
           reason: "source_text_mismatch",
         };
       }
@@ -79,8 +128,8 @@ function resolveSourceBlocks(
 
     if (buffer !== normalizedLineText) {
       return {
-        sourceBlocks: [],
-        ready: false,
+        sourceBlocks: buildWorkingCopyBlocks(segmentOrder, segmentsById),
+        ready: segmentOrder.length > 0,
         reason: "source_text_mismatch",
       };
     }
@@ -94,8 +143,8 @@ function resolveSourceBlocks(
 
   if (segmentCursor !== segmentOrder.length) {
     return {
-      sourceBlocks: [],
-      ready: false,
+      sourceBlocks: buildWorkingCopyBlocks(segmentOrder, segmentsById),
+      ready: segmentOrder.length > 0,
       reason: "source_text_mismatch",
     };
   }
@@ -145,6 +194,7 @@ export function buildWorkspaceSemanticDocument(
 
   const sourceBlockResult = resolveSourceBlocks(
     input.sourceText,
+    input.compositionLayoutHints ?? null,
     segmentOrder,
     segmentsById,
   );

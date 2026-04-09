@@ -1,4 +1,5 @@
 import { computed, ref, watch } from "vue";
+import { ElMessage } from "element-plus";
 
 import {
   commitSegmentRenderProfile,
@@ -9,8 +10,10 @@ import {
   commitSessionVoiceBinding,
   updateEdge,
 } from "@/api/editSession";
+import { shouldBlockEdgeEditing } from "@/components/workspace/workspace-editor/workspaceEditorHostModel";
 import { useEditSession } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
+import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   useSegmentSelection,
@@ -89,6 +92,7 @@ function clearDraftState() {
 export function useParameterPanel() {
   const editSession = useEditSession();
   const runtimeState = useRuntimeState();
+  const lightEdit = useWorkspaceLightEdit();
   const workspaceProcessing = useWorkspaceProcessing();
   const selection = useSegmentSelection();
   const queue = createParameterPatchQueue();
@@ -299,6 +303,25 @@ export function useParameterPanel() {
     return "边界参数调整";
   }
 
+  function assertEdgeDraftSafeToCommit() {
+    const edgeId = scopeContext.value.edgeId;
+    if (
+      scopeContext.value.scope !== "edge" ||
+      !edgeId ||
+      !shouldBlockEdgeEditing({
+        edgeId,
+        edges: editSession.edges.value,
+        dirtySegmentIds: lightEdit.dirtySegmentIds.value,
+      })
+    ) {
+      return;
+    }
+
+    const message = "该停顿会影响待重推理段，请先重推理";
+    ElMessage.warning(message);
+    throw new Error(message);
+  }
+
   function buildPatchTasks() {
     const tasks: Array<{
       kind: "voice-binding" | "render-profile" | "edge";
@@ -354,6 +377,7 @@ export function useParameterPanel() {
       tasks.push({
         kind: "edge",
         submit: async () => {
+          assertEdgeDraftSafeToCommit();
           const completion = workspaceProcessing.startEdgeUpdate({
             summary: buildEdgeSummary(),
           });
@@ -403,6 +427,9 @@ export function useParameterPanel() {
     try {
       const result = await queue.run(tasks);
       if (result.status !== "completed") {
+        if (result.error instanceof Error) {
+          throw result.error;
+        }
         throw new Error(`参数提交失败，失败阶段为 ${result.failedTaskKind ?? "unknown"}`);
       }
 

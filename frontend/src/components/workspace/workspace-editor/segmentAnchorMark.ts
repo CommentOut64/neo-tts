@@ -2,7 +2,7 @@ import { Mark, mergeAttributes } from "@tiptap/core";
 
 export const SegmentAnchorMark = Mark.create({
   name: "segmentAnchor",
-  inclusive: false,
+  inclusive: true,
 
   addAttributes() {
     return {
