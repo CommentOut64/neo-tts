@@ -212,6 +212,11 @@ export interface EdgeUpdateBody {
   boundary_strategy?: string | null
 }
 
+export interface ReorderSegmentsBody {
+  base_document_version: number
+  ordered_segment_ids: string[]
+}
+
 export interface RenderJobResponse {
   job_id: string
   document_id: string

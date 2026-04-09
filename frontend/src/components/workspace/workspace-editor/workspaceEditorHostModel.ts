@@ -113,6 +113,13 @@ export function findCanvasTarget(
   return null;
 }
 
+export function findReorderHandleTarget(
+  target: ClosestCapableTarget | null,
+): string | null {
+  const handleTarget = target?.closest("[data-segment-handle-for]");
+  return handleTarget?.getAttribute("data-segment-handle-for") ?? null;
+}
+
 export function haveSameEdgeTopology(
   nextEdges: EditableEdge[] | undefined,
   previousEdges: EditableEdge[] | undefined,

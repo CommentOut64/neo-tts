@@ -1,5 +1,6 @@
 import { PauseBoundary } from "./pauseBoundary";
 import { SegmentAnchorMark } from "./segmentAnchorMark";
+import { ListReorderHandleDecoration } from "./listReorderHandleDecoration";
 import { SegmentDecoration } from "./segmentDecoration";
 import { SegmentEditingGuards } from "./segmentEditingGuards";
 
@@ -16,6 +17,7 @@ export function buildEditorExtensions(
       onActivateEdge: options.onActivateEdge,
     }),
     SegmentDecoration,
+    ListReorderHandleDecoration,
     SegmentEditingGuards,
   ];
 }

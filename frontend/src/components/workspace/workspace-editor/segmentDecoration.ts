@@ -3,6 +3,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
 import type { WorkspaceEditorLayoutMode, WorkspaceRenderMap } from './layoutTypes'
+import type { ListDropIntent } from './listReorderTypes'
 
 export const segmentDecorationKey = new PluginKey('segmentDecoration')
 
@@ -15,6 +16,10 @@ export interface SegmentDecorationState {
   dirtyIds: Set<string>
   dirtyEdgeIds: Set<string>
   isEditing: boolean
+  draggingSegmentId?: string | null
+  dropTargetSegmentId?: string | null
+  dropIntent?: ListDropIntent | null
+  isSubmittingReorder?: boolean
 }
 
 export interface SegmentDecorationSpec {
@@ -71,6 +76,26 @@ export function buildSegmentDecorationSpecs(
         classes.push(
           state.layoutMode === "list" ? "segment-line-selected" : "segment-selected",
         )
+      }
+    }
+
+    if (state.layoutMode === "list") {
+      if (state.draggingSegmentId === range.segmentId) {
+        classes.push("segment-line-reorder-source")
+      }
+
+      if (state.dropTargetSegmentId === range.segmentId) {
+        if (state.dropIntent === "swap") {
+          classes.push("segment-line-drop-swap")
+        } else if (state.dropIntent === "insert-before") {
+          classes.push("segment-line-drop-before")
+        } else if (state.dropIntent === "insert-after") {
+          classes.push("segment-line-drop-after")
+        }
+      }
+
+      if (state.isSubmittingReorder) {
+        classes.push("segment-line-submitting")
       }
     }
 

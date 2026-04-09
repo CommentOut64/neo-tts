@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import type { JSONContent } from "@tiptap/vue-3";
 
+import { reorderSegments } from "@/api/editSession";
 import { useEditSession } from "@/composables/useEditSession";
 import { usePlayback } from "@/composables/usePlayback";
 import { useRuntimeState } from "@/composables/useRuntimeState";
@@ -11,6 +12,7 @@ import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPersistence";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
 import type { EditableEdge, EditableSegment } from "@/types/editSession";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
@@ -25,6 +27,7 @@ import {
 } from "./sessionHandoff";
 import { resolveRerenderTargets } from "./rerenderTargets";
 import { buildEditorExtensions } from "./workspace-editor/buildEditorExtensions";
+import { buildDisplayWorkspaceEdges } from "./workspace-editor/buildDisplayWorkspaceEdges";
 import { buildWorkspaceSemanticDocument } from "./workspace-editor/buildWorkspaceSemanticDocument";
 import {
   areCompositionLayoutHintsCompatible,
@@ -48,6 +51,7 @@ import {
   cloneWorkspaceSerializable,
   collectPauseBoundaryAttrPatches,
   findCanvasTarget,
+  findReorderHandleTarget,
   haveSameEdgeTopology,
   resolveWorkspaceSessionItems,
   requestLayoutMode,
@@ -87,6 +91,7 @@ const layoutHintRevision = ref(0);
 const editNormalizationError = ref<string | null>(null);
 const renderMap = ref<ReturnType<typeof extractRenderMapFromDoc> | null>(null);
 const editorRef = ref<{ editor: any } | null>(null);
+const canvasRef = ref<HTMLElement | null>(null);
 const lastSessionSegments = ref<
   Array<Pick<EditableSegment, "segment_id" | "order_key" | "raw_text">>
 >([]);
@@ -144,6 +149,11 @@ const workspaceEdges = computed<WorkspaceSemanticEdge[]>(() =>
     boundaryStrategy: edge.boundary_strategy,
   })),
 );
+const backendSegmentTextById = computed<Record<string, string>>(() =>
+  Object.fromEntries(
+    sortedReadySegments.value.map((segment) => [segment.segment_id, segment.raw_text]),
+  ),
+);
 const pendingRerenderTargets = computed(() =>
   resolveRerenderTargets({
     dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
@@ -198,6 +208,57 @@ const sourceDocSegmentTexts = computed(() => {
   }));
 });
 
+const listReorder = useWorkspaceListReorder({
+  canStartDrag() {
+    return (
+      effectiveLayoutMode.value === "list" &&
+      !isEditing.value &&
+      editSession.sessionStatus.value === "ready" &&
+      runtimeState.canMutate.value
+    );
+  },
+  getCurrentOrder() {
+    return sourceDocSegmentTexts.value.map((segment) => segment.segmentId);
+  },
+  getScrollContainer() {
+    return canvasRef.value;
+  },
+  async onCommit({ nextOrder }) {
+    if (currentDocumentVersion.value === null) {
+      ElMessage.error("当前文档版本缺失，无法提交段顺序");
+      throw new Error("missing_document_version");
+    }
+
+    try {
+      const job = await reorderSegments({
+        base_document_version: currentDocumentVersion.value,
+        ordered_segment_ids: nextOrder,
+      });
+      runtimeState.trackJob(job, {
+        refreshSessionOnTerminal: true,
+      });
+      const terminalStatus = await runtimeState.waitForJobTerminal(job.job_id);
+      await editSession.refreshFormalSessionState();
+
+      if (terminalStatus !== "completed") {
+        ElMessage.error("段顺序提交失败，已回滚");
+        throw new Error(`reorder_failed:${terminalStatus}`);
+      }
+    } catch (error) {
+      try {
+        await editSession.refreshFormalSessionState();
+      } catch (refreshError) {
+        console.error("刷新重排后的正式会话状态失败", refreshError);
+      }
+
+      if (!(error instanceof Error && error.message.startsWith("reorder_failed:"))) {
+        ElMessage.error("段顺序提交失败，已回滚");
+      }
+      throw error;
+    }
+  },
+});
+
 const sourceDocSegmentDrafts = computed<Record<string, string>>(() =>
   Object.fromEntries(
     sourceDocSegmentTexts.value
@@ -206,18 +267,43 @@ const sourceDocSegmentDrafts = computed<Record<string, string>>(() =>
   ),
 );
 
+const displayOrder = computed(
+  () =>
+    listReorder.previewOrder.value ??
+    sourceDocSegmentTexts.value.map((segment) => segment.segmentId),
+);
+
+const displaySegmentTexts = computed(() => {
+  const textBySegmentId = new Map(
+    sourceDocSegmentTexts.value.map((segment) => [segment.segmentId, segment.text]),
+  );
+
+  return displayOrder.value.map((segmentId, index) => ({
+    segmentId,
+    orderKey: index + 1,
+    text: textBySegmentId.get(segmentId) ?? backendSegmentTextById.value[segmentId] ?? "",
+  }));
+});
+
+const displayWorkspaceEdges = computed(() =>
+  buildDisplayWorkspaceEdges({
+    orderedSegmentIds: displayOrder.value,
+    edges: workspaceEdges.value,
+  }),
+);
+
 const semanticDocument = computed(() => {
   if (editSession.sessionStatus.value === "ready") {
     return buildWorkspaceSemanticDocument({
       sourceText: editSession.sourceText.value,
       compositionLayoutHints: compositionLayoutHints.value,
-      segments: sourceDocSegmentTexts.value.map((segment) => ({
+      segments: displaySegmentTexts.value.map((segment) => ({
         segmentId: segment.segmentId,
         orderKey: segment.orderKey,
         text: segment.text,
         renderStatus: "completed",
       })),
-      edges: workspaceEdges.value,
+      edges: displayWorkspaceEdges.value,
       dirtySegmentIds: new Set(Object.keys(sourceDocSegmentDrafts.value)),
     });
   }
@@ -278,6 +364,45 @@ const activeViewKey = computed(() =>
     layoutHintRevision: layoutHintRevision.value,
   }),
 );
+const displayViewKey = computed(() => {
+  const previewSignature = listReorder.previewOrder.value?.join("|") ?? "base";
+  return `${activeViewKey.value}:${previewSignature}`;
+});
+const dragGhostText = computed(() => {
+  const draggingId = listReorder.draggingSegmentId.value;
+  if (!draggingId) {
+    return "";
+  }
+
+  return (
+    sourceDocSegmentTexts.value.find((segment) => segment.segmentId === draggingId)?.text ??
+    backendSegmentTextById.value[draggingId] ??
+    ""
+  );
+});
+const dragGhostLineNumber = computed(() => {
+  const draggingId = listReorder.draggingSegmentId.value;
+  if (!draggingId) {
+    return null;
+  }
+
+  const order = sourceDocSegmentTexts.value.map((segment) => segment.segmentId);
+  const index = order.indexOf(draggingId);
+  return index >= 0 ? index + 1 : null;
+});
+const dragGhostStyle = computed<Record<string, string>>(() => {
+  if (
+    listReorder.pointerClientX.value === null ||
+    listReorder.pointerClientY.value === null
+  ) {
+    return {};
+  }
+
+  return {
+    left: `${listReorder.pointerClientX.value + 18}px`,
+    top: `${listReorder.pointerClientY.value + 16}px`,
+  };
+});
 
 const customExtensions = buildEditorExtensions({
   onActivateEdge(edgeId) {
@@ -454,6 +579,10 @@ function clearPersistedWorkspaceDraft() {
 }
 
 function syncPreviewWorkspaceState(editorDoc: JSONContent) {
+  if (listReorder.previewOrder.value !== null) {
+    return;
+  }
+
   if (lightEdit.dirtyCount.value === 0) {
     clearPersistedWorkspaceDraft();
     return;
@@ -465,7 +594,7 @@ function syncPreviewWorkspaceState(editorDoc: JSONContent) {
 function pushContentToEditor(
   editorOverride?: any,
   docOverride: JSONContent = currentViewDoc.value,
-  viewKeyOverride: string = activeViewKey.value,
+  viewKeyOverride: string = displayViewKey.value,
   force = false,
 ) {
   nextTick(() => {
@@ -495,7 +624,7 @@ function syncDisplayDocument(force = false) {
   }
 
   currentViewDoc.value = renderPlan.value.doc;
-  pushContentToEditor(undefined, renderPlan.value.doc, activeViewKey.value, force);
+  pushContentToEditor(undefined, renderPlan.value.doc, displayViewKey.value, force);
 
   if (
     editSession.sessionStatus.value === "ready" &&
@@ -519,6 +648,17 @@ function syncDecorationState(editorOverride?: any) {
     dirtyIds: lightEdit.dirtySegmentIds.value,
     dirtyEdgeIds: parameterPanel.dirtyEdgeIds.value,
     isEditing: isEditing.value,
+    draggingSegmentId: listReorder.draggingSegmentId.value,
+    dropTargetSegmentId: listReorder.dropTargetSegmentId.value,
+    dropIntent: listReorder.dropIntent.value,
+    isSubmittingReorder: listReorder.mode.value === "submitting",
+  };
+  editor.storage.listReorderHandleDecoration.state = {
+    layoutMode: effectiveLayoutMode.value,
+    renderMap: isEditing.value ? null : renderMap.value,
+    selectedIds: segmentSelection.selectedSegmentIds.value,
+    draggingSegmentId: listReorder.draggingSegmentId.value,
+    mode: listReorder.mode.value,
   };
 
   editor.view.dispatch(editor.state.tr.setMeta(segmentDecorationKey, true));
@@ -598,7 +738,7 @@ function syncPauseBoundaryAttrsInEditor(nextEdges: EditableEdge[]) {
 
 function onEditorCreate({ editor }: { editor: any }) {
   editor.setEditable(isEditing.value);
-  pushContentToEditor(editor, currentViewDoc.value, activeViewKey.value, true);
+  pushContentToEditor(editor, currentViewDoc.value, displayViewKey.value, true);
 }
 
 function enterEditMode(clickEvent?: MouseEvent) {
@@ -787,7 +927,24 @@ function onDocUpdate(value: JSONContent) {
   }, WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS);
 }
 
+function onCanvasPointerDown(event: PointerEvent) {
+  const handleSegmentId = findReorderHandleTarget(event.target as any);
+  if (!handleSegmentId) {
+    return;
+  }
+
+  if (listReorder.startCandidateDrag(event, handleSegmentId)) {
+    segmentSelection.select(handleSegmentId);
+  }
+}
+
 function onCanvasClick(event: MouseEvent) {
+  if (listReorder.consumeClickSuppression()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
   if (isEditing.value) {
     return;
   }
@@ -825,6 +982,12 @@ function onCanvasClick(event: MouseEvent) {
 }
 
 function onCanvasDblClick(event: MouseEvent) {
+  if (listReorder.consumeClickSuppression()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
   if (isEditing.value) {
     return;
   }
@@ -861,6 +1024,10 @@ function activateEdgeSelection(edgeId: string | null) {
 watch(
   currentSessionKey,
   (nextSessionKey, previousSessionKey) => {
+    if (nextSessionKey !== previousSessionKey) {
+      listReorder.resetState();
+    }
+
     if (!currentSessionKey.value) {
       restoredSessionKey.value = null;
       setSourceDoc(createEmptyWorkspaceSourceDoc());
@@ -904,7 +1071,7 @@ watch(
             ? cloneWorkspaceSerializable(snapshot.compositionLayoutHints)
             : null;
         currentViewDoc.value = snapshot.editorDoc;
-        pushContentToEditor(undefined, snapshot.editorDoc, activeViewKey.value, true);
+        pushContentToEditor(undefined, snapshot.editorDoc, displayViewKey.value, true);
       } else {
         editingSourceDocBaseline.value = null;
         editingCompositionLayoutHintsBaseline.value = null;
@@ -977,6 +1144,8 @@ watch(
 watch(
   [
     sourceDocSegmentTexts,
+    () => listReorder.previewOrder.value,
+    () => listReorder.mode.value,
     () => runtimeState.progressiveSegments.value,
     () => editSession.sessionStatus.value,
     () => runtimeState.isInitialRendering.value,
@@ -1000,7 +1169,7 @@ watch(
 );
 
 watch(
-  activeViewKey,
+  displayViewKey,
   () => {
     if (!isEditing.value) {
       syncDisplayDocument();
@@ -1036,6 +1205,10 @@ watch(
     () => parameterPanel.dirtyEdgeIds.value,
     isEditing,
     renderMap,
+    () => listReorder.mode.value,
+    () => listReorder.draggingSegmentId.value,
+    () => listReorder.dropTargetSegmentId.value,
+    () => listReorder.dropIntent.value,
   ],
   () => nextTick(syncDecorationState),
   { deep: true },
@@ -1048,7 +1221,7 @@ watch(
       return;
     }
     editor.setEditable(isEditing.value);
-    pushContentToEditor(editor, currentViewDoc.value, activeViewKey.value, true);
+    pushContentToEditor(editor, currentViewDoc.value, displayViewKey.value, true);
   },
   { immediate: true },
 );
@@ -1161,7 +1334,9 @@ watch(isEditing, (editing) => {
     </header>
 
     <div
+      ref="canvasRef"
       class="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+      @pointerdown.capture="onCanvasPointerDown"
       @click="onCanvasClick"
       @dblclick="onCanvasDblClick"
     >
@@ -1177,6 +1352,22 @@ watch(isEditing, (editing) => {
         class="min-h-full w-full"
         @update:model-value="onDocUpdate"
       />
+    </div>
+
+    <div
+      v-if="listReorder.mode === 'dragging' && listReorder.draggingSegmentId"
+      class="workspace-reorder-ghost"
+      :style="dragGhostStyle"
+    >
+      <span
+        v-if="dragGhostLineNumber !== null"
+        class="workspace-reorder-ghost-line"
+      >
+        {{ String(dragGhostLineNumber).padStart(2, "0") }}
+      </span>
+      <span class="workspace-reorder-ghost-text">
+        {{ dragGhostText || "拖动当前段" }}
+      </span>
     </div>
 
     <EndSessionDialog
@@ -1262,12 +1453,72 @@ html.dark :deep(.segment-selected) {
 }
 
 :deep(.ProseMirror p.segment-line) {
+  position: relative;
   border-radius: 8px;
+  padding-left: 52px;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
     box-shadow 0.15s ease,
     border-color 0.15s ease;
+}
+
+:deep(.ProseMirror p.segment-line .segment-reorder-handle) {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  z-index: 2;
+  display: inline-flex;
+  height: 24px;
+  width: 32px;
+  transform: translateY(-50%);
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 7px;
+  color: var(--color-muted-fg);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+
+:deep(.ProseMirror p.segment-line .segment-reorder-line-number) {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+:deep(.ProseMirror p.segment-line .segment-reorder-grip) {
+  font-size: 10px;
+  letter-spacing: -1px;
+  opacity: 0;
+  transform: translateY(1px);
+  transition: opacity 0.15s ease;
+}
+
+:deep(.ProseMirror p.segment-line:hover .segment-reorder-handle),
+:deep(.ProseMirror p.segment-line-selected .segment-reorder-handle) {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--color-foreground);
+}
+
+html.dark :deep(.ProseMirror p.segment-line:hover .segment-reorder-handle),
+html.dark :deep(.ProseMirror p.segment-line-selected .segment-reorder-handle) {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+:deep(.ProseMirror p.segment-line:hover .segment-reorder-line-number),
+:deep(.ProseMirror p.segment-line-selected .segment-reorder-line-number) {
+  opacity: 0.24;
+}
+
+:deep(.ProseMirror p.segment-line:hover .segment-reorder-grip),
+:deep(.ProseMirror p.segment-line-selected .segment-reorder-grip) {
+  opacity: 0.9;
 }
 
 :deep(.ProseMirror p.segment-line-dirty) {
@@ -1290,6 +1541,58 @@ html.dark :deep(.ProseMirror p.segment-line-selected) {
 :deep(.ProseMirror p.segment-line-playing) {
   color: var(--color-accent);
   font-weight: 700;
+}
+
+:deep(.ProseMirror p.segment-line-reorder-source) {
+  background: rgba(59, 130, 246, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-reorder-source) {
+  background: rgba(96, 165, 250, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.28);
+}
+
+:deep(.ProseMirror p.segment-line-reorder-source .segment-reorder-handle),
+:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging) {
+  background: rgba(59, 130, 246, 0.14);
+  color: rgb(37 99 235);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-reorder-source .segment-reorder-handle),
+html.dark :deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging) {
+  background: rgba(96, 165, 250, 0.2);
+  color: rgb(147 197 253);
+}
+
+:deep(.ProseMirror p.segment-line-drop-swap) {
+  box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.38);
+  background: rgba(14, 165, 233, 0.08);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-drop-swap) {
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+:deep(.ProseMirror p.segment-line-drop-before) {
+  box-shadow: inset 0 2px 0 0 rgba(14, 165, 233, 0.8);
+}
+
+:deep(.ProseMirror p.segment-line-drop-after) {
+  box-shadow: inset 0 -2px 0 0 rgba(14, 165, 233, 0.8);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-drop-before) {
+  box-shadow: inset 0 2px 0 0 rgba(56, 189, 248, 0.86);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-drop-after) {
+  box-shadow: inset 0 -2px 0 0 rgba(56, 189, 248, 0.86);
+}
+
+:deep(.ProseMirror p.segment-line-submitting) {
+  opacity: 0.72;
 }
 
 :deep(.ProseMirror p.segment-line-editing-playing) {
@@ -1347,6 +1650,43 @@ html.dark :deep(.ProseMirror .pause-boundary-dirty) {
   background: rgba(245, 158, 11, 0.16);
   border-color: rgba(245, 158, 11, 0.4);
   color: rgb(251 191 36);
+}
+
+.workspace-reorder-ghost {
+  position: fixed;
+  z-index: 40;
+  display: inline-flex;
+  max-width: min(520px, calc(100vw - 32px));
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+  border-radius: 12px;
+  padding: 10px 12px;
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  backdrop-filter: blur(10px);
+}
+
+html.dark .workspace-reorder-ghost {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 20px 44px rgba(2, 6, 23, 0.42);
+}
+
+.workspace-reorder-ghost-line {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-fg);
+}
+
+.workspace-reorder-ghost-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-foreground);
 }
 
 :deep(.ProseMirror .is-editor-empty:first-child::before) {

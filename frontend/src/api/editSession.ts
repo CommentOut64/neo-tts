@@ -19,6 +19,7 @@ import type {
   SegmentBatchRenderProfilePatchBody,
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
+  ReorderSegmentsBody,
   ExportSegmentsBody,
   ExportCompositionBody,
   ExportJobResponse,
@@ -121,6 +122,16 @@ export async function rerenderSegment(id: string): Promise<RenderJobResponse> {
 export async function updateEdge(edgeId: string, body: EdgeUpdateBody): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
     `/v1/edit-session/edges/${edgeId}`,
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function reorderSegments(
+  body: ReorderSegmentsBody,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.post<RenderJobAcceptedResponse>(
+    "/v1/edit-session/segments/reorder",
     body,
   )
   return unwrapAcceptedRenderJob(data)

@@ -11,6 +11,7 @@ import {
   cloneWorkspaceSerializable,
   collectPauseBoundaryAttrPatches,
   findCanvasTarget,
+  findReorderHandleTarget,
   haveSameEdgeTopology,
   requestLayoutMode,
   resolveWorkspaceSessionItems,
@@ -158,6 +159,22 @@ describe("workspace editor host layout mode helpers", () => {
       type: "segment",
       segmentId: "seg-1",
     });
+  });
+
+  it("findReorderHandleTarget 能命中段首拖拽 handle", () => {
+    const handleTarget = {
+      getAttribute(name: string) {
+        return name === "data-segment-handle-for" ? "seg-2" : null;
+      },
+      closest(selector: string) {
+        if (selector === "[data-segment-handle-for]") {
+          return this;
+        }
+        return null;
+      },
+    };
+
+    expect(findReorderHandleTarget(handleTarget as never)).toBe("seg-2");
   });
 
   it("haveSameEdgeTopology 只看拓扑，不把纯 attrs 变化当成重建", () => {

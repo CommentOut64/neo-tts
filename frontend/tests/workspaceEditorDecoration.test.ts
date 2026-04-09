@@ -315,4 +315,60 @@ describe("workspace editor decoration", () => {
     expect(specs[0].attrs.class).toContain("segment-line-editing-playing");
     expect(specs[0].attrs.class).not.toContain("segment-line-playing");
   });
+
+  it("列表式拖拽时会给源段和落点段叠加 reorder class", () => {
+    const state = {
+      layoutMode: "list",
+      renderMap: {
+        orderedSegmentIds: ["seg-1", "seg-2"],
+        segmentRanges: [],
+        segmentBlockRanges: [
+          { segmentId: "seg-1", from: 0, to: 7 },
+          { segmentId: "seg-2", from: 7, to: 13 },
+        ],
+        edgeAnchors: [],
+      },
+      playingId: null,
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set<string>(),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: false,
+      draggingSegmentId: "seg-1",
+      dropTargetSegmentId: "seg-2",
+      dropIntent: "insert-before",
+      isSubmittingReorder: false,
+    } as unknown as SegmentDecorationState;
+
+    const specs = buildSegmentDecorationSpecs(state);
+
+    expect(specs[0].attrs.class).toContain("segment-line-reorder-source");
+    expect(specs[1].attrs.class).toContain("segment-line-drop-before");
+    expect(specs[1].attrs.class).not.toContain("segment-line-drop-swap");
+  });
+
+  it("列表式提交重排时会附加 submitting class", () => {
+    const state = {
+      layoutMode: "list",
+      renderMap: {
+        orderedSegmentIds: ["seg-1"],
+        segmentRanges: [],
+        segmentBlockRanges: [{ segmentId: "seg-1", from: 0, to: 7 }],
+        edgeAnchors: [],
+      },
+      playingId: null,
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set<string>(),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: false,
+      draggingSegmentId: null,
+      dropTargetSegmentId: null,
+      dropIntent: null,
+      isSubmittingReorder: true,
+    } as unknown as SegmentDecorationState;
+
+    const specs = buildSegmentDecorationSpecs(state);
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0].attrs.class).toContain("segment-line-submitting");
+  });
 });
