@@ -120,6 +120,35 @@ export function findReorderHandleTarget(
   return handleTarget?.getAttribute("data-segment-handle-for") ?? null;
 }
 
+export function canStartListReorder(input: {
+  layoutMode: WorkspaceEditorLayoutMode;
+  isEditing: boolean;
+  sessionStatus: "empty" | "initializing" | "ready" | "failed";
+  hasTextDraft: boolean;
+  hasParameterDraft: boolean;
+  hasPendingRerender: boolean;
+  canMutate: boolean;
+  isInteractionLocked: boolean;
+}): boolean {
+  return (
+    input.layoutMode === "list" &&
+    !input.isEditing &&
+    input.sessionStatus === "ready" &&
+    !input.hasTextDraft &&
+    !input.hasParameterDraft &&
+    !input.hasPendingRerender &&
+    input.canMutate &&
+    !input.isInteractionLocked
+  );
+}
+
+export function shouldShowListReorderHandles(input: {
+  canStartReorder: boolean;
+  hasReorderDraft: boolean;
+}): boolean {
+  return input.canStartReorder || input.hasReorderDraft;
+}
+
 export function haveSameEdgeTopology(
   nextEdges: EditableEdge[] | undefined,
   previousEdges: EditableEdge[] | undefined,

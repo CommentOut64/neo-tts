@@ -6,10 +6,12 @@ export type WorkspaceEntryAction = "idle" | "initialize" | "rebuild";
 export type EndSessionGuard =
   | "confirm_plain"
   | "confirm_discard_only"
+  | "confirm_apply_reorder"
   | "confirm_with_text_options";
 export type EndSessionChoice =
   | "continue_editing"
   | "keep_working_text"
+  | "apply_updates_and_end_session"
   | "discard_unapplied_changes";
 
 interface ResolveWorkspaceEntryActionInput {
@@ -36,6 +38,7 @@ interface ResolveEndSessionGuardInput {
   hasPendingTextChanges: boolean;
   hasPendingRerender: boolean;
   hasDirtyParameterDraft: boolean;
+  hasPendingReorderDraft: boolean;
 }
 
 interface ResolveEndSessionChoiceResultInput {
@@ -112,6 +115,10 @@ export function resolveEndSessionGuard(
     return "confirm_with_text_options";
   }
 
+  if (input.hasPendingReorderDraft) {
+    return "confirm_apply_reorder";
+  }
+
   if (input.hasPendingRerender || input.hasDirtyParameterDraft) {
     return "confirm_discard_only";
   }
@@ -123,6 +130,7 @@ export function resolveEndSessionChoiceResult(
   input: ResolveEndSessionChoiceResultInput,
 ): {
   shouldEndSession: boolean;
+  shouldApplyUpdatesBeforeEndSession?: boolean;
   nextInputText: string | null;
   nextInputSource: InputDraftSource | null;
   nextRoute: "/workspace" | null;
@@ -141,6 +149,16 @@ export function resolveEndSessionChoiceResult(
       shouldEndSession: true,
       nextInputText: input.workingText,
       nextInputSource: "input_handoff",
+      nextRoute: "/workspace",
+    };
+  }
+
+  if (input.choice === "apply_updates_and_end_session") {
+    return {
+      shouldEndSession: true,
+      shouldApplyUpdatesBeforeEndSession: true,
+      nextInputText: input.appliedText,
+      nextInputSource: "applied_text",
       nextRoute: "/workspace",
     };
   }

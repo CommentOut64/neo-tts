@@ -76,6 +76,7 @@ export interface EditableEdge {
   right_segment_id: string
   pause_duration_seconds: number
   boundary_strategy: string
+  boundary_strategy_locked?: boolean
   effective_boundary_strategy: string | null
   pause_sample_count: number | null
   boundary_sample_count: number | null

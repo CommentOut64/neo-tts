@@ -1,4 +1,4 @@
-import { nextTick, onBeforeUnmount, ref } from "vue";
+import { onBeforeUnmount, ref } from "vue";
 
 import { buildNextSegmentOrder } from "@/components/workspace/workspace-editor/buildNextSegmentOrder";
 import { computeListDropIntent } from "@/components/workspace/workspace-editor/computeListDropIntent";
@@ -21,7 +21,7 @@ function arraysEqual(left: string[], right: string[]) {
 
 export interface WorkspaceListReorderCommitPayload {
   nextOrder: string[];
-  rollbackOrder: string[];
+  committedOrder: string[];
   draggingSegmentId: string;
   dropTargetSegmentId: string;
   dropIntent: ListDropIntent;
@@ -30,8 +30,9 @@ export interface WorkspaceListReorderCommitPayload {
 export interface UseWorkspaceListReorderOptions {
   canStartDrag: () => boolean;
   getCurrentOrder: () => string[];
+  getCommittedOrder: () => string[];
   getScrollContainer: () => HTMLElement | null;
-  onCommit: (payload: WorkspaceListReorderCommitPayload) => Promise<void>;
+  onStage: (payload: WorkspaceListReorderCommitPayload) => boolean;
 }
 
 export function useWorkspaceListReorder(
@@ -45,8 +46,6 @@ export function useWorkspaceListReorder(
   const pointerClientY = ref<number | null>(null);
   const dragStartClientX = ref<number | null>(null);
   const dragStartClientY = ref<number | null>(null);
-  const previewOrder = ref<string[] | null>(null);
-  const rollbackOrder = ref<string[] | null>(null);
   const suppressNextClick = ref(false);
 
   function clearDocumentListeners() {
@@ -110,6 +109,7 @@ export function useWorkspaceListReorder(
 
   async function submitDrop() {
     const currentOrder = options.getCurrentOrder();
+    const committedOrder = options.getCommittedOrder();
     const draggingId = draggingSegmentId.value;
     const targetId = dropTargetSegmentId.value;
     const intent = dropIntent.value;
@@ -130,30 +130,14 @@ export function useWorkspaceListReorder(
       return;
     }
 
-    const currentRollbackOrder = [...currentOrder];
-    rollbackOrder.value = currentRollbackOrder;
-    previewOrder.value = nextOrder;
-    resetDragState("submitting");
-
-    try {
-      await options.onCommit({
-        nextOrder,
-        rollbackOrder: currentRollbackOrder,
-        draggingSegmentId: draggingId,
-        dropTargetSegmentId: targetId,
-        dropIntent: intent,
-      });
-      previewOrder.value = null;
-      rollbackOrder.value = null;
-      mode.value = "idle";
-    } catch (error) {
-      previewOrder.value = currentRollbackOrder;
-      await nextTick();
-      previewOrder.value = null;
-      rollbackOrder.value = null;
-      mode.value = "idle";
-      throw error;
-    }
+    const hasDraft = options.onStage({
+      nextOrder,
+      committedOrder,
+      draggingSegmentId: draggingId,
+      dropTargetSegmentId: targetId,
+      dropIntent: intent,
+    });
+    resetDragState(hasDraft ? "drafted" : "idle");
   }
 
   function handlePointerMove(event: PointerEvent) {
@@ -202,7 +186,12 @@ export function useWorkspaceListReorder(
   }
 
   function startCandidateDrag(event: PointerEvent, segmentId: string) {
-    if (!options.canStartDrag() || mode.value === "submitting") {
+    if (
+      !options.canStartDrag() ||
+      mode.value === "pending-drag" ||
+      mode.value === "dragging" ||
+      mode.value === "submitting"
+    ) {
       return false;
     }
 
@@ -243,8 +232,6 @@ export function useWorkspaceListReorder(
   }
 
   function resetState() {
-    previewOrder.value = null;
-    rollbackOrder.value = null;
     suppressNextClick.value = false;
     resetDragState();
   }
@@ -262,8 +249,6 @@ export function useWorkspaceListReorder(
     pointerClientY,
     dragStartClientX,
     dragStartClientY,
-    previewOrder,
-    rollbackOrder,
     startCandidateDrag,
     consumeClickSuppression,
     resetState,

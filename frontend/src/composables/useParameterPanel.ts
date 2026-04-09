@@ -258,6 +258,13 @@ export function useParameterPanel() {
     key: K,
     value: EdgeUpdateBody[K],
   ) {
+    if (
+      key === "boundary_strategy" &&
+      resolvedValues.value.edge?.boundary_strategy_locked
+    ) {
+      return;
+    }
+
     const isSameAsOriginal =
       resolvedValues.value.edge &&
       value ===

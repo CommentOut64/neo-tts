@@ -35,6 +35,7 @@ export interface ResolvedParameterPanelValues {
   edge: {
     pause_duration_seconds: number;
     boundary_strategy: string;
+    boundary_strategy_locked: boolean;
     effective_boundary_strategy: string | null;
   } | null;
 }
@@ -98,6 +99,7 @@ export function resolveEffectiveParameters(input: {
       edge: {
         pause_duration_seconds: edge.pause_duration_seconds,
         boundary_strategy: edge.boundary_strategy,
+        boundary_strategy_locked: Boolean(edge.boundary_strategy_locked),
         effective_boundary_strategy: edge.effective_boundary_strategy,
       },
     };

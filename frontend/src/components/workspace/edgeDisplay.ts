@@ -8,7 +8,7 @@ const EDGE_BOUNDARY_STRATEGY_LABELS: Record<string, string> = {
     "智能交叉淡化（Adaptive Crossfade）",
   crossfade: "简单交叉淡化（Simple Crossfade）",
   hard_cut: "直接硬切（Hard Cut）",
-  crossfade_only: "兼容交叉淡化（Fallback Crossfade）",
+  crossfade_only: "简单交叉淡化（Fallback Crossfade）",
 };
 
 export const EDGE_BOUNDARY_STRATEGY_OPTIONS: EdgeBoundaryStrategyOption[] = [

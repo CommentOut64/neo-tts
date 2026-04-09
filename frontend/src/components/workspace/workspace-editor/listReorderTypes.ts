@@ -2,6 +2,7 @@ export type DragReorderMode =
   | "idle"
   | "pending-drag"
   | "dragging"
+  | "drafted"
   | "submitting";
 
 export type ListDropIntent =
