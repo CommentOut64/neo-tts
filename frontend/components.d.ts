@@ -17,6 +17,7 @@ declare module 'vue' {
     BatchParameterPanel: typeof import('./src/components/workspace/BatchParameterPanel.vue')['default']
     DirtySegmentBadge: typeof import('./src/components/workspace/DirtySegmentBadge.vue')['default']
     EdgeParameterPanel: typeof import('./src/components/workspace/EdgeParameterPanel.vue')['default']
+    EndSessionDialog: typeof import('./src/components/workspace/EndSessionDialog.vue')['default']
     ExportDialog: typeof import('./src/components/workspace/ExportDialog.vue')['default']
     FileImportZone: typeof import('./src/components/text-input/FileImportZone.vue')['default']
     FileUploader: typeof import('./src/components/FileUploader.vue')['default']

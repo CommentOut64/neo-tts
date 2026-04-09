@@ -4,7 +4,6 @@ import { ElMessage } from "element-plus";
 import type { JSONContent } from "@tiptap/vue-3";
 
 import { useEditSession } from "@/composables/useEditSession";
-import { useInputDraft } from "@/composables/useInputDraft";
 import { usePlayback } from "@/composables/usePlayback";
 import { useRuntimeState } from "@/composables/useRuntimeState";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
@@ -16,8 +15,15 @@ import type { EditableEdge, EditableSegment } from "@/types/editSession";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
 
-import ResetSessionDialog from "./ResetSessionDialog.vue";
-import { buildSessionHeadText } from "./sessionHandoff";
+import EndSessionDialog from "./EndSessionDialog.vue";
+import {
+  buildSessionHeadText,
+  resolveEndSessionChoiceResult,
+  resolveEndSessionGuard,
+  type EndSessionGuard,
+  type EndSessionChoice,
+} from "./sessionHandoff";
+import { resolveRerenderTargets } from "./rerenderTargets";
 import { buildEditorExtensions } from "./workspace-editor/buildEditorExtensions";
 import { buildWorkspaceSemanticDocument } from "./workspace-editor/buildWorkspaceSemanticDocument";
 import {
@@ -54,7 +60,6 @@ const COMPOSITION_DISABLED_MESSAGE =
   "当前会话结构已脱离输入稿换行，暂不支持组合式";
 
 const editSession = useEditSession();
-const inputDraft = useInputDraft();
 const lightEdit = useWorkspaceLightEdit();
 const workspaceDraftPersistence = useWorkspaceDraftPersistence();
 const { currentSegmentId, play, seekToSegment } = usePlayback();
@@ -63,7 +68,9 @@ const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
 const parameterPanel = useParameterPanel();
 
-const resetSessionDialogVisible = ref(false);
+const endSessionDialogVisible = ref(false);
+const endSessionDialogMode = ref<EndSessionGuard>("confirm_plain");
+const isEndingSession = ref(false);
 const isEditing = ref(false);
 const sourceDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
 const currentViewDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
@@ -124,6 +131,7 @@ const currentDocumentVersion = computed(() => editSession.documentVersion.value)
 const currentSessionHeadText = computed(() =>
   buildSessionHeadText(sortedReadySegments.value),
 );
+const currentWorkingText = computed(() => extractWorkspaceEffectiveText(sourceDoc.value));
 const currentSessionSegmentIds = computed(() =>
   sortedReadySegments.value.map((segment) => segment.segment_id),
 );
@@ -135,6 +143,16 @@ const workspaceEdges = computed<WorkspaceSemanticEdge[]>(() =>
     pauseDurationSeconds: edge.pause_duration_seconds,
     boundaryStrategy: edge.boundary_strategy,
   })),
+);
+const pendingRerenderTargets = computed(() =>
+  resolveRerenderTargets({
+    dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
+    segments: editSession.segments.value.map((segment) => ({
+      segment_id: segment.segment_id,
+      order_key: segment.order_key,
+      render_status: segment.render_status,
+    })),
+  }),
 );
 
 const currentSessionKey = computed(() => {
@@ -388,23 +406,6 @@ function syncEditingSourceState(viewDoc: JSONContent): boolean {
   }
 }
 
-function syncInputBackToSessionIfNeeded() {
-  if (inputDraft.source.value !== "workspace" || !currentSessionHeadText.value) {
-    return;
-  }
-
-  editSession.syncInputDraftToSessionText(currentSessionHeadText.value);
-}
-
-function syncInputFromWorkspaceEffectiveText(effectiveText: string) {
-  if (
-    effectiveText !== currentSessionHeadText.value ||
-    inputDraft.source.value === "workspace"
-  ) {
-    inputDraft.syncFromWorkspaceDraft(effectiveText);
-  }
-}
-
 function persistWorkspaceDraftSnapshot(
   mode: WorkspaceDraftMode,
   editorDoc: JSONContent,
@@ -455,13 +456,10 @@ function clearPersistedWorkspaceDraft() {
 function syncPreviewWorkspaceState(editorDoc: JSONContent) {
   if (lightEdit.dirtyCount.value === 0) {
     clearPersistedWorkspaceDraft();
-    syncInputBackToSessionIfNeeded();
     return;
   }
 
-  const effectiveText = extractWorkspaceEffectiveText(sourceDoc.value);
   persistWorkspaceDraftSnapshot("preview", editorDoc);
-  syncInputFromWorkspaceEffectiveText(effectiveText);
 }
 
 function pushContentToEditor(
@@ -679,10 +677,8 @@ function commitAndExitEdit() {
 
     if (Object.keys(nextDrafts).length > 0) {
       persistWorkspaceDraftSnapshot("preview", editorDoc, nextDrafts);
-      syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(nextSourceDoc));
     } else {
       clearPersistedWorkspaceDraft();
-      syncInputBackToSessionIfNeeded();
     }
   } catch (error) {
     ElMessage.error(
@@ -723,6 +719,50 @@ function handleResetSessionSuccess() {
   nextTick(syncDisplayDocument);
 }
 
+async function finalizeEndSession(choice: EndSessionChoice) {
+  const result = resolveEndSessionChoiceResult({
+    choice,
+    appliedText: currentSessionHeadText.value ?? "",
+    workingText: currentWorkingText.value,
+  });
+
+  if (!result.shouldEndSession) {
+    endSessionDialogVisible.value = false;
+    return;
+  }
+
+  try {
+    isEndingSession.value = true;
+    await editSession.endSession(
+      result.nextInputSource !== null && result.nextInputText !== null
+        ? {
+            nextInputText: result.nextInputText,
+            nextInputSource: result.nextInputSource,
+          }
+        : undefined,
+    );
+    parameterPanel.discardDraft();
+    handleResetSessionSuccess();
+    endSessionDialogVisible.value = false;
+    ElMessage.success("当前会话已结束");
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error ? error.message : "结束当前会话失败",
+    );
+  } finally {
+    isEndingSession.value = false;
+  }
+}
+
+async function requestEndSession() {
+  endSessionDialogMode.value = resolveEndSessionGuard({
+    hasPendingTextChanges: lightEdit.dirtyCount.value > 0,
+    hasPendingRerender: pendingRerenderTargets.value.count > 0,
+    hasDirtyParameterDraft: parameterPanel.hasDirty.value,
+  });
+  endSessionDialogVisible.value = true;
+}
+
 function onKeyDown(event: KeyboardEvent) {
   if (event.key === "Escape" && isEditing.value) {
     event.preventDefault();
@@ -744,7 +784,6 @@ function onDocUpdate(value: JSONContent) {
   draftPersistTimeoutId = window.setTimeout(() => {
     draftPersistTimeoutId = null;
     persistWorkspaceDraftSnapshot("editing", value);
-    syncInputFromWorkspaceEffectiveText(extractWorkspaceEffectiveText(sourceDoc.value));
   }, WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS);
 }
 
@@ -852,7 +891,6 @@ watch(
         syncCompositionLayoutHintsFromSemanticDocument();
       }
       lightEdit.replaceAllDrafts(snapshot.segmentDrafts);
-      syncInputFromWorkspaceEffectiveText(snapshot.effectiveText);
 
       if (
         snapshot.mode === "editing" &&
@@ -1097,10 +1135,10 @@ watch(isEditing, (editing) => {
         <button
           v-if="!isEditing"
           class="rounded border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
-          :disabled="isInteractionLocked"
-          @click="resetSessionDialogVisible = true"
+          :disabled="isEndingSession"
+          @click="requestEndSession"
         >
-          清空会话
+          结束会话
         </button>
 
         <template v-if="isEditing">
@@ -1141,9 +1179,11 @@ watch(isEditing, (editing) => {
       />
     </div>
 
-    <ResetSessionDialog
-      v-model:visible="resetSessionDialogVisible"
-      @success="handleResetSessionSuccess"
+    <EndSessionDialog
+      v-model:visible="endSessionDialogVisible"
+      :mode="endSessionDialogMode"
+      :loading="isEndingSession"
+      @choose="finalizeEndSession"
     />
   </section>
 </template>

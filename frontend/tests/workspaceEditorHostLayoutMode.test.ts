@@ -323,4 +323,14 @@ describe("workspace editor host layout mode helpers", () => {
   it("不再提供转到文本输入页继续编辑按钮", () => {
     expect(workspaceEditorHostSource).not.toContain("转到文本输入页继续编辑");
   });
+
+  it("不会再把 workspace working_text 实时回写到输入页", () => {
+    expect(workspaceEditorHostSource).not.toContain("syncFromWorkspaceDraft");
+    expect(workspaceEditorHostSource).not.toContain("syncInputDraftToSessionText");
+  });
+
+  it("正文区顶部入口应改成结束会话，而不是继续暴露清空会话语义", () => {
+    expect(workspaceEditorHostSource).toContain("结束会话");
+    expect(workspaceEditorHostSource).not.toContain("清空会话");
+  });
 });

@@ -32,7 +32,8 @@ const {
   discoverSession,
   initialize,
   clearSession,
-  syncInputDraftToSessionText,
+  backfillInputDraftFromAppliedText,
+  rememberSessionInitialText,
   sourceDraftRevision,
 } = useEditSession()
 const {
@@ -255,7 +256,8 @@ const handleInit = async () => {
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
 
   if (accepted) {
-    syncInputDraftToSessionText(text.value)
+    rememberSessionInitialText(text.value)
+    backfillInputDraftFromAppliedText(text.value)
   }
 }
 

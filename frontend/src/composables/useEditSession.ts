@@ -27,7 +27,9 @@ import { extractStatusCode } from '@/api/requestSupport'
 import { useTimeline } from "./useTimeline";
 import { useInputDraft, type InputDraftSource } from './useInputDraft'
 import { useWorkspaceDraftPersistence } from './useWorkspaceDraftPersistence'
+import { useWorkspaceLightEdit } from './useWorkspaceLightEdit'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
+export type EndSessionInputSource = InputDraftSource | 'manual'
 
 export interface ResolveInputDraftSyncActionInput {
   sessionHeadText: string | null
@@ -46,11 +48,22 @@ export function resolveInputDraftSyncAction(
     return 'noop'
   }
 
+  const isExplicitManualDraft =
+    input.inputSource === 'manual' &&
+    (
+      input.draftRevision > 0 ||
+      input.lastSentToSessionRevision !== null ||
+      input.sourceDraftRevision !== null
+    )
+
   if (input.isInputEmpty) {
+    if (isExplicitManualDraft) {
+      return 'noop'
+    }
     return 'backfill'
   }
 
-  if (input.inputSource === 'workspace') {
+  if (input.inputSource === 'input_handoff') {
     return 'noop'
   }
 
@@ -58,7 +71,7 @@ export function resolveInputDraftSyncAction(
     return 'adopt'
   }
 
-  const isTrackingSessionDraft = input.inputSource === 'session'
+  const isTrackingSessionDraft = input.inputSource === 'applied_text'
     && input.sourceDraftRevision !== null
     && input.draftRevision === input.sourceDraftRevision
     && input.lastSentToSessionRevision === input.draftRevision
@@ -90,6 +103,7 @@ export function useEditSession() {
   const runtimeState = useRuntimeState()
   const inputDraft = useInputDraft()
   const workspaceDraftPersistence = useWorkspaceDraftPersistence()
+  const lightEdit = useWorkspaceLightEdit()
 
   function getSnapshotHeadText(data: EditSessionSnapshot | null): string | null {
     if (!data || data.segments.length === 0) {
@@ -101,15 +115,21 @@ export function useEditSession() {
   const sourceText = computed(() => {
     return snapshot.value?.source_text ?? lastInitParams.value?.raw_text ?? null
   })
+  const sessionInitialText = computed(() => sourceText.value)
+  const appliedText = computed(() => getSnapshotHeadText(snapshot.value))
 
   function markDraftAsSyncedToSession() {
     sourceDraftRevision.value = inputDraft.draftRevision.value
     inputDraft.markSentToSession(inputDraft.draftRevision.value)
   }
 
-  function syncInputDraftToSessionText(sessionHeadText: string) {
-    inputDraft.backfillFromSession(sessionHeadText)
+  function backfillInputDraftFromAppliedText(sessionHeadText: string) {
+    inputDraft.backfillFromAppliedText(sessionHeadText)
     markDraftAsSyncedToSession()
+  }
+
+  function rememberSessionInitialText(nextText: string) {
+    inputDraft.rememberLastSessionInitialText(nextText)
   }
 
   function syncDraftRevisionFromSnapshot(data: EditSessionSnapshot) {
@@ -125,8 +145,27 @@ export function useEditSession() {
     })
 
     if ((action === 'backfill' || action === 'adopt') && sessionHeadText) {
-      syncInputDraftToSessionText(sessionHeadText)
+      backfillInputDraftFromAppliedText(sessionHeadText)
     }
+  }
+
+  function resetSessionState() {
+    sessionStatus.value = 'empty'
+    snapshot.value = null
+    timeline.value = null
+    documentVersion.value = null
+    activeJob.value = null
+    lastInitParams.value = null
+    segments.value = []
+    segmentsLoaded.value = false
+    edges.value = []
+    edgesLoaded.value = false
+    groups.value = []
+    renderProfiles.value = []
+    voiceBindings.value = []
+    sessionResourcesLoaded.value = false
+    sourceDraftRevision.value = null
+    lightEdit.clearAll()
   }
 
   async function discoverSession() {
@@ -152,19 +191,13 @@ export function useEditSession() {
         voiceBindings.value = []
         sessionResourcesLoaded.value = false
         sourceDraftRevision.value = null
+        if (data.session_status === 'empty') {
+          lastInitParams.value = null
+        }
       }
     } catch (err) {
       if (extractStatusCode(err) === 404) {
-        sessionStatus.value = 'empty'
-        segments.value = []
-        segmentsLoaded.value = false
-        edges.value = []
-        edgesLoaded.value = false
-        groups.value = []
-        renderProfiles.value = []
-        voiceBindings.value = []
-        sessionResourcesLoaded.value = false
-        sourceDraftRevision.value = null
+        resetSessionState()
       } else {
         sessionStatus.value = 'failed'
       }
@@ -197,16 +230,17 @@ export function useEditSession() {
     }
 
     if (sessionStatus.value !== 'ready') {
-      segments.value = []
-      segmentsLoaded.value = false
-      edges.value = []
-      edgesLoaded.value = false
-      groups.value = []
-      renderProfiles.value = []
-      voiceBindings.value = []
-      sessionResourcesLoaded.value = false
       if (sessionStatus.value === 'empty') {
-        sourceDraftRevision.value = null
+        resetSessionState()
+      } else {
+        segments.value = []
+        segmentsLoaded.value = false
+        edges.value = []
+        edgesLoaded.value = false
+        groups.value = []
+        renderProfiles.value = []
+        voiceBindings.value = []
+        sessionResourcesLoaded.value = false
       }
     }
   }
@@ -245,14 +279,18 @@ export function useEditSession() {
     setTimeline(timelineData)
 
     if (sessionStatus.value !== 'ready') {
-      segments.value = []
-      segmentsLoaded.value = false
-      edges.value = []
-      edgesLoaded.value = false
-      groups.value = []
-      renderProfiles.value = []
-      voiceBindings.value = []
-      sessionResourcesLoaded.value = false
+      if (sessionStatus.value === 'empty') {
+        resetSessionState()
+      } else {
+        segments.value = []
+        segmentsLoaded.value = false
+        edges.value = []
+        edgesLoaded.value = false
+        groups.value = []
+        renderProfiles.value = []
+        voiceBindings.value = []
+        sessionResourcesLoaded.value = false
+      }
       return {
         snapshot: snapshotData,
         timeline: timelineData,
@@ -343,26 +381,38 @@ export function useEditSession() {
     }
 
     await deleteSession()
-    sessionStatus.value = 'empty'
-    snapshot.value = null
-    timeline.value = null
-    documentVersion.value = null
-    activeJob.value = null
-    segments.value = []
-    segmentsLoaded.value = false
-    edges.value = []
-    edgesLoaded.value = false
-    groups.value = []
-    renderProfiles.value = []
-    voiceBindings.value = []
-    sessionResourcesLoaded.value = false
-    sourceDraftRevision.value = null
+    resetSessionState()
+  }
+
+  async function endSession(target?: {
+    nextInputText: string
+    nextInputSource: EndSessionInputSource
+  }) {
+    await clearSession()
+
+    if (!target) {
+      return
+    }
+
+    if (target.nextInputSource === 'applied_text') {
+      inputDraft.backfillFromAppliedText(target.nextInputText)
+      return
+    }
+
+    if (target.nextInputSource === 'input_handoff') {
+      inputDraft.handoffFromWorkspace(target.nextInputText)
+      return
+    }
+
+    inputDraft.setText(target.nextInputText)
   }
 
   return {
     sessionStatus,
     snapshot,
     sourceText,
+    sessionInitialText,
+    appliedText,
     timeline,
     documentVersion,
     activeJob,
@@ -385,7 +435,9 @@ export function useEditSession() {
     loadAllSegments,
     loadAllEdges,
     refreshSessionResources,
-    syncInputDraftToSessionText,
+    backfillInputDraftFromAppliedText,
+    rememberSessionInitialText,
+    endSession,
     clearSession,
   }
 }

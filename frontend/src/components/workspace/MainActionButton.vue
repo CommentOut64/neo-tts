@@ -18,7 +18,12 @@ const props = defineProps<{
 const lightEdit = useWorkspaceLightEdit();
 const editSession = useEditSession();
 const parameterPanel = useParameterPanel();
-const { refreshSnapshot, refreshTimeline } = editSession;
+const {
+  refreshSnapshot,
+  refreshTimeline,
+  appliedText,
+  backfillInputDraftFromAppliedText,
+} = editSession;
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const rerenderTargets = computed(() =>
@@ -86,7 +91,14 @@ const buttonState = computed(() =>
 const handleStart = async () => {
   const dirtyIds = rerenderTargets.value.segmentIds;
   if (dirtyIds.length === 0) return;
-  await queue.run(dirtyIds);
+  const result = await queue.run(dirtyIds);
+  if (
+    result?.completedAll &&
+    result.terminalStatus === "completed" &&
+    appliedText.value
+  ) {
+    backfillInputDraftFromAppliedText(appliedText.value);
+  }
 };
 
 const onClick = async () => {

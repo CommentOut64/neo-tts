@@ -1,14 +1,10 @@
 export type ClearInputDraftResult =
   | "cancelled"
-  | "cleared_draft"
-  | "cleared_draft_and_session";
+  | "cleared_all";
 
 export interface ClearInputDraftFlowOptions {
   confirmClearDraft: () => Promise<void>;
-  loadHasSessionContent: () => Promise<boolean>;
-  chooseSessionCleanup: () => Promise<boolean>;
-  clearDraft: () => void;
-  clearSession: () => Promise<void>;
+  executeClear: () => Promise<void>;
 }
 
 export async function runClearInputDraftFlow(
@@ -20,19 +16,6 @@ export async function runClearInputDraftFlow(
     return "cancelled";
   }
 
-  const hasSessionContent = await options.loadHasSessionContent();
-  if (!hasSessionContent) {
-    options.clearDraft();
-    return "cleared_draft";
-  }
-
-  const shouldClearSession = await options.chooseSessionCleanup();
-  if (shouldClearSession) {
-    await options.clearSession();
-    options.clearDraft();
-    return "cleared_draft_and_session";
-  }
-
-  options.clearDraft();
-  return "cleared_draft";
+  await options.executeClear();
+  return "cleared_all";
 }

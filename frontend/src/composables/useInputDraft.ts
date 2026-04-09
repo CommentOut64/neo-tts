@@ -3,19 +3,21 @@ import type { Router } from 'vue-router'
 
 const STORAGE_KEY = 'neo-tts-input-draft'
 
-export type InputDraftSource = 'manual' | 'session' | 'workspace'
+export type InputDraftSource = 'manual' | 'applied_text' | 'input_handoff'
 
 interface InputDraftEnvelope {
   text: string
   draftRevision: number
   lastSentToSessionRevision: number | null
   source: InputDraftSource
+  lastSessionInitialText: string | null
 }
 
 const text = ref<string>('')
 const draftRevision = ref<number>(0)
 const lastSentToSessionRevision = ref<number | null>(null)
 const source = ref<InputDraftSource>('manual')
+const lastSessionInitialText = ref<string | null>(null)
 let hydrated = false
 
 function hasBrowserStorage(): boolean {
@@ -27,12 +29,21 @@ function normalizeSource(
   normalizedRevision: number,
   normalizedLastSent: number | null,
 ): InputDraftSource {
-  if (raw === 'manual' || raw === 'session' || raw === 'workspace') {
+  if (raw === 'manual' || raw === 'applied_text' || raw === 'input_handoff') {
     return raw
   }
 
+  // 兼容旧持久化来源命名。
+  if (raw === 'session') {
+    return 'applied_text'
+  }
+
+  if (raw === 'workspace') {
+    return 'input_handoff'
+  }
+
   if (normalizedRevision > 0 && normalizedLastSent === normalizedRevision) {
-    return 'session'
+    return 'applied_text'
   }
 
   return 'manual'
@@ -61,13 +72,17 @@ function normalizeEnvelope(raw: unknown): InputDraftEnvelope | null {
     draftRevision: normalizedRevision,
     lastSentToSessionRevision: normalizedLastSent,
     source: normalizeSource(candidate.source, normalizedRevision, normalizedLastSent),
+    lastSessionInitialText:
+      typeof candidate.lastSessionInitialText === 'string' && candidate.lastSessionInitialText.length > 0
+        ? candidate.lastSessionInitialText
+        : null,
   }
 }
 
 function persistDraftState() {
   if (!hasBrowserStorage()) return
 
-  if (text.value.length === 0) {
+  if (text.value.length === 0 && !lastSessionInitialText.value) {
     window.localStorage.removeItem(STORAGE_KEY)
     return
   }
@@ -77,6 +92,7 @@ function persistDraftState() {
     draftRevision: draftRevision.value,
     lastSentToSessionRevision: lastSentToSessionRevision.value,
     source: source.value,
+    lastSessionInitialText: lastSessionInitialText.value,
   }
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope))
 }
@@ -99,6 +115,7 @@ function hydrateDraftState() {
     draftRevision.value = envelope.draftRevision
     lastSentToSessionRevision.value = envelope.lastSentToSessionRevision
     source.value = envelope.source
+    lastSessionInitialText.value = envelope.lastSessionInitialText
   } catch {
     window.localStorage.removeItem(STORAGE_KEY)
   }
@@ -133,31 +150,26 @@ export function useInputDraft() {
     persistDraftState()
   }
 
-  function backfillFromSession(t: string) {
-    return applyIncomingText(t, 'session')
+  function backfillFromAppliedText(t: string) {
+    return applyIncomingText(t, 'applied_text')
   }
 
-  function syncFromWorkspaceDraft(t: string) {
-    if (source.value === 'manual' && text.value.trim().length > 0 && text.value !== t) {
+  function handoffFromWorkspace(t: string) {
+    return applyIncomingText(t, 'input_handoff')
+  }
+
+  function rememberLastSessionInitialText(nextText: string) {
+    lastSessionInitialText.value = nextText.trim().length > 0 ? nextText : null
+    persistDraftState()
+  }
+
+  function restoreLastSessionInitialText() {
+    if (!lastSessionInitialText.value) {
       return false
     }
 
-    if (text.value === t) {
-      if (source.value === 'workspace') {
-        persistDraftState()
-        return true
-      }
-
-      if (source.value === 'manual') {
-        persistDraftState()
-        return false
-      }
-
-      persistDraftState()
-      return true
-    }
-
-    return applyIncomingText(t, 'workspace')
+    setText(lastSessionInitialText.value)
+    return true
   }
 
   function setText(newText: string) {
@@ -175,12 +187,15 @@ export function useInputDraft() {
     draftRevision,
     lastSentToSessionRevision,
     source,
+    lastSessionInitialText,
     hasUnsent,
     isEmpty,
     sendToWorkspace,
     markSentToSession,
-    backfillFromSession,
-    syncFromWorkspaceDraft,
+    backfillFromAppliedText,
+    handoffFromWorkspace,
+    rememberLastSessionInitialText,
+    restoreLastSessionInitialText,
     setText
   }
 }
