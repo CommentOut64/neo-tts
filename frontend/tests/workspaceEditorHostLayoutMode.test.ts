@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { reactive } from "vue";
 import { describe, expect, it } from "vitest";
 
@@ -15,6 +18,14 @@ import {
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
 import type { WorkspaceRenderMap } from "../src/components/workspace/workspace-editor/layoutTypes";
+
+const workspaceEditorHostSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/WorkspaceEditorHost.vue",
+  ),
+  "utf8",
+);
 
 function createEdge(
   edgeId: string,
@@ -288,5 +299,28 @@ describe("workspace editor host layout mode helpers", () => {
         nextEdges: [createEdge("edge-1", "seg-1", "seg-3", 0.8)],
       }),
     ).toBe(false);
+  });
+
+  it("会话正文默认以列表式打开", () => {
+    expect(workspaceEditorHostSource).toContain(
+      'const layoutMode = ref<WorkspaceEditorLayoutMode>("list");',
+    );
+  });
+
+  it("布局切换按钮顺序应为列表式在前，组合式在后", () => {
+    const listButtonIndex = workspaceEditorHostSource.indexOf(
+      '@click="requestNextLayoutMode(\'list\')"',
+    );
+    const compositionButtonIndex = workspaceEditorHostSource.indexOf(
+      '@click="requestNextLayoutMode(\'composition\')"',
+    );
+
+    expect(listButtonIndex).toBeGreaterThan(-1);
+    expect(compositionButtonIndex).toBeGreaterThan(-1);
+    expect(listButtonIndex).toBeLessThan(compositionButtonIndex);
+  });
+
+  it("不再提供转到文本输入页继续编辑按钮", () => {
+    expect(workspaceEditorHostSource).not.toContain("转到文本输入页继续编辑");
   });
 });

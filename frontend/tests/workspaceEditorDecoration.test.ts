@@ -243,4 +243,76 @@ describe("workspace editor decoration", () => {
     expect(specs[0].attrs.class).not.toContain("segment-fragment");
     expect(specs[1].attrs.class).toContain("segment-line-selected");
   });
+
+  it("组合式编辑态不应保留 dirty 背景高亮", () => {
+    const state = {
+      layoutMode: "composition",
+      renderMap: {
+        orderedSegmentIds: ["seg-1"],
+        segmentRanges: [{ segmentId: "seg-1", from: 1, to: 5 }],
+        segmentBlockRanges: [],
+        edgeAnchors: [],
+      },
+      playingId: null,
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set(["seg-1"]),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: true,
+    } as unknown as SegmentDecorationState;
+
+    const specs = buildSegmentDecorationSpecs(state);
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0].attrs.class).toContain("segment-fragment");
+    expect(specs[0].attrs.class).not.toContain("segment-dirty");
+  });
+
+  it("组合式编辑态播放段应切为绿色背景高亮，并覆盖 dirty 视觉", () => {
+    const state = {
+      layoutMode: "composition",
+      renderMap: {
+        orderedSegmentIds: ["seg-1"],
+        segmentRanges: [{ segmentId: "seg-1", from: 1, to: 5 }],
+        segmentBlockRanges: [],
+        edgeAnchors: [],
+      },
+      playingId: "seg-1",
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set(["seg-1"]),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: true,
+    } as unknown as SegmentDecorationState;
+
+    const specs = buildSegmentDecorationSpecs(state);
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0].attrs.class).toContain("segment-editing-playing");
+    expect(specs[0].attrs.class).not.toContain("segment-playing");
+    expect(specs[0].attrs.class).not.toContain("segment-dirty");
+  });
+
+  it("列表式编辑态播放段应切为整行绿色背景高亮，并压过 dirty", () => {
+    const state = {
+      layoutMode: "list",
+      renderMap: {
+        orderedSegmentIds: ["seg-1"],
+        segmentRanges: [],
+        segmentBlockRanges: [{ segmentId: "seg-1", from: 0, to: 7 }],
+        edgeAnchors: [],
+      },
+      playingId: "seg-1",
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set(["seg-1"]),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: true,
+    } as unknown as SegmentDecorationState;
+
+    const specs = buildSegmentDecorationSpecs(state);
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0].attrs.class).toContain("segment-line");
+    expect(specs[0].attrs.class).toContain("segment-line-dirty");
+    expect(specs[0].attrs.class).toContain("segment-line-editing-playing");
+    expect(specs[0].attrs.class).not.toContain("segment-line-playing");
+  });
 });

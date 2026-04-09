@@ -49,10 +49,6 @@ import {
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "./workspace-editor/workspaceEditorHostModel";
 
-const emit = defineEmits<{
-  (e: "backfill-to-text-input"): void;
-}>();
-
 const WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS = 200;
 const COMPOSITION_DISABLED_MESSAGE =
   "当前会话结构已脱离输入稿换行，暂不支持组合式";
@@ -71,7 +67,7 @@ const resetSessionDialogVisible = ref(false);
 const isEditing = ref(false);
 const sourceDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
 const currentViewDoc = ref<JSONContent>(createEmptyWorkspaceSourceDoc());
-const layoutMode = ref<WorkspaceEditorLayoutMode>("composition");
+const layoutMode = ref<WorkspaceEditorLayoutMode>("list");
 const restoredSessionKey = ref<string | null>(null);
 const sourceDocSessionKey = ref<string | null>(null);
 const editingSourceDocBaseline = ref<JSONContent | null>(null);
@@ -1054,24 +1050,24 @@ watch(isEditing, (editing) => {
           <button
             type="button"
             class="px-2.5 py-1 text-xs transition-colors"
-            :class="effectiveLayoutMode === 'composition'
-              ? 'bg-foreground text-background'
-              : 'bg-transparent text-foreground'"
-            :disabled="isEditing || !compositionAvailable || isInteractionLocked"
-            @click="requestNextLayoutMode('composition')"
-          >
-            组合式
-          </button>
-          <button
-            type="button"
-            class="px-2.5 py-1 text-xs transition-colors"
             :class="effectiveLayoutMode === 'list'
               ? 'bg-foreground text-background'
               : 'bg-transparent text-foreground'"
             :disabled="isEditing || isInteractionLocked"
             @click="requestNextLayoutMode('list')"
           >
-            列表式
+            列表
+          </button>
+          <button
+            type="button"
+            class="px-2.5 py-1 text-xs transition-colors"
+            :class="effectiveLayoutMode === 'composition'
+              ? 'bg-foreground text-background'
+              : 'bg-transparent text-foreground'"
+            :disabled="isEditing || !compositionAvailable || isInteractionLocked"
+            @click="requestNextLayoutMode('composition')"
+          >
+            组合
           </button>
         </div>
         <el-tooltip
@@ -1090,14 +1086,6 @@ watch(isEditing, (editing) => {
       <div class="flex min-w-[240px] items-center justify-end gap-2">
         <span class="mr-1 text-xs text-muted-fg">{{ charCount }} 字</span>
 
-        <button
-          v-if="!isEditing"
-          :disabled="segmentCount === 0 || isInteractionLocked"
-          class="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-secondary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          @click="emit('backfill-to-text-input')"
-        >
-          转到文本输入页继续编辑
-        </button>
         <button
           v-if="!isEditing && segmentCount > 0"
           class="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-secondary/50"
@@ -1192,7 +1180,8 @@ html.dark :deep(.ProseMirror ::selection) {
   border-radius: 4px;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
-  padding: 1px 0;
+  margin: 0 -2px;
+  padding: 1px 2px;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
@@ -1200,17 +1189,28 @@ html.dark :deep(.ProseMirror ::selection) {
 }
 
 :deep(.segment-dirty) {
-  background: rgba(245, 158, 11, 0.06);
-  box-shadow: inset 3px 0 0 var(--color-warning);
+  background: rgba(245, 158, 11, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.32);
 }
 
 html.dark :deep(.segment-dirty) {
-  background: rgba(245, 158, 11, 0.10);
+  background: rgba(245, 158, 11, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.36);
 }
 
 :deep(.segment-playing) {
   color: var(--color-accent);
   font-weight: 700;
+}
+
+:deep(.segment-editing-playing) {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+html.dark :deep(.segment-editing-playing) {
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 38%, transparent);
 }
 
 :deep(.segment-selected) {
@@ -1250,6 +1250,24 @@ html.dark :deep(.ProseMirror p.segment-line-selected) {
 :deep(.ProseMirror p.segment-line-playing) {
   color: var(--color-accent);
   font-weight: 700;
+}
+
+:deep(.ProseMirror p.segment-line-editing-playing) {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border-left-color: color-mix(in srgb, var(--color-accent) 58%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+html.dark :deep(.ProseMirror p.segment-line-editing-playing) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-left-color: color-mix(in srgb, var(--color-accent) 64%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+:deep(.ProseMirror p.segment-line-editing-playing [data-edge-id] button) {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-accent);
 }
 
 :deep(.ProseMirror p.segment-line [data-edge-id] button) {

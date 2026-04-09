@@ -44,18 +44,29 @@ export function buildSegmentDecorationSpecs(
     const classes: string[] =
       state.layoutMode === "list" ? ["segment-line"] : ["segment-fragment"]
 
-    if (state.dirtyIds.has(range.segmentId)) {
+    const shouldHighlightDirty =
+      state.dirtyIds.has(range.segmentId) &&
+      (state.layoutMode === "list" || !state.isEditing)
+
+    if (shouldHighlightDirty) {
       classes.push(
         state.layoutMode === "list" ? "segment-line-dirty" : "segment-dirty",
       )
     }
 
+    if (state.playingId === range.segmentId) {
+      classes.push(
+        state.layoutMode === "list"
+          ? state.isEditing
+            ? "segment-line-editing-playing"
+            : "segment-line-playing"
+          : state.isEditing
+            ? "segment-editing-playing"
+            : "segment-playing",
+      )
+    }
+
     if (!state.isEditing) {
-      if (state.playingId === range.segmentId) {
-        classes.push(
-          state.layoutMode === "list" ? "segment-line-playing" : "segment-playing",
-        )
-      }
       if (state.selectedIds.has(range.segmentId)) {
         classes.push(
           state.layoutMode === "list" ? "segment-line-selected" : "segment-selected",
