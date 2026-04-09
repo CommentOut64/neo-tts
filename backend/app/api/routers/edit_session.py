@@ -34,6 +34,7 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    ReorderSegmentsRequest,
     ReferenceAudioUploadResponse,
     RenderProfilePatchRequest,
     RenderProfileListResponse,
@@ -465,6 +466,18 @@ def swap_segments(request: Request, body: SwapSegmentsRequest) -> RenderJobAccep
 )
 def move_segment_range(request: Request, body: MoveSegmentRangeRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_move_range_job(body)
+
+
+@router.post(
+    "/segments/reorder",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="按完整顺序重排段列表",
+    description="按传入的完整 segment ID 顺序重排当前文档，并创建新的编辑作业。",
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+)
+def reorder_segments(request: Request, body: ReorderSegmentsRequest) -> RenderJobAcceptedResponse:
+    return _build_render_job_service(request).create_reorder_segments_job(body)
 
 
 @router.post(

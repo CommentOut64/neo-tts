@@ -552,6 +552,89 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
         assert composition.status_code == 404
 
 
+def test_edit_session_reorder_segments_reorders_without_rerendering_segments(test_app_settings):
+    backend = FakeEditableInferenceBackend()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(backend)
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。第三句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        initial_snapshot = client.get("/v1/edit-session/snapshot").json()
+        baseline_segment_calls = len(backend.segment_calls)
+        baseline_boundary_calls = len(backend.boundary_calls)
+
+        reorder_response = client.post(
+            "/v1/edit-session/segments/reorder",
+            json={
+                "base_document_version": initial_snapshot["document_version"],
+                "ordered_segment_ids": [
+                    initial_snapshot["segments"][2]["segment_id"],
+                    initial_snapshot["segments"][0]["segment_id"],
+                    initial_snapshot["segments"][1]["segment_id"],
+                ],
+            },
+        )
+
+        assert reorder_response.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
+
+        reordered_snapshot = client.get("/v1/edit-session/snapshot").json()
+        assert [item["raw_text"] for item in reordered_snapshot["segments"]] == ["第三句。", "第一句。", "第二句。"]
+        assert [(edge["left_segment_id"], edge["right_segment_id"]) for edge in reordered_snapshot["edges"]] == [
+            (reordered_snapshot["segments"][0]["segment_id"], reordered_snapshot["segments"][1]["segment_id"]),
+            (reordered_snapshot["segments"][1]["segment_id"], reordered_snapshot["segments"][2]["segment_id"]),
+        ]
+        assert len(backend.segment_calls) == baseline_segment_calls
+        assert len(backend.boundary_calls) == baseline_boundary_calls
+
+        playback_map = client.get("/v1/edit-session/playback-map")
+        assert playback_map.status_code == 200
+        assert [entry["segment_id"] for entry in playback_map.json()["entries"]] == [
+            reordered_snapshot["segments"][0]["segment_id"],
+            reordered_snapshot["segments"][1]["segment_id"],
+            reordered_snapshot["segments"][2]["segment_id"],
+        ]
+
+
+def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_settings):
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。第三句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        snapshot = client.get("/v1/edit-session/snapshot").json()
+        stale_response = client.post(
+            "/v1/edit-session/segments/reorder",
+            json={
+                "base_document_version": snapshot["document_version"] + 1,
+                "ordered_segment_ids": [
+                    snapshot["segments"][1]["segment_id"],
+                    snapshot["segments"][0]["segment_id"],
+                    snapshot["segments"][2]["segment_id"],
+                ],
+            },
+        )
+
+        assert stale_response.status_code == 409
+        assert "document version" in stale_response.json()["detail"]
+
+
 def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
