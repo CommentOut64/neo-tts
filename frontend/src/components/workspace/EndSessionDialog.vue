@@ -38,6 +38,9 @@ const dialogTitle = computed(() =>
       <p v-if="mode === 'confirm_with_text_options'">
         现在结束会话，这些修改不会进入当前音频。你可以继续编辑、保留文字并结束会话，或撤销这些修改后结束会话。
       </p>
+      <p v-else-if="mode === 'confirm_apply_reorder'">
+        当前有未应用的顺序调整。你可以继续编辑、应用调整后结束会话，或放弃调整后结束会话。
+      </p>
       <p v-else-if="mode === 'confirm_discard_only'">
         现在结束会话，这些修改不会进入当前音频。你可以继续编辑，或直接结束当前会话。
       </p>
@@ -50,7 +53,7 @@ const dialogTitle = computed(() =>
           继续编辑
         </el-button>
         <el-button
-          v-if="mode === 'confirm_with_text_options'"
+          v-if="mode === 'confirm_with_text_options' || mode === 'confirm_apply_reorder'"
           :disabled="loading"
           @click="handleChoose('discard_unapplied_changes')"
         >
@@ -60,9 +63,17 @@ const dialogTitle = computed(() =>
           type="danger"
           :loading="loading"
           :disabled="loading"
-          @click="handleChoose(mode === 'confirm_with_text_options' ? 'keep_working_text' : 'discard_unapplied_changes')"
+          @click="handleChoose(
+            mode === 'confirm_with_text_options'
+              ? 'keep_working_text'
+              : mode === 'confirm_apply_reorder'
+                ? 'apply_updates_and_end_session'
+                : 'discard_unapplied_changes'
+          )"
         >
-          {{ mode === "confirm_with_text_options" ? "保留文字" : "结束当前会话" }}
+          {{ mode === "confirm_apply_reorder"
+            ? "应用更新并结束"
+            : mode === "confirm_with_text_options" ? "保留文字" : "结束当前会话" }}
         </el-button>
       </div>
     </template>

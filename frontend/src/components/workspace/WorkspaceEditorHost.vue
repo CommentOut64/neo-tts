@@ -13,6 +13,7 @@ import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPer
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
+import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
 import type { EditableEdge, EditableSegment } from "@/types/editSession";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
@@ -46,6 +47,7 @@ import {
 } from "./workspace-editor/sourceDocNormalizer";
 import { segmentDecorationKey } from "./workspace-editor/segmentDecoration";
 import {
+  canStartListReorder,
   buildWorkspaceDraftPersistKey,
   buildWorkspaceViewRevisionKey,
   cloneWorkspaceSerializable,
@@ -55,6 +57,7 @@ import {
   haveSameEdgeTopology,
   resolveWorkspaceSessionItems,
   requestLayoutMode,
+  shouldShowListReorderHandles,
   shouldBlockEdgeEditing,
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "./workspace-editor/workspaceEditorHostModel";
@@ -62,6 +65,7 @@ import {
 const WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS = 200;
 const COMPOSITION_DISABLED_MESSAGE =
   "当前会话结构已脱离输入稿换行，暂不支持组合式";
+const REORDER_DRAFT_LOCK_MESSAGE = "请先应用或放弃当前顺序调整";
 
 const editSession = useEditSession();
 const lightEdit = useWorkspaceLightEdit();
@@ -71,6 +75,7 @@ const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
 const parameterPanel = useParameterPanel();
+const reorderDraft = useWorkspaceReorderDraft();
 
 const endSessionDialogVisible = ref(false);
 const endSessionDialogMode = ref<EndSessionGuard>("confirm_plain");
@@ -164,6 +169,10 @@ const pendingRerenderTargets = computed(() =>
     })),
   }),
 );
+const committedOrder = computed(() =>
+  sortedReadySegments.value.map((segment) => segment.segment_id),
+);
+const hasReorderDraft = computed(() => reorderDraft.hasDraft.value);
 
 const currentSessionKey = computed(() => {
   if (
@@ -211,51 +220,21 @@ const sourceDocSegmentTexts = computed(() => {
 const listReorder = useWorkspaceListReorder({
   canStartDrag() {
     return (
-      effectiveLayoutMode.value === "list" &&
-      !isEditing.value &&
-      editSession.sessionStatus.value === "ready" &&
-      runtimeState.canMutate.value
+      !reorderDraft.isSubmitting.value &&
+      (canStartFreshReorder.value || hasReorderDraft.value)
     );
   },
   getCurrentOrder() {
-    return sourceDocSegmentTexts.value.map((segment) => segment.segmentId);
+    return displayOrder.value;
+  },
+  getCommittedOrder() {
+    return committedOrder.value;
   },
   getScrollContainer() {
     return canvasRef.value;
   },
-  async onCommit({ nextOrder }) {
-    if (currentDocumentVersion.value === null) {
-      ElMessage.error("当前文档版本缺失，无法提交段顺序");
-      throw new Error("missing_document_version");
-    }
-
-    try {
-      const job = await reorderSegments({
-        base_document_version: currentDocumentVersion.value,
-        ordered_segment_ids: nextOrder,
-      });
-      runtimeState.trackJob(job, {
-        refreshSessionOnTerminal: true,
-      });
-      const terminalStatus = await runtimeState.waitForJobTerminal(job.job_id);
-      await editSession.refreshFormalSessionState();
-
-      if (terminalStatus !== "completed") {
-        ElMessage.error("段顺序提交失败，已回滚");
-        throw new Error(`reorder_failed:${terminalStatus}`);
-      }
-    } catch (error) {
-      try {
-        await editSession.refreshFormalSessionState();
-      } catch (refreshError) {
-        console.error("刷新重排后的正式会话状态失败", refreshError);
-      }
-
-      if (!(error instanceof Error && error.message.startsWith("reorder_failed:"))) {
-        ElMessage.error("段顺序提交失败，已回滚");
-      }
-      throw error;
-    }
+  onStage({ nextOrder, committedOrder: nextCommittedOrder }) {
+    return reorderDraft.setStagedOrder(nextOrder, nextCommittedOrder);
   },
 });
 
@@ -269,8 +248,7 @@ const sourceDocSegmentDrafts = computed<Record<string, string>>(() =>
 
 const displayOrder = computed(
   () =>
-    listReorder.previewOrder.value ??
-    sourceDocSegmentTexts.value.map((segment) => segment.segmentId),
+    reorderDraft.stagedOrder.value ?? committedOrder.value,
 );
 
 const displaySegmentTexts = computed(() => {
@@ -336,6 +314,24 @@ const effectiveLayoutMode = computed<WorkspaceEditorLayoutMode>(() => {
     ? "composition"
     : "list";
 });
+const canStartFreshReorder = computed(() =>
+  canStartListReorder({
+    layoutMode: effectiveLayoutMode.value,
+    isEditing: isEditing.value,
+    sessionStatus: editSession.sessionStatus.value,
+    hasTextDraft: lightEdit.dirtyCount.value > 0,
+    hasParameterDraft: parameterPanel.hasDirty.value,
+    hasPendingRerender: pendingRerenderTargets.value.count > 0,
+    canMutate: runtimeState.canMutate.value,
+    isInteractionLocked: workspaceProcessing.isInteractionLocked.value,
+  }),
+);
+const shouldShowReorderHandles = computed(() =>
+  shouldShowListReorderHandles({
+    canStartReorder: canStartFreshReorder.value,
+    hasReorderDraft: hasReorderDraft.value,
+  }),
+);
 
 const renderPlan = computed(() =>
   buildWorkspaceRenderPlan(semanticDocument.value, effectiveLayoutMode.value),
@@ -365,7 +361,7 @@ const activeViewKey = computed(() =>
   }),
 );
 const displayViewKey = computed(() => {
-  const previewSignature = listReorder.previewOrder.value?.join("|") ?? "base";
+  const previewSignature = reorderDraft.stagedOrder.value?.join("|") ?? "base";
   return `${activeViewKey.value}:${previewSignature}`;
 });
 const dragGhostText = computed(() => {
@@ -386,7 +382,7 @@ const dragGhostLineNumber = computed(() => {
     return null;
   }
 
-  const order = sourceDocSegmentTexts.value.map((segment) => segment.segmentId);
+  const order = displayOrder.value;
   const index = order.indexOf(draggingId);
   return index >= 0 ? index + 1 : null;
 });
@@ -419,8 +415,78 @@ function clearPendingDraftPersist() {
   draftPersistTimeoutId = null;
 }
 
+function ensureNoReorderDraft() {
+  if (!hasReorderDraft.value) {
+    return true;
+  }
+
+  ElMessage.warning(REORDER_DRAFT_LOCK_MESSAGE);
+  return false;
+}
+
+function discardReorderDraft(showMessage = false) {
+  if (!hasReorderDraft.value) {
+    return;
+  }
+
+  reorderDraft.clearDraft();
+  listReorder.resetState();
+  if (showMessage) {
+    ElMessage.info("已放弃当前顺序调整");
+  }
+}
+
+async function applyReorderDraft() {
+  const stagedOrder = reorderDraft.stagedOrder.value;
+  if (!stagedOrder || stagedOrder.length === 0) {
+    return;
+  }
+  if (currentDocumentVersion.value === null) {
+    ElMessage.error("当前文档版本缺失，无法应用顺序调整");
+    throw new Error("missing_document_version");
+  }
+
+  reorderDraft.startSubmitting();
+  try {
+    const job = await reorderSegments({
+      base_document_version: currentDocumentVersion.value,
+      ordered_segment_ids: stagedOrder,
+    });
+    runtimeState.trackJob(job, {
+      refreshSessionOnTerminal: true,
+    });
+    const terminalStatus = await runtimeState.waitForJobTerminal(job.job_id);
+    await editSession.refreshFormalSessionState();
+
+    if (terminalStatus !== "completed") {
+      throw new Error(`reorder_failed:${terminalStatus}`);
+    }
+
+    discardReorderDraft();
+    ElMessage.success("顺序调整已应用");
+  } catch (error) {
+    try {
+      await editSession.refreshFormalSessionState();
+    } catch (refreshError) {
+      console.error("刷新重排后的正式会话状态失败", refreshError);
+    }
+
+    discardReorderDraft();
+    ElMessage.error("顺序调整应用失败，已恢复正式顺序");
+    throw error;
+  } finally {
+    reorderDraft.finishSubmitting();
+  }
+}
+
+const unregisterReorderDraftActions = reorderDraft.registerActions({
+  applyDraft: applyReorderDraft,
+  discardDraft: () => discardReorderDraft(true),
+});
+
 onBeforeUnmount(() => {
   clearPendingDraftPersist();
+  unregisterReorderDraftActions();
 });
 
 function buildSegmentDraftRecord(
@@ -579,7 +645,7 @@ function clearPersistedWorkspaceDraft() {
 }
 
 function syncPreviewWorkspaceState(editorDoc: JSONContent) {
-  if (listReorder.previewOrder.value !== null) {
+  if (hasReorderDraft.value) {
     return;
   }
 
@@ -651,11 +717,12 @@ function syncDecorationState(editorOverride?: any) {
     draggingSegmentId: listReorder.draggingSegmentId.value,
     dropTargetSegmentId: listReorder.dropTargetSegmentId.value,
     dropIntent: listReorder.dropIntent.value,
-    isSubmittingReorder: listReorder.mode.value === "submitting",
+    isSubmittingReorder: reorderDraft.isSubmitting.value,
   };
   editor.storage.listReorderHandleDecoration.state = {
     layoutMode: effectiveLayoutMode.value,
-    renderMap: isEditing.value ? null : renderMap.value,
+    renderMap:
+      !isEditing.value && shouldShowReorderHandles.value ? renderMap.value : null,
     selectedIds: segmentSelection.selectedSegmentIds.value,
     draggingSegmentId: listReorder.draggingSegmentId.value,
     mode: listReorder.mode.value,
@@ -677,6 +744,10 @@ function isEditorSnapshotCompatible(editorDoc: JSONContent): boolean {
 }
 
 function requestNextLayoutMode(nextMode: WorkspaceEditorLayoutMode) {
+  if (!ensureNoReorderDraft()) {
+    return;
+  }
+
   const result = requestLayoutMode({
     isEditing: isEditing.value,
     currentMode: layoutMode.value,
@@ -743,6 +814,9 @@ function onEditorCreate({ editor }: { editor: any }) {
 
 function enterEditMode(clickEvent?: MouseEvent) {
   if (isEditing.value) {
+    return;
+  }
+  if (!ensureNoReorderDraft()) {
     return;
   }
   if (isInteractionLocked.value) {
@@ -850,6 +924,8 @@ function discardAndExitEdit() {
 function handleResetSessionSuccess() {
   segmentSelection.clearSelection();
   lightEdit.clearAll();
+  reorderDraft.clearDraft();
+  listReorder.resetState();
   clearPendingDraftPersist();
   editingSourceDocBaseline.value = null;
   editingCompositionLayoutHintsBaseline.value = null;
@@ -873,13 +949,28 @@ async function finalizeEndSession(choice: EndSessionChoice) {
 
   try {
     isEndingSession.value = true;
-    await editSession.endSession(
+    let endSessionTarget =
       result.nextInputSource !== null && result.nextInputText !== null
         ? {
             nextInputText: result.nextInputText,
             nextInputSource: result.nextInputSource,
           }
-        : undefined,
+        : undefined;
+
+    if (result.shouldApplyUpdatesBeforeEndSession) {
+      try {
+        await applyReorderDraft();
+      } catch {
+        return;
+      }
+      endSessionTarget = {
+        nextInputText: buildSessionHeadText(sortedReadySegments.value),
+        nextInputSource: "applied_text",
+      };
+    }
+
+    await editSession.endSession(
+      endSessionTarget,
     );
     parameterPanel.discardDraft();
     handleResetSessionSuccess();
@@ -899,6 +990,7 @@ async function requestEndSession() {
     hasPendingTextChanges: lightEdit.dirtyCount.value > 0,
     hasPendingRerender: pendingRerenderTargets.value.count > 0,
     hasDirtyParameterDraft: parameterPanel.hasDirty.value,
+    hasPendingReorderDraft: hasReorderDraft.value,
   });
   endSessionDialogVisible.value = true;
 }
@@ -1025,6 +1117,7 @@ watch(
   currentSessionKey,
   (nextSessionKey, previousSessionKey) => {
     if (nextSessionKey !== previousSessionKey) {
+      reorderDraft.clearDraft();
       listReorder.resetState();
     }
 
@@ -1144,7 +1237,7 @@ watch(
 watch(
   [
     sourceDocSegmentTexts,
-    () => listReorder.previewOrder.value,
+    () => reorderDraft.stagedOrder.value,
     () => listReorder.mode.value,
     () => runtimeState.progressiveSegments.value,
     () => editSession.sessionStatus.value,
@@ -1205,6 +1298,8 @@ watch(
     () => parameterPanel.dirtyEdgeIds.value,
     isEditing,
     renderMap,
+    hasReorderDraft,
+    () => reorderDraft.isSubmitting.value,
     () => listReorder.mode.value,
     () => listReorder.draggingSegmentId.value,
     () => listReorder.dropTargetSegmentId.value,
@@ -1336,6 +1431,7 @@ watch(isEditing, (editing) => {
     <div
       ref="canvasRef"
       class="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+      :class="effectiveLayoutMode === 'list' ? 'editor-layout-list overflow-x-auto' : 'editor-layout-composition overflow-x-hidden w-full'"
       @pointerdown.capture="onCanvasPointerDown"
       @click="onCanvasClick"
       @dblclick="onCanvasDblClick"
@@ -1455,7 +1551,7 @@ html.dark :deep(.segment-selected) {
 :deep(.ProseMirror p.segment-line) {
   position: relative;
   border-radius: 8px;
-  padding-left: 52px;
+  padding-left: 38px;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
@@ -1463,19 +1559,29 @@ html.dark :deep(.segment-selected) {
     border-color 0.15s ease;
 }
 
+.editor-layout-list :deep(.ProseMirror) {
+  width: max-content;
+  min-width: 100%;
+}
+
+.editor-layout-list :deep(.ProseMirror p.segment-line) {
+  white-space: nowrap;
+}
+
 :deep(.ProseMirror p.segment-line .segment-reorder-handle) {
   position: absolute;
-  left: 10px;
+  left: 6px;
   top: 50%;
   z-index: 2;
   display: inline-flex;
   height: 24px;
-  width: 32px;
-  transform: translateY(-50%);
+  width: 24px;
+  transform: translateY(-50%) translateZ(0);
+  will-change: transform, opacity, background-color;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  border-radius: 7px;
+  overflow: hidden;
+  border-radius: 6px;
   color: var(--color-muted-fg);
   transition:
     background-color 0.15s ease,
@@ -1485,6 +1591,11 @@ html.dark :deep(.segment-selected) {
 }
 
 :deep(.ProseMirror p.segment-line .segment-reorder-line-number) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
@@ -1493,31 +1604,31 @@ html.dark :deep(.segment-selected) {
 }
 
 :deep(.ProseMirror p.segment-line .segment-reorder-grip) {
-  font-size: 10px;
-  letter-spacing: -1px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
-  transform: translateY(1px);
   transition: opacity 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line:hover .segment-reorder-handle),
-:deep(.ProseMirror p.segment-line-selected .segment-reorder-handle) {
+:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover) {
   background: rgba(148, 163, 184, 0.12);
   color: var(--color-foreground);
 }
 
-html.dark :deep(.ProseMirror p.segment-line:hover .segment-reorder-handle),
-html.dark :deep(.ProseMirror p.segment-line-selected .segment-reorder-handle) {
+html.dark :deep(.ProseMirror p.segment-line .segment-reorder-handle:hover) {
   background: rgba(148, 163, 184, 0.18);
 }
 
-:deep(.ProseMirror p.segment-line:hover .segment-reorder-line-number),
-:deep(.ProseMirror p.segment-line-selected .segment-reorder-line-number) {
-  opacity: 0.24;
+:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover .segment-reorder-line-number),
+:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging .segment-reorder-line-number) {
+  opacity: 0;
 }
 
-:deep(.ProseMirror p.segment-line:hover .segment-reorder-grip),
-:deep(.ProseMirror p.segment-line-selected .segment-reorder-grip) {
+:deep(.ProseMirror p.segment-line .segment-reorder-handle:hover .segment-reorder-grip),
+:deep(.ProseMirror p.segment-line .segment-reorder-handle.is-dragging .segment-reorder-grip) {
   opacity: 0.9;
 }
 
@@ -1577,10 +1688,14 @@ html.dark :deep(.ProseMirror p.segment-line-drop-swap) {
 
 :deep(.ProseMirror p.segment-line-drop-before) {
   box-shadow: inset 0 2px 0 0 rgba(14, 165, 233, 0.8);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 :deep(.ProseMirror p.segment-line-drop-after) {
   box-shadow: inset 0 -2px 0 0 rgba(14, 165, 233, 0.8);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 html.dark :deep(.ProseMirror p.segment-line-drop-before) {
@@ -1607,13 +1722,27 @@ html.dark :deep(.ProseMirror p.segment-line-editing-playing) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
-:deep(.ProseMirror p.segment-line-editing-playing [data-edge-id] button) {
+:deep(.ProseMirror p.segment-line-editing-playing [data-pause-boundary] button) {
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: var(--color-accent);
 }
 
-:deep(.ProseMirror p.segment-line [data-edge-id] button) {
+:deep(.ProseMirror [data-pause-boundary]) {
+  display: inline-block;
+  vertical-align: baseline;
+}
+
+:deep(.ProseMirror [data-pause-boundary] button) {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 19.62px;
+  padding-block: 0;
+  font-size: 11px;
+  line-height: normal;
+  vertical-align: baseline;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
@@ -1621,19 +1750,19 @@ html.dark :deep(.ProseMirror p.segment-line-editing-playing) {
     box-shadow 0.15s ease;
 }
 
-:deep(.ProseMirror p.segment-line-selected [data-edge-id] button) {
+:deep(.ProseMirror p.segment-line-selected [data-pause-boundary] button) {
   background: rgba(59, 130, 246, 0.12);
   border-color: rgba(59, 130, 246, 0.28);
   color: rgb(37 99 235);
 }
 
-html.dark :deep(.ProseMirror p.segment-line-selected [data-edge-id] button) {
+html.dark :deep(.ProseMirror p.segment-line-selected [data-pause-boundary] button) {
   background: rgba(96, 165, 250, 0.18);
   border-color: rgba(96, 165, 250, 0.3);
   color: rgb(147 197 253);
 }
 
-:deep(.ProseMirror p.segment-line-playing [data-edge-id] button) {
+:deep(.ProseMirror p.segment-line-playing [data-pause-boundary] button) {
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: var(--color-accent);

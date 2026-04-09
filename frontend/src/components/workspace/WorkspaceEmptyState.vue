@@ -16,6 +16,7 @@ const actionState = computed(() =>
   resolveMainActionButtonState({
     sessionStatus: "empty",
     dirtyCount: 0,
+    hasReorderDraft: false,
     canInitialize: props.canSubmit,
     canMutate: true,
   }),

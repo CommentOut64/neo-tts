@@ -2,7 +2,7 @@ import type { WorkspaceSemanticEdge } from "./layoutTypes";
 
 export const DEFAULT_REORDER_PAUSE_DURATION_SECONDS = 0.3;
 export const DEFAULT_REORDER_BOUNDARY_STRATEGY =
-  "latent_overlap_then_equal_power_crossfade";
+  "crossfade_only";
 
 function buildEdgePairKey(leftSegmentId: string, rightSegmentId: string) {
   return `${leftSegmentId}::${rightSegmentId}`;
