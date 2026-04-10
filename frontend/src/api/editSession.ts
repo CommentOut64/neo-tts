@@ -119,6 +119,13 @@ export async function rerenderSegment(id: string): Promise<RenderJobResponse> {
   return unwrapAcceptedRenderJob(data);
 }
 
+export async function deleteSegment(segmentId: string): Promise<RenderJobResponse> {
+  const { data } = await axios.delete<RenderJobAcceptedResponse>(
+    `/v1/edit-session/segments/${segmentId}`,
+  );
+  return unwrapAcceptedRenderJob(data);
+}
+
 export async function updateEdge(edgeId: string, body: EdgeUpdateBody): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
     `/v1/edit-session/edges/${edgeId}`,

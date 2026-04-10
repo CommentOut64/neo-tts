@@ -35,6 +35,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     RuntimeInferenceSettingsPanel: typeof import('./src/components/workspace/parameter-panel/RuntimeInferenceSettingsPanel.vue')['default']
     SegmentBlockNodeView: typeof import('./src/components/workspace/workspace-editor/list/SegmentBlockNodeView.vue')['default']
+    SegmentContextMenu: typeof import('./src/components/workspace/SegmentContextMenu.vue')['default']
     SegmentListDisplay: typeof import('./src/components/workspace/SegmentListDisplay.vue')['default']
     SegmentParameterPanel: typeof import('./src/components/workspace/SegmentParameterPanel.vue')['default']
     SegmentPreviewList: typeof import('./src/components/text-input/SegmentPreviewList.vue')['default']

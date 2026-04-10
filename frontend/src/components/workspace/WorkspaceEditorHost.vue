@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import type { JSONContent } from "@tiptap/vue-3";
 
-import { reorderSegments } from "@/api/editSession";
+import { reorderSegments, deleteSegment } from "@/api/editSession";
 import { useEditSession } from "@/composables/useEditSession";
 import { usePlayback } from "@/composables/usePlayback";
 import { useRuntimeState } from "@/composables/useRuntimeState";
@@ -19,6 +19,13 @@ import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
 
 import EndSessionDialog from "./EndSessionDialog.vue";
+import SegmentContextMenu from "./SegmentContextMenu.vue";
+import {
+  detectDeletionCandidates,
+  confirmSegmentDeletion,
+  patchEditorDocForRestoredSegments,
+  runDeletionJobs,
+} from "./segmentDeletion";
 import {
   buildSessionHeadText,
   resolveEndSessionChoiceResult,
@@ -55,6 +62,7 @@ import {
   findCanvasTarget,
   findReorderHandleTarget,
   haveSameEdgeTopology,
+  resolveSegmentDeletionGuard,
   resolveWorkspaceSessionItems,
   requestLayoutMode,
   shouldBlockEdgeEditing,
@@ -397,6 +405,24 @@ const customExtensions = buildEditorExtensions({
     activateEdgeSelection(edgeId);
   },
 });
+
+// ── 右键菜单状态 ──
+
+const contextMenu = ref({ visible: false, x: 0, y: 0, segmentId: null as string | null });
+
+const segmentDeletionGuard = computed(() =>
+  resolveSegmentDeletionGuard({
+    segmentCount: sortedReadySegments.value.length,
+    canMutate: runtimeState.canMutate.value,
+    isInteractionLocked: isInteractionLocked.value,
+    hasTextDraft: lightEdit.dirtyCount.value > 0,
+    hasParameterDraft: parameterPanel.hasDirty.value,
+    hasPendingRerender: pendingRerenderTargets.value.count > 0,
+    hasReorderDraft: hasReorderDraft.value,
+  }),
+);
+
+const canDeleteFromMenu = computed(() => segmentDeletionGuard.value.allowed);
 
 function clearPendingDraftPersist() {
   if (draftPersistTimeoutId === null) {
@@ -867,19 +893,8 @@ function enterEditMode(clickEvent?: MouseEvent) {
   });
 }
 
-function commitAndExitEdit() {
-  const editor = editorRef.value?.editor;
-  if (!editor) {
-    clearPendingDraftPersist();
-    editingSourceDocBaseline.value = null;
-    editingCompositionLayoutHintsBaseline.value = null;
-    isEditing.value = false;
-    nextTick(syncDisplayDocument);
-    return;
-  }
-
+function commitEditWithDoc(editorDoc: JSONContent) {
   try {
-    const editorDoc = editor.getJSON();
     const nextSourceDoc = normalizeWorkspaceViewDocToSourceDoc({
       viewDoc: editorDoc,
       orderedSegmentIds: currentSessionSegmentIds.value,
@@ -910,13 +925,100 @@ function commitAndExitEdit() {
     ElMessage.error(
       error instanceof Error ? error.message : "正文结构异常，无法提交编辑",
     );
-    return;
+    return false;
   }
 
   editingSourceDocBaseline.value = null;
   editingCompositionLayoutHintsBaseline.value = null;
   isEditing.value = false;
   nextTick(syncDisplayDocument);
+  return true;
+}
+
+async function waitForDeleteJobCompletion(segmentId: string) {
+  const job = await deleteSegment(segmentId);
+  runtimeState.trackJob(job, { refreshSessionOnTerminal: false });
+  const terminalStatus = await runtimeState.waitForJobTerminal(job.job_id);
+  if (terminalStatus !== "completed") {
+    throw new Error(`delete_failed:${terminalStatus}`);
+  }
+}
+
+async function commitAndExitEdit() {
+  const editor = editorRef.value?.editor;
+  if (!editor) {
+    clearPendingDraftPersist();
+    editingSourceDocBaseline.value = null;
+    editingCompositionLayoutHintsBaseline.value = null;
+    isEditing.value = false;
+    nextTick(syncDisplayDocument);
+    return;
+  }
+
+  const editorDoc = editor.getJSON();
+
+  // ── 编辑态删段检测 ──
+  const candidates = effectiveLayoutMode.value === "list"
+    ? detectDeletionCandidates(editorDoc, currentSessionSegmentIds.value)
+    : [];
+  if (candidates.length > 0) {
+    if (candidates.length >= currentSessionSegmentIds.value.length) {
+      ElMessage.warning("至少保留一段");
+      return;
+    }
+
+    let confirmed = false;
+    try {
+      confirmed = await confirmSegmentDeletion(candidates.length);
+    } catch (error) {
+      ElMessage.error(
+        error instanceof Error ? error.message : "删段确认框打开失败",
+      );
+      return;
+    }
+
+    const restorations = candidates.map((id) => ({
+      segmentId: id,
+      originalText: getBackendSegmentText(id),
+    }));
+    const patchedDoc = patchEditorDocForRestoredSegments(
+      editorDoc, currentSessionSegmentIds.value, restorations,
+    );
+    editor.commands.setContent(patchedDoc);
+
+    if (!confirmed) {
+      // 用户选择不删除 — 段文字已回退，留在编辑态
+      syncEditingSourceState(patchedDoc);
+      return;
+    }
+
+    // 用户确认删除 — 先用修补后 doc 正常提交，再调 API 删段
+    if (!commitEditWithDoc(patchedDoc)) {
+      return;
+    }
+
+    const deletionResult = await runDeletionJobs({
+      segmentIds: candidates,
+      deleteSegment: waitForDeleteJobCompletion,
+    });
+
+    await editSession.refreshFormalSessionState();
+    segmentSelection.clearSelection();
+    for (const id of deletionResult.deletedSegmentIds) {
+      lightEdit.clearDraft(id);
+    }
+    if (!deletionResult.completed) {
+      ElMessage.error(
+        `删除段失败，已成功删除 ${deletionResult.deletedSegmentIds.length} 段，失败段为 ${deletionResult.failedSegmentId ?? "unknown"}`,
+      );
+      return;
+    }
+    ElMessage.success("已删除清空的段");
+    return;
+  }
+
+  // ── 无删段意图 — 正常提交 ──
+  commitEditWithDoc(editorDoc);
 }
 
 function discardAndExitEdit() {
@@ -1141,6 +1243,86 @@ function activateEdgeSelection(edgeId: string | null) {
   }
 
   segmentSelection.selectEdge(edgeId);
+}
+
+// ── 右键菜单与删段 ──
+
+function onCanvasContextMenu(event: MouseEvent) {
+  if (isEditing.value) {
+    return;
+  }
+
+  const target = findCanvasTarget(event.target as any);
+  if (target?.type !== "segment" || !target.segmentId) {
+    return;
+  }
+
+  event.preventDefault();
+  segmentSelection.select(target.segmentId);
+  if (!segmentDeletionGuard.value.allowed) {
+    if (segmentDeletionGuard.value.reason) {
+      ElMessage.warning(segmentDeletionGuard.value.reason);
+    }
+    closeContextMenu();
+    return;
+  }
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    segmentId: target.segmentId,
+  };
+}
+
+function closeContextMenu() {
+  contextMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    segmentId: null,
+  };
+}
+
+async function executeDeleteSegment(segmentId: string) {
+  closeContextMenu();
+  if (!segmentDeletionGuard.value.allowed) {
+    if (segmentDeletionGuard.value.reason) {
+      ElMessage.warning(segmentDeletionGuard.value.reason);
+    }
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      "确定要删除这一段吗？",
+      "删除段",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+        lockScroll: false,
+      },
+    );
+  } catch (error) {
+    if (error === "cancel" || error === "close") {
+      return;
+    }
+    ElMessage.error(
+      error instanceof Error ? error.message : "删除确认框打开失败",
+    );
+    return;
+  }
+
+  try {
+    await waitForDeleteJobCompletion(segmentId);
+    await editSession.refreshFormalSessionState();
+
+    segmentSelection.clearSelection();
+    lightEdit.clearDraft(segmentId);
+    ElMessage.success("段已删除");
+  } catch (err) {
+    ElMessage.error(`删除失败: ${(err as Error).message}`);
+  }
 }
 
 watch(
@@ -1467,6 +1649,7 @@ watch(isEditing, (editing) => {
       @pointerdown.capture="onCanvasPointerDown"
       @click="onCanvasClick"
       @dblclick="onCanvasDblClick"
+      @contextmenu="onCanvasContextMenu"
     >
       <UEditor
         ref="editorRef"
@@ -1502,6 +1685,16 @@ watch(isEditing, (editing) => {
       :mode="endSessionDialogMode"
       :loading="isEndingSession"
       @choose="finalizeEndSession"
+    />
+
+    <SegmentContextMenu
+      :visible="contextMenu.visible"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      :segment-id="contextMenu.segmentId"
+      :can-delete="canDeleteFromMenu"
+      @close="closeContextMenu"
+      @delete="executeDeleteSegment"
     />
   </section>
 </template>
