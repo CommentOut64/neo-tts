@@ -15,7 +15,7 @@ import (
 
 const (
 	frontendDevPort         = 5175
-	frontendRestartDelay    = 3 * time.Second
+	frontendRestartDelay    = 5 * time.Second
 	frontendCrashWindow     = 60 * time.Second
 	frontendCrashRetryLimit = 3
 )

@@ -31,14 +31,14 @@ func Bootstrap(projectRoot string, startup StartupContext) (Session, error) {
 		fmt.Sprintf("launcher_%s_%d.log", time.Now().Format("20060102_150405"), os.Getpid()),
 	)
 
-	startupLine := fmt.Sprintf(
+	startupLine := FormatLauncherLine(time.Now(), fmt.Sprintf(
 		"startup begin cwd=%s exe=%s args=%s elevated=%t source=%s\n",
 		startup.WorkingDirectory,
 		startup.ExecutablePath,
 		strings.Join(startup.Arguments, " "),
 		startup.IsElevated,
 		startup.StartupSource,
-	)
+	))
 
 	if err := os.WriteFile(logFilePath, []byte(startupLine), 0o644); err != nil {
 		return Session{}, err
@@ -62,4 +62,8 @@ func Append(logFilePath string, line string) error {
 	}
 	_, err = file.WriteString(line)
 	return err
+}
+
+func FormatLauncherLine(now time.Time, line string) string {
+	return fmt.Sprintf("%s [INFO] [launcher] %s", now.Format("15:04:05.000"), strings.TrimRight(line, "\r\n"))
 }

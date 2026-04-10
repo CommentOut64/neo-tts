@@ -229,8 +229,7 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	}
 	if deps.WaitForSupervisor == nil {
 		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState) error {
-			<-ctx.Done()
-			return nil
+			return supervisor.RunLoop(ctx, cfg, current, supervisor.LoopDeps{})
 		}
 	}
 	return deps
@@ -260,8 +259,9 @@ func isExistingWebInstanceHealthy(ctx context.Context, existing state.RuntimeSta
 }
 
 func logPhase(current state.RuntimeState, line string) {
-	_ = logging.Append(current.LogFilePath, line)
+	formatted := logging.FormatLauncherLine(time.Now(), line)
+	_ = logging.Append(current.LogFilePath, formatted)
 	if current.RuntimeMode == "dev" {
-		_, _ = fmt.Fprintln(os.Stdout, line)
+		_, _ = fmt.Fprintln(os.Stdout, formatted)
 	}
 }

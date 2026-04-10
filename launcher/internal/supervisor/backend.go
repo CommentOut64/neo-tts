@@ -342,9 +342,16 @@ func killProcess(pid int) error {
 		return nil
 	}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
+	command := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid))
+	winplatform.ConfigureCommand(command, winplatform.WindowHidden)
+	if err := command.Run(); err != nil {
+		process, findErr := os.FindProcess(pid)
+		if findErr != nil {
+			return err
+		}
+		if killErr := process.Kill(); killErr != nil {
+			return err
+		}
 	}
-	return process.Kill()
+	return nil
 }

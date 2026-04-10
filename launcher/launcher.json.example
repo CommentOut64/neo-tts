@@ -24,7 +24,7 @@
     }
   },
   "supervisor": {
-    "frontendRestartDelaySeconds": 3,
+    "frontendRestartDelaySeconds": 5,
     "frontendCrashWindowSeconds": 60,
     "frontendMaxCrashCount": 3,
     "backendHealthPollIntervalMs": 1000
