@@ -1,4 +1,11 @@
-# GPT-SoVITS Minimal Inference 架构设计与当前状态
+# GPT-SoVITS Minimal Inference 架构设计与当前状态（归档）
+
+> Archived: 2026-04-10
+> Reason:
+> - 文档仍以 `TtsStudioView` 作为前端主线页面，不再代表当前 `TextInput + Workspace + legacy /studio` 的实际结构
+> Current Entry:
+> - `/llmdoc/overview/backend-overview.md`
+> - `/llmdoc/overview/edit-session-domain-overview.md`
 
 **日期：** 2026-03-20  
 **最近同步：** 2026-04-02

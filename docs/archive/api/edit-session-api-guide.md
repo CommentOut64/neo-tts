@@ -1,4 +1,10 @@
-# Edit Session API 接入指南
+# Edit Session API 接入指南（归档）
+
+> Archived: 2026-04-10
+> Current Entry:
+> - `/llmdoc/architecture/api-routing-and-dependency-wiring.md`
+> - `/llmdoc/guides/export-workflow.md`
+> - `/llmdoc/guides/voice-config-setup.md`
 
 本文档面向前端接入方，说明 `edit-session` 后端接口的推荐使用方式、状态语义与常见约束。
 
