@@ -31,7 +31,7 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 ### 统一播放与时间线
 
-播放器基于 Block 级 AudioBuffer 调度，支持点击段跳转、实时高亮当前段、Seek 时交叉淡入淡出。时间线由后端 TimelineManifest 驱动，段/边界/块的采样位置全局统一。
+播放器基于 Block 级 AudioBuffer 调度，支持点击段跳转、Seek 时交叉淡入淡出。时间线由后端 TimelineManifest 驱动，`useTimeline` 会把当前播放位置统一解析为 segment / boundary / pause / ended 等游标语义，保证正文高亮、控制栏和波形图共用同一播放真源。
 
 ### 导出
 
@@ -162,7 +162,7 @@ Set-Location frontend && npm run dev             # 前端
 ### 前端架构
 
 - **编辑器**：基于 Tiptap 构建结构化编辑画布，段（`SegmentBlock`）和停顿（`PauseBoundary`）作为自定义 Node 内嵌，支持行内文本编辑、拖拽重排、右键菜单操作
-- **播放器**：基于 Web Audio API，按 Block 级 AudioBuffer 调度播放，Seek 时带交叉淡入淡出；`useTimeline` 维护段 ↔ 采样位置的双向映射，驱动点击跳转和实时高亮
+- **播放器**：基于 Web Audio API，按 Block 级 AudioBuffer 调度播放，Seek 时带交叉淡入淡出；`usePlayback` 以 sample 为真源，`useTimeline` 负责解析统一播放游标（segment / boundary / pause），驱动点击跳转、正文高亮、控制栏与波形图联动
 - **状态管理**：`useEditSession` 管理会话生命周期，`useWorkspaceLightEdit` 维护段级草稿状态，`useWorkspaceProcessing` 处理渲染作业提交与进度订阅
 - **进度流**：初始化和重推理全程通过 SSE 推送段级进度事件，前端实时展示进度条和段状态变更
 
