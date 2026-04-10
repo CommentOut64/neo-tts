@@ -20,6 +20,7 @@ import {
   shouldBlockEdgeEditing,
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
+import * as workspaceEditorHostModel from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
 import type { WorkspaceRenderMap } from "../src/components/workspace/workspace-editor/layoutTypes";
 
 const workspaceEditorHostSource = readFileSync(
@@ -389,6 +390,39 @@ describe("workspace editor host layout mode helpers", () => {
         nextEdges: [createEdge("edge-1", "seg-1", "seg-3", 0.8)],
       }),
     ).toBe(false);
+  });
+
+  it("展示态删段遇到未提交正文草稿时必须阻止，避免版本切换冲掉本地 draft", () => {
+    const result = (
+      workspaceEditorHostModel as typeof workspaceEditorHostModel & {
+        resolveSegmentDeletionGuard?: (input: {
+          segmentCount: number;
+          canMutate: boolean;
+          isInteractionLocked: boolean;
+          hasTextDraft: boolean;
+          hasParameterDraft: boolean;
+          hasPendingRerender: boolean;
+          hasReorderDraft: boolean;
+        }) => unknown;
+      }
+    ).resolveSegmentDeletionGuard?.({
+      segmentCount: 3,
+      canMutate: true,
+      isInteractionLocked: false,
+      hasTextDraft: true,
+      hasParameterDraft: false,
+      hasPendingRerender: false,
+      hasReorderDraft: false,
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: "请先完成或放弃当前正文草稿",
+    });
+  });
+
+  it("展示态右键删段确认框会关闭 body 滚动条补偿，避免右侧留白", () => {
+    expect(workspaceEditorHostSource).toContain("lockScroll: false");
   });
 
   it("会话正文默认以列表式打开", () => {
