@@ -1,5 +1,6 @@
-import { ref, computed, shallowRef } from "vue";
-import { useTimeline } from "./useTimeline";
+import { ref, computed, shallowRef, watch } from "vue";
+import { resolvePlaybackCursor, useTimeline } from "./useTimeline";
+import type { PlaybackCursor } from "@/types/editSession";
 import { useRuntimeState } from "./useRuntimeState";
 
 type BlockCacheEntry = {
@@ -10,7 +11,8 @@ type BlockCacheEntry = {
 // module-level singletons (preserves state across route changes if needed)
 const isPlaying = ref(false);
 const currentSample = ref(0);
-const currentSegmentId = ref<string | null>(null);
+const currentCursor = ref<PlaybackCursor | null>(null);
+const playbackCursorError = ref<Error | null>(null);
 
 const audioCtx = shallowRef<AudioContext | null>(null);
 const masterGainNode = shallowRef<GainNode | null>(null);
@@ -27,6 +29,7 @@ let startOffsetSamples = 0; // The exact timeline sample value corresponding to 
 let animationFrameId: number | null = null;
 let prefetchTimeoutId: number | null = null;
 let playbackSessionId = 0;
+let cursorSyncInitialized = false;
 
 export function usePlayback() {
   const {
@@ -34,10 +37,67 @@ export function usePlayback() {
     blockEntries,
     sampleRate,
     totalSamples,
-    sampleToSegmentId,
     segmentIdToSampleRange,
   } = useTimeline();
   const { canMutate, lockedSegmentIds } = useRuntimeState();
+
+  function stopScheduledPlayback() {
+    isPlaying.value = false;
+    playbackSessionId += 1;
+
+    clearScheduledTimers();
+    clearActiveNodes();
+  }
+
+  function clearScheduledTimers() {
+    if (animationFrameId !== null) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+    }
+    if (prefetchTimeoutId !== null) {
+      clearTimeout(prefetchTimeoutId);
+      prefetchTimeoutId = null;
+    }
+  }
+
+  function syncCursorState() {
+    if (!timelineManifest.value) {
+      currentCursor.value = null;
+      playbackCursorError.value = null;
+      return;
+    }
+
+    try {
+      currentCursor.value = resolvePlaybackCursor(
+        timelineManifest.value,
+        currentSample.value,
+      );
+      playbackCursorError.value = null;
+    } catch (error) {
+      currentCursor.value = null;
+      playbackCursorError.value =
+        error instanceof Error
+          ? error
+          : new Error("[playback] failed to resolve playback cursor");
+      stopScheduledPlayback();
+    }
+  }
+
+  function setCurrentSample(sample: number) {
+    currentSample.value = sample;
+    syncCursorState();
+  }
+
+  if (!cursorSyncInitialized) {
+    cursorSyncInitialized = true;
+    watch(
+      timelineManifest,
+      () => {
+        syncCursorState();
+      },
+      { immediate: true, flush: "sync" },
+    );
+  }
 
   function getAudioCtx() {
     if (!audioCtx.value) {
@@ -153,27 +213,15 @@ export function usePlayback() {
 
   function pause() {
     if (!isPlaying.value) return;
-    isPlaying.value = false;
-    playbackSessionId += 1;
-
-    if (animationFrameId !== null) {
-      cancelAnimationFrame(animationFrameId);
-      animationFrameId = null;
-    }
-    if (prefetchTimeoutId !== null) {
-      clearTimeout(prefetchTimeoutId);
-      prefetchTimeoutId = null;
-    }
+    stopScheduledPlayback();
 
     // Calculate accurate pause position before clearing
     const ctx = getAudioCtx();
     const elapsedSeconds = Math.max(0, ctx.currentTime - startTimeSeconds);
-    currentSample.value = Math.min(
+    setCurrentSample(Math.min(
       totalSamples.value,
       startOffsetSamples + Math.floor(elapsedSeconds * sampleRate.value),
-    );
-
-    clearActiveNodes();
+    ));
   }
 
   function pauseForProcessing() {
@@ -188,13 +236,12 @@ export function usePlayback() {
       startOffsetSamples + Math.floor(elapsedSeconds * sampleRate.value);
 
     if (newSample >= totalSamples.value) {
-      currentSample.value = totalSamples.value;
+      setCurrentSample(totalSamples.value);
       isPlaying.value = false;
       return;
     }
 
-    currentSample.value = newSample;
-    currentSegmentId.value = sampleToSegmentId(newSample);
+    setCurrentSample(newSample);
     animationFrameId = requestAnimationFrame(updatePlayState);
   }
 
@@ -297,7 +344,7 @@ export function usePlayback() {
           if (t >= 0) activeNodes.splice(t, 1);
           if (activeNodes.length === 0 && !isStalePlaybackSession(sessionId)) {
             isPlaying.value = false;
-            currentSample.value = totalSamples.value;
+            setCurrentSample(totalSamples.value);
           }
         };
       }
@@ -318,10 +365,11 @@ export function usePlayback() {
     startCtxTime?: number;
     fadeInDurationSeconds?: number;
   }) {
-    if (!canMutate.value || isPlaying.value) {
+    if (!canMutate.value || isPlaying.value || playbackCursorError.value) {
       console.warn("[playback] play ignored", {
         canMutate: canMutate.value,
         isPlaying: isPlaying.value,
+        playbackCursorError: playbackCursorError.value?.message ?? null,
         totalSamples: totalSamples.value,
         blockCount: blockEntries.value.length,
       });
@@ -329,7 +377,17 @@ export function usePlayback() {
     }
 
     if (currentSample.value >= totalSamples.value) {
-      currentSample.value = 0;
+      setCurrentSample(0);
+    } else {
+      syncCursorState();
+    }
+
+    if (playbackCursorError.value) {
+      console.warn("[playback] play aborted due to cursor error", {
+        currentSample: currentSample.value,
+        error: playbackCursorError.value.message,
+      });
+      return;
     }
 
     console.info("[playback] play requested", {
@@ -376,8 +434,7 @@ export function usePlayback() {
     const targetSample = Math.max(0, Math.min(sample, totalSamples.value));
     const wasPlaying = isPlaying.value;
     if (!wasPlaying) {
-      currentSample.value = targetSample;
-      currentSegmentId.value = sampleToSegmentId(currentSample.value);
+      setCurrentSample(targetSample);
       return;
     }
 
@@ -385,15 +442,7 @@ export function usePlayback() {
     const restartAt = scheduleFadeOut(ctx.currentTime, SEEK_FADE_OUT_SECONDS);
     isPlaying.value = false;
     playbackSessionId += 1;
-
-    if (animationFrameId !== null) {
-      cancelAnimationFrame(animationFrameId);
-      animationFrameId = null;
-    }
-    if (prefetchTimeoutId !== null) {
-      clearTimeout(prefetchTimeoutId);
-      prefetchTimeoutId = null;
-    }
+    clearScheduledTimers();
     for (const { node } of activeNodes) {
       node.onended = null;
       try {
@@ -404,8 +453,10 @@ export function usePlayback() {
     }
     activeNodes = [];
 
-    currentSample.value = targetSample;
-    currentSegmentId.value = sampleToSegmentId(currentSample.value);
+    setCurrentSample(targetSample);
+    if (playbackCursorError.value) {
+      return;
+    }
     play({
       startCtxTime: restartAt,
       fadeInDurationSeconds: SEEK_FADE_IN_SECONDS,
@@ -428,7 +479,11 @@ export function usePlayback() {
   return {
     isPlaying: computed(() => isPlaying.value),
     currentSample,
-    currentSegmentId,
+    currentCursor: computed(() => currentCursor.value),
+    currentSegmentId: computed(() =>
+      currentCursor.value?.kind === "segment" ? currentCursor.value.segmentId : null,
+    ),
+    playbackCursorError: computed(() => playbackCursorError.value),
     play,
     pause,
     pauseForProcessing,

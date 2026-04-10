@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { EditorState } from '@tiptap/pm/state'
+import type { PlaybackCursor } from '@/types/editSession'
 
 import type { WorkspaceEditorLayoutMode, WorkspaceRenderMap } from './layoutTypes'
 import type { ListDropIntent } from './listReorderTypes'
@@ -14,6 +15,7 @@ export interface SegmentDecorationState {
   renderMap: WorkspaceRenderMap | null
   showReorderHandle: boolean
   playingId: string | null
+  playingCursor?: PlaybackCursor | null
   selectedIds: Set<string>
   dirtyIds: Set<string>
   dirtyEdgeIds: Set<string>
@@ -31,6 +33,16 @@ export interface SegmentDecorationSpec {
   attrs: Record<string, string>
 }
 
+function resolvePlayingSegmentId(state: SegmentDecorationState) {
+  if (state.playingCursor) {
+    return state.playingCursor.kind === "segment"
+      ? state.playingCursor.segmentId
+      : null
+  }
+
+  return state.playingId
+}
+
 export function buildSegmentDecorationSpecs(
   state: SegmentDecorationState | null,
 ): SegmentDecorationSpec[] {
@@ -43,6 +55,7 @@ export function buildSegmentDecorationSpecs(
   }
 
   const ranges = state.renderMap.segmentRanges
+  const playingSegmentId = resolvePlayingSegmentId(state)
 
   if (ranges.length === 0) {
     return []
@@ -59,7 +72,7 @@ export function buildSegmentDecorationSpecs(
       classes.push("segment-dirty")
     }
 
-    if (state.playingId === range.segmentId) {
+    if (playingSegmentId === range.segmentId) {
       classes.push(
         state.isEditing
           ? "segment-editing-playing"
@@ -90,12 +103,13 @@ function buildListSegmentDecorationAttrs(
   segmentId: string,
 ) {
   const classes = ["segment-line"]
+  const playingSegmentId = resolvePlayingSegmentId(state)
 
   if (state.dirtyIds.has(segmentId)) {
     classes.push("segment-line-dirty")
   }
 
-  if (state.playingId === segmentId) {
+  if (playingSegmentId === segmentId) {
     classes.push(
       state.isEditing
         ? "segment-line-editing-playing"

@@ -9,7 +9,7 @@ import DirtySegmentBadge from "./DirtySegmentBadge.vue";
 import WorkspaceEditorHost from "./WorkspaceEditorHost.vue";
 
 const { segmentEntries } = useTimeline();
-const { currentSegmentId, play, seekToSegment } = usePlayback();
+const { currentCursor, play, seekToSegment } = usePlayback();
 const { segments, segmentsLoaded } = useEditSession();
 const segmentSelection = useSegmentSelection();
 const lightEdit = useWorkspaceLightEdit();
@@ -51,7 +51,10 @@ const displaySegments = computed(() => {
 });
 
 function isCurrentSegment(segmentId: string) {
-  return currentSegmentId.value === segmentId;
+  return (
+    currentCursor.value?.kind === "segment" &&
+    currentCursor.value.segmentId === segmentId
+  );
 }
 
 function isSelected(segmentId: string) {

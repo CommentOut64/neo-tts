@@ -15,10 +15,12 @@ import {
   ArrowRight,
 } from "@element-plus/icons-vue";
 
-const { isPlaying, play, pause, currentSample, seekToSample } = usePlayback();
+const { isPlaying, play, pause, currentSample, seekToSample, playbackCursorError } =
+  usePlayback();
 const { totalSamples, sampleRate, segmentEntries } = useTimeline();
 const workspaceProcessing = useWorkspaceProcessing();
 const isLocked = computed(() => workspaceProcessing.isInteractionLocked.value);
+const hasPlaybackCursorError = computed(() => Boolean(playbackCursorError.value));
 
 const sliderPercent = ref(0);
 const isDraggingSlider = ref(false);
@@ -49,7 +51,7 @@ const displayCurrentTime = computed(() => formatTime(currentSample.value));
 const displayTotalTime = computed(() => formatTime(totalSamples.value));
 
 function seekByPercent(percent: number) {
-  if (totalSamples.value === 0 || isLocked.value) return;
+  if (totalSamples.value === 0 || isLocked.value || hasPlaybackCursorError.value) return;
   seekToSample((percent / 100) * totalSamples.value);
 }
 
@@ -67,13 +69,13 @@ function onSliderChange(value: number | number[]) {
 }
 
 function onTogglePlay() {
-  if (isLocked.value) return;
+  if (isLocked.value || hasPlaybackCursorError.value) return;
   if (isPlaying.value) pause();
   else play();
 }
 
 function onPrevSegment() {
-  if (isLocked.value) return;
+  if (isLocked.value || hasPlaybackCursorError.value) return;
   const targetSample = findPreviousSegmentStartSample(
     segmentEntries.value,
     currentSample.value,
@@ -82,7 +84,7 @@ function onPrevSegment() {
 }
 
 function onNextSegment() {
-  if (isLocked.value) return;
+  if (isLocked.value || hasPlaybackCursorError.value) return;
   const targetSample = findNextSegmentStartSample(
     segmentEntries.value,
     currentSample.value,
@@ -99,14 +101,14 @@ function onNextSegment() {
         class="hover-state-layer w-9 h-9 flex items-center justify-center rounded-full bg-secondary dark:bg-secondary/50 text-foreground hover:bg-secondary/80 dark:hover:bg-secondary/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         @click="onPrevSegment"
         title="上一段"
-        :disabled="segmentEntries.length === 0 || isLocked"
+        :disabled="segmentEntries.length === 0 || isLocked || hasPlaybackCursorError"
       >
         <el-icon><ArrowLeft /></el-icon>
       </button>
       <button
         class="hover-state-layer w-11 h-11 flex items-center justify-center rounded-full bg-blue-500 text-white shadow-sm hover:bg-blue-600 hover:shadow disabled:bg-blue-300 disabled:text-white/80 disabled:cursor-not-allowed transition-all text-xl"
         @click="onTogglePlay"
-        :disabled="totalSamples === 0 || isLocked"
+        :disabled="totalSamples === 0 || isLocked || hasPlaybackCursorError"
       >
         <el-icon v-if="isPlaying"><VideoPause /></el-icon>
         <el-icon v-else class="ml-[2px]"><VideoPlay /></el-icon>
@@ -115,7 +117,7 @@ function onNextSegment() {
         class="hover-state-layer w-9 h-9 flex items-center justify-center rounded-full bg-secondary dark:bg-secondary/50 text-foreground hover:bg-secondary/80 dark:hover:bg-secondary/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         @click="onNextSegment"
         title="下一段"
-        :disabled="segmentEntries.length === 0 || isLocked"
+        :disabled="segmentEntries.length === 0 || isLocked || hasPlaybackCursorError"
       >
         <el-icon><ArrowRight /></el-icon>
       </button>
@@ -129,7 +131,7 @@ function onNextSegment() {
           :show-tooltip="false"
           size="small"
           class="w-full !m-0 slider-hit-area"
-          :disabled="isLocked"
+          :disabled="isLocked || hasPlaybackCursorError"
           @input="onSliderInput"
           @change="onSliderChange"
         />

@@ -77,7 +77,7 @@ const REORDER_DRAFT_LOCK_MESSAGE = "请先应用或放弃当前顺序调整";
 const editSession = useEditSession();
 const lightEdit = useWorkspaceLightEdit();
 const workspaceDraftPersistence = useWorkspaceDraftPersistence();
-const { currentSegmentId, isPlaying, play, pause, seekToSegment } = usePlayback();
+const { currentCursor, isPlaying, play, pause, seekToSegment } = usePlayback();
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
@@ -751,7 +751,11 @@ function syncDecorationState(editorOverride?: any) {
     layoutMode: effectiveLayoutMode.value,
     renderMap: renderMap.value,
     showReorderHandle: canStartFreshReorder.value,
-    playingId: currentSegmentId.value,
+    playingId:
+      currentCursor.value?.kind === "segment"
+        ? currentCursor.value.segmentId
+        : null,
+    playingCursor: currentCursor.value,
     selectedIds: segmentSelection.selectedSegmentIds.value,
     dirtyIds: lightEdit.dirtySegmentIds.value,
     dirtyEdgeIds: parameterPanel.dirtyEdgeIds.value,
@@ -1504,7 +1508,7 @@ watch(
 
 watch(
   [
-    currentSegmentId,
+    currentCursor,
     () => segmentSelection.selectedSegmentIds.value,
     () => lightEdit.dirtySegmentIds.value,
     () => parameterPanel.dirtyEdgeIds.value,

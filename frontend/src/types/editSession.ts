@@ -304,6 +304,25 @@ export interface TimelineManifest {
   created_at?: string;
 }
 
+export type PlaybackCursorKind =
+  | "before_start"
+  | "segment"
+  | "boundary"
+  | "pause"
+  | "ended";
+
+export interface PlaybackCursor {
+  sample: number;
+  kind: PlaybackCursorKind;
+  segmentId: string | null;
+  edgeId: string | null;
+  leftSegmentId: string | null;
+  rightSegmentId: string | null;
+  spanStartSample: number;
+  spanEndSample: number;
+  progressInSpan: number;
+}
+
 export type RenderJobEventType =
   | 'job_state_changed'
   | 'segments_initialized'
