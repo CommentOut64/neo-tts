@@ -5,6 +5,7 @@ defineProps<{
   modelValue: string
   voices: VoiceProfile[]
   placeholder?: string
+  disabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +17,7 @@ const emit = defineEmits<{
   <el-select
     :model-value="modelValue"
     :placeholder="placeholder ?? '选择模型'"
+    :disabled="disabled"
     size="default"
     class="!w-min"
     style="min-width: 280px;"

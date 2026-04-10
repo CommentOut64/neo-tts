@@ -14,6 +14,7 @@ const props = defineProps<{
   mixedLabel?: string
   fallbackValue?: number
   isDirty?: boolean
+  disabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -51,6 +52,7 @@ const resolvedValue = computed(() => {
       <el-slider
         :model-value="resolvedValue"
         :min="min" :max="max" :step="step"
+        :disabled="disabled"
         :show-tooltip="false"
         class="flex-1"
         @update:model-value="emit('update:modelValue', $event)"
@@ -58,6 +60,7 @@ const resolvedValue = computed(() => {
       <el-input-number
         :model-value="resolvedValue"
         :min="min" :max="max" :step="step"
+        :disabled="disabled"
         :controls="false"
         size="small"
         class="!w-20"

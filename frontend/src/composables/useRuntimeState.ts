@@ -39,6 +39,12 @@ let finishPromise: Promise<void> | null = null;
 let trackedJobId: string | null = null;
 let trackedJobOptions: TrackJobOptions = {};
 let trackedJobEpoch = 0;
+let renderJobReconnectTimerId: ReturnType<typeof setTimeout> | null = null;
+let renderJobReconnectAttempt = 0;
+let renderJobHealthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
+let runtimeLifecycleDiagnosticsRegistered = false;
+let scheduleRenderJobReconnectFromLifecycle: ((reason: string) => void) | null = null;
+let lastRenderJobSseActivityAt = 0;
 let resolveTerminalStatus:
   | ((status: "completed" | "failed" | "paused" | "cancelled_partial") => void)
   | null = null;
@@ -48,6 +54,9 @@ let terminalStatusPromise: Promise<
 
 const PAUSED_HINT = "已暂停，随时可以继续";
 const RESUMED_HINT = "已继续，正在接着处理剩余内容";
+const RENDER_JOB_RECONNECT_DELAYS_MS = [500, 1000, 2000] as const;
+const RENDER_JOB_HEALTH_CHECK_INTERVAL_MS = 5000;
+const RENDER_JOB_STREAM_STALE_MS = 30000;
 
 interface RenderJobCommitMetadataShape {
   committed_document_version?: number | null;
@@ -218,7 +227,69 @@ function isSettledRenderStatus(
   return ["completed", "failed", "paused", "cancelled_partial"].includes(status);
 }
 
+function isPageVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function markRenderJobSseActivity() {
+  lastRenderJobSseActivityAt = Date.now();
+}
+
+function clearRenderJobHealthCheckInterval() {
+  if (renderJobHealthCheckIntervalId === null) {
+    return;
+  }
+  clearInterval(renderJobHealthCheckIntervalId);
+  renderJobHealthCheckIntervalId = null;
+}
+
+function ensureRenderJobHealthCheckLoop() {
+  if (!shouldTrackJobLifecycle()) {
+    clearRenderJobHealthCheckInterval();
+    return;
+  }
+  if (renderJobHealthCheckIntervalId !== null) {
+    return;
+  }
+
+  renderJobHealthCheckIntervalId = setInterval(() => {
+    if (!shouldTrackJobLifecycle() || !isPageVisible()) {
+      return;
+    }
+    if (sseConnectionState.value === "polling") {
+      return;
+    }
+    if (unsubscribeSse === null || sseConnectionState.value !== "connected") {
+      console.warn("[useRuntimeState] health check detected missing render job SSE", {
+        jobId: trackedJobId,
+        sseConnectionState: sseConnectionState.value,
+        hasSubscription: unsubscribeSse !== null,
+      });
+      scheduleRenderJobReconnectFromLifecycle?.("health-check:disconnected");
+      return;
+    }
+
+    const streamInactiveForMs =
+      lastRenderJobSseActivityAt > 0 ? Date.now() - lastRenderJobSseActivityAt : null;
+    if (
+      streamInactiveForMs !== null &&
+      streamInactiveForMs >= RENDER_JOB_STREAM_STALE_MS
+    ) {
+      console.warn("[useRuntimeState] health check detected stale render job SSE", {
+        jobId: trackedJobId,
+        streamInactiveForMs,
+      });
+      unsubscribeSse();
+      unsubscribeSse = null;
+      sseConnectionState.value = "disconnected";
+      scheduleRenderJobReconnectFromLifecycle?.("health-check:stale");
+    }
+  }, RENDER_JOB_HEALTH_CHECK_INTERVAL_MS);
+}
+
 export function useRuntimeState() {
+  registerRuntimeLifecycleDiagnostics();
+
   const canMutate = computed(() => {
     return (
       currentRenderJob.value === null ||
@@ -236,14 +307,17 @@ export function useRuntimeState() {
       clearInterval(pollingIntervalId);
       pollingIntervalId = null;
     }
+    clearRenderJobReconnectTimer();
 
     finishPromise = null;
+    renderJobReconnectAttempt = 0;
     trackedJobEpoch += 1;
     trackedJobId = job.job_id;
     trackedJobOptions = options;
     pausedJobContext = null;
     emittedCommittedSignature = null;
     currentRenderJob.value = buildTrackedJobSnapshot(job, options);
+    lastRenderJobSseActivityAt = 0;
     const initialCommittedPayload = extractCommittedRenderJobPayload(
       currentRenderJob.value as Partial<RenderJobCommitMetadataShape>,
     );
@@ -255,7 +329,7 @@ export function useRuntimeState() {
       : [];
     isInitialRendering.value = options.initialRendering ?? false;
     lockedSegmentIds.value = new Set(options.lockedSegmentIds ?? []);
-    sseConnectionState.value = "connected";
+    sseConnectionState.value = "disconnected";
     console.warn("[useRuntimeState] tracking render job", {
       jobId: job.job_id,
       initialRendering: isInitialRendering.value,
@@ -267,9 +341,39 @@ export function useRuntimeState() {
       resolveTerminalStatus = resolve;
     });
 
-    unsubscribeSse = subscribeRenderJobEvents(job.job_id, {
+    ensureRenderJobHealthCheckLoop();
+    connectRenderJobSse(job.job_id, trackedJobEpoch, "trackJob");
+  }
+
+  function connectRenderJobSse(
+    jobId: string,
+    jobEpoch: number,
+    source: string,
+  ) {
+    if (trackedJobId !== jobId || trackedJobEpoch !== jobEpoch) {
+      return;
+    }
+
+    if (unsubscribeSse) {
+      unsubscribeSse();
+      unsubscribeSse = null;
+    }
+
+    sseConnectionState.value = "disconnected";
+    unsubscribeSse = subscribeRenderJobEvents(jobId, {
+      onOpen: () => {
+        clearRenderJobReconnectTimer();
+        renderJobReconnectAttempt = 0;
+        sseConnectionState.value = "connected";
+        markRenderJobSseActivity();
+        console.warn("[useRuntimeState] render job SSE opened", {
+          jobId,
+          source,
+        });
+      },
       onEvent: (type: RenderJobEventType, payload: any) => {
-        emitRenderJobEvent(type, payload, job.job_id);
+        markRenderJobSseActivity();
+        emitRenderJobEvent(type, payload, jobId);
         if (type === "job_state_changed") {
           currentRenderJob.value = mergeTrackedJobSnapshot(
             payload as RenderJob,
@@ -278,7 +382,7 @@ export function useRuntimeState() {
             payload as Partial<RenderJobCommitMetadataShape>,
           );
           if (committedPayload) {
-            applyCommittedPayload(committedPayload, job.job_id);
+            applyCommittedPayload(committedPayload, jobId);
           }
           if (isSettledRenderStatus(currentRenderJob.value.status)) {
             if (currentRenderJob.value.status === "paused") {
@@ -302,7 +406,7 @@ export function useRuntimeState() {
             }))
             .sort((a: any, b: any) => a.orderKey - b.orderKey);
           console.warn("[useRuntimeState] received segments_initialized", {
-            jobId: job.job_id,
+            jobId,
             segmentCount: progressiveSegments.value.length,
             sseConnectionState: sseConnectionState.value,
           });
@@ -322,7 +426,7 @@ export function useRuntimeState() {
             payload as Partial<RenderJobCommitMetadataShape>,
           );
           if (committedPayload) {
-            applyCommittedPayload(committedPayload, job.job_id);
+            applyCommittedPayload(committedPayload, jobId);
           }
         } else if (type === "job_resumed") {
           if (currentRenderJob.value) {
@@ -342,31 +446,81 @@ export function useRuntimeState() {
           }
           resolveTerminalStatus?.("paused");
           void finishTrackedJob(
-            currentRenderJob.value?.job_id ?? job.job_id,
+            currentRenderJob.value?.job_id ?? jobId,
             "paused",
           );
         } else if (type === "job_cancelled_partial") {
           resolveTerminalStatus?.("cancelled_partial");
           void finishTrackedJob(
-            currentRenderJob.value?.job_id ?? job.job_id,
+            currentRenderJob.value?.job_id ?? jobId,
             "cancelled_partial",
           );
         }
       },
       onError: (err: any) => {
-        console.warn("[useRuntimeState] render job SSE disconnected, falling back to polling", {
-          jobId: job.job_id,
+        console.warn("[useRuntimeState] render job SSE disconnected, scheduling reconnect", {
+          jobId,
           error: err,
           progressiveSegmentCount: progressiveSegments.value.length,
           isInitialRendering: isInitialRendering.value,
+          source,
+          reconnectAttempt: renderJobReconnectAttempt,
         });
-        sseConnectionState.value = "polling";
         if (unsubscribeSse) unsubscribeSse();
         unsubscribeSse = null;
-        startPolling(job.job_id);
+        sseConnectionState.value = "disconnected";
+        scheduleRenderJobReconnect(`error:${source}`);
       },
     });
+    ensureRenderJobHealthCheckLoop();
   }
+
+  function scheduleRenderJobReconnect(reason: string) {
+    if (!shouldTrackJobLifecycle() || trackedJobId === null) {
+      return;
+    }
+    if (renderJobReconnectTimerId !== null) {
+      return;
+    }
+
+    const nextAttempt = renderJobReconnectAttempt + 1;
+    if (nextAttempt > 3) {
+      console.warn("[useRuntimeState] render job SSE reconnect exhausted, switching to polling", {
+        jobId: trackedJobId,
+        reason,
+      });
+      sseConnectionState.value = "polling";
+      startPolling(trackedJobId);
+      return;
+    }
+
+    renderJobReconnectAttempt = nextAttempt;
+    const delayMs =
+      RENDER_JOB_RECONNECT_DELAYS_MS[nextAttempt - 1] ??
+      RENDER_JOB_RECONNECT_DELAYS_MS[RENDER_JOB_RECONNECT_DELAYS_MS.length - 1];
+    console.warn("[useRuntimeState] scheduling render job SSE reconnect", {
+      jobId: trackedJobId,
+      reason,
+      attempt: nextAttempt,
+      delayMs,
+    });
+
+    const reconnectJobId = trackedJobId;
+    const reconnectEpoch = trackedJobEpoch;
+    renderJobReconnectTimerId = setTimeout(() => {
+      renderJobReconnectTimerId = null;
+      if (trackedJobId !== reconnectJobId || trackedJobEpoch !== reconnectEpoch) {
+        return;
+      }
+      connectRenderJobSse(
+        reconnectJobId,
+        reconnectEpoch,
+        `reconnect#${nextAttempt}:${reason}`,
+      );
+    }, delayMs);
+  }
+
+  scheduleRenderJobReconnectFromLifecycle = scheduleRenderJobReconnect;
 
   function startPolling(jobId: string) {
     if (pollingIntervalId) {
@@ -444,10 +598,14 @@ export function useRuntimeState() {
         unsubscribeSse();
         unsubscribeSse = null;
       }
+      clearRenderJobReconnectTimer();
+      renderJobReconnectAttempt = 0;
       if (pollingIntervalId) {
         clearInterval(pollingIntervalId);
         pollingIntervalId = null;
       }
+      clearRenderJobHealthCheckInterval();
+      lastRenderJobSseActivityAt = 0;
 
       try {
         const stillSameJob =
@@ -458,10 +616,7 @@ export function useRuntimeState() {
         ) {
           const module = await import("./useEditSession");
           const editSession = module.useEditSession();
-          await editSession.refreshSnapshot();
-          if (editSession.sessionStatus.value === "ready") {
-            await editSession.refreshTimeline();
-          }
+          await editSession.refreshFormalSessionState();
         }
       } catch (err) {
         console.error(
@@ -647,4 +802,57 @@ export function useRuntimeState() {
     onRenderJobEvent,
     onRenderJobCommitted,
   };
+}
+
+function clearRenderJobReconnectTimer() {
+  if (renderJobReconnectTimerId === null) {
+    return;
+  }
+  clearTimeout(renderJobReconnectTimerId);
+  renderJobReconnectTimerId = null;
+}
+
+function shouldTrackJobLifecycle() {
+  return (
+    trackedJobId !== null &&
+    currentRenderJob.value !== null &&
+    !isSettledRenderStatus(currentRenderJob.value.status)
+  );
+}
+
+function registerRuntimeLifecycleDiagnostics() {
+  if (runtimeLifecycleDiagnosticsRegistered) {
+    return;
+  }
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  const reconnectIfNeeded = (event: "visibilitychange" | "pageshow") => {
+    if (event === "visibilitychange" && document.visibilityState !== "visible") {
+      return;
+    }
+    if (!shouldTrackJobLifecycle()) {
+      return;
+    }
+    if (unsubscribeSse && sseConnectionState.value === "connected") {
+      return;
+    }
+
+    console.warn("[useRuntimeState] lifecycle requested render job SSE reconnect", {
+      event,
+      jobId: trackedJobId,
+      sseConnectionState: sseConnectionState.value,
+      hasSubscription: unsubscribeSse !== null,
+    });
+    scheduleRenderJobReconnectFromLifecycle?.("lifecycle:" + event);
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    reconnectIfNeeded("visibilitychange");
+  });
+  window.addEventListener("pageshow", () => {
+    reconnectIfNeeded("pageshow");
+  });
+  runtimeLifecycleDiagnosticsRegistered = true;
 }

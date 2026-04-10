@@ -113,6 +113,9 @@ export async function getInferenceProgress(): Promise<InferenceProgressState> {
 export function subscribeInferenceProgress(
   onProgress: (state: InferenceProgressState) => void,
   onError?: (error: Error) => void,
+  options?: {
+    onOpen?: () => void
+  },
 ): () => void {
   const source = new EventSource(resolveApiUrl('/v1/audio/inference/progress/stream', import.meta.env.VITE_API_BASE_URL || ''))
 
@@ -126,6 +129,9 @@ export function subscribeInferenceProgress(
   }
 
   source.addEventListener('progress', handleProgress as unknown as EventListener)
+  source.onopen = () => {
+    options?.onOpen?.()
+  }
   source.onerror = () => {
     onError?.(new Error('推理进度 SSE 连接异常。'))
   }

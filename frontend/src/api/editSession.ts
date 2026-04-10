@@ -274,6 +274,7 @@ export async function commitEdgeConfig(
 export interface RenderJobEventHandlers {
   onEvent?: (type: RenderJobEventType, payload: any) => void
   onError?: (err: Event) => void
+  onOpen?: () => void
   onComplete?: () => void
 }
 
@@ -310,6 +311,9 @@ export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEvent
     return { eventType, listener }
   })
 
+  source.onopen = () => {
+    handlers.onOpen?.()
+  }
   source.onerror = (e) => {
     if (handlers.onError) handlers.onError(e)
     source.close()

@@ -20,8 +20,7 @@ const lightEdit = useWorkspaceLightEdit();
 const editSession = useEditSession();
 const parameterPanel = useParameterPanel();
 const {
-  refreshSnapshot,
-  refreshTimeline,
+  refreshFormalSessionState,
   appliedText,
   backfillInputDraftFromAppliedText,
 } = editSession;
@@ -67,8 +66,7 @@ const queue = createSegmentRerenderQueue({
   },
   clearDraft: (segmentId) => lightEdit.clearDraft(segmentId),
   refreshSession: async () => {
-    await refreshSnapshot();
-    await refreshTimeline();
+    await refreshFormalSessionState();
   },
   setLockedSegments: (segmentIds) => {
     runtimeState.lockedSegmentIds.value = new Set(segmentIds);
