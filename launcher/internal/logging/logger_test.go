@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBootstrapLoggerCreatesSessionLogFile(t *testing.T) {
@@ -51,7 +52,7 @@ func TestBootstrapLoggerWritesStartupHeader(t *testing.T) {
 	}
 
 	text := string(content)
-	if !strings.Contains(text, "startup begin") {
+	if !strings.Contains(text, "[INFO] [launcher] startup begin") {
 		t.Fatalf("log file missing startup marker: %q", text)
 	}
 	if !strings.Contains(text, "double-click") {
@@ -84,5 +85,14 @@ func TestAppendPersistsAdditionalLogLine(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "phase=backend-ready") {
 		t.Fatalf("content = %q, want appended line", string(content))
+	}
+}
+
+func TestFormatLauncherLineAddsTimestampAndTag(t *testing.T) {
+	got := FormatLauncherLine(time.Date(2026, 4, 10, 21, 21, 21, 157000000, time.Local), "phase=running")
+
+	want := "21:21:21.157 [INFO] [launcher] phase=running"
+	if got != want {
+		t.Fatalf("FormatLauncherLine = %q, want %q", got, want)
 	}
 }

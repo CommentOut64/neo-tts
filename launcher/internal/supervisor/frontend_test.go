@@ -156,7 +156,7 @@ func TestFrontendRepeatedLaunchDoesNotReopenBrowser(t *testing.T) {
 	}
 }
 
-func TestFrontendRestartAfterThreeSecondDelay(t *testing.T) {
+func TestFrontendRestartAfterFiveSecondDelay(t *testing.T) {
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.Local)
 	var slept time.Duration
 
@@ -172,8 +172,8 @@ func TestFrontendRestartAfterThreeSecondDelay(t *testing.T) {
 		t.Fatalf("HandleFrontendCrash returned error: %v", err)
 	}
 
-	if slept != 3*time.Second {
-		t.Fatalf("Sleep duration = %s, want 3s", slept)
+	if slept != 5*time.Second {
+		t.Fatalf("Sleep duration = %s, want 5s", slept)
 	}
 	if !result.ShouldRestart {
 		t.Fatal("ShouldRestart = false, want true")
