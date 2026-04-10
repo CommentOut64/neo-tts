@@ -19,6 +19,18 @@ const props = defineProps<{
 const panel = useParameterPanel();
 const isUploadingReferenceAudio = ref(false);
 const refSource = ref<"preset" | "custom">("preset");
+const inputsDisabled = computed(
+  () => panel.isSubmitting.value || panel.resolvedStatus.value !== "ready",
+);
+const scopeStatusMessage = computed(() => {
+  if (panel.resolvedStatus.value === "resolving") {
+    return "正在同步当前作用域的正式参数，暂时不可编辑。";
+  }
+  if (panel.resolvedStatus.value === "unresolved") {
+    return "当前作用域的正式参数引用暂不可解析，请稍后重试或重新选择范围。";
+  }
+  return null;
+});
 
 function isMixed(value: unknown): value is typeof MIXED_VALUE {
   return value === MIXED_VALUE;
@@ -61,6 +73,9 @@ function handleRuntimeUpdate(
 }
 
 async function handleReferenceAudioUpload(file: { raw?: File }) {
+  if (inputsDisabled.value) {
+    return;
+  }
   if (!(file.raw instanceof File)) {
     return;
   }
@@ -86,6 +101,13 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 </script>
 
 <template>
+  <p
+    v-if="scopeStatusMessage"
+    class="mb-3 rounded-card border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted-fg"
+  >
+    {{ scopeStatusMessage }}
+  </p>
+
   <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       目标音色<span v-if="panel.dirtyFields.value.has('voiceBinding.voice_id')" class="text-red-500 font-bold ml-0.5">*</span>
@@ -93,6 +115,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     <VoiceSelect
       :model-value="selectedVoiceId"
       :voices="voices"
+      :disabled="inputsDisabled"
       :placeholder="
         isMixed(panel.displayValues.value.voiceBinding.voice_id)
           ? '多个音色'
@@ -115,7 +138,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
       参考音频<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path') || panel.dirtyFields.value.has('renderProfile.reference_text') || panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
-    <el-radio-group v-model="refSource" class="mb-3">
+    <el-radio-group v-model="refSource" class="mb-3" :disabled="inputsDisabled">
       <el-radio value="preset">模型预设</el-radio>
       <el-radio value="custom">自定义上传</el-radio>
     </el-radio-group>
@@ -136,6 +159,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
         class="w-full"
         :show-file-list="false"
         :on-change="handleReferenceAudioUpload"
+        :disabled="inputsDisabled || isUploadingReferenceAudio"
       >
         <p class="text-sm text-muted-fg">
           {{
@@ -156,6 +180,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
               panel.displayValues.value.renderProfile.reference_audio_path,
             )
           "
+          :disabled="inputsDisabled"
           :placeholder="
             isMixed(
               panel.displayValues.value.renderProfile.reference_audio_path,
@@ -184,7 +209,8 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
           "
           type="textarea"
           :rows="2"
-          :readonly="refSource === 'preset'"
+          :readonly="refSource === 'preset' || inputsDisabled"
+          :disabled="inputsDisabled"
           :placeholder="
             isMixed(panel.displayValues.value.renderProfile.reference_text)
               ? '多个值'
@@ -204,6 +230,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
           :model-value="
             asString(panel.displayValues.value.renderProfile.reference_language)
           "
+          :disabled="inputsDisabled"
           size="small"
           class="!w-min"
           style="min-width: 90px"
@@ -228,6 +255,8 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
   <RuntimeInferenceSettingsPanel
     :values="panel.displayValues.value.renderProfile"
+    :status="panel.resolvedStatus.value"
+    :disabled="inputsDisabled"
     :dirty-fields="new Set(panel.dirtyFields.value)"
     @update="handleRuntimeUpdate"
   />

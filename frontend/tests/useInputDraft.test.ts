@@ -74,38 +74,44 @@ describe("useInputDraft", () => {
     expect(localStorageMock.getItem("neo-tts-input-draft")).toBeNull();
   });
 
-  it("从会话回填正文后也会同步持久化", async () => {
+  it("从正式正文回填后也会同步持久化，并记录为 applied_text 来源", async () => {
     const { useInputDraft } = await loadUseInputDraftModule();
     const draft = useInputDraft();
 
-    draft.backfillFromSession("来自会话的正文");
+    draft.backfillFromAppliedText("来自正式正文");
     draft.markSentToSession(draft.draftRevision.value);
 
-    expect(draft.text.value).toBe("来自会话的正文");
-    expect(draft.source.value).toBe("session");
-    expect(localStorageMock.getItem("neo-tts-input-draft")).toContain("来自会话的正文");
+    expect(draft.text.value).toBe("来自正式正文");
+    expect(draft.source.value).toBe("applied_text");
+    expect(localStorageMock.getItem("neo-tts-input-draft")).toContain("来自正式正文");
   });
 
-  it("workspace 草稿会更新输入框，并记录为 workspace 来源", async () => {
+  it("显式保留 workspace 文字时，会记录为 input_handoff 来源", async () => {
     const { useInputDraft } = await loadUseInputDraftModule();
     const draft = useInputDraft();
 
-    draft.syncFromWorkspaceDraft("来自 workspace 的正文");
+    draft.handoffFromWorkspace("来自 workspace 的保留文字");
 
-    expect(draft.text.value).toBe("来自 workspace 的正文");
-    expect(draft.source.value).toBe("workspace");
+    expect(draft.text.value).toBe("来自 workspace 的保留文字");
+    expect(draft.source.value).toBe("input_handoff");
   });
 
-  it("文本输入页手工改动后，workspace 不会再静默覆盖", async () => {
+  it("会记住最近一轮会话最初版本，并允许跨重新加载恢复", async () => {
     const { useInputDraft } = await loadUseInputDraftModule();
     const draft = useInputDraft();
 
-    draft.syncFromWorkspaceDraft("旧的 workspace 正文");
-    draft.setText("text-input 自己的新稿");
-    const applied = draft.syncFromWorkspaceDraft("新的 workspace 正文");
+    draft.rememberLastSessionInitialText("第一次进入会话时的正文");
+    draft.setText("");
 
-    expect(applied).toBe(false);
-    expect(draft.text.value).toBe("text-input 自己的新稿");
+    const persisted = localStorageMock.getItem("neo-tts-input-draft");
+    expect(persisted).toContain("第一次进入会话时的正文");
+
+    const reloadedModule = await loadUseInputDraftModule();
+    const reloadedDraft = reloadedModule.useInputDraft();
+    const restored = reloadedDraft.restoreLastSessionInitialText();
+
+    expect(restored).toBe(true);
+    expect(reloadedDraft.text.value).toBe("第一次进入会话时的正文");
     expect(draft.source.value).toBe("manual");
   });
 });

@@ -110,6 +110,11 @@ class EditSessionService:
             if composition_manifest_id is not None
             else None
         )
+        source_text = None
+        if active_session.initialize_request is not None:
+            source_text = active_session.initialize_request.raw_text
+        elif current_snapshot is not None:
+            source_text = current_snapshot.raw_text
         total_segment_count = len(current_snapshot.segments) if current_snapshot is not None else 0
         inline_entities = should_inline_segment_summary(total_segment_count)
         segments = (
@@ -126,6 +131,7 @@ class EditSessionService:
             session_status=active_session.session_status,
             document_id=active_session.document_id,
             document_version=current_snapshot.document_version if current_snapshot is not None else None,
+            source_text=source_text,
             default_render_profile_id=current_snapshot.default_render_profile_id if current_snapshot is not None else None,
             default_voice_binding_id=current_snapshot.default_voice_binding_id if current_snapshot is not None else None,
             baseline_version=baseline_snapshot.document_version if baseline_snapshot is not None else None,
@@ -297,6 +303,11 @@ class EditSessionService:
         )
 
     def delete_session(self) -> None:
+        active_session = self._repository.get_active_session()
+        active_job_id = active_session.active_job_id if active_session is not None else None
+        if active_job_id is not None:
+            self._runtime.request_cancel(active_job_id)
+            self._runtime.wait_for_job_terminal(active_job_id)
         self._repository.clear()
         self._asset_store.clear_all()
         self._runtime.reset()

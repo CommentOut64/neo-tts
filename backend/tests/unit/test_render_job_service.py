@@ -1,4 +1,5 @@
 import threading
+import shutil
 import time
 
 import numpy as np
@@ -15,7 +16,15 @@ from backend.app.inference.editable_types import (
     build_boundary_asset_id,
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
-from backend.app.schemas.edit_session import EditableEdge, InitializeEditSessionRequest, PreviewRequest, UpdateSegmentRequest
+from backend.app.schemas.edit_session import (
+    EditableEdge,
+    InitializeEditSessionRequest,
+    PreviewRequest,
+    ReorderSegmentsRequest,
+    SwapSegmentsRequest,
+    UpdateEdgeRequest,
+    UpdateSegmentRequest,
+)
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_asset_store import EditAssetStore
@@ -100,7 +109,7 @@ class _FakeEditableBackend:
         )
 
     def render_boundary_asset(self, left_asset, right_asset, edge, context) -> BoundaryAssetPayload:
-        del edge, context
+        del context
         if self.fail_boundary:
             raise RuntimeError("boundary render failed")
         return BoundaryAssetPayload(
@@ -109,15 +118,15 @@ class _FakeEditableBackend:
                 left_render_version=left_asset.render_version,
                 right_segment_id=right_asset.segment_id,
                 right_render_version=right_asset.render_version,
-                edge_version=1,
-                boundary_strategy="latent_overlap_then_equal_power_crossfade",
+                edge_version=edge.edge_version,
+                boundary_strategy=edge.boundary_strategy,
             ),
             left_segment_id=left_asset.segment_id,
-            left_render_version=1,
+            left_render_version=left_asset.render_version,
             right_segment_id=right_asset.segment_id,
-            right_render_version=1,
-            edge_version=1,
-            boundary_strategy="latent_overlap_then_equal_power_crossfade",
+            right_render_version=right_asset.render_version,
+            edge_version=edge.edge_version,
+            boundary_strategy=edge.boundary_strategy,
             boundary_sample_count=1,
             boundary_audio=np.asarray([0.9], dtype=np.float32),
             trace=None,
@@ -197,6 +206,22 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     assert snapshot.total_edge_count == 1
     assert snapshot.ready_block_count == 1
     assert snapshot.composition_manifest_id is None
+
+
+def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。\n第二句。",
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_snapshot()
+
+    assert snapshot.session_status == "ready"
+    assert snapshot.source_text == "第一句。\n第二句。"
 
 
 def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
@@ -386,6 +411,239 @@ def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
 
     assert len(composed_block_ids) == 1
     assert untouched_block_id not in composed_block_ids
+
+
+def test_edge_pause_update_timeline_commit_only_reports_newly_composed_block_assets(tmp_path):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=100,
+            max_block_seconds=1000,
+            max_segment_count=2,
+        ),
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    edge_id = initial_snapshot.edges[0].edge_id
+
+    assert len(initial_snapshot.block_ids) == 2
+
+    edit_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    timeline_committed = next(
+        event["data"]
+        for event in service._runtime._events[edit_job.job.job_id]  # noqa: SLF001
+        if event["event"] == "timeline_committed"
+    )
+
+    assert updated_snapshot.block_ids[0] != initial_snapshot.block_ids[0]
+    assert updated_snapshot.block_ids[1] == initial_snapshot.block_ids[1]
+    assert timeline_committed["changed_block_asset_ids"] == [updated_snapshot.block_ids[0]]
+
+
+def test_edge_pause_update_persists_committed_metadata_into_render_job_state(tmp_path):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=100,
+            max_block_seconds=1000,
+            max_segment_count=2,
+        ),
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    edge_id = initial_snapshot.edges[0].edge_id
+
+    edit_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    job = service.get_job(edit_job.job.job_id)
+    stored_job = service._repository.get_render_job(edit_job.job.job_id)  # noqa: SLF001
+
+    assert job is not None
+    assert stored_job is not None
+    assert job.committed_document_version == updated_snapshot.document_version
+    assert job.committed_timeline_manifest_id == updated_snapshot.timeline_manifest_id
+    assert job.changed_block_asset_ids == [updated_snapshot.block_ids[0]]
+    assert stored_job.committed_document_version == updated_snapshot.document_version
+    assert stored_job.committed_timeline_manifest_id == updated_snapshot.timeline_manifest_id
+    assert stored_job.changed_block_asset_ids == [updated_snapshot.block_ids[0]]
+
+
+def test_edge_pause_update_does_not_build_reference_context_again(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    edge_id = service.get_head_snapshot().edges[0].edge_id
+    build_context_calls = 0
+    original_build_reference_context = service._gateway.build_reference_context
+
+    def _count_build_reference_context(*args, **kwargs):
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return original_build_reference_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service._gateway,
+        "build_reference_context",
+        _count_build_reference_context,
+    )
+
+    edit_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert build_context_calls == 0
+
+
+def test_segment_swap_does_not_build_reference_context_again(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    build_context_calls = 0
+    original_build_reference_context = service._gateway.build_reference_context
+
+    def _count_build_reference_context(*args, **kwargs):
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return original_build_reference_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service._gateway,
+        "build_reference_context",
+        _count_build_reference_context,
+    )
+
+    edit_job = service.create_swap_segments_job(
+        SwapSegmentsRequest(
+            first_segment_id=snapshot.segments[0].segment_id,
+            second_segment_id=snapshot.segments[2].segment_id,
+        )
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert build_context_calls == 0
+
+
+def test_segment_reorder_does_not_build_reference_context_again(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    build_context_calls = 0
+    original_build_reference_context = service._gateway.build_reference_context
+
+    def _count_build_reference_context(*args, **kwargs):
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return original_build_reference_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service._gateway,
+        "build_reference_context",
+        _count_build_reference_context,
+    )
+
+    edit_job = service.create_reorder_segments_job(
+        ReorderSegmentsRequest(
+            base_document_version=snapshot.document_version,
+            ordered_segment_ids=[
+                snapshot.segments[2].segment_id,
+                snapshot.segments[0].segment_id,
+                snapshot.segments[1].segment_id,
+            ],
+        )
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert build_context_calls == 0
+
+
+def test_edge_pause_update_rebuilds_missing_boundary_asset_for_current_snapshot(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    edge_id = service.get_head_snapshot().edges[0].edge_id
+
+    strategy_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(boundary_strategy="crossfade_only"),
+    )
+    service.run_edit_job(strategy_job.job.job_id)
+
+    strategy_snapshot = service.get_head_snapshot()
+    left_segment = strategy_snapshot.segments[0]
+    right_segment = strategy_snapshot.segments[1]
+    edge = strategy_snapshot.edges[0]
+    boundary_asset_id = build_boundary_asset_id(
+        left_segment_id=edge.left_segment_id,
+        left_render_version=left_segment.render_version,
+        right_segment_id=edge.right_segment_id,
+        right_render_version=right_segment.render_version,
+        edge_version=edge.edge_version,
+        boundary_strategy=edge.effective_boundary_strategy or edge.boundary_strategy,
+    )
+    boundary_dir = tmp_path / "assets" / "formal" / "boundaries" / boundary_asset_id
+    assert boundary_dir.exists()
+    shutil.rmtree(boundary_dir)
+    assert not boundary_dir.exists()
+
+    pause_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+
+    service.run_edit_job(pause_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
+    assert boundary_dir.exists()
 
 
 def test_create_update_segment_job_preserves_planner_metadata_for_queued_edit_job(tmp_path):

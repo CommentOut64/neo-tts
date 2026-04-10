@@ -22,6 +22,12 @@ interface CreateSegmentRerenderQueueOptions {
   onError?: (error: unknown, segmentId: string | null) => void;
 }
 
+export interface SegmentRerenderRunResult {
+  completedSegmentIds: string[];
+  completedAll: boolean;
+  terminalStatus: SegmentRerenderTerminalStatus;
+}
+
 export function createSegmentRerenderQueue(
   options: CreateSegmentRerenderQueueOptions,
 ) {
@@ -33,7 +39,9 @@ export function createSegmentRerenderQueue(
   let activeJob: SegmentRerenderJobHandle | null = null;
   let cancelRequested = false;
 
-  async function run(segmentIds: string[]) {
+  async function run(
+    segmentIds: string[],
+  ): Promise<SegmentRerenderRunResult | undefined> {
     if (isProcessing.value || segmentIds.length === 0) {
       return;
     }
@@ -45,6 +53,8 @@ export function createSegmentRerenderQueue(
     cancelRequested = false;
 
     let completedAny = false;
+    const completedSegmentIds: string[] = [];
+    let terminalStatus: SegmentRerenderTerminalStatus = "completed";
 
     try {
       for (let index = 0; index < segmentIds.length; index += 1) {
@@ -67,9 +77,11 @@ export function createSegmentRerenderQueue(
           if (status === "completed") {
             options.clearDraft(segmentId);
             completedAny = true;
+            completedSegmentIds.push(segmentId);
             continue;
           }
 
+          terminalStatus = status;
           if (status === "paused" || status === "cancelled_partial") {
             cancelRequested = true;
           }
@@ -87,6 +99,12 @@ export function createSegmentRerenderQueue(
       if (completedAny) {
         await options.refreshSession();
       }
+
+      return {
+        completedSegmentIds,
+        completedAll: completedSegmentIds.length === segmentIds.length,
+        terminalStatus,
+      };
     } finally {
       activeJob = null;
       cancelRequested = false;

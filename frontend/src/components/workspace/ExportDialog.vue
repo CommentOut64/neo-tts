@@ -11,6 +11,7 @@ import { openFolderDialog } from "@/api/system";
 import { extractStatusCode } from "@/api/requestSupport";
 import { useEditSession } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import { isExportBlockedByRenderJob } from "./sessionHandoff";
 import type { ExportJobResponse } from "@/types/editSession";
 
@@ -24,6 +25,7 @@ const emit = defineEmits<{
 
 const { snapshot } = useEditSession();
 const { currentRenderJob, trackExportJob } = useRuntimeState();
+const workspaceProcessing = useWorkspaceProcessing();
 
 const exportType = ref<"composition" | "segments">("composition");
 const targetDir = ref("");
@@ -41,7 +43,10 @@ const isRenderBlocked = computed(() =>
   isExportBlockedByRenderJob(currentRenderJob.value),
 );
 const canStartExport = computed(
-  () => documentVersion.value != null && !isRenderBlocked.value,
+  () =>
+    documentVersion.value != null &&
+    !isRenderBlocked.value &&
+    !workspaceProcessing.isInteractionLocked.value,
 );
 const footerButtonLabel = computed(() =>
   resultFiles.value.length > 0 ? "重新导出" : "开始导出",
@@ -58,6 +63,10 @@ async function startExport() {
   }
   if (isRenderBlocked.value) {
     ElMessage.warning("推理任务仍在运行，当前版本暂时不可导出");
+    return;
+  }
+  if (workspaceProcessing.isInteractionLocked.value) {
+    ElMessage.warning("当前正在处理正式结果，暂时不能导出");
     return;
   }
 

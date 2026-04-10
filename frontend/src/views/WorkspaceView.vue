@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useEditSession } from '@/composables/useEditSession'
 import { useInputDraft } from '@/composables/useInputDraft'
 import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
@@ -24,20 +24,17 @@ import { useParameterPanel } from '@/composables/useParameterPanel'
 import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
 import ParameterDraftConfirm from '@/components/workspace/ParameterDraftConfirm.vue'
-import { buildSessionHeadText, resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
+import { resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
 
 const route = useRoute()
-const router = useRouter()
 const {
   sessionStatus,
   discoverSession,
   initialize,
   clearSession,
-  syncInputDraftToSessionText,
+  backfillInputDraftFromAppliedText,
+  rememberSessionInitialText,
   sourceDraftRevision,
-  snapshot,
-  segments,
-  segmentsLoaded,
 } = useEditSession()
 const {
   text,
@@ -212,13 +209,6 @@ async function handleSubmitDraftAndContinue() {
   await runPendingGuardedAction()
 }
 
-function getCurrentSessionHeadText() {
-  const sessionSegments = segmentsLoaded.value && segments.value.length > 0
-    ? segments.value
-    : snapshot.value?.segments ?? []
-  return buildSessionHeadText(sessionSegments)
-}
-
 const handleInit = async () => {
   if (!initParams.value.voice_id || !text.value) return
   if (sessionStatus.value === 'ready') {
@@ -266,7 +256,8 @@ const handleInit = async () => {
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
 
   if (accepted) {
-    syncInputDraftToSessionText(text.value)
+    rememberSessionInitialText(text.value)
+    backfillInputDraftFromAppliedText(text.value)
   }
 }
 
@@ -320,19 +311,6 @@ const handleResetParams = () => {
     initParams.value.custom_ref_file = null
     initParams.value.custom_ref_path = null
   }
-}
-
-async function handleBackfillToTextInput() {
-  await requestParameterDraftResolution(async () => {
-    const sessionHeadText = getCurrentSessionHeadText()
-    if (!sessionHeadText.trim()) {
-      ElMessage.warning('当前会话没有可回填的正文')
-      return
-    }
-
-    syncInputDraftToSessionText(sessionHeadText)
-    await router.push('/text-input')
-  })
 }
 
 watch(
@@ -403,7 +381,7 @@ watch(
       
       <div v-else-if="sessionStatus === 'ready' || sessionStatus === 'initializing'" class="w-full h-full flex flex-col pt-2 gap-3">
         <!-- 主画布：统一 Editor -->
-        <WorkspaceEditorHost @backfill-to-text-input="handleBackfillToTextInput" />
+        <WorkspaceEditorHost />
 
         <!-- 波形可视化 -->
         <WaveformStrip />

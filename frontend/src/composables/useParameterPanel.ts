@@ -1,16 +1,20 @@
 import { computed, ref, watch } from "vue";
+import { ElMessage } from "element-plus";
 
 import {
-  commitEdgeConfig,
   commitSegmentRenderProfile,
   commitSegmentRenderProfileBatch,
   commitSegmentVoiceBinding,
   commitSegmentVoiceBindingBatch,
   commitSessionRenderProfile,
   commitSessionVoiceBinding,
+  updateEdge,
 } from "@/api/editSession";
+import { shouldBlockEdgeEditing } from "@/components/workspace/workspace-editor/workspaceEditorHostModel";
 import { useEditSession } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
+import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   useSegmentSelection,
   type SelectionSnapshot,
@@ -55,6 +59,10 @@ const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
   primarySelectedSegmentId: null,
   selectedEdgeId: null,
 });
+const lastStableScopeKey = ref<string | null>(null);
+const lastStableResolvedValues = ref<ResolvedParameterPanelValues | null>(null);
+
+type ParameterPanelResolvedStatus = "ready" | "resolving" | "unresolved";
 
 function cloneScopeContext(context: ParameterPanelScopeContext): ParameterPanelScopeContext {
   return {
@@ -85,9 +93,76 @@ function clearDraftState() {
   dirtyFieldSet.value = new Set();
 }
 
+function buildScopeKey(context: ParameterPanelScopeContext): string {
+  if (context.scope === "edge") {
+    return `edge:${context.edgeId ?? ""}`;
+  }
+
+  return `${context.scope}:${context.segmentIds.join(",")}`;
+}
+
+function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
+  return {
+    renderProfile: {
+      speed: null,
+      top_k: null,
+      top_p: null,
+      temperature: null,
+      noise_scale: null,
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
+    },
+    voiceBinding: {
+      voice_id: null,
+      model_key: null,
+      gpt_path: null,
+      sovits_path: null,
+    },
+    edge: null,
+  };
+}
+
+function cloneResolvedValues(values: ResolvedParameterPanelValues): ResolvedParameterPanelValues {
+  return {
+    renderProfile: {
+      ...values.renderProfile,
+    },
+    voiceBinding: {
+      ...values.voiceBinding,
+    },
+    edge: values.edge
+      ? {
+          ...values.edge,
+        }
+      : null,
+  };
+}
+
+function hasResolvedValues(
+  context: ParameterPanelScopeContext,
+  values: ResolvedParameterPanelValues,
+): boolean {
+  if (context.scope === "edge") {
+    return values.edge !== null;
+  }
+
+  return (
+    values.renderProfile.speed !== null &&
+    values.renderProfile.top_k !== null &&
+    values.renderProfile.top_p !== null &&
+    values.renderProfile.temperature !== null &&
+    values.renderProfile.noise_scale !== null &&
+    values.voiceBinding.voice_id !== null &&
+    values.voiceBinding.model_key !== null
+  );
+}
+
 export function useParameterPanel() {
   const editSession = useEditSession();
   const runtimeState = useRuntimeState();
+  const lightEdit = useWorkspaceLightEdit();
+  const workspaceProcessing = useWorkspaceProcessing();
   const selection = useSegmentSelection();
   const queue = createParameterPatchQueue();
 
@@ -101,8 +176,20 @@ export function useParameterPanel() {
   const dirtyFields = computed(() => Array.from(dirtyFieldSet.value));
   const dirtyFieldSetReadonly = computed(() => new Set(dirtyFieldSet.value));
   const hasDirty = computed(() => dirtyFieldSet.value.size > 0);
+  const scopeKey = computed(() => buildScopeKey(scopeContext.value));
+  const dirtyEdgeIds = computed(() => {
+    if (
+      scopeContext.value.scope !== "edge" ||
+      !scopeContext.value.edgeId ||
+      Object.keys(draftPatch.value.edge).length === 0
+    ) {
+      return new Set<string>();
+    }
 
-  const resolvedValues = computed<ResolvedParameterPanelValues>(() =>
+    return new Set([scopeContext.value.edgeId]);
+  });
+
+  const rawResolvedValues = computed<ResolvedParameterPanelValues>(() =>
     resolveEffectiveParameters({
       scope: scopeContext.value.scope,
       segmentIds: scopeContext.value.segmentIds,
@@ -116,6 +203,53 @@ export function useParameterPanel() {
       edges: editSession.edges.value,
     }),
   );
+
+  const resolvedStatus = computed<ParameterPanelResolvedStatus>(() => {
+    if (editSession.sessionStatus.value !== "ready") {
+      return "unresolved";
+    }
+
+    if (editSession.formalStateStatus.value === "refreshing") {
+      return "resolving";
+    }
+
+    if (editSession.formalStateStatus.value === "error") {
+      return "unresolved";
+    }
+
+    return hasResolvedValues(scopeContext.value, rawResolvedValues.value)
+      ? "ready"
+      : "unresolved";
+  });
+
+  watch(
+    [scopeKey, resolvedStatus, rawResolvedValues],
+    ([nextScopeKey, nextResolvedStatus, nextResolvedValues]) => {
+      if (nextResolvedStatus !== "ready") {
+        return;
+      }
+
+      lastStableScopeKey.value = nextScopeKey;
+      lastStableResolvedValues.value = cloneResolvedValues(nextResolvedValues);
+    },
+    { immediate: true, deep: true },
+  );
+
+  const resolvedValues = computed<ResolvedParameterPanelValues>(() => {
+    if (resolvedStatus.value === "ready") {
+      return rawResolvedValues.value;
+    }
+
+    if (
+      resolvedStatus.value === "resolving" &&
+      lastStableScopeKey.value === scopeKey.value &&
+      lastStableResolvedValues.value
+    ) {
+      return cloneResolvedValues(lastStableResolvedValues.value);
+    }
+
+    return buildEmptyResolvedValues();
+  });
 
   const displayValues = computed<ResolvedParameterPanelValues>(() => {
     const base = resolvedValues.value;
@@ -241,6 +375,13 @@ export function useParameterPanel() {
     key: K,
     value: EdgeUpdateBody[K],
   ) {
+    if (
+      key === "boundary_strategy" &&
+      resolvedValues.value.edge?.boundary_strategy_locked
+    ) {
+      return;
+    }
+
     const isSameAsOriginal =
       resolvedValues.value.edge &&
       value ===
@@ -267,6 +408,42 @@ export function useParameterPanel() {
 
   function discardDraft() {
     clearDraftState();
+  }
+
+  function buildEdgeSummary(): string {
+    const currentEdge = resolvedValues.value.edge;
+    if (!currentEdge) {
+      return "边界参数调整";
+    }
+
+    if (draftPatch.value.edge.pause_duration_seconds != null) {
+      return `停顿 ${currentEdge.pause_duration_seconds.toFixed(2)} -> ${draftPatch.value.edge.pause_duration_seconds.toFixed(2)}`;
+    }
+
+    if (draftPatch.value.edge.boundary_strategy) {
+      return `边界策略 ${currentEdge.boundary_strategy} -> ${draftPatch.value.edge.boundary_strategy}`;
+    }
+
+    return "边界参数调整";
+  }
+
+  function assertEdgeDraftSafeToCommit() {
+    const edgeId = scopeContext.value.edgeId;
+    if (
+      scopeContext.value.scope !== "edge" ||
+      !edgeId ||
+      !shouldBlockEdgeEditing({
+        edgeId,
+        edges: editSession.edges.value,
+        dirtySegmentIds: lightEdit.dirtySegmentIds.value,
+      })
+    ) {
+      return;
+    }
+
+    const message = "该停顿会影响待重推理段，请先重推理";
+    ElMessage.warning(message);
+    throw new Error(message);
   }
 
   function buildPatchTasks() {
@@ -324,7 +501,31 @@ export function useParameterPanel() {
       tasks.push({
         kind: "edge",
         submit: async () => {
-          await commitEdgeConfig(scopeContext.value.edgeId!, draftPatch.value.edge);
+          assertEdgeDraftSafeToCommit();
+          const completion = workspaceProcessing.startEdgeUpdate({
+            summary: buildEdgeSummary(),
+          });
+          let jobResponse;
+          try {
+            jobResponse = await updateEdge(
+              scopeContext.value.edgeId!,
+              draftPatch.value.edge,
+            );
+          } catch (error) {
+            workspaceProcessing.fail(
+              error instanceof Error ? error.message : "停顿调整提交失败",
+            );
+            throw error;
+          }
+          workspaceProcessing.acceptJob({
+            job: jobResponse,
+            jobKind: "edge-compose",
+          });
+          runtimeState.trackJob(jobResponse, {
+            initialRendering: false,
+            refreshSessionOnTerminal: false,
+          });
+          await completion;
         },
       });
     }
@@ -336,7 +537,7 @@ export function useParameterPanel() {
     if (!hasDirty.value) {
       return;
     }
-    if (!runtimeState.canMutate.value) {
+    if (!runtimeState.canMutate.value || workspaceProcessing.isInteractionLocked.value) {
       throw new Error("当前存在活动作业，暂时不能提交参数");
     }
 
@@ -350,12 +551,14 @@ export function useParameterPanel() {
     try {
       const result = await queue.run(tasks);
       if (result.status !== "completed") {
+        if (result.error instanceof Error) {
+          throw result.error;
+        }
         throw new Error(`参数提交失败，失败阶段为 ${result.failedTaskKind ?? "unknown"}`);
       }
 
-      await editSession.refreshSnapshot();
-      if (editSession.sessionStatus.value === "ready") {
-        await editSession.refreshTimeline();
+      if (scopeContext.value.scope !== "edge") {
+        await editSession.refreshFormalSessionState();
       }
       clearDraftState();
       if (pendingScopeContext.value) {
@@ -398,10 +601,12 @@ export function useParameterPanel() {
   return {
     scopeContext: computed(() => cloneScopeContext(scopeContext.value)),
     resolvedValues,
+    resolvedStatus,
     displayValues,
     draftPatch: computed(() => draftPatch.value),
     dirtyFields: dirtyFieldSetReadonly,
     dirtyFieldList: dirtyFields,
+    dirtyEdgeIds,
     hasDirty,
     isSubmitting,
     confirmVisible,

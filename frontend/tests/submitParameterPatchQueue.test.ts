@@ -53,6 +53,7 @@ describe("createParameterPatchQueue", () => {
 
     expect(result.status).toBe("failed");
     expect(result.failedTaskKind).toBe("voice-binding");
+    expect(result.error).toBeInstanceOf(Error);
     expect(secondSubmit).not.toHaveBeenCalled();
   });
 });

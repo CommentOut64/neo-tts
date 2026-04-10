@@ -8,10 +8,11 @@ export function createParameterPatchQueue() {
     for (const task of tasks) {
       try {
         await task.submit();
-      } catch {
+      } catch (error) {
         return {
           status: "failed" as const,
           failedTaskKind: task.kind,
+          error,
         };
       }
     }
@@ -19,6 +20,7 @@ export function createParameterPatchQueue() {
     return {
       status: "completed" as const,
       failedTaskKind: null,
+      error: null,
     };
   }
 

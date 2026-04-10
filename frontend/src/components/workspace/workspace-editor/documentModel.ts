@@ -1,5 +1,10 @@
 import type { JSONContent } from "@tiptap/vue-3";
 
+import { buildListLayoutDocument } from "./buildListLayoutDocument";
+import type { WorkspaceEditorLayoutMode, WorkspaceSemanticDocument } from "./layoutTypes";
+import { buildCompositionLayoutDocument } from "./buildCompositionLayoutDocument";
+import { extractOrderedSegmentTextsFromWorkspaceViewDoc } from "./sourceDocNormalizer";
+
 export interface SegmentEditorParagraph {
   segmentId: string;
   text: string;
@@ -13,18 +18,40 @@ export interface SegmentDraftChangeSet {
 export function buildSegmentEditorDocument(
   segments: SegmentEditorParagraph[],
 ): JSONContent {
-  return {
-    type: "doc",
-    content:
-      segments.length > 0
-        ? segments.map((segment) => ({
-            type: "paragraph",
-            content: segment.text
-              ? [{ type: "text", text: segment.text }]
-              : [],
-          }))
-        : [{ type: "paragraph", content: [] }],
-  };
+  return buildListLayoutDocument({
+    segmentOrder: segments.map((segment) => segment.segmentId),
+    segmentsById: Object.fromEntries(
+      segments.map((segment, index) => [
+        segment.segmentId,
+        {
+          segmentId: segment.segmentId,
+          orderKey: index + 1,
+          text: segment.text,
+          renderStatus: "completed" as const,
+          isDirty: false,
+        },
+      ]),
+    ),
+    edgesByLeftSegmentId: {},
+    sourceBlocks: segments.map((segment, index) => ({
+      blockId: `block-${index + 1}`,
+      rawLineText: segment.text,
+      segmentIds: [segment.segmentId],
+    })),
+    compositionAvailability: {
+      ready: false,
+      reason: "missing_source_text",
+    },
+  }).doc;
+}
+
+export function buildWorkspaceRenderPlan(
+  semanticDocument: WorkspaceSemanticDocument,
+  layoutMode: WorkspaceEditorLayoutMode,
+) {
+  return layoutMode === "composition"
+    ? buildCompositionLayoutDocument(semanticDocument)
+    : buildListLayoutDocument(semanticDocument);
 }
 
 export function collectSegmentDraftChanges(
@@ -32,23 +59,19 @@ export function collectSegmentDraftChanges(
   orderedSegmentIds: string[],
   getBackendText: (segmentId: string) => string,
 ): SegmentDraftChangeSet {
-  const paragraphs = (doc.content ?? []).filter(
-    (node) => node.type === "paragraph",
+  const segmentTexts = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+    doc,
+    orderedSegmentIds,
   );
-
-  if (paragraphs.length !== orderedSegmentIds.length) {
-    throw new Error("编辑器段落结构已变化，请放弃当前编辑后重试");
-  }
 
   const changedDrafts: Array<[segmentId: string, text: string]> = [];
   const clearedSegmentIds: string[] = [];
 
-  orderedSegmentIds.forEach((segmentId, index) => {
-    const currentText = readNodeText(paragraphs[index]);
+  segmentTexts.forEach(({ segmentId, text }) => {
     const backendText = getBackendText(segmentId);
 
-    if (currentText !== backendText) {
-      changedDrafts.push([segmentId, currentText]);
+    if (text !== backendText) {
+      changedDrafts.push([segmentId, text]);
       return;
     }
 
@@ -63,20 +86,4 @@ export function collectSegmentDraftChanges(
 
 export function normalizeEditorPastedText(text: string): string {
   return text.replace(/\s*\r?\n+\s*/g, " ").trim();
-}
-
-function readNodeText(node: JSONContent | undefined): string {
-  if (!node?.content || node.content.length === 0) {
-    return "";
-  }
-
-  return node.content
-    .map((child) => {
-      if (typeof child.text === "string") {
-        return child.text;
-      }
-
-      return readNodeText(child);
-    })
-    .join("");
 }

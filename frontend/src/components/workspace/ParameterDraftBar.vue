@@ -7,6 +7,7 @@ const props = defineProps<{
   scope: "session" | "segment" | "batch" | "edge";
   hasDirty: boolean;
   isSubmitting: boolean;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -40,7 +41,7 @@ const hint = computed(() => {
     case "batch":
       return "当前选中多段的统一运行期参数。多个值时会以“多个值”展示。";
     case "edge":
-      return "调整段间停顿与边界策略。提交后仅持久化配置，不立即触发重推理。";
+      return "调整段间停顿与边界策略。提交后会启动拼接作业，并在完成后更新试听。";
     default:
       return "";
   }
@@ -104,14 +105,14 @@ watch(
       <div class="flex items-center gap-2">
         <button 
           class="px-3 py-1 text-xs font-medium rounded text-muted-fg hover:bg-secondary/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" 
-          :disabled="!hasDirty || isSubmitting" 
+          :disabled="!hasDirty || isSubmitting || disabled" 
           @click="emit('discard')"
         >
           放弃
         </button>
         <button 
           class="hover-state-layer px-3 py-1 text-xs font-medium rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed bg-blue-500 text-white"
-          :disabled="!hasDirty || isSubmitting" 
+          :disabled="!hasDirty || isSubmitting || disabled" 
           @click="emit('submit')"
         >
           {{ isSubmitting ? "提交中..." : submitLabel }}

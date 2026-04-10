@@ -45,6 +45,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _runtime_error_handler(_: Request, exc: ActiveRenderJobConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @app.exception_handler(SnapshotStateError)
+    async def _snapshot_state_error_handler(_: Request, exc: SnapshotStateError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     @app.exception_handler(ValueError)
     async def _value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})

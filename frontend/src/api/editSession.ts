@@ -19,6 +19,7 @@ import type {
   SegmentBatchRenderProfilePatchBody,
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
+  ReorderSegmentsBody,
   ExportSegmentsBody,
   ExportCompositionBody,
   ExportJobResponse,
@@ -118,9 +119,26 @@ export async function rerenderSegment(id: string): Promise<RenderJobResponse> {
   return unwrapAcceptedRenderJob(data);
 }
 
+export async function deleteSegment(segmentId: string): Promise<RenderJobResponse> {
+  const { data } = await axios.delete<RenderJobAcceptedResponse>(
+    `/v1/edit-session/segments/${segmentId}`,
+  );
+  return unwrapAcceptedRenderJob(data);
+}
+
 export async function updateEdge(edgeId: string, body: EdgeUpdateBody): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
     `/v1/edit-session/edges/${edgeId}`,
+    body,
+  )
+  return unwrapAcceptedRenderJob(data)
+}
+
+export async function reorderSegments(
+  body: ReorderSegmentsBody,
+): Promise<RenderJobResponse> {
+  const { data } = await axios.post<RenderJobAcceptedResponse>(
+    "/v1/edit-session/segments/reorder",
     body,
   )
   return unwrapAcceptedRenderJob(data)
@@ -256,6 +274,7 @@ export async function commitEdgeConfig(
 export interface RenderJobEventHandlers {
   onEvent?: (type: RenderJobEventType, payload: any) => void
   onError?: (err: Event) => void
+  onOpen?: () => void
   onComplete?: () => void
 }
 
@@ -292,6 +311,9 @@ export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEvent
     return { eventType, listener }
   })
 
+  source.onopen = () => {
+    handlers.onOpen?.()
+  }
   source.onerror = (e) => {
     if (handlers.onError) handlers.onError(e)
     source.close()

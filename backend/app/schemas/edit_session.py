@@ -237,6 +237,17 @@ class MoveSegmentRangeRequest(BaseModel):
         return self
 
 
+class ReorderSegmentsRequest(BaseModel):
+    base_document_version: int = Field(ge=1, description="本次重排所基于的文档版本号。")
+    ordered_segment_ids: list[str] = Field(min_length=1, description="重排后的完整 segment ID 顺序。")
+
+    @model_validator(mode="after")
+    def _validate_unique_segment_ids(self) -> "ReorderSegmentsRequest":
+        if len(set(self.ordered_segment_ids)) != len(self.ordered_segment_ids):
+            raise ValueError("Reorder segment ids must be unique.")
+        return self
+
+
 class SplitSegmentRequest(BaseModel):
     segment_id: str = Field(description="要拆分的目标段 ID。")
     left_text: str = Field(description="拆分后左半段文本。")
@@ -264,6 +275,10 @@ class EditableEdge(BaseModel):
     boundary_strategy: str = Field(
         default="latent_overlap_then_equal_power_crossfade",
         description="请求使用的边界拼接策略。",
+    )
+    boundary_strategy_locked: bool = Field(
+        default=False,
+        description="该边界策略是否被系统锁定，不允许用户修改。",
     )
     effective_boundary_strategy: str | None = Field(default=None, description="实际生效的边界策略。")
     pause_sample_count: int | None = Field(default=None, description="当前停顿区间的 sample 数。")
@@ -358,6 +373,19 @@ class RenderJobResponse(BaseModel):
     current_block_index: int | None = Field(default=None, ge=0, description="当前已完成的 block 计数。")
     total_block_count: int | None = Field(default=None, ge=0, description="本次作业预计处理的 block 总数。")
     result_document_version: int | None = Field(default=None, description="成功完成后提交出的 document_version。")
+    committed_document_version: int | None = Field(default=None, description="已提交正式版本的 document_version。")
+    committed_timeline_manifest_id: str | None = Field(
+        default=None,
+        description="已提交正式版本的 timeline manifest ID。",
+    )
+    committed_playable_sample_span: tuple[int, int] | None = Field(
+        default=None,
+        description="已提交正式版本的可播放 sample 区间。",
+    )
+    changed_block_asset_ids: list[str] = Field(
+        default_factory=list,
+        description="本次提交中真正发生变化的 block asset ID 列表。",
+    )
     checkpoint_id: str | None = Field(default=None, description="若作业暂停或 partial commit，关联的 checkpoint ID。")
     resume_token: str | None = Field(default=None, description="可恢复作业的 resume token。")
     updated_at: datetime = Field(default_factory=_now_utc, description="作业最后更新时间。")
@@ -638,6 +666,10 @@ class EditSessionSnapshotResponse(BaseModel):
     session_status: Literal["empty", "initializing", "ready", "failed"] = Field(default="empty", description="当前会话状态。")
     document_id: str | None = Field(default=None, description="当前活动文档 ID。")
     document_version: int | None = Field(default=None, description="当前 head 对应的版本号。")
+    source_text: str | None = Field(
+        default=None,
+        description="保留原始换行的全文文本，供 WorkspaceEditorHost 组合式布局使用。",
+    )
     default_render_profile_id: str | None = Field(default=None, description="默认 session-scope render profile ID。")
     default_voice_binding_id: str | None = Field(default=None, description="默认 session-scope voice binding ID。")
     baseline_version: int | None = Field(default=None, description="baseline 版本号。")

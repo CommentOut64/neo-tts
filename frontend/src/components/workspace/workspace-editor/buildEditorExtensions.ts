@@ -1,10 +1,23 @@
+import { PauseBoundary } from "./pauseBoundary";
+import { SegmentAnchorMark } from "./segmentAnchorMark";
+import { SegmentBlock } from "./list/segmentBlock";
 import { SegmentDecoration } from "./segmentDecoration";
 import { SegmentEditingGuards } from "./segmentEditingGuards";
 
-/**
- * 构建 WorkspaceEditorHost 专用的 TipTap 扩展列表。
- * 当前只包含段级 Decoration 扩展。
- */
-export function buildEditorExtensions() {
-  return [SegmentDecoration, SegmentEditingGuards];
+export interface WorkspaceEditorExtensionOptions {
+  onActivateEdge: (edgeId: string | null) => void;
+}
+
+export function buildEditorExtensions(
+  options: WorkspaceEditorExtensionOptions,
+) {
+  return [
+    SegmentAnchorMark,
+    SegmentBlock,
+    PauseBoundary.configure({
+      onActivateEdge: options.onActivateEdge,
+    }),
+    SegmentDecoration,
+    SegmentEditingGuards,
+  ];
 }

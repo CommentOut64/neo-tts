@@ -52,6 +52,10 @@ def test_render_job_response_exposes_frozen_progress_fields():
         current_block_index=0,
         total_block_count=1,
         result_document_version=None,
+        committed_document_version=2,
+        committed_timeline_manifest_id="timeline-2",
+        committed_playable_sample_span=(0, 128),
+        changed_block_asset_ids=["block-1"],
         updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
@@ -59,6 +63,10 @@ def test_render_job_response_exposes_frozen_progress_fields():
     assert job.model_dump()["total_segment_count"] == 4
     assert job.model_dump()["current_block_index"] == 0
     assert job.model_dump()["total_block_count"] == 1
+    assert job.model_dump()["committed_document_version"] == 2
+    assert job.model_dump()["committed_timeline_manifest_id"] == "timeline-2"
+    assert job.model_dump()["committed_playable_sample_span"] == (0, 128)
+    assert job.model_dump()["changed_block_asset_ids"] == ["block-1"]
 
 
 def test_audio_delivery_contract_is_metadata_only():
@@ -174,6 +182,7 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     assert segment.segment_kind == "speech"
     assert edge.pause_duration_seconds == 0.3
     assert edge.boundary_strategy == "latent_overlap_then_equal_power_crossfade"
+    assert edge.boundary_strategy_locked is False
 
 
 def test_checkpoint_state_rejects_running_partial_status():

@@ -1,4 +1,10 @@
-# Edit Session API 接入指南
+# Edit Session API 接入指南（归档）
+
+> Archived: 2026-04-10
+> Current Entry:
+> - `/llmdoc/architecture/api-routing-and-dependency-wiring.md`
+> - `/llmdoc/guides/export-workflow.md`
+> - `/llmdoc/guides/voice-config-setup.md`
 
 本文档面向前端接入方，说明 `edit-session` 后端接口的推荐使用方式、状态语义与常见约束。
 
@@ -118,8 +124,13 @@ export 不会创建新的 `document_version`。
 
 1. 记录返回的 `job.job_id`
 2. 轮询 `GET /v1/edit-session/render-jobs/{job_id}`，或订阅 `GET /v1/edit-session/render-jobs/{job_id}/events`
-3. 等待作业进入 `completed`
-4. 再读取：
+3. 优先消费 job 状态里自带的 committed 元数据：
+   - `committed_document_version`
+   - `committed_timeline_manifest_id`
+   - `committed_playable_sample_span`
+   - `changed_block_asset_ids`
+4. 等待作业进入 `completed`
+5. 再读取：
    - `GET /v1/edit-session/snapshot`
    - `GET /v1/edit-session/timeline`
 
@@ -137,8 +148,9 @@ export 不会创建新的 `document_version`。
 1. 调用对应 mutation 接口
 2. 获取返回的 `job_id`
 3. 订阅 render job SSE 或轮询 job 状态
-4. 作业完成后重新读取 `snapshot`
-5. 如果界面依赖精确播放结构，再重新读取 `timeline`
+4. 以 job 状态中的 committed 元数据作为“可以刷新正式状态”的正式信号，而不是依赖瞬时 SSE 事件一定先到
+5. 作业完成后重新读取 `snapshot`
+6. 如果界面依赖精确播放结构，再重新读取 `timeline`
 
 推荐不要假设前端本地能自行推导最终时间线，统一以后端返回为准。
 
@@ -368,12 +380,34 @@ export 不会创建新的 `document_version`。
 - `job_cancelled_partial`
 - `job_resumed`
 
+其中 `timeline_committed` 的 payload 会携带：
+
+- `document_version` / `timeline_version` / `timeline_manifest_id`
+- `playable_sample_span`
+- `changed_block_asset_ids`
+
+`changed_block_asset_ids` 表示本次提交后需要重新预热或替换的 block 资产集合。对于 compose-only 的停顿编辑，它只包含真正重新拼接出的脏 block，而不是整条 timeline 的全量 block。
+
+同一批 committed 元数据也会被写入 render job 正式状态，并出现在：
+
+- `GET /v1/edit-session/render-jobs/{job_id}`
+- SSE / replay 的 `job_state_changed`
+
+对应字段为：
+
+- `committed_document_version`
+- `committed_timeline_manifest_id`
+- `committed_playable_sample_span`
+- `changed_block_asset_ids`
+
 建议前端策略：
 
 1. 以 `job_state_changed` 更新通用状态与进度
 2. 以 `segment_completed` 更新更细粒度的段进度 UI
-3. 以 `timeline_committed` 作为可以安全刷新 `timeline` 的信号
-4. SSE 中断时可退回到 job 轮询
+3. 以 job 状态中的 committed 字段作为 hydrate / 刷新 `timeline` 的正式信号
+4. `timeline_committed` 可继续作为补充事件使用，但不应成为唯一事实来源
+5. SSE 中断时可退回到 job 轮询；只要 job 已携带 committed 字段，前端仍可继续完成 hydrate
+6. hydrate 与音频预热完成后，仍应再用 `GET /render-jobs/{job_id}` 或同等正式状态查询对账一次 terminal 状态；只有 render job 已真正进入 `completed` / `failed` / `paused` / `cancelled_partial`，前端才应清理运行态锁与完成提示
 
 ### 5.2 Export Job SSE
 

@@ -4,7 +4,7 @@ import { useHealthCheck } from '@/composables/useHealthCheck'
 import { useInferenceRuntime } from '@/composables/useInferenceRuntime'
 
 const { status } = useHealthCheck()
-const { isProgressStreamConnected } = useInferenceRuntime()
+const { isProgressStreamConnected } = useInferenceRuntime('App')
 </script>
 
 <template>

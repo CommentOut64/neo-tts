@@ -3,10 +3,17 @@ import { computed } from "vue";
 
 import ParameterSlider from "@/components/ParameterSlider.vue";
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import {
+  EDGE_BOUNDARY_STRATEGY_OPTIONS,
+  formatEdgeBoundaryStrategyLabel,
+} from "@/components/workspace/edgeDisplay";
 
 const panel = useParameterPanel();
 
 const edgeValues = computed(() => panel.displayValues.value.edge);
+const isBoundaryStrategyLocked = computed(
+  () => Boolean(edgeValues.value?.boundary_strategy_locked),
+);
 </script>
 
 <template>
@@ -19,7 +26,7 @@ const edgeValues = computed(() => panel.displayValues.value.edge);
         label="停顿时长"
         :min="0"
         :max="2"
-        :step="0.05"
+        :step="0.01"
         unit="s"
         tooltip="控制两段之间的静音时长"
         :is-dirty="panel.dirtyFields.value.has('edge.pause_duration_seconds')"
@@ -28,19 +35,33 @@ const edgeValues = computed(() => panel.displayValues.value.edge);
 
       <div class="flex flex-col gap-1.5 self-start">
         <label class="text-[13px] font-semibold text-foreground flex items-center">边界策略<span v-if="panel.dirtyFields.value.has('edge.boundary_strategy')" class="text-red-500 font-bold ml-0.5">*</span></label>
+        <el-input
+          v-if="isBoundaryStrategyLocked"
+          :model-value="formatEdgeBoundaryStrategyLabel(edgeValues?.boundary_strategy)"
+          readonly
+          size="small"
+          style="min-width: 220px"
+        />
         <el-select
+          v-else
           :model-value="edgeValues?.boundary_strategy ?? ''"
           size="small"
           class="!w-min"
           style="min-width: 220px"
           @update:model-value="panel.updateEdgeField('boundary_strategy', $event)"
         >
-          <el-option value="latent_overlap_then_equal_power_crossfade" label="Crossfade" />
-          <el-option value="crossfade" label="Simple Crossfade" />
-          <el-option value="hard_cut" label="Hard Cut" />
+          <el-option
+            v-for="option in EDGE_BOUNDARY_STRATEGY_OPTIONS"
+            :key="option.value"
+            :value="option.value"
+            :label="option.label"
+          />
         </el-select>
+        <p v-if="isBoundaryStrategyLocked" class="text-[12px] text-muted-fg">
+          该停顿由重排新建，边界策略固定为简单交叉淡化。
+        </p>
         <p v-if="edgeValues?.effective_boundary_strategy" class="text-[12px] text-muted-fg">
-          当前生效：{{ edgeValues.effective_boundary_strategy }}
+          当前生效：{{ formatEdgeBoundaryStrategyLabel(edgeValues.effective_boundary_strategy) }}
         </p>
       </div>
     </div>

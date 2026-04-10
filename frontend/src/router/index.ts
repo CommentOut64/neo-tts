@@ -7,6 +7,10 @@ const AppEntryResolvingView = defineComponent({
   render: () => null,
 })
 
+// 页面首次加载时启用 fall 动画，动画结束后自动移除
+document.documentElement.classList.add('page-entering')
+setTimeout(() => document.documentElement.classList.remove('page-entering'), 500)
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -44,3 +48,15 @@ const router = createRouter({
 })
 
 export default router
+
+/**
+ * 路由切换时触发 fall 入场动画。
+ * afterEach 挂载 page-entering，500ms 后自动移除，
+ * 确保只有页面入场瞬间的 card 播放动画，后续局部重渲染不受影响。
+ */
+let enteringTimer: ReturnType<typeof setTimeout> | undefined
+router.afterEach(() => {
+  clearTimeout(enteringTimer)
+  document.documentElement.classList.add('page-entering')
+  enteringTimer = setTimeout(() => document.documentElement.classList.remove('page-entering'), 500)
+})

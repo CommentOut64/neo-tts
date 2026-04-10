@@ -1,70 +1,48 @@
 <script setup lang="ts">
-import { Delete } from '@element-plus/icons-vue'
+import { Delete, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { extractStatusCode } from '@/api/requestSupport'
-import { useInputDraft } from '@/composables/useInputDraft'
 import { useEditSession } from '@/composables/useEditSession'
-import { useWorkspaceLightEdit } from '@/composables/useWorkspaceLightEdit'
+import { useInputDraft } from '@/composables/useInputDraft'
 import { runClearInputDraftFlow } from './clearInputDraftFlow'
 
 const draft = useInputDraft()
 const editSession = useEditSession()
-const lightEdit = useWorkspaceLightEdit()
 
 async function handleClear() {
   if (draft.isEmpty.value) return
 
   try {
     await runClearInputDraftFlow({
-      confirmClearDraft: () => ElMessageBox.confirm('确定清空当前内容？', '清空草稿', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning',
-        lockScroll: false,
-      }),
-      loadHasSessionContent: async () => {
-        try {
-          await editSession.refreshSnapshot()
-          return editSession.sessionStatus.value !== 'empty'
-        } catch (error) {
-          if (extractStatusCode(error) === 404) {
-            return false
-          }
-          throw error
-        }
-      },
-      chooseSessionCleanup: async () => {
-        try {
-          await ElMessageBox.confirm(
-            '检测到语音合成界面还有会话正文，是否同时清理？',
-            '同步清理会话正文',
-            {
-              confirmButtonText: '同时清理',
-              cancelButtonText: '保留会话正文',
-              type: 'warning',
-              closeOnClickModal: false,
-              closeOnPressEscape: false,
-              showClose: false,
-              lockScroll: false,
-            },
-          )
-          return true
-        } catch {
-          return false
-        }
-      },
-      clearDraft: () => {
-        draft.setText('')
-      },
-      clearSession: async () => {
-        lightEdit.clearAll()
-        await editSession.clearSession()
+      confirmClearDraft: () => ElMessageBox.confirm(
+        '这会同时清空输入框和当前会话，请先导出音频后再清空',
+        '清空输入与会话',
+        {
+          confirmButtonText: '确认清空',
+          cancelButtonText: '取消',
+          type: 'warning',
+          closeOnClickModal: false,
+          closeOnPressEscape: false,
+          lockScroll: false,
+        },
+      ),
+      executeClear: async () => {
+        await editSession.endSession({
+          nextInputText: '',
+          nextInputSource: 'manual',
+        })
       },
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : '清理失败，请稍后重试'
     ElMessage.error(message)
   }
+}
+
+function handleRestoreInitialText() {
+  if (!draft.restoreLastSessionInitialText()) {
+    return
+  }
+  ElMessage.success('已恢复最初版本')
 }
 
 function handleInput(val: string) {
@@ -76,13 +54,24 @@ function handleInput(val: string) {
   <div class="flex flex-col h-full bg-card rounded-card shadow-card p-4 border border-border dark:border-transparent animate-fall">
     <div class="flex items-center justify-between mb-3 shrink-0">
       <h3 class="text-[13px] font-semibold text-foreground">输入稿正文</h3>
-      <el-button 
-        type="danger" text size="small" :icon="Delete" 
-        :disabled="draft.isEmpty.value"
-        @click="handleClear"
-      >
-        清空
-      </el-button>
+      <div class="flex items-center gap-2">
+        <el-button
+          v-if="draft.lastSessionInitialText.value"
+          text
+          size="small"
+          :icon="RefreshLeft"
+          @click="handleRestoreInitialText"
+        >
+          恢复最初版本
+        </el-button>
+        <el-button 
+          type="danger" text size="small" :icon="Delete" 
+          :disabled="draft.isEmpty.value"
+          @click="handleClear"
+        >
+          清空
+        </el-button>
+      </div>
     </div>
     <el-input
       :model-value="draft.text.value"
@@ -92,8 +81,11 @@ function handleInput(val: string) {
       placeholder="从这里开始输入要合成的文本..."
       @update:model-value="handleInput"
     />
-    <div class="flex justify-end mt-2 shrink-0 text-xs text-muted-fg">
-      {{ draft.text.value.length }} 字
+    <div class="mt-2 flex items-center justify-between gap-3 shrink-0 text-xs text-muted-fg">
+      <span v-if="draft.lastSessionInitialText.value">
+        可随时恢复到本次会话开始时的文字。
+      </span>
+      <span class="ml-auto">{{ draft.text.value.length }} 字</span>
     </div>
   </div>
 </template>

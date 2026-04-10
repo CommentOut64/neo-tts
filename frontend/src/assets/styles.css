@@ -247,9 +247,13 @@ html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-sha
   --el-drawer-bg-color: var(--color-window-bg) !important;
 }
 
-/* Ensure falling animation uses hardware acceleration reliably to prevent text deformation on Windows */
+/* Fall 动画：仅在页面进入时生效，避免局部重渲染导致抖动 */
 .animate-fall {
   backface-visibility: hidden;
   transform-style: preserve-3d;
+  animation: none;
+}
+.page-entering .animate-fall {
+  animation: fall 0.4s ease-out forwards;
   will-change: transform, opacity;
 }

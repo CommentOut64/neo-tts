@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useEditSession } from '@/composables/useEditSession'
 import { useRuntimeState } from '@/composables/useRuntimeState'
+import { useWorkspaceProcessing } from '@/composables/useWorkspaceProcessing'
 
 defineProps<{
   visible: boolean
@@ -15,12 +16,18 @@ const emit = defineEmits<{
 
 const editSession = useEditSession()
 const runtimeState = useRuntimeState()
+const workspaceProcessing = useWorkspaceProcessing()
 const isResetting = ref(false)
+const isInteractionLocked = computed(() => workspaceProcessing.isInteractionLocked.value)
 
 async function handleConfirm() {
   try {
     if (!runtimeState.canMutate.value) {
       ElMessage.warning('当前有正在运行的作业，无法清空会话')
+      return
+    }
+    if (workspaceProcessing.isInteractionLocked.value) {
+      ElMessage.warning('当前正在处理正式结果，暂时不能清空会话')
       return
     }
     isResetting.value = true
@@ -52,7 +59,7 @@ async function handleConfirm() {
     <template #footer>
       <div class="flex justify-end gap-2">
         <el-button @click="emit('update:visible', false)" :disabled="isResetting">取消</el-button>
-        <el-button type="danger" @click="handleConfirm" :loading="isResetting">确认清空</el-button>
+        <el-button type="danger" @click="handleConfirm" :loading="isResetting" :disabled="isInteractionLocked">确认清空</el-button>
       </div>
     </template>
   </el-dialog>

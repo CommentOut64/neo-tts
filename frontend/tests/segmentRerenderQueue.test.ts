@@ -1,89 +1,67 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createSegmentRerenderQueue,
-  type SegmentRerenderJobHandle,
-} from "../src/components/workspace/segmentRerenderQueue";
+import { createSegmentRerenderQueue } from "../src/components/workspace/segmentRerenderQueue";
 
-describe("createSegmentRerenderQueue", () => {
-  it("串行完成全部脏段后只刷新一次并清理锁定段", async () => {
+describe("segmentRerenderQueue", () => {
+  it("全部目标段都成功完成后，返回可用于输入页回填的 full completion 结果", async () => {
+    const refreshSession = vi.fn().mockResolvedValue(undefined);
     const clearDraft = vi.fn();
-    const refreshSession = vi.fn(async () => {});
-    const setLockedSegments = vi.fn();
-    const submitSegmentUpdate = vi
-      .fn<[string], Promise<SegmentRerenderJobHandle | null>>()
-      .mockImplementation(async (segmentId) => ({
-        jobId: `${segmentId}-job`,
-        waitForTerminal: async () => "completed",
-        cancel: async () => {},
-      }));
-
     const queue = createSegmentRerenderQueue({
-      submitSegmentUpdate,
+      submitSegmentUpdate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          jobId: "job-1",
+          waitForTerminal: vi.fn().mockResolvedValue("completed"),
+          cancel: vi.fn(),
+        })
+        .mockResolvedValueOnce({
+          jobId: "job-2",
+          waitForTerminal: vi.fn().mockResolvedValue("completed"),
+          cancel: vi.fn(),
+        }),
       clearDraft,
       refreshSession,
-      setLockedSegments,
     });
 
-    await queue.run(["seg-1", "seg-2"]);
+    const result = await queue.run(["seg-1", "seg-2"]);
 
-    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(1, "seg-1");
-    expect(submitSegmentUpdate).toHaveBeenNthCalledWith(2, "seg-2");
+    expect(result).toEqual({
+      completedSegmentIds: ["seg-1", "seg-2"],
+      completedAll: true,
+      terminalStatus: "completed",
+    });
     expect(clearDraft).toHaveBeenCalledTimes(2);
-    expect(clearDraft).toHaveBeenCalledWith("seg-1");
-    expect(clearDraft).toHaveBeenCalledWith("seg-2");
     expect(refreshSession).toHaveBeenCalledTimes(1);
-    expect(setLockedSegments).toHaveBeenCalledWith(["seg-1"]);
-    expect(setLockedSegments).toHaveBeenCalledWith(["seg-2"]);
-    expect(setLockedSegments).toHaveBeenLastCalledWith([]);
-    expect(queue.isProcessing.value).toBe(false);
-    expect(queue.isCancelling.value).toBe(false);
   });
 
-  it("取消当前 job 后会停止队列，并保留未完成段为脏态", async () => {
+  it("只要出现取消或部分取消，就不会返回 full completion 结果", async () => {
+    const refreshSession = vi.fn().mockResolvedValue(undefined);
     const clearDraft = vi.fn();
-    const refreshSession = vi.fn(async () => {});
-    const setLockedSegments = vi.fn();
-
-    let resolveFirstJob: ((status: "completed" | "failed" | "paused" | "cancelled_partial") => void) | null = null;
-    const cancel = vi.fn(async () => {
-      resolveFirstJob?.("cancelled_partial");
-    });
-
-    const submitSegmentUpdate = vi
-      .fn<[string], Promise<SegmentRerenderJobHandle | null>>()
-      .mockImplementationOnce(async () => ({
-        jobId: "job-1",
-        waitForTerminal: () =>
-          new Promise((resolve) => {
-            resolveFirstJob = resolve;
-          }),
-        cancel,
-      }))
-      .mockImplementationOnce(async () => ({
-        jobId: "job-2",
-        waitForTerminal: async () => "completed",
-        cancel: async () => {},
-      }));
-
     const queue = createSegmentRerenderQueue({
-      submitSegmentUpdate,
+      submitSegmentUpdate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          jobId: "job-1",
+          waitForTerminal: vi.fn().mockResolvedValue("completed"),
+          cancel: vi.fn(),
+        })
+        .mockResolvedValueOnce({
+          jobId: "job-2",
+          waitForTerminal: vi.fn().mockResolvedValue("cancelled_partial"),
+          cancel: vi.fn(),
+        }),
       clearDraft,
       refreshSession,
-      setLockedSegments,
     });
 
-    const runPromise = queue.run(["seg-1", "seg-2"]);
-    await Promise.resolve();
-    await queue.requestCancel();
-    await runPromise;
+    const result = await queue.run(["seg-1", "seg-2"]);
 
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(submitSegmentUpdate).toHaveBeenCalledTimes(1);
-    expect(clearDraft).not.toHaveBeenCalled();
-    expect(refreshSession).not.toHaveBeenCalled();
-    expect(setLockedSegments).toHaveBeenLastCalledWith([]);
-    expect(queue.isProcessing.value).toBe(false);
-    expect(queue.isCancelling.value).toBe(false);
+    expect(result).toEqual({
+      completedSegmentIds: ["seg-1"],
+      completedAll: false,
+      terminalStatus: "cancelled_partial",
+    });
+    expect(clearDraft).toHaveBeenCalledTimes(1);
+    expect(refreshSession).toHaveBeenCalledTimes(1);
   });
 });

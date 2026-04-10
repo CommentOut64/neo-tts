@@ -1,6 +1,11 @@
 import type { JSONContent } from "@tiptap/vue-3";
 
-export const WORKSPACE_DRAFT_SCHEMA_VERSION = 1 as const;
+import {
+  normalizeCompositionLayoutHints,
+  type WorkspaceCompositionLayoutHints,
+} from "@/components/workspace/workspace-editor/compositionLayoutHints";
+
+export const WORKSPACE_DRAFT_SCHEMA_VERSION = 2 as const;
 export const WORKSPACE_DRAFT_STORAGE_PREFIX = "neo-tts-workspace-local-draft::";
 export const WORKSPACE_DRAFT_INDEX_KEY = "neo-tts-workspace-local-draft-index";
 
@@ -13,8 +18,10 @@ export interface WorkspaceDraftSnapshot {
   segmentIds: string[];
   mode: WorkspaceDraftMode;
   editorDoc: JSONContent;
+  sourceDoc: JSONContent;
   segmentDrafts: Record<string, string>;
   effectiveText: string;
+  compositionLayoutHints: WorkspaceCompositionLayoutHints | null;
   updatedAt: string;
 }
 
@@ -89,12 +96,18 @@ export function normalizeWorkspaceDraftSnapshot(
 
   const mode = normalizeSourceMode(raw.mode);
   const editorDoc = normalizeEditorDoc(raw.editorDoc);
+  const sourceDoc = normalizeEditorDoc(raw.sourceDoc);
   const segmentDrafts = normalizeSegmentDrafts(raw.segmentDrafts);
+  const compositionLayoutHints = normalizeCompositionLayoutHints(
+    raw.compositionLayoutHints ?? null,
+  );
 
   if (
     mode === null ||
     editorDoc === null ||
+    sourceDoc === null ||
     segmentDrafts === null ||
+    compositionLayoutHints === null && raw.compositionLayoutHints !== null ||
     typeof raw.effectiveText !== "string" ||
     typeof raw.updatedAt !== "string"
   ) {
@@ -108,8 +121,10 @@ export function normalizeWorkspaceDraftSnapshot(
     segmentIds: [...raw.segmentIds],
     mode,
     editorDoc,
+    sourceDoc,
     segmentDrafts,
     effectiveText: raw.effectiveText,
+    compositionLayoutHints,
     updatedAt: raw.updatedAt,
   };
 }
