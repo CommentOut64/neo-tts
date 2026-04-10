@@ -25,6 +25,13 @@ const isProgressStreamConnected = ref(false)
 const runtimeError = ref<string | null>(null)
 let unsubscribe: (() => void) | null = null
 
+function releaseProgressStreamSubscription() {
+  if (!unsubscribe) return
+  const teardown = unsubscribe
+  unsubscribe = null
+  teardown()
+}
+
 function connectProgressStream() {
   if (unsubscribe) return
   runtimeError.value = null
@@ -34,6 +41,7 @@ function connectProgressStream() {
       isProgressStreamConnected.value = true
     },
     (error) => {
+      releaseProgressStreamSubscription()
       isProgressStreamConnected.value = false
       runtimeError.value = error.message
     },
@@ -41,9 +49,7 @@ function connectProgressStream() {
 }
 
 function disconnectProgressStream() {
-  if (!unsubscribe) return
-  unsubscribe()
-  unsubscribe = null
+  releaseProgressStreamSubscription()
   isProgressStreamConnected.value = false
 }
 
