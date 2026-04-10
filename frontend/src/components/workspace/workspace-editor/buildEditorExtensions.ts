@@ -1,5 +1,6 @@
 import { PauseBoundary } from "./pauseBoundary";
 import { SegmentAnchorMark } from "./segmentAnchorMark";
+import { SegmentBlock } from "./list/segmentBlock";
 import { SegmentDecoration } from "./segmentDecoration";
 import { SegmentEditingGuards } from "./segmentEditingGuards";
 
@@ -12,6 +13,7 @@ export function buildEditorExtensions(
 ) {
   return [
     SegmentAnchorMark,
+    SegmentBlock,
     PauseBoundary.configure({
       onActivateEdge: options.onActivateEdge,
     }),

@@ -54,6 +54,7 @@ from backend.app.schemas.edit_session import (
     PlaybackMapResponse,
     PreviewRequest,
     PreviewResponse,
+    ReorderSegmentsRequest,
     RenderProfile,
     RenderProfilePatchRequest,
     RenderProfileListResponse,
@@ -425,6 +426,28 @@ class RenderJobService:
         return self._enqueue_edit_job(
             job_kind="segment_move_range",
             message=f"已创建移段作业，目标段 {len(body.segment_ids)} 个。",
+            snapshot=mutation.snapshot,
+            impact=impact,
+        )
+
+    def create_reorder_segments_job(self, body: ReorderSegmentsRequest) -> RenderJobAcceptedResponse:
+        before_snapshot = self._session_service.get_head_snapshot()
+        self._assert_document_version_matches(
+            expected_version=body.base_document_version,
+            actual_version=before_snapshot.document_version,
+        )
+        mutation = self._segment_service.reorder_segments(
+            body.ordered_segment_ids,
+            snapshot=before_snapshot,
+        )
+        impact = self._render_planner.for_segment_reorder(
+            before_snapshot=before_snapshot,
+            after_snapshot=mutation.snapshot,
+            reordered_segment_ids=set(body.ordered_segment_ids),
+        )
+        return self._enqueue_edit_job(
+            job_kind="segment_reorder",
+            message=f"已创建重排作业，目标段 {len(body.ordered_segment_ids)} 个。",
             snapshot=mutation.snapshot,
             impact=impact,
         )
@@ -1309,6 +1332,8 @@ class RenderJobService:
 
     @staticmethod
     def _should_prepare_edit_reference_context(plan: RenderPlan) -> bool:
+        if getattr(plan, "job_kind", None) in {"segment_swap", "segment_reorder"}:
+            return False
         if plan.compose_only and not plan.target_segment_ids and not plan.target_edge_ids:
             return False
         return True
@@ -1553,7 +1578,7 @@ class RenderJobService:
             resolved_edge = self._render_config_resolver.resolve_edge(snapshot=config_snapshot, edge_id=edge.edge_id)
             effective_boundary_strategy = resolved_edge.effective_boundary_strategy
             if edge.edge_id in plan.target_edge_ids:
-                if plan.job_kind == "segment_swap":
+                if plan.job_kind in {"segment_swap", "segment_reorder"}:
                     boundary_asset = self._build_fallback_boundary_asset(
                         left_asset,
                         right_asset,
@@ -2682,6 +2707,13 @@ class RenderJobService:
         if active_session.initialize_request is None:
             raise SnapshotStateError("Active session initialize request is missing.")
         return active_session.initialize_request
+
+    @staticmethod
+    def _assert_document_version_matches(*, expected_version: int, actual_version: int) -> None:
+        if expected_version != actual_version:
+            raise SnapshotStateError(
+                f"Base document version {expected_version} does not match current head document version {actual_version}."
+            )
 
     def _load_sample_rate(self, asset_path, *, asset_id: str) -> int:
         try:

@@ -79,68 +79,33 @@ describe("workspace editor document model", () => {
     expect((SegmentAnchorMark as any).config.inclusive).toBe(true);
   });
 
-  it("列表式 builder 会为文本节点写入 segmentAnchor mark，并保留 pauseBoundary", () => {
-    const plan = buildListLayoutDocument(createSemanticDocument());
+  it("列表式 builder 会输出 segmentBlock，并用节点 attrs 承担段级映射", () => {
+    const semanticDocument = createSemanticDocument();
+    const plan = buildListLayoutDocument(semanticDocument);
     expect(plan.layoutMode).toBe("list");
-    expect(plan.doc).toEqual({
-      type: "doc",
-      content: [
-        {
-          type: "paragraph",
-          content: [
-            {
-              type: "text",
-              text: "第一段。",
-              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
-            },
-            {
-              type: "pauseBoundary",
-              attrs: {
-                edgeId: "edge-1",
-                leftSegmentId: "seg-1",
-                rightSegmentId: "seg-2",
-                pauseDurationSeconds: 0.3,
-                boundaryStrategy: "crossfade",
-                layoutMode: "list",
-                crossBlock: false,
-              },
-            },
-          ],
-        },
-        {
-          type: "paragraph",
-          content: [
-            {
-              type: "text",
-              text: "第二段。",
-              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
-            },
-            {
-              type: "pauseBoundary",
-              attrs: {
-                edgeId: "edge-2",
-                leftSegmentId: "seg-2",
-                rightSegmentId: "seg-3",
-                pauseDurationSeconds: 0.5,
-                boundaryStrategy: "crossfade",
-                layoutMode: "list",
-                crossBlock: false,
-              },
-            },
-          ],
-        },
-        {
-          type: "paragraph",
-          content: [
-            {
-              type: "text",
-              text: "第三段。",
-              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-3" } }],
-            },
-          ],
-        },
-      ],
+    expect(plan.doc.type).toBe("doc");
+    expect(plan.doc.content).toHaveLength(3);
+    expect(plan.doc.content?.map((node) => node.type)).toEqual([
+      "segmentBlock",
+      "segmentBlock",
+      "segmentBlock",
+    ]);
+    expect(
+      plan.doc.content?.map((node) => node.attrs?.segmentId),
+    ).toEqual(semanticDocument.segmentOrder);
+    expect(plan.doc.content?.[0]?.content?.at(-1)).toEqual({
+      type: "pauseBoundary",
+      attrs: {
+        edgeId: "edge-1",
+        leftSegmentId: "seg-1",
+        rightSegmentId: "seg-2",
+        pauseDurationSeconds: 0.3,
+        boundaryStrategy: "crossfade",
+        layoutMode: "list",
+        crossBlock: false,
+      },
     });
+    expect(plan.doc.content?.[2]?.content?.at(-1)?.type).toBe("text");
   });
 
   it("组合式 builder 可以在同一段落内放多个 segment，并标记跨行 edge", () => {

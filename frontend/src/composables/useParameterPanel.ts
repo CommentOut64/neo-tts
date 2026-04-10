@@ -59,6 +59,10 @@ const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
   primarySelectedSegmentId: null,
   selectedEdgeId: null,
 });
+const lastStableScopeKey = ref<string | null>(null);
+const lastStableResolvedValues = ref<ResolvedParameterPanelValues | null>(null);
+
+type ParameterPanelResolvedStatus = "ready" | "resolving" | "unresolved";
 
 function cloneScopeContext(context: ParameterPanelScopeContext): ParameterPanelScopeContext {
   return {
@@ -89,6 +93,71 @@ function clearDraftState() {
   dirtyFieldSet.value = new Set();
 }
 
+function buildScopeKey(context: ParameterPanelScopeContext): string {
+  if (context.scope === "edge") {
+    return `edge:${context.edgeId ?? ""}`;
+  }
+
+  return `${context.scope}:${context.segmentIds.join(",")}`;
+}
+
+function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
+  return {
+    renderProfile: {
+      speed: null,
+      top_k: null,
+      top_p: null,
+      temperature: null,
+      noise_scale: null,
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
+    },
+    voiceBinding: {
+      voice_id: null,
+      model_key: null,
+      gpt_path: null,
+      sovits_path: null,
+    },
+    edge: null,
+  };
+}
+
+function cloneResolvedValues(values: ResolvedParameterPanelValues): ResolvedParameterPanelValues {
+  return {
+    renderProfile: {
+      ...values.renderProfile,
+    },
+    voiceBinding: {
+      ...values.voiceBinding,
+    },
+    edge: values.edge
+      ? {
+          ...values.edge,
+        }
+      : null,
+  };
+}
+
+function hasResolvedValues(
+  context: ParameterPanelScopeContext,
+  values: ResolvedParameterPanelValues,
+): boolean {
+  if (context.scope === "edge") {
+    return values.edge !== null;
+  }
+
+  return (
+    values.renderProfile.speed !== null &&
+    values.renderProfile.top_k !== null &&
+    values.renderProfile.top_p !== null &&
+    values.renderProfile.temperature !== null &&
+    values.renderProfile.noise_scale !== null &&
+    values.voiceBinding.voice_id !== null &&
+    values.voiceBinding.model_key !== null
+  );
+}
+
 export function useParameterPanel() {
   const editSession = useEditSession();
   const runtimeState = useRuntimeState();
@@ -107,6 +176,7 @@ export function useParameterPanel() {
   const dirtyFields = computed(() => Array.from(dirtyFieldSet.value));
   const dirtyFieldSetReadonly = computed(() => new Set(dirtyFieldSet.value));
   const hasDirty = computed(() => dirtyFieldSet.value.size > 0);
+  const scopeKey = computed(() => buildScopeKey(scopeContext.value));
   const dirtyEdgeIds = computed(() => {
     if (
       scopeContext.value.scope !== "edge" ||
@@ -119,7 +189,7 @@ export function useParameterPanel() {
     return new Set([scopeContext.value.edgeId]);
   });
 
-  const resolvedValues = computed<ResolvedParameterPanelValues>(() =>
+  const rawResolvedValues = computed<ResolvedParameterPanelValues>(() =>
     resolveEffectiveParameters({
       scope: scopeContext.value.scope,
       segmentIds: scopeContext.value.segmentIds,
@@ -133,6 +203,53 @@ export function useParameterPanel() {
       edges: editSession.edges.value,
     }),
   );
+
+  const resolvedStatus = computed<ParameterPanelResolvedStatus>(() => {
+    if (editSession.sessionStatus.value !== "ready") {
+      return "unresolved";
+    }
+
+    if (editSession.formalStateStatus.value === "refreshing") {
+      return "resolving";
+    }
+
+    if (editSession.formalStateStatus.value === "error") {
+      return "unresolved";
+    }
+
+    return hasResolvedValues(scopeContext.value, rawResolvedValues.value)
+      ? "ready"
+      : "unresolved";
+  });
+
+  watch(
+    [scopeKey, resolvedStatus, rawResolvedValues],
+    ([nextScopeKey, nextResolvedStatus, nextResolvedValues]) => {
+      if (nextResolvedStatus !== "ready") {
+        return;
+      }
+
+      lastStableScopeKey.value = nextScopeKey;
+      lastStableResolvedValues.value = cloneResolvedValues(nextResolvedValues);
+    },
+    { immediate: true, deep: true },
+  );
+
+  const resolvedValues = computed<ResolvedParameterPanelValues>(() => {
+    if (resolvedStatus.value === "ready") {
+      return rawResolvedValues.value;
+    }
+
+    if (
+      resolvedStatus.value === "resolving" &&
+      lastStableScopeKey.value === scopeKey.value &&
+      lastStableResolvedValues.value
+    ) {
+      return cloneResolvedValues(lastStableResolvedValues.value);
+    }
+
+    return buildEmptyResolvedValues();
+  });
 
   const displayValues = computed<ResolvedParameterPanelValues>(() => {
     const base = resolvedValues.value;
@@ -258,6 +375,13 @@ export function useParameterPanel() {
     key: K,
     value: EdgeUpdateBody[K],
   ) {
+    if (
+      key === "boundary_strategy" &&
+      resolvedValues.value.edge?.boundary_strategy_locked
+    ) {
+      return;
+    }
+
     const isSameAsOriginal =
       resolvedValues.value.edge &&
       value ===
@@ -434,10 +558,7 @@ export function useParameterPanel() {
       }
 
       if (scopeContext.value.scope !== "edge") {
-        await editSession.refreshSnapshot();
-        if (editSession.sessionStatus.value === "ready") {
-          await editSession.refreshTimeline();
-        }
+        await editSession.refreshFormalSessionState();
       }
       clearDraftState();
       if (pendingScopeContext.value) {
@@ -480,6 +601,7 @@ export function useParameterPanel() {
   return {
     scopeContext: computed(() => cloneScopeContext(scopeContext.value)),
     resolvedValues,
+    resolvedStatus,
     displayValues,
     draftPatch: computed(() => draftPatch.value),
     dirtyFields: dirtyFieldSetReadonly,

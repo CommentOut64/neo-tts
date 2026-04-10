@@ -1,8 +1,11 @@
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import type { EditorState } from '@tiptap/pm/state'
+import type { PlaybackCursor } from '@/types/editSession'
 
 import type { WorkspaceEditorLayoutMode, WorkspaceRenderMap } from './layoutTypes'
+import type { ListDropIntent } from './listReorderTypes'
 
 export const segmentDecorationKey = new PluginKey('segmentDecoration')
 
@@ -10,11 +13,17 @@ export const segmentDecorationKey = new PluginKey('segmentDecoration')
 export interface SegmentDecorationState {
   layoutMode: WorkspaceEditorLayoutMode
   renderMap: WorkspaceRenderMap | null
+  showReorderHandle: boolean
   playingId: string | null
+  playingCursor?: PlaybackCursor | null
   selectedIds: Set<string>
   dirtyIds: Set<string>
   dirtyEdgeIds: Set<string>
   isEditing: boolean
+  draggingSegmentId?: string | null
+  dropTargetSegmentId?: string | null
+  dropIntent?: ListDropIntent | null
+  isSubmittingReorder?: boolean
 }
 
 export interface SegmentDecorationSpec {
@@ -24,6 +33,16 @@ export interface SegmentDecorationSpec {
   attrs: Record<string, string>
 }
 
+function resolvePlayingSegmentId(state: SegmentDecorationState) {
+  if (state.playingCursor) {
+    return state.playingCursor.kind === "segment"
+      ? state.playingCursor.segmentId
+      : null
+  }
+
+  return state.playingId
+}
+
 export function buildSegmentDecorationSpecs(
   state: SegmentDecorationState | null,
 ): SegmentDecorationSpec[] {
@@ -31,51 +50,44 @@ export function buildSegmentDecorationSpecs(
     return []
   }
 
-  const ranges =
-    state.layoutMode === "list"
-      ? state.renderMap.segmentBlockRanges
-      : state.renderMap.segmentRanges
+  if (state.layoutMode === "list") {
+    return []
+  }
+
+  const ranges = state.renderMap.segmentRanges
+  const playingSegmentId = resolvePlayingSegmentId(state)
 
   if (ranges.length === 0) {
     return []
   }
 
   return ranges.map((range) => {
-    const classes: string[] =
-      state.layoutMode === "list" ? ["segment-line"] : ["segment-fragment"]
+    const classes: string[] = ["segment-fragment"]
 
     const shouldHighlightDirty =
       state.dirtyIds.has(range.segmentId) &&
-      (state.layoutMode === "list" || !state.isEditing)
+      !state.isEditing
 
     if (shouldHighlightDirty) {
-      classes.push(
-        state.layoutMode === "list" ? "segment-line-dirty" : "segment-dirty",
-      )
+      classes.push("segment-dirty")
     }
 
-    if (state.playingId === range.segmentId) {
+    if (playingSegmentId === range.segmentId) {
       classes.push(
-        state.layoutMode === "list"
-          ? state.isEditing
-            ? "segment-line-editing-playing"
-            : "segment-line-playing"
-          : state.isEditing
-            ? "segment-editing-playing"
-            : "segment-playing",
+        state.isEditing
+          ? "segment-editing-playing"
+          : "segment-playing",
       )
     }
 
     if (!state.isEditing) {
       if (state.selectedIds.has(range.segmentId)) {
-        classes.push(
-          state.layoutMode === "list" ? "segment-line-selected" : "segment-selected",
-        )
+        classes.push("segment-selected")
       }
     }
 
     return {
-      kind: state.layoutMode === "list" ? "node" : "inline",
+      kind: "inline",
       from: range.from,
       to: range.to,
       attrs: {
@@ -84,6 +96,88 @@ export function buildSegmentDecorationSpecs(
       },
     }
   })
+}
+
+function buildListSegmentDecorationAttrs(
+  state: SegmentDecorationState,
+  segmentId: string,
+) {
+  const classes = ["segment-line"]
+  const playingSegmentId = resolvePlayingSegmentId(state)
+
+  if (state.dirtyIds.has(segmentId)) {
+    classes.push("segment-line-dirty")
+  }
+
+  if (playingSegmentId === segmentId) {
+    classes.push(
+      state.isEditing
+        ? "segment-line-editing-playing"
+        : "segment-line-playing",
+    )
+  }
+
+  if (state.isEditing) {
+    classes.push("segment-line-editing")
+  }
+
+  if (!state.isEditing && state.selectedIds.has(segmentId)) {
+    classes.push("segment-line-selected")
+  }
+
+  if (state.draggingSegmentId === segmentId) {
+    classes.push("segment-line-reorder-source")
+  }
+
+  if (state.dropTargetSegmentId === segmentId) {
+    if (state.dropIntent === "swap") {
+      classes.push("segment-line-drop-swap")
+    } else if (state.dropIntent === "insert-before") {
+      classes.push("segment-line-drop-before")
+    } else if (state.dropIntent === "insert-after") {
+      classes.push("segment-line-drop-after")
+    }
+  }
+
+  if (state.isSubmittingReorder) {
+    classes.push("segment-line-submitting")
+  }
+
+  return {
+    class: classes.join(" "),
+    "data-segment-id": segmentId,
+  }
+}
+
+function buildListSegmentDecorations(
+  editorState: EditorState,
+  state: SegmentDecorationState | null,
+) {
+  if (!state || state.layoutMode !== "list") {
+    return [] as Decoration[]
+  }
+
+  const decorations: Decoration[] = []
+  editorState.doc.descendants((node, pos) => {
+    if (node.type.name !== "segmentBlock") {
+      return
+    }
+
+    const segmentId =
+      typeof node.attrs.segmentId === "string" ? node.attrs.segmentId : null
+    if (!segmentId) {
+      return
+    }
+
+    decorations.push(
+      Decoration.node(
+        pos,
+        pos + node.nodeSize,
+        buildListSegmentDecorationAttrs(state, segmentId),
+      ),
+    )
+  })
+  return decorations
 }
 
 /**
@@ -112,11 +206,14 @@ export const SegmentDecoration = Extension.create<Record<string, never>, { state
 
         props: {
           decorations(editorState) {
-            const decorations = buildSegmentDecorationSpecs(extensionStorage.state).map((spec) =>
-              spec.kind === "node"
-                ? Decoration.node(spec.from, spec.to, spec.attrs)
-                : Decoration.inline(spec.from, spec.to, spec.attrs),
-            )
+            const decorations =
+              extensionStorage.state?.layoutMode === "list"
+                ? buildListSegmentDecorations(editorState, extensionStorage.state)
+                : buildSegmentDecorationSpecs(extensionStorage.state).map((spec) =>
+                    spec.kind === "node"
+                      ? Decoration.node(spec.from, spec.to, spec.attrs)
+                      : Decoration.inline(spec.from, spec.to, spec.attrs),
+                  )
 
             return decorations.length > 0
               ? DecorationSet.create(editorState.doc, decorations)

@@ -157,6 +157,35 @@ class RenderPlanner:
             change_reason="segment_swap",
         )
 
+    def for_segment_reorder(
+        self,
+        *,
+        before_snapshot: DocumentSnapshot,
+        after_snapshot: DocumentSnapshot,
+        reordered_segment_ids: set[str],
+    ) -> TargetedRenderPlan:
+        before_pairs = {
+            (edge.left_segment_id, edge.right_segment_id)
+            for edge in before_snapshot.edges
+        }
+        changed_edges = {
+            edge.edge_id
+            for edge in after_snapshot.edges
+            if (edge.left_segment_id, edge.right_segment_id) not in before_pairs
+        }
+        return TargetedRenderPlan(
+            target_segment_ids=set(),
+            target_edge_ids=changed_edges,
+            target_block_ids=self._collect_block_ids(after_snapshot, reordered_segment_ids),
+            compose_only=False,
+            earliest_changed_order_key=min(
+                (self._segment_order_key(after_snapshot, segment_id) for segment_id in reordered_segment_ids),
+                default=None,
+            ),
+            timeline_reflow_required=True,
+            change_reason="segment_reorder",
+        )
+
     def for_snapshot_change(
         self,
         *,

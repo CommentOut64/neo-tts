@@ -1,4 +1,11 @@
-# UI/UX 设计规格：GPT-SoVITS TTS Studio
+# UI/UX 设计规格：GPT-SoVITS TTS Studio（归档）
+
+> Archived: 2026-04-10
+> Reason:
+> - 文档以 `/studio` 双页架构和 `/v1/audio/speech` 主链为中心，已不再代表当前前端主流程
+> Current Entry:
+> - `/llmdoc/overview/backend-overview.md`
+> - `/llmdoc/overview/edit-session-domain-overview.md`
 
 **设计时间**：2026-03-21
 **目标平台**：Web (Desktop-first, Responsive)

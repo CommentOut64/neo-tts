@@ -55,8 +55,10 @@ function handleClick(event: MouseEvent) {
 <template>
   <NodeViewWrapper
     as="span"
-    class="mx-1 inline-flex align-middle"
+    class="mx-1"
+    data-pause-boundary=""
     :data-edge-id="props.node.attrs.edgeId"
+    :data-layout-mode="props.node.attrs.layoutMode"
     :data-cross-block="isCrossBlock ? 'true' : 'false'"
     :data-edge-dirty="isDirty ? 'true' : 'false'"
   >
@@ -68,7 +70,7 @@ function handleClick(event: MouseEvent) {
     >
       <span
         v-if="isCrossBlock"
-        class="text-[10px] font-semibold leading-none text-foreground"
+        class="font-semibold text-foreground"
       >
         ↵
       </span>

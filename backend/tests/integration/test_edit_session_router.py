@@ -249,6 +249,50 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert job_id
 
 
+def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(
+        FakeEditableInferenceBackend(gate=gate, wait_timeout=None)
+    )
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+
+        delete_result: dict[str, object] = {}
+
+        def _delete_session() -> None:
+            delete_result["response"] = client.delete("/v1/edit-session")
+
+        delete_thread = threading.Thread(target=_delete_session, daemon=True)
+        delete_thread.start()
+
+        def _delete_has_requested_cancel() -> bool:
+            payload = client.get("/v1/edit-session/snapshot").json()
+            active_job = payload.get("active_job")
+            return bool(active_job and active_job.get("status") == "cancel_requested")
+
+        _wait_until(_delete_has_requested_cancel)
+        assert delete_thread.is_alive()
+
+        gate.set()
+        delete_thread.join(timeout=3.0)
+        assert not delete_thread.is_alive()
+
+        delete_response = delete_result["response"]
+        assert delete_response.status_code == 204
+
+        after_delete = client.get("/v1/edit-session/snapshot")
+        assert after_delete.status_code == 200
+        assert after_delete.json()["session_status"] == "empty"
+
+
 def test_upload_reference_audio_returns_temporary_path(test_app_settings):
     app = create_app(settings=test_app_settings)
     with TestClient(app) as client:
@@ -506,6 +550,100 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
 
         composition = client.get("/v1/edit-session/composition")
         assert composition.status_code == 404
+
+
+def test_edit_session_reorder_segments_reorders_without_rerendering_segments(test_app_settings):
+    backend = FakeEditableInferenceBackend()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(backend)
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。第三句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        initial_snapshot = client.get("/v1/edit-session/snapshot").json()
+        baseline_segment_calls = len(backend.segment_calls)
+        baseline_boundary_calls = len(backend.boundary_calls)
+
+        reorder_response = client.post(
+            "/v1/edit-session/segments/reorder",
+            json={
+                "base_document_version": initial_snapshot["document_version"],
+                "ordered_segment_ids": [
+                    initial_snapshot["segments"][2]["segment_id"],
+                    initial_snapshot["segments"][0]["segment_id"],
+                    initial_snapshot["segments"][1]["segment_id"],
+                ],
+            },
+        )
+
+        assert reorder_response.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
+
+        reordered_snapshot = client.get("/v1/edit-session/snapshot").json()
+        assert [item["raw_text"] for item in reordered_snapshot["segments"]] == ["第三句。", "第一句。", "第二句。"]
+        assert [(edge["left_segment_id"], edge["right_segment_id"]) for edge in reordered_snapshot["edges"]] == [
+            (reordered_snapshot["segments"][0]["segment_id"], reordered_snapshot["segments"][1]["segment_id"]),
+            (reordered_snapshot["segments"][1]["segment_id"], reordered_snapshot["segments"][2]["segment_id"]),
+        ]
+        assert reordered_snapshot["edges"][0]["boundary_strategy"] == "crossfade_only"
+        assert reordered_snapshot["edges"][0]["boundary_strategy_locked"] is True
+        assert reordered_snapshot["edges"][1]["boundary_strategy"] == "latent_overlap_then_equal_power_crossfade"
+        assert reordered_snapshot["edges"][1]["boundary_strategy_locked"] is False
+        assert len(backend.segment_calls) == baseline_segment_calls
+        assert len(backend.boundary_calls) == baseline_boundary_calls
+
+        playback_map = client.get("/v1/edit-session/playback-map")
+        assert playback_map.status_code == 200
+        assert [entry["segment_id"] for entry in playback_map.json()["entries"]] == [
+            reordered_snapshot["segments"][0]["segment_id"],
+            reordered_snapshot["segments"][1]["segment_id"],
+            reordered_snapshot["segments"][2]["segment_id"],
+        ]
+
+        locked_strategy_response = client.patch(
+            f"/v1/edit-session/edges/{reordered_snapshot['edges'][0]['edge_id']}",
+            json={"boundary_strategy": "hard_cut"},
+        )
+        assert locked_strategy_response.status_code == 400
+        assert "已锁定" in locked_strategy_response.json()["detail"]
+
+
+def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_settings):
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。第三句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        snapshot = client.get("/v1/edit-session/snapshot").json()
+        stale_response = client.post(
+            "/v1/edit-session/segments/reorder",
+            json={
+                "base_document_version": snapshot["document_version"] + 1,
+                "ordered_segment_ids": [
+                    snapshot["segments"][1]["segment_id"],
+                    snapshot["segments"][0]["segment_id"],
+                    snapshot["segments"][2]["segment_id"],
+                ],
+            },
+        )
+
+        assert stale_response.status_code == 409
+        assert "document version" in stale_response.json()["detail"]
 
 
 def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):

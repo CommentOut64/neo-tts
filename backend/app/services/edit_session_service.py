@@ -303,6 +303,11 @@ class EditSessionService:
         )
 
     def delete_session(self) -> None:
+        active_session = self._repository.get_active_session()
+        active_job_id = active_session.active_job_id if active_session is not None else None
+        if active_job_id is not None:
+            self._runtime.request_cancel(active_job_id)
+            self._runtime.wait_for_job_terminal(active_job_id)
         self._repository.clear()
         self._asset_store.clear_all()
         self._runtime.reset()

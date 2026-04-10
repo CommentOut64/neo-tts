@@ -76,6 +76,7 @@ export interface EditableEdge {
   right_segment_id: string
   pause_duration_seconds: number
   boundary_strategy: string
+  boundary_strategy_locked?: boolean
   effective_boundary_strategy: string | null
   pause_sample_count: number | null
   boundary_sample_count: number | null
@@ -212,6 +213,11 @@ export interface EdgeUpdateBody {
   boundary_strategy?: string | null
 }
 
+export interface ReorderSegmentsBody {
+  base_document_version: number
+  ordered_segment_ids: string[]
+}
+
 export interface RenderJobResponse {
   job_id: string
   document_id: string
@@ -296,6 +302,25 @@ export interface TimelineManifest {
   edge_entries: TimelineEdgeEntry[];
   markers: TimelineMarkerEntry[];
   created_at?: string;
+}
+
+export type PlaybackCursorKind =
+  | "before_start"
+  | "segment"
+  | "boundary"
+  | "pause"
+  | "ended";
+
+export interface PlaybackCursor {
+  sample: number;
+  kind: PlaybackCursorKind;
+  segmentId: string | null;
+  edgeId: string | null;
+  leftSegmentId: string | null;
+  rightSegmentId: string | null;
+  spanStartSample: number;
+  spanEndSample: number;
+  progressInSpan: number;
 }
 
 export type RenderJobEventType =

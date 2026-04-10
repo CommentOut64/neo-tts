@@ -1,3 +1,7 @@
+> Archived: 2026-04-10
+> Superseded By:
+> - `/llmdoc/standard/commit规范.md`
+
 ## 工作流
 
 1. 直接分析代码 Diff，识别核心改动点。 

@@ -48,12 +48,12 @@ describe("sessionHandoff", () => {
     ).toBe("rebuild");
   });
 
-  it("输入稿与会话版本一致时不触发 rebuild", () => {
+  it("输入稿与当前 applied_text 版本一致时不触发 rebuild", () => {
     expect(
       resolveWorkspaceEntryAction({
         sessionStatus: "ready",
         hasInputText: true,
-        inputSource: "session",
+        inputSource: "applied_text",
         draftRevision: 5,
         lastSentToSessionRevision: 5,
         sourceDraftRevision: 5,
@@ -61,17 +61,17 @@ describe("sessionHandoff", () => {
     ).toBe("idle");
   });
 
-  it("workspace 镜像稿不会被误判成需要 rebuild 的新输入稿", () => {
+  it("input_handoff 不代表当前会话已提交成功，因此会触发 rebuild", () => {
     expect(
       resolveWorkspaceEntryAction({
         sessionStatus: "ready",
         hasInputText: true,
-        inputSource: "workspace",
+        inputSource: "input_handoff",
         draftRevision: 7,
         lastSentToSessionRevision: 5,
         sourceDraftRevision: 5,
       }),
-    ).toBe("idle");
+    ).toBe("rebuild");
   });
 
   it("buildSessionHeadText 会按 order_key 顺序拼接当前 session 正文", () => {

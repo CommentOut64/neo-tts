@@ -12,7 +12,6 @@ export function resolvePauseBoundaryChipClass(input: {
   const classes = input.isCrossBlock
     ? [
         "inline-flex",
-        "h-6",
         "items-center",
         "gap-1",
         "rounded",
@@ -20,8 +19,7 @@ export function resolvePauseBoundaryChipClass(input: {
         "border-dashed",
         "border-border",
         "bg-card",
-        "px-2",
-        "text-[11px]",
+        "px-1.5",
         "font-medium",
         "text-muted-fg",
         "transition-colors",
@@ -29,15 +27,13 @@ export function resolvePauseBoundaryChipClass(input: {
       ]
     : [
         "inline-flex",
-        "h-6",
         "items-center",
         "gap-1",
         "rounded",
         "border",
         "border-border",
         "bg-muted",
-        "px-2",
-        "text-[11px]",
+        "px-1.5",
         "font-medium",
         "text-muted-fg",
         "transition-colors",

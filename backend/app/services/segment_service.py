@@ -287,6 +287,8 @@ class SegmentService:
             normalized_segments,
             existing_edges=head_snapshot.edges,
             default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
         )
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
@@ -332,6 +334,39 @@ class SegmentService:
             normalized_segments,
             existing_edges=head_snapshot.edges,
             default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
+        )
+        return SegmentMutationResult(
+            snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),
+            segment=None,
+        )
+
+    def reorder_segments(
+        self,
+        ordered_segment_ids: list[str],
+        *,
+        snapshot: DocumentSnapshot | None = None,
+    ) -> SegmentMutationResult:
+        head_snapshot = snapshot or self._get_head_snapshot()
+        if not ordered_segment_ids:
+            raise ValueError("Reorder requires at least one segment.")
+        if len(set(ordered_segment_ids)) != len(ordered_segment_ids):
+            raise ValueError("Reorder segment ids must be unique.")
+
+        segments = [item.model_copy(deep=True) for item in head_snapshot.segments]
+        segment_by_id = {segment.segment_id: segment for segment in segments}
+        if len(ordered_segment_ids) != len(segments) or set(ordered_segment_ids) != set(segment_by_id):
+            raise ValueError("Reorder segment ids must match current snapshot exactly.")
+
+        reordered_segments = [segment_by_id[segment_id] for segment_id in ordered_segment_ids]
+        normalized_segments = self._normalize_segment_order(reordered_segments)
+        edges = self._edge_service.rebuild_neighbor_edges(
+            normalized_segments,
+            existing_edges=head_snapshot.edges,
+            default_pause_duration_seconds=self._default_pause_duration_seconds(),
+            default_boundary_strategy="crossfade_only",
+            lock_new_boundary_strategy=True,
         )
         return SegmentMutationResult(
             snapshot=self._clone_snapshot(head_snapshot, segments=normalized_segments, edges=edges),

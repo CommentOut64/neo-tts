@@ -3,6 +3,16 @@ import type { InputDraftSource } from "@/composables/useInputDraft";
 
 export type WorkspaceSessionStatus = "empty" | "initializing" | "ready" | "failed";
 export type WorkspaceEntryAction = "idle" | "initialize" | "rebuild";
+export type EndSessionGuard =
+  | "confirm_plain"
+  | "confirm_discard_only"
+  | "confirm_apply_reorder"
+  | "confirm_with_text_options";
+export type EndSessionChoice =
+  | "continue_editing"
+  | "keep_working_text"
+  | "apply_updates_and_end_session"
+  | "discard_unapplied_changes";
 
 interface ResolveWorkspaceEntryActionInput {
   sessionStatus: WorkspaceSessionStatus;
@@ -22,6 +32,19 @@ interface SessionSegmentLike {
 interface ResolveNavbarRuntimeHintInput {
   currentRenderJob: RenderJobSummary | null;
   currentExportJob: ExportJobResponse | null;
+}
+
+interface ResolveEndSessionGuardInput {
+  hasPendingTextChanges: boolean;
+  hasPendingRerender: boolean;
+  hasDirtyParameterDraft: boolean;
+  hasPendingReorderDraft: boolean;
+}
+
+interface ResolveEndSessionChoiceResultInput {
+  choice: EndSessionChoice;
+  appliedText: string;
+  workingText: string;
 }
 
 function isTerminalExportStatus(status: ExportJobResponse["status"]) {
@@ -63,8 +86,8 @@ export function resolveWorkspaceEntryAction(
     return "idle";
   }
 
-  if (input.inputSource === "workspace") {
-    return "idle";
+  if (input.inputSource === "input_handoff") {
+    return "rebuild";
   }
 
   if (input.sourceDraftRevision === null) {
@@ -83,6 +106,69 @@ export function resolveWorkspaceEntryAction(
   }
 
   return "idle";
+}
+
+export function resolveEndSessionGuard(
+  input: ResolveEndSessionGuardInput,
+): EndSessionGuard {
+  if (input.hasPendingTextChanges) {
+    return "confirm_with_text_options";
+  }
+
+  if (input.hasPendingReorderDraft) {
+    return "confirm_apply_reorder";
+  }
+
+  if (input.hasPendingRerender || input.hasDirtyParameterDraft) {
+    return "confirm_discard_only";
+  }
+
+  return "confirm_plain";
+}
+
+export function resolveEndSessionChoiceResult(
+  input: ResolveEndSessionChoiceResultInput,
+): {
+  shouldEndSession: boolean;
+  shouldApplyUpdatesBeforeEndSession?: boolean;
+  nextInputText: string | null;
+  nextInputSource: InputDraftSource | null;
+  nextRoute: "/workspace" | null;
+} {
+  if (input.choice === "continue_editing") {
+    return {
+      shouldEndSession: false,
+      nextInputText: null,
+      nextInputSource: null,
+      nextRoute: null,
+    };
+  }
+
+  if (input.choice === "keep_working_text") {
+    return {
+      shouldEndSession: true,
+      nextInputText: input.workingText,
+      nextInputSource: "input_handoff",
+      nextRoute: "/workspace",
+    };
+  }
+
+  if (input.choice === "apply_updates_and_end_session") {
+    return {
+      shouldEndSession: true,
+      shouldApplyUpdatesBeforeEndSession: true,
+      nextInputText: input.appliedText,
+      nextInputSource: "applied_text",
+      nextRoute: "/workspace",
+    };
+  }
+
+  return {
+    shouldEndSession: true,
+    nextInputText: input.appliedText,
+    nextInputSource: "applied_text",
+    nextRoute: "/workspace",
+  };
 }
 
 export function buildSessionHeadText(segments: SessionSegmentLike[]): string {

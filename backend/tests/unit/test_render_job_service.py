@@ -20,6 +20,8 @@ from backend.app.schemas.edit_session import (
     EditableEdge,
     InitializeEditSessionRequest,
     PreviewRequest,
+    ReorderSegmentsRequest,
+    SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
 )
@@ -518,6 +520,80 @@ def test_edge_pause_update_does_not_build_reference_context_again(tmp_path, monk
     edit_job = service.create_update_edge_job(
         edge_id,
         UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert build_context_calls == 0
+
+
+def test_segment_swap_does_not_build_reference_context_again(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    build_context_calls = 0
+    original_build_reference_context = service._gateway.build_reference_context
+
+    def _count_build_reference_context(*args, **kwargs):
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return original_build_reference_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service._gateway,
+        "build_reference_context",
+        _count_build_reference_context,
+    )
+
+    edit_job = service.create_swap_segments_job(
+        SwapSegmentsRequest(
+            first_segment_id=snapshot.segments[0].segment_id,
+            second_segment_id=snapshot.segments[2].segment_id,
+        )
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert build_context_calls == 0
+
+
+def test_segment_reorder_does_not_build_reference_context_again(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    build_context_calls = 0
+    original_build_reference_context = service._gateway.build_reference_context
+
+    def _count_build_reference_context(*args, **kwargs):
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return original_build_reference_context(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service._gateway,
+        "build_reference_context",
+        _count_build_reference_context,
+    )
+
+    edit_job = service.create_reorder_segments_job(
+        ReorderSegmentsRequest(
+            base_document_version=snapshot.document_version,
+            ordered_segment_ids=[
+                snapshot.segments[2].segment_id,
+                snapshot.segments[0].segment_id,
+                snapshot.segments[1].segment_id,
+            ],
+        )
     )
     service.run_edit_job(edit_job.job.job_id)
 

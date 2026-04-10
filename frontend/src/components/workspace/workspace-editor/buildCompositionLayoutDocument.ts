@@ -124,7 +124,6 @@ export function buildCompositionLayoutDocument(
     renderMap: {
       orderedSegmentIds: [...semanticDocument.segmentOrder],
       segmentRanges: [],
-      segmentBlockRanges: [],
       edgeAnchors: [],
     },
   };

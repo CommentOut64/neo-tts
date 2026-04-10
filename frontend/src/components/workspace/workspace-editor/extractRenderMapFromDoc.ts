@@ -32,25 +32,6 @@ function readSegmentAnchorId(node: JSONContent): string | null {
     : null;
 }
 
-function collectParagraphSegmentIds(node: JSONContent): string[] {
-  const segmentIds = new Set<string>();
-
-  const visit = (currentNode: JSONContent) => {
-    if (typeof currentNode.text === "string") {
-      const segmentId = readSegmentAnchorId(currentNode);
-      if (segmentId) {
-        segmentIds.add(segmentId);
-      }
-      return;
-    }
-
-    currentNode.content?.forEach(visit);
-  };
-
-  visit(node);
-  return [...segmentIds];
-}
-
 function walkDoc(
   node: JSONContent,
   context: WalkContext,
@@ -106,21 +87,9 @@ export function extractRenderMapFromDoc(
   layoutMode: WorkspaceEditorLayoutMode = "composition",
 ): WorkspaceRenderMap {
   const segmentRanges: WorkspaceRenderMap["segmentRanges"] = [];
-  const segmentBlockRanges: WorkspaceRenderMap["segmentBlockRanges"] = [];
   const edgeAnchors: WorkspaceRenderMap["edgeAnchors"] = [];
 
   walkDoc(doc, { position: 0 }, (node, from, to) => {
-    if (node.type === "paragraph" && layoutMode === "list") {
-      const segmentIds = collectParagraphSegmentIds(node);
-      if (segmentIds.length === 1) {
-        segmentBlockRanges.push({
-          segmentId: segmentIds[0],
-          from,
-          to,
-        });
-      }
-    }
-
     if (typeof node.text === "string") {
       const segmentId = readSegmentAnchorId(node);
       if (segmentId) {
@@ -151,7 +120,6 @@ export function extractRenderMapFromDoc(
   return {
     orderedSegmentIds: [...orderedSegmentIds],
     segmentRanges,
-    segmentBlockRanges,
     edgeAnchors,
   };
 }

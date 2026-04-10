@@ -45,12 +45,6 @@ export interface SegmentRenderRange {
   to: number;
 }
 
-export interface SegmentBlockRange {
-  segmentId: string;
-  from: number;
-  to: number;
-}
-
 export interface EdgeRenderAnchor {
   edgeId: string | null;
   leftSegmentId: string;
@@ -64,7 +58,6 @@ export interface EdgeRenderAnchor {
 export interface WorkspaceRenderMap {
   orderedSegmentIds: string[];
   segmentRanges: SegmentRenderRange[];
-  segmentBlockRanges: SegmentBlockRange[];
   edgeAnchors: EdgeRenderAnchor[];
 }
 

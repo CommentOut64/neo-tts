@@ -8,6 +8,7 @@ describe("resolveMainActionButtonState", () => {
       resolveMainActionButtonState({
         sessionStatus: "empty",
         dirtyCount: 0,
+        hasReorderDraft: false,
         canInitialize: true,
         canMutate: true,
       }),
@@ -23,6 +24,7 @@ describe("resolveMainActionButtonState", () => {
       resolveMainActionButtonState({
         sessionStatus: "empty",
         dirtyCount: 0,
+        hasReorderDraft: false,
         canInitialize: false,
         canMutate: true,
       }),
@@ -38,6 +40,7 @@ describe("resolveMainActionButtonState", () => {
       resolveMainActionButtonState({
         sessionStatus: "ready",
         dirtyCount: 0,
+        hasReorderDraft: false,
         canInitialize: true,
         canMutate: true,
       }),
@@ -53,6 +56,7 @@ describe("resolveMainActionButtonState", () => {
       resolveMainActionButtonState({
         sessionStatus: "ready",
         dirtyCount: 3,
+        hasReorderDraft: false,
         canInitialize: true,
         canMutate: true,
       }),
@@ -68,6 +72,7 @@ describe("resolveMainActionButtonState", () => {
       resolveMainActionButtonState({
         sessionStatus: "ready",
         dirtyCount: 2,
+        hasReorderDraft: false,
         canInitialize: true,
         canMutate: false,
       }),
@@ -75,6 +80,22 @@ describe("resolveMainActionButtonState", () => {
       mode: "rerender",
       label: "重推理(2)",
       disabled: true,
+    });
+  });
+
+  it("存在重排草稿时主按钮应切换为应用重排", () => {
+    expect(
+      resolveMainActionButtonState({
+        sessionStatus: "ready",
+        dirtyCount: 3,
+        hasReorderDraft: true,
+        canInitialize: true,
+        canMutate: true,
+      }),
+    ).toEqual({
+      mode: "apply_reorder",
+      label: "应用重排",
+      disabled: false,
     });
   });
 });

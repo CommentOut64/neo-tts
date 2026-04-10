@@ -8,21 +8,39 @@ import type { EditableEdge } from "../src/types/editSession";
 import {
   buildWorkspaceDraftPersistKey,
   buildWorkspaceViewRevisionKey,
+  canStartListReorder,
   cloneWorkspaceSerializable,
   collectPauseBoundaryAttrPatches,
   findCanvasTarget,
+  findReorderHandleTarget,
   haveSameEdgeTopology,
   requestLayoutMode,
   resolveWorkspaceSessionItems,
+  shouldShowListReorderHandles,
   shouldBlockEdgeEditing,
   shouldPreserveLocalTextDraftsOnVersionChange,
 } from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
+import * as workspaceEditorHostModel from "../src/components/workspace/workspace-editor/workspaceEditorHostModel";
 import type { WorkspaceRenderMap } from "../src/components/workspace/workspace-editor/layoutTypes";
 
 const workspaceEditorHostSource = readFileSync(
   resolve(
     dirname(fileURLToPath(import.meta.url)),
     "../src/components/workspace/WorkspaceEditorHost.vue",
+  ),
+  "utf8",
+);
+const pauseBoundaryNodeViewSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/PauseBoundaryNodeView.vue",
+  ),
+  "utf8",
+);
+const workspaceEditorHostModelSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/workspaceEditorHostModel.ts",
   ),
   "utf8",
 );
@@ -158,6 +176,79 @@ describe("workspace editor host layout mode helpers", () => {
       type: "segment",
       segmentId: "seg-1",
     });
+  });
+
+  it("findReorderHandleTarget 会命中新 segmentBlock gutter handle", () => {
+    const handleTarget = {
+      getAttribute(name: string) {
+        return name === "data-segment-id" ? "seg-2" : null;
+      },
+      closest(selector: string) {
+        if (selector === "[data-segment-block-handle]") {
+          return this;
+        }
+        return null;
+      },
+    };
+
+    expect(findReorderHandleTarget(handleTarget as never)).toBe("seg-2");
+  });
+
+  it("只有展示态且无草稿、无待重推理、无活动作业时才允许开始重排", () => {
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: false,
+        hasPendingRerender: false,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(true);
+
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: false,
+        hasPendingRerender: true,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      canStartListReorder({
+        layoutMode: "list",
+        isEditing: false,
+        sessionStatus: "ready",
+        hasTextDraft: false,
+        hasParameterDraft: true,
+        hasPendingRerender: false,
+        canMutate: true,
+        isInteractionLocked: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("禁用重排时不再显示拖拽 grip，但行序号仍保留", () => {
+    expect(
+      shouldShowListReorderHandles({
+        canStartReorder: false,
+        hasReorderDraft: true,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldShowListReorderHandles({
+        canStartReorder: false,
+        hasReorderDraft: false,
+      }),
+    ).toBe(false);
   });
 
   it("haveSameEdgeTopology 只看拓扑，不把纯 attrs 变化当成重建", () => {
@@ -301,6 +392,39 @@ describe("workspace editor host layout mode helpers", () => {
     ).toBe(false);
   });
 
+  it("展示态删段遇到未提交正文草稿时必须阻止，避免版本切换冲掉本地 draft", () => {
+    const result = (
+      workspaceEditorHostModel as typeof workspaceEditorHostModel & {
+        resolveSegmentDeletionGuard?: (input: {
+          segmentCount: number;
+          canMutate: boolean;
+          isInteractionLocked: boolean;
+          hasTextDraft: boolean;
+          hasParameterDraft: boolean;
+          hasPendingRerender: boolean;
+          hasReorderDraft: boolean;
+        }) => unknown;
+      }
+    ).resolveSegmentDeletionGuard?.({
+      segmentCount: 3,
+      canMutate: true,
+      isInteractionLocked: false,
+      hasTextDraft: true,
+      hasParameterDraft: false,
+      hasPendingRerender: false,
+      hasReorderDraft: false,
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: "请先完成或放弃当前正文草稿",
+    });
+  });
+
+  it("展示态右键删段确认框会关闭 body 滚动条补偿，避免右侧留白", () => {
+    expect(workspaceEditorHostSource).toContain("lockScroll: false");
+  });
+
   it("会话正文默认以列表式打开", () => {
     expect(workspaceEditorHostSource).toContain(
       'const layoutMode = ref<WorkspaceEditorLayoutMode>("list");',
@@ -323,4 +447,91 @@ describe("workspace editor host layout mode helpers", () => {
   it("不再提供转到文本输入页继续编辑按钮", () => {
     expect(workspaceEditorHostSource).not.toContain("转到文本输入页继续编辑");
   });
+
+  it("不会再把 workspace working_text 实时回写到输入页", () => {
+    expect(workspaceEditorHostSource).not.toContain("syncFromWorkspaceDraft");
+    expect(workspaceEditorHostSource).not.toContain("syncInputDraftToSessionText");
+  });
+
+  it("正文区顶部入口应改成结束会话，而不是继续暴露清空会话语义", () => {
+    expect(workspaceEditorHostSource).toContain("结束会话");
+    expect(workspaceEditorHostSource).not.toContain("清空会话");
+  });
+
+  it("停顿节点模板不再通过 align-middle 或 leading-none 做基线补偿", () => {
+    expect(pauseBoundaryNodeViewSource).not.toContain("align-middle");
+    expect(pauseBoundaryNodeViewSource).not.toContain("leading-none");
+  });
+
+  it("停顿节点会把 layoutMode 透传到 DOM", () => {
+    expect(pauseBoundaryNodeViewSource).toContain(":data-layout-mode=");
+  });
+
+  it("宿主层固定停顿节点当前高度，并把字号恢复到 11px", () => {
+    expect(workspaceEditorHostSource).toContain("[data-pause-boundary] button");
+    expect(workspaceEditorHostSource).toContain(
+      "font-size: 11px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "line-height: normal;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "height: 19.62px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "vertical-align: baseline;",
+    );
+  });
+
+  it("宿主层不再依赖旧 widget handle 和 paragraph padding-left 维持列表式 gutter", () => {
+    expect(workspaceEditorHostSource).not.toContain(
+      "editor.storage.listReorderHandleDecoration.state",
+    );
+    expect(workspaceEditorHostSource).not.toContain("padding-left: 38px;");
+    expect(workspaceEditorHostSource).toContain("segment-block-gutter");
+    expect(workspaceEditorHostSource).toContain("segment-block-content");
+    expect(workspaceEditorHostModelSource).toContain(
+      "[data-segment-block-handle]",
+    );
+    expect(workspaceEditorHostModelSource).not.toContain(
+      "[data-segment-handle-for]",
+    );
+  });
+
+  it("编辑态可隐藏 gutter 内容，但结构列宽必须保留", () => {
+    expect(workspaceEditorHostSource).toContain("segment-block-gutter");
+    expect(workspaceEditorHostSource).toMatch(
+      /segment-block-gutter[\s\S]*(width|min-width):/,
+    );
+    expect(workspaceEditorHostSource).toContain("showReorderHandle: canStartFreshReorder.value");
+    expect(workspaceEditorHostSource).toMatch(
+      /segment-line-editing[\s\S]*segment-reorder-line-number[\s\S]*opacity:\s*0/,
+    );
+  });
+
+  it("禁用重排时只隐藏 grip，不隐藏行序号", () => {
+    expect(workspaceEditorHostSource).toContain(
+      '.segment-reorder-handle[data-visible="false"] .segment-reorder-grip',
+    );
+    expect(workspaceEditorHostSource).not.toContain(
+      '.segment-reorder-handle[data-visible="false"] .segment-reorder-line-number',
+    );
+  });
+
+  it("列表式左侧强调线改为装饰层绘制，避免 border-left 挤压正文布局", () => {
+    expect(workspaceEditorHostSource).toMatch(
+      /:deep\(\.ProseMirror \.segment-block\)::before/,
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "--segment-block-accent-width: 3px;",
+    );
+    expect(workspaceEditorHostSource).toContain(
+      "--segment-block-accent-color: color-mix(in srgb, var(--color-accent) 58%, transparent);",
+    );
+    expect(workspaceEditorHostSource).not.toContain(
+      "border-left: 3px solid var(--color-warning);",
+    );
+    expect(workspaceEditorHostSource).not.toContain("border-left-color:");
+  });
+
 });

@@ -1,10 +1,11 @@
 import type { SessionStatus } from "@/composables/useEditSession";
 
-export type MainActionMode = "init" | "rerender";
+export type MainActionMode = "init" | "rerender" | "apply_reorder";
 
 export interface ResolveMainActionButtonStateOptions {
   sessionStatus: SessionStatus;
   dirtyCount: number;
+  hasReorderDraft: boolean;
   canInitialize: boolean;
   canMutate: boolean;
 }
@@ -18,6 +19,7 @@ export interface MainActionButtonState {
 export function resolveMainActionButtonState({
   sessionStatus,
   dirtyCount,
+  hasReorderDraft,
   canInitialize,
   canMutate,
 }: ResolveMainActionButtonStateOptions): MainActionButtonState {
@@ -26,6 +28,14 @@ export function resolveMainActionButtonState({
       mode: "init",
       label: "开始生成",
       disabled: !canInitialize || !canMutate,
+    };
+  }
+
+  if (hasReorderDraft) {
+    return {
+      mode: "apply_reorder",
+      label: "应用重排",
+      disabled: sessionStatus !== "ready" || !canMutate,
     };
   }
 

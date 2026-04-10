@@ -237,6 +237,17 @@ class MoveSegmentRangeRequest(BaseModel):
         return self
 
 
+class ReorderSegmentsRequest(BaseModel):
+    base_document_version: int = Field(ge=1, description="本次重排所基于的文档版本号。")
+    ordered_segment_ids: list[str] = Field(min_length=1, description="重排后的完整 segment ID 顺序。")
+
+    @model_validator(mode="after")
+    def _validate_unique_segment_ids(self) -> "ReorderSegmentsRequest":
+        if len(set(self.ordered_segment_ids)) != len(self.ordered_segment_ids):
+            raise ValueError("Reorder segment ids must be unique.")
+        return self
+
+
 class SplitSegmentRequest(BaseModel):
     segment_id: str = Field(description="要拆分的目标段 ID。")
     left_text: str = Field(description="拆分后左半段文本。")
@@ -264,6 +275,10 @@ class EditableEdge(BaseModel):
     boundary_strategy: str = Field(
         default="latent_overlap_then_equal_power_crossfade",
         description="请求使用的边界拼接策略。",
+    )
+    boundary_strategy_locked: bool = Field(
+        default=False,
+        description="该边界策略是否被系统锁定，不允许用户修改。",
     )
     effective_boundary_strategy: str | None = Field(default=None, description="实际生效的边界策略。")
     pause_sample_count: int | None = Field(default=None, description="当前停顿区间的 sample 数。")

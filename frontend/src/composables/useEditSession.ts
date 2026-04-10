@@ -27,7 +27,10 @@ import { extractStatusCode } from '@/api/requestSupport'
 import { useTimeline } from "./useTimeline";
 import { useInputDraft, type InputDraftSource } from './useInputDraft'
 import { useWorkspaceDraftPersistence } from './useWorkspaceDraftPersistence'
+import { useWorkspaceLightEdit } from './useWorkspaceLightEdit'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
+export type EndSessionInputSource = InputDraftSource | 'manual'
+export type FormalStateStatus = 'idle' | 'refreshing' | 'ready' | 'error'
 
 export interface ResolveInputDraftSyncActionInput {
   sessionHeadText: string | null
@@ -46,11 +49,22 @@ export function resolveInputDraftSyncAction(
     return 'noop'
   }
 
+  const isExplicitManualDraft =
+    input.inputSource === 'manual' &&
+    (
+      input.draftRevision > 0 ||
+      input.lastSentToSessionRevision !== null ||
+      input.sourceDraftRevision !== null
+    )
+
   if (input.isInputEmpty) {
+    if (isExplicitManualDraft) {
+      return 'noop'
+    }
     return 'backfill'
   }
 
-  if (input.inputSource === 'workspace') {
+  if (input.inputSource === 'input_handoff') {
     return 'noop'
   }
 
@@ -58,7 +72,7 @@ export function resolveInputDraftSyncAction(
     return 'adopt'
   }
 
-  const isTrackingSessionDraft = input.inputSource === 'session'
+  const isTrackingSessionDraft = input.inputSource === 'applied_text'
     && input.sourceDraftRevision !== null
     && input.draftRevision === input.sourceDraftRevision
     && input.lastSentToSessionRevision === input.draftRevision
@@ -85,11 +99,24 @@ const groups = ref<SegmentGroup[]>([])
 const renderProfiles = ref<RenderProfile[]>([])
 const voiceBindings = ref<VoiceBinding[]>([])
 const sessionResourcesLoaded = ref(false)
+const formalStateStatus = ref<FormalStateStatus>('idle')
+const formalStateEpoch = ref(0)
+
+interface FormalSessionBundle {
+  snapshot: EditSessionSnapshot
+  timeline: TimelineManifest | null
+  segments: EditableSegment[]
+  edges: EditableEdge[]
+  groups: SegmentGroup[]
+  renderProfiles: RenderProfile[]
+  voiceBindings: VoiceBinding[]
+}
 
 export function useEditSession() {
   const runtimeState = useRuntimeState()
   const inputDraft = useInputDraft()
   const workspaceDraftPersistence = useWorkspaceDraftPersistence()
+  const lightEdit = useWorkspaceLightEdit()
 
   function getSnapshotHeadText(data: EditSessionSnapshot | null): string | null {
     if (!data || data.segments.length === 0) {
@@ -101,15 +128,21 @@ export function useEditSession() {
   const sourceText = computed(() => {
     return snapshot.value?.source_text ?? lastInitParams.value?.raw_text ?? null
   })
+  const sessionInitialText = computed(() => sourceText.value)
+  const appliedText = computed(() => getSnapshotHeadText(snapshot.value))
 
   function markDraftAsSyncedToSession() {
     sourceDraftRevision.value = inputDraft.draftRevision.value
     inputDraft.markSentToSession(inputDraft.draftRevision.value)
   }
 
-  function syncInputDraftToSessionText(sessionHeadText: string) {
-    inputDraft.backfillFromSession(sessionHeadText)
+  function backfillInputDraftFromAppliedText(sessionHeadText: string) {
+    inputDraft.backfillFromAppliedText(sessionHeadText)
     markDraftAsSyncedToSession()
+  }
+
+  function rememberSessionInitialText(nextText: string) {
+    inputDraft.rememberLastSessionInitialText(nextText)
   }
 
   function syncDraftRevisionFromSnapshot(data: EditSessionSnapshot) {
@@ -125,46 +158,159 @@ export function useEditSession() {
     })
 
     if ((action === 'backfill' || action === 'adopt') && sessionHeadText) {
-      syncInputDraftToSessionText(sessionHeadText)
+      backfillInputDraftFromAppliedText(sessionHeadText)
+    }
+  }
+
+  function resetSessionState() {
+    const { setTimeline } = useTimeline()
+    sessionStatus.value = 'empty'
+    snapshot.value = null
+    timeline.value = null
+    setTimeline(null)
+    documentVersion.value = null
+    activeJob.value = null
+    lastInitParams.value = null
+    segments.value = []
+    segmentsLoaded.value = false
+    edges.value = []
+    edgesLoaded.value = false
+    groups.value = []
+    renderProfiles.value = []
+    voiceBindings.value = []
+    sessionResourcesLoaded.value = false
+    formalStateStatus.value = 'idle'
+    sourceDraftRevision.value = null
+    lightEdit.clearAll()
+  }
+
+  function clearFormalResources() {
+    const { setTimeline } = useTimeline()
+    timeline.value = null
+    setTimeline(null)
+    segments.value = []
+    segmentsLoaded.value = false
+    edges.value = []
+    edgesLoaded.value = false
+    groups.value = []
+    renderProfiles.value = []
+    voiceBindings.value = []
+    sessionResourcesLoaded.value = false
+    sourceDraftRevision.value = null
+  }
+
+  function applySnapshotMeta(data: EditSessionSnapshot) {
+    snapshot.value = data
+    sessionStatus.value = data.session_status || 'empty'
+    documentVersion.value = data.document_version
+    activeJob.value = data.active_job
+  }
+
+  function buildCurrentFormalSessionResult() {
+    return {
+      snapshot: snapshot.value,
+      timeline: timeline.value,
+      edges: edges.value,
+    }
+  }
+
+  function applyFormalSessionBundle(bundle: FormalSessionBundle) {
+    const { setTimeline } = useTimeline()
+
+    applySnapshotMeta(bundle.snapshot)
+    timeline.value = bundle.timeline
+    setTimeline(bundle.timeline)
+    segments.value = bundle.segments
+    segmentsLoaded.value = true
+    edges.value = bundle.edges
+    edgesLoaded.value = true
+    groups.value = bundle.groups
+    renderProfiles.value = bundle.renderProfiles
+    voiceBindings.value = bundle.voiceBindings
+    sessionResourcesLoaded.value = true
+  }
+
+  async function loadAllSegmentsPage() {
+    const allSegments: EditableSegment[] = []
+    let cursor: number | null = null
+
+    while (true) {
+      const page = await listSegments(1000, cursor)
+      allSegments.push(...page.items)
+      if (page.next_cursor === null) {
+        break
+      }
+      cursor = page.next_cursor
+    }
+
+    return allSegments
+  }
+
+  async function loadAllEdgesPage() {
+    const allEdges: EditableEdge[] = []
+    let cursor: number | null = null
+
+    while (true) {
+      const page = await listEdges(1000, cursor)
+      allEdges.push(...page.items)
+      if (page.next_cursor === null) {
+        break
+      }
+      cursor = page.next_cursor
+    }
+
+    return allEdges
+  }
+
+  async function loadFormalSessionBundle(snapshotData: EditSessionSnapshot): Promise<FormalSessionBundle> {
+    const [
+      timelineData,
+      allSegments,
+      allEdges,
+      groupResponse,
+      profileResponse,
+      bindingResponse,
+    ] = await Promise.all([
+      getTimeline(),
+      loadAllSegmentsPage(),
+      loadAllEdgesPage(),
+      getGroups(),
+      getRenderProfiles(),
+      getVoiceBindings(),
+    ])
+
+    return {
+      snapshot: snapshotData,
+      timeline: timelineData,
+      segments: allSegments,
+      edges: allEdges,
+      groups: groupResponse.items,
+      renderProfiles: profileResponse.items,
+      voiceBindings: bindingResponse.items,
     }
   }
 
   async function discoverSession() {
     try {
       const data = await getSnapshot()
-      snapshot.value = data
-      sessionStatus.value = data.session_status || 'empty'
-      documentVersion.value = data.document_version
-      activeJob.value = data.active_job
+      applySnapshotMeta(data)
       
       if (data.session_status === 'initializing' && activeJob.value) {
+        formalStateStatus.value = 'idle'
+        clearFormalResources()
         runtimeState.trackJob(activeJob.value, { initialRendering: true })
       } else if (data.session_status === 'ready') {
-        syncDraftRevisionFromSnapshot(data)
-        await refreshTimeline()
+        await refreshFormalSessionState({ snapshotData: data })
       } else {
-        segments.value = []
-        segmentsLoaded.value = false
-        edges.value = []
-        edgesLoaded.value = false
-        groups.value = []
-        renderProfiles.value = []
-        voiceBindings.value = []
-        sessionResourcesLoaded.value = false
-        sourceDraftRevision.value = null
+        formalStateStatus.value = 'idle'
+        clearFormalResources()
+        if (data.session_status === 'empty') {
+          lastInitParams.value = null
+        }
       }
     } catch (err) {
       if (extractStatusCode(err) === 404) {
-        sessionStatus.value = 'empty'
-        segments.value = []
-        segmentsLoaded.value = false
-        edges.value = []
-        edgesLoaded.value = false
-        groups.value = []
-        renderProfiles.value = []
-        voiceBindings.value = []
-        sessionResourcesLoaded.value = false
-        sourceDraftRevision.value = null
+        resetSessionState()
       } else {
         sessionStatus.value = 'failed'
       }
@@ -187,26 +333,18 @@ export function useEditSession() {
 
   async function refreshSnapshot() {
     const data = await getSnapshot()
-    snapshot.value = data
-    sessionStatus.value = data.session_status || 'empty'
-    documentVersion.value = data.document_version
-    activeJob.value = data.active_job
+    applySnapshotMeta(data)
     if (sessionStatus.value === 'ready') {
       syncDraftRevisionFromSnapshot(data)
       return
     }
 
     if (sessionStatus.value !== 'ready') {
-      segments.value = []
-      segmentsLoaded.value = false
-      edges.value = []
-      edgesLoaded.value = false
-      groups.value = []
-      renderProfiles.value = []
-      voiceBindings.value = []
-      sessionResourcesLoaded.value = false
       if (sessionStatus.value === 'empty') {
-        sourceDraftRevision.value = null
+        resetSessionState()
+      } else {
+        formalStateStatus.value = 'idle'
+        clearFormalResources()
       }
     }
   }
@@ -229,43 +367,44 @@ export function useEditSession() {
     await Promise.all([loadAllSegments(), loadAllEdges(), refreshSessionResources()])
   }
 
-  async function refreshFormalSessionState() {
-    const [snapshotData, timelineData] = await Promise.all([
-      getSnapshot(),
-      getTimeline(),
-    ])
+  async function refreshFormalSessionState(options?: { snapshotData?: EditSessionSnapshot }) {
+    const requestEpoch = formalStateEpoch.value + 1
+    formalStateEpoch.value = requestEpoch
+    formalStateStatus.value = 'refreshing'
 
-    snapshot.value = snapshotData
-    sessionStatus.value = snapshotData.session_status || 'empty'
-    documentVersion.value = snapshotData.document_version
-    activeJob.value = snapshotData.active_job
+    try {
+      const snapshotData = options?.snapshotData ?? await getSnapshot()
+      const nextStatus = snapshotData.session_status || 'empty'
 
-    timeline.value = timelineData
-    const { setTimeline } = useTimeline()
-    setTimeline(timelineData)
+      if (nextStatus !== 'ready') {
+        if (requestEpoch !== formalStateEpoch.value) {
+          return buildCurrentFormalSessionResult()
+        }
 
-    if (sessionStatus.value !== 'ready') {
-      segments.value = []
-      segmentsLoaded.value = false
-      edges.value = []
-      edgesLoaded.value = false
-      groups.value = []
-      renderProfiles.value = []
-      voiceBindings.value = []
-      sessionResourcesLoaded.value = false
-      return {
-        snapshot: snapshotData,
-        timeline: timelineData,
-        edges: [] as EditableEdge[],
+        applySnapshotMeta(snapshotData)
+        if (nextStatus === 'empty') {
+          resetSessionState()
+        } else {
+          clearFormalResources()
+          formalStateStatus.value = 'idle'
+        }
+        return buildCurrentFormalSessionResult()
       }
-    }
 
-    syncDraftRevisionFromSnapshot(snapshotData)
-    await Promise.all([loadAllSegments(), loadAllEdges(), refreshSessionResources()])
-    return {
-      snapshot: snapshot.value,
-      timeline: timeline.value,
-      edges: edges.value,
+      const bundle = await loadFormalSessionBundle(snapshotData)
+      if (requestEpoch !== formalStateEpoch.value) {
+        return buildCurrentFormalSessionResult()
+      }
+
+      applyFormalSessionBundle(bundle)
+      syncDraftRevisionFromSnapshot(bundle.snapshot)
+      formalStateStatus.value = 'ready'
+      return buildCurrentFormalSessionResult()
+    } catch (error) {
+      if (requestEpoch === formalStateEpoch.value) {
+        formalStateStatus.value = 'error'
+      }
+      throw error
     }
   }
 
@@ -343,26 +482,38 @@ export function useEditSession() {
     }
 
     await deleteSession()
-    sessionStatus.value = 'empty'
-    snapshot.value = null
-    timeline.value = null
-    documentVersion.value = null
-    activeJob.value = null
-    segments.value = []
-    segmentsLoaded.value = false
-    edges.value = []
-    edgesLoaded.value = false
-    groups.value = []
-    renderProfiles.value = []
-    voiceBindings.value = []
-    sessionResourcesLoaded.value = false
-    sourceDraftRevision.value = null
+    resetSessionState()
+  }
+
+  async function endSession(target?: {
+    nextInputText: string
+    nextInputSource: EndSessionInputSource
+  }) {
+    await clearSession()
+
+    if (!target) {
+      return
+    }
+
+    if (target.nextInputSource === 'applied_text') {
+      inputDraft.backfillFromAppliedText(target.nextInputText)
+      return
+    }
+
+    if (target.nextInputSource === 'input_handoff') {
+      inputDraft.handoffFromWorkspace(target.nextInputText)
+      return
+    }
+
+    inputDraft.setText(target.nextInputText)
   }
 
   return {
     sessionStatus,
     snapshot,
     sourceText,
+    sessionInitialText,
+    appliedText,
     timeline,
     documentVersion,
     activeJob,
@@ -376,6 +527,9 @@ export function useEditSession() {
     renderProfiles,
     voiceBindings,
     sessionResourcesLoaded,
+    formalStateStatus,
+    isFormalStateRefreshing: computed(() => formalStateStatus.value === 'refreshing'),
+    formalStateEpoch,
 
     discoverSession,
     initialize,
@@ -385,7 +539,9 @@ export function useEditSession() {
     loadAllSegments,
     loadAllEdges,
     refreshSessionResources,
-    syncInputDraftToSessionText,
+    backfillInputDraftFromAppliedText,
+    rememberSessionInitialText,
+    endSession,
     clearSession,
   }
 }

@@ -182,6 +182,7 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     assert segment.segment_kind == "speech"
     assert edge.pause_duration_seconds == 0.3
     assert edge.boundary_strategy == "latent_overlap_then_equal_power_crossfade"
+    assert edge.boundary_strategy_locked is False
 
 
 def test_checkpoint_state_rejects_running_partial_status():

@@ -10,7 +10,7 @@ import {
 } from "./renderJobControls";
 
 const { currentRenderJob, pauseJob, cancelJob, resumeJob } = useRuntimeState();
-const { progress, connectProgressStream, refreshProgress } = useInferenceRuntime();
+const { progress, connectProgressStream, refreshProgress } = useInferenceRuntime("RenderJobProgressBar");
 
 const resolvedProgress = computed(() =>
   resolveWorkspaceProgressState({
@@ -23,8 +23,8 @@ const progressPercent = computed(() => resolvedProgress.value.percent);
 const statusMessage = computed(() => resolvedProgress.value.message);
 
 onMounted(() => {
-  connectProgressStream();
-  void refreshProgress();
+  connectProgressStream("RenderJobProgressBar:onMounted");
+  void refreshProgress("RenderJobProgressBar:onMounted");
 });
 
 function onPause() {

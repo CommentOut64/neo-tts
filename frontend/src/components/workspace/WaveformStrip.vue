@@ -3,7 +3,7 @@ import { computed, ref, onUnmounted } from "vue";
 import { usePlayback } from "@/composables/usePlayback";
 import { useTimeline } from "@/composables/useTimeline";
 
-const { currentSample, seekToSample } = usePlayback();
+const { currentSample, seekToSample, playbackCursorError } = usePlayback();
 const { totalSamples, segmentEntries } = useTimeline();
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -39,6 +39,7 @@ const progressPercent = computed(() => {
 });
 
 function getSampleFromMouseEvent(e: MouseEvent): number | null {
+  if (playbackCursorError.value) return null;
   if (!containerRef.value || totalSamples.value === 0) return null;
 
   const rect = containerRef.value.getBoundingClientRect();
@@ -56,6 +57,7 @@ function updateDragPreview(e: MouseEvent) {
 }
 
 function onMouseDown(e: MouseEvent) {
+  if (playbackCursorError.value) return;
   isDragging.value = true;
   updateDragPreview(e);
   document.addEventListener("mousemove", onMouseMove);

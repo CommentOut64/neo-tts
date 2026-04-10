@@ -148,7 +148,7 @@ onMounted(loadVoices)
       <el-table-column prop="ref_lang" label="语言" width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="row.ref_lang === 'zh' ? 'primary' : 'success'" size="small">
-            {{ { zh: '中文', en: 'EN', ja: 'JA', ko: 'KO' }[row.ref_lang as string] || row.ref_lang }}
+            {{ { zh: '中', en: '英', ja: '日', ko: '韩' }[row.ref_lang as string] || row.ref_lang }}
           </el-tag>
         </template>
       </el-table-column>
