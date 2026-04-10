@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const subscribeRenderJobEvents = vi.fn(() => () => {});
 const getRenderJob = vi.fn();
@@ -34,6 +34,7 @@ function createDeferred() {
 
 describe("useRuntimeState", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
     vi.resetModules();
     subscribeRenderJobEvents.mockClear();
     getRenderJob.mockReset();
@@ -43,6 +44,11 @@ describe("useRuntimeState", () => {
     subscribeExportJobEvents.mockReset();
     subscribeExportJobEvents.mockImplementation(() => () => {});
     getExportJob.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it("trackJob 会立即建立运行态门禁并锁定当前段", async () => {
@@ -198,12 +204,11 @@ describe("useRuntimeState", () => {
 
   it("pause 收尾尚未结束时恢复，不会被旧收尾清空新 job 的渐进状态", async () => {
     const pauseCleanup = createDeferred();
+    const refreshFormalSessionState = vi.fn(() => pauseCleanup.promise);
 
     vi.doMock("../src/composables/useEditSession", () => ({
       useEditSession: () => ({
-        refreshSnapshot: vi.fn(() => pauseCleanup.promise),
-        refreshTimeline: vi.fn(),
-        sessionStatus: { value: "ready" },
+        refreshFormalSessionState,
       }),
     }));
 
@@ -328,9 +333,7 @@ describe("useRuntimeState", () => {
   it("render job 到达 completed 后会清空 currentRenderJob 并重新允许变更", async () => {
     vi.doMock("../src/composables/useEditSession", () => ({
       useEditSession: () => ({
-        refreshSnapshot: vi.fn(),
-        refreshTimeline: vi.fn(),
-        sessionStatus: { value: "ready" },
+        refreshFormalSessionState: vi.fn(),
       }),
     }));
 
@@ -361,6 +364,86 @@ describe("useRuntimeState", () => {
 
     expect(runtimeState.currentRenderJob.value).toBeNull();
     expect(runtimeState.canMutate.value).toBe(true);
+  });
+
+  it("render job 终态需要刷新正式状态时，会走 refreshFormalSessionState", async () => {
+    const refreshFormalSessionState = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("../src/composables/useEditSession", () => ({
+      useEditSession: () => ({
+        refreshFormalSessionState,
+      }),
+    }));
+
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-refresh-formal",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.4,
+        message: "running",
+      },
+      {
+        initialRendering: false,
+      },
+    );
+
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-refresh-formal",
+      document_id: "doc-1",
+      status: "completed",
+      progress: 1,
+      message: "done",
+    });
+    await vi.waitFor(() => {
+      expect(refreshFormalSessionState).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("render job SSE 断线后会先尝试自动重连，而不是立刻退回 polling", async () => {
+    const firstUnsubscribe = vi.fn();
+    const secondUnsubscribe = vi.fn();
+    subscribeRenderJobEvents
+      .mockReturnValueOnce(firstUnsubscribe)
+      .mockReturnValueOnce(secondUnsubscribe);
+
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-reconnect",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.2,
+        message: "running",
+      },
+      {
+        initialRendering: true,
+        refreshSessionOnTerminal: false,
+      },
+    );
+
+    const firstHandler = subscribeRenderJobEvents.mock.calls[0][1];
+    firstHandler.onError?.(new Error("boom"));
+
+    expect(firstUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(runtimeState.sseConnectionState.value).toBe("disconnected");
+    expect(getRenderJob).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(subscribeRenderJobEvents).toHaveBeenCalledTimes(2);
+    expect(getRenderJob).not.toHaveBeenCalled();
+
+    const secondHandler = subscribeRenderJobEvents.mock.calls[1][1];
+    secondHandler.onOpen?.();
+
+    expect(runtimeState.sseConnectionState.value).toBe("connected");
   });
 
   it("会向外广播 render job SSE 事件，供 workspace processing 消费", async () => {
@@ -456,9 +539,7 @@ describe("useRuntimeState", () => {
   it("可以主动对账已跟踪 job 的终态，避免 terminal SSE 丢失后一直锁死", async () => {
     vi.doMock("../src/composables/useEditSession", () => ({
       useEditSession: () => ({
-        refreshSnapshot: vi.fn(),
-        refreshTimeline: vi.fn(),
-        sessionStatus: { value: "ready" },
+        refreshFormalSessionState: vi.fn(),
       }),
     }));
 
