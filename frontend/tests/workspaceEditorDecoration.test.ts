@@ -9,6 +9,7 @@ import {
   buildSegmentDecorationSpecs,
   type SegmentDecorationState,
 } from "../src/components/workspace/workspace-editor/segmentDecoration";
+import type { PlaybackCursor } from "../src/types/editSession";
 
 const extractRenderMapSource = readFileSync(
   resolve(
@@ -33,6 +34,29 @@ const layoutTypesSource = readFileSync(
 );
 
 describe("workspace editor decoration", () => {
+  function buildPlaybackCursorState(
+    playingCursor: PlaybackCursor | null,
+  ): SegmentDecorationState {
+    return {
+      layoutMode: "composition",
+      renderMap: {
+        orderedSegmentIds: ["seg-1", "seg-2"],
+        segmentRanges: [
+          { segmentId: "seg-1", from: 1, to: 5 },
+          { segmentId: "seg-2", from: 6, to: 10 },
+        ],
+        edgeAnchors: [],
+      },
+      showReorderHandle: false,
+      playingId: null,
+      playingCursor,
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set<string>(),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: false,
+    } as unknown as SegmentDecorationState;
+  }
+
   it("组合视图 renderMap 仍提取 segmentRanges 和 edgeAnchors，但不再保留列表式 block range", () => {
     const renderMap = (extractRenderMapFromDoc as any)(
       {
@@ -237,6 +261,87 @@ describe("workspace editor decoration", () => {
     expect(bySegmentId["seg-1"].to).toBe(5);
     expect(bySegmentId["seg-2"].attrs.class).toContain("segment-selected");
     expect(bySegmentId["seg-1"].to).toBeLessThan(bySegmentId["seg-2"].from);
+  });
+
+  it("只有 playingCursor.kind === segment 时才高亮对应段", () => {
+    const segmentState = buildPlaybackCursorState({
+      sample: 2,
+      kind: "segment",
+      segmentId: "seg-1",
+      edgeId: null,
+      leftSegmentId: null,
+      rightSegmentId: null,
+      spanStartSample: 0,
+      spanEndSample: 3,
+      progressInSpan: 2 / 3,
+    });
+
+    const boundaryState = buildPlaybackCursorState({
+      sample: 3,
+      kind: "boundary",
+      segmentId: null,
+      edgeId: "edge-1",
+      leftSegmentId: "seg-1",
+      rightSegmentId: "seg-2",
+      spanStartSample: 3,
+      spanEndSample: 4,
+      progressInSpan: 0,
+    });
+
+    const pauseState = buildPlaybackCursorState({
+      sample: 4,
+      kind: "pause",
+      segmentId: null,
+      edgeId: "edge-1",
+      leftSegmentId: "seg-1",
+      rightSegmentId: "seg-2",
+      spanStartSample: 4,
+      spanEndSample: 6,
+      progressInSpan: 0,
+    });
+
+    const beforeStartState = buildPlaybackCursorState({
+      sample: -1,
+      kind: "before_start",
+      segmentId: null,
+      edgeId: null,
+      leftSegmentId: null,
+      rightSegmentId: null,
+      spanStartSample: 0,
+      spanEndSample: 0,
+      progressInSpan: 0,
+    });
+
+    const endedState = buildPlaybackCursorState({
+      sample: 9,
+      kind: "ended",
+      segmentId: null,
+      edgeId: null,
+      leftSegmentId: null,
+      rightSegmentId: null,
+      spanStartSample: 9,
+      spanEndSample: 9,
+      progressInSpan: 1,
+    });
+
+    const segmentSpecs = buildSegmentDecorationSpecs(segmentState);
+    const boundarySpecs = buildSegmentDecorationSpecs(boundaryState);
+    const pauseSpecs = buildSegmentDecorationSpecs(pauseState);
+    const beforeStartSpecs = buildSegmentDecorationSpecs(beforeStartState);
+    const endedSpecs = buildSegmentDecorationSpecs(endedState);
+
+    expect(segmentSpecs[0].attrs.class).toContain("segment-playing");
+    expect(segmentSpecs[1].attrs.class).not.toContain("segment-playing");
+
+    for (const specs of [
+      boundarySpecs,
+      pauseSpecs,
+      beforeStartSpecs,
+      endedSpecs,
+    ]) {
+      expect(specs[0].attrs.class).not.toContain("segment-playing");
+      expect(specs[1].attrs.class).not.toContain("segment-playing");
+    }
   });
 
   it("列表式重构后，源码中不应再保留旧的 renderMap block range 路径", () => {

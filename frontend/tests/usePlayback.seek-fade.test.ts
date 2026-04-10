@@ -165,8 +165,105 @@ function buildTimeline(): TimelineManifest {
   };
 }
 
+function buildCursorTimeline(): TimelineManifest {
+  return {
+    timeline_manifest_id: "timeline-cursor",
+    document_id: "doc-1",
+    document_version: 1,
+    timeline_version: 1,
+    sample_rate: 24000,
+    playable_sample_span: [0, 9],
+    block_entries: [
+      {
+        block_asset_id: "block-1",
+        segment_ids: ["seg-1", "seg-2"],
+        start_sample: 0,
+        end_sample: 9,
+        audio_sample_count: 9,
+        audio_url: "/audio/block-1.wav",
+      },
+    ],
+    segment_entries: [
+      {
+        segment_id: "seg-1",
+        order_key: 1,
+        start_sample: 0,
+        end_sample: 3,
+        render_status: "ready",
+        group_id: null,
+        render_profile_id: null,
+        voice_binding_id: null,
+      },
+      {
+        segment_id: "seg-2",
+        order_key: 2,
+        start_sample: 6,
+        end_sample: 9,
+        render_status: "ready",
+        group_id: null,
+        render_profile_id: null,
+        voice_binding_id: null,
+      },
+    ],
+    edge_entries: [
+      {
+        edge_id: "edge-1",
+        left_segment_id: "seg-1",
+        right_segment_id: "seg-2",
+        pause_duration_seconds: 0.5,
+        boundary_strategy: "crossfade_only",
+        effective_boundary_strategy: "crossfade_only",
+        boundary_start_sample: 3,
+        boundary_end_sample: 4,
+        pause_start_sample: 4,
+        pause_end_sample: 6,
+      },
+    ],
+    markers: [],
+  };
+}
+
+function buildInvalidTimeline(): TimelineManifest {
+  return {
+    timeline_manifest_id: "timeline-invalid",
+    document_id: "doc-1",
+    document_version: 1,
+    timeline_version: 1,
+    sample_rate: 24000,
+    playable_sample_span: [0, 9],
+    block_entries: [
+      {
+        block_asset_id: "block-invalid",
+        segment_ids: ["seg-1"],
+        start_sample: 0,
+        end_sample: 9,
+        audio_sample_count: 9,
+        audio_url: "/audio/block-invalid.wav",
+      },
+    ],
+    segment_entries: [
+      {
+        segment_id: "seg-1",
+        order_key: 1,
+        start_sample: 0,
+        end_sample: 3,
+        render_status: "ready",
+        group_id: null,
+        render_profile_id: null,
+        voice_binding_id: null,
+      },
+    ],
+    edge_entries: [],
+    markers: [],
+  };
+}
+
 describe("usePlayback seek fade", () => {
 afterEach(() => {
+  const playback = usePlayback();
+  playback.pause();
+  const { setTimeline } = useTimeline();
+  setTimeline(null);
   delete (globalThis as typeof globalThis & { AudioContext?: unknown }).AudioContext;
   delete (globalThis as typeof globalThis & { fetch?: unknown }).fetch;
   delete (globalThis as typeof globalThis & { requestAnimationFrame?: unknown }).requestAnimationFrame;
@@ -284,5 +381,88 @@ it("warmAudioUrls 会提前拉取并解码 block 音频", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(fetchMock).toHaveBeenNthCalledWith(1, "/audio/block-99.wav");
   expect(fetchMock).toHaveBeenNthCalledWith(2, "/audio/block-100.wav");
+});
+
+it("currentCursor 会表达 segment、boundary、pause、ended，currentSegmentId 只在 segment 时存在", () => {
+  Object.defineProperty(globalThis, "requestAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: () => 1,
+  });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  });
+
+  const { setTimeline } = useTimeline();
+  setTimeline(buildCursorTimeline());
+
+  const playback = usePlayback();
+  playback.pause();
+
+  playback.seekToSample(2);
+  expect(playback.currentCursor.value.kind).toBe("segment");
+  expect(playback.currentSegmentId.value).toBe("seg-1");
+
+  playback.seekToSample(3);
+  expect(playback.currentCursor.value.kind).toBe("boundary");
+  expect(playback.currentSegmentId.value).toBeNull();
+
+  playback.seekToSample(4);
+  expect(playback.currentCursor.value.kind).toBe("pause");
+  expect(playback.currentSegmentId.value).toBeNull();
+
+  playback.seekToSample(9);
+  expect(playback.currentCursor.value.kind).toBe("ended");
+  expect(playback.currentSegmentId.value).toBeNull();
+});
+
+it("非法 timeline 会进入错误态，刷新为合法 timeline 后可恢复播放", async () => {
+  FakeAudioContext.instances.length = 0;
+
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    writable: true,
+    value: FakeAudioContext,
+  });
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "audio/wav" },
+      arrayBuffer: async () => new ArrayBuffer(16),
+    }),
+  });
+  Object.defineProperty(globalThis, "requestAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: () => 1,
+  });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  });
+
+  const { setTimeline } = useTimeline();
+  const playback = usePlayback();
+  playback.pause();
+
+  setTimeline(buildInvalidTimeline());
+  playback.seekToSample(4);
+
+  expect(playback.playbackCursorError.value).toBeTruthy();
+  playback.play();
+  expect(playback.isPlaying.value).toBe(false);
+
+  setTimeline(buildTimeline());
+  expect(playback.playbackCursorError.value).toBeNull();
+
+  playback.seekToSample(0);
+  playback.play();
+  expect(playback.isPlaying.value).toBe(true);
 });
 });
