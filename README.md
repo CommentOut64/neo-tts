@@ -1,61 +1,83 @@
 # Neo TTS
 
-> **基于 GPT-SoVITS 的推理和编辑工具。**
+> **基于 GPT-SoVITS 的段级可编辑语音合成工具。**
 
-> 围绕长文本生成、逐段编辑、局部重推理和导出的一套完整工作流。
+GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改任何一句话都需要整篇重跑。Neo TTS 围绕这个痛点重新设计：将长文本拆分为独立管理的语音段，每段独立推理、独立编辑、独立重做，并通过 Latent Overlap 边界增强保持段间自然衔接，最终组装为完整音频导出。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Status](https://img.shields.io/badge/status-active%20development-orange.svg)
 
-## 功能特点
+<p align="center">
+  <img src="assets/main1.png" width="100%" />
+</p>
 
-### 核心亮点
+## 核心特性
 
-- **完整工作流**：从输入文本、选择音色、生成首版语音，到进入工作区逐段修改、按需重做、最终导出，TTS主流水线已完整实现
-- **高精度段切分**：可独立管理语音段，为每段维护独立顺序、版本和时间线位置，便于长文本逐段修正
-- **完整编辑能力**：支持插入、追加、修改、删除、交换位置和区间重排
-- **段级重推理**：可以只重做单个段，或只重做本次修改真正影响到的目标集合，避免每次小改动都整篇重跑
-- **停顿可调**：相邻语音段之间的停顿时长可以单独调整
-- **Overlap 边界控制**：智能交叉淡化允许段间保持自然的气息连贯
-- **高效的编辑体验**：可播放、可选段、可切换布局、可持续修改
+### 段级编辑与局部重推理
 
-### 工作区能力
+支持对语音段的插入、追加、修改、删除、交换位置和区间重排。编辑后系统自动计算受影响的最小集合（目标段 + 相邻边界 + 所在块），只重做必要部分，不整篇重跑。
 
-- **双布局工作区**：同一份文本可以在列表式与组合式两种视图之间切换，兼顾逐段操作和整体排布观察
-- **文本标准化与句末标点控制**：输入页预览、工作区编辑和正式生成统一按句尾胶囊方案组织，句尾信息、显示文本和实际生成文本分层处理，面向长文本场景保持一致口径
-- **段级参数调整**：生成参数支持会话级、组级、段级和批量段级调整，可覆盖语速、`top_k`、`top_p`、`temperature`、`noise_scale` 以及参考音频与参考文本
-- **段级模型切换**：音色和模型绑定支持会话级、组级、段级和批量段级切换，允许在一次编辑中使用多种模型/音色
-- **统一播放结构**：支持点击跳转和定位高亮，文本与音频高度绑定
+### 段间衔接控制
 
-### 生产能力
+相邻段之间的停顿时长可逐条调节。边界融合支持三种策略：Latent Overlap + 等功率交叉淡化（默认）、纯交叉淡化、硬拼接。当左右段使用不同音色或不同模型时，系统自动降级为纯交叉淡化。
 
-- **多种导出方式**：支持整条成品导出和分段导出，同时覆盖最终交付和素材回收场景
-- **模型导入与集中管理**：支持查看现有音色、刷新配置、上传托管模型、删除托管模型；静态配置音色与托管音色可以共存
+### 灵活的参数与音色覆盖
+
+生成参数（语速、top_k、top_p、temperature、noise_scale、参考音频）和音色/模型绑定均支持会话级、组级、段级和批量段级覆盖。同一篇文档内可混合多种音色和参数配置。
+
+### 双布局工作区
+
+同一份文本可在列表式（逐段操作）和组合式（整体排布）两种视图之间切换。编辑器基于 Tiptap 构建，段与停顿作为一等结构节点内嵌，支持行内编辑、拖拽重排和右键菜单。
+
+### 统一播放与时间线
+
+播放器基于 Block 级 AudioBuffer 调度，支持点击段跳转、实时高亮当前段、Seek 时交叉淡入淡出。时间线由后端 TimelineManifest 驱动，段/边界/块的采样位置全局统一。
+
+### 导出
+
+支持整条成品导出（拼接为单个 WAV）和分段导出（每段一个 WAV + manifest），覆盖最终交付和素材回收两种场景。
+
+### 模型管理
+
+支持查看现有音色、上传托管模型、删除托管模型、刷新配置。手动维护的静态音色（`config/voices.json`）与上传的托管音色（`storage/managed_voices/`）可以共存。
 
 ## 系统要求
 
-### 基础环境
+### 使用整合包（普通用户）
 
 - **操作系统**：Windows 10 / 11
-- **GPU**：NVIDIA GPU（显存要求因模型而异，具体请参照官方说明；8GB 显存可轻松跑 V2Pro）
+- **GPU**：NVIDIA GPU（8 GB 显存可运行 V2Pro；更大模型按显存需求自行评估）
+- **CUDA**：CUDA 11.8+（整合包内置）
+
+### 本地开发部署
+
+在上述基础要求之上，还需要：
+
+- **Python**：3.11（项目通过 [uv](https://docs.astral.sh/uv/) 管理依赖）
+- **Node.js**：18+
+- **包管理**：uv（后端）、npm（前端）
 
 ## 快速开始
 
-### 1. 安装后端依赖
+### 整合包
+
+> 整合包正在准备中，发布后将提供一键启动的使用说明。
+
+### 本地开发部署
+
+#### 1. 安装依赖
 
 ```powershell
+# 后端
 uv sync --group dev
-```
 
-### 2. 安装前端依赖
-
-```powershell
+# 前端
 Set-Location frontend
 npm install
 Set-Location ..
 ```
 
-### 3. 准备模型与音色配置
+#### 2. 准备模型与音色配置
 
 编辑 [config/voices.json](config/voices.json)，最小结构如下：
 
@@ -79,121 +101,80 @@ Set-Location ..
 }
 ```
 
-说明：
-
 - 手动维护的静态音色由 `config/voices.json` 管理
 - 上传到管理页的托管音色会写入 `storage/managed_voices/`
 
-### 4. 启动后端
+#### 3. 启动
 
 ```powershell
-uv run python -m backend.app.cli --port 8000
+# 一键启动（推荐）
+.\start_dev.bat
+
+# 或分别启动
+uv run python -m backend.app.cli --port 8000   # 后端
+Set-Location frontend && npm run dev             # 前端
 ```
 
-### 5. 启动前端
-
-```powershell
-Set-Location frontend
-npm run dev
-```
-
-### 6. 打开页面
+#### 4. 打开页面
 
 - 前端开发地址：`http://127.0.0.1:5175`
 - 后端接口文档：`http://127.0.0.1:8000/docs`
 
-### 7. 一键开发启动
+## 技术架构
 
-仓库提供了 `start_dev.bat`：
+### 推理引擎与边界增强
 
-```powershell
-.\start_dev.bat
-```
+推理主线基于 PyTorch-first 的 GPT-SoVITS 运行时（支持 v2 / v2Pro），模型引擎按 `gpt_path + sovits_path` 组合键缓存，避免重复初始化。
 
-它会完成以下操作：
+每段推理完成后，音频被切分为 **left_margin / core / right_margin** 三段。margin 区域保留了 SoVITS decoder 的 latent frame，用于后续边界增强——这意味着边界重算不需要重推段本身。
 
-- 检查 `.venv\Scripts\python.exe`
-- 启动后端到 `8000`
-- 在 `frontend/` 下启动前端开发服务器
+**Latent Overlap 边界增强**（核心创新）：利用 SoVITS TextEncoder 已有的 overlap 原语，将左段的 right_margin latent frame 注入右段的解码前缀（`decode_boundary_prefix`），在声学层面实现跨段自然衔接，而非仅靠波形级交叉淡化。当左右段使用不同音色或不同模型时，系统自动降级为纯交叉淡化，避免 latent 空间不兼容。
+
+### 编辑会话模型
+
+系统围绕 **Segment（段）+ Edge（边）** 双实体模型组织编辑状态：
+
+- **Segment** 维护文本、顺序、语言、版本号、音频资产引用和段级参数覆盖
+- **Edge** 描述相邻段之间的停顿时长（`pause_duration_seconds`）和边界策略（`boundary_strategy`）
+
+每次编辑提交产生新的 **DocumentSnapshot**（含段列表、边列表、版本号）。**RenderPlanner** 根据编辑类型（update / insert / delete / swap / reorder）对比前后快照，精确计算需要重做的 segment、edge 和 block 集合（`TargetedRenderPlan`），跳过未受影响的部分。
+
+### Block 分层组装
+
+长文档被 **BlockPlanner** 按时长（20-40 秒）和段数上限自动分块。**CompositionBuilder** 逐块组装段音频、边界音频和停顿静音，产出带有采样级标记的 `BlockCompositionAssetPayload`。**TimelineManifestService** 将所有块拼接为全局时间线（`TimelineManifest`），为前端播放器提供段/边界/块的绝对采样位置。
+
+这套三层结构（Segment → Block → Timeline）使得局部编辑只需重组装受影响的块，而非整条音频。
+
+### 参数与模型绑定
+
+**RenderProfile**（生成参数）和 **VoiceBinding**（音色/模型绑定）各自支持会话级 → 组级 → 段级三层覆盖。**RenderConfigResolver** 在渲染前逐段解析最终生效的参数和模型组合，并生成 fingerprint 用于缓存命中判断。
+
+### 文本处理
+
+段文本在生命周期内维护三层口径：
+
+- **raw_text**：用户输入的原始文本（含原始标点）
+- **normalized_text**：标准化后的文本（统一句尾强标点）
+- **render_text**：送入推理的最终文本（运行时按语言和句尾规则派生，不持久化）
+
+切分策略支持 6 种模式（cut0 – cut5），覆盖按标点、按句号、按字符数等场景。
+
+### 前端架构
+
+- **编辑器**：基于 Tiptap 构建结构化编辑画布，段（`SegmentBlock`）和停顿（`PauseBoundary`）作为自定义 Node 内嵌，支持行内文本编辑、拖拽重排、右键菜单操作
+- **播放器**：基于 Web Audio API，按 Block 级 AudioBuffer 调度播放，Seek 时带交叉淡入淡出；`useTimeline` 维护段 ↔ 采样位置的双向映射，驱动点击跳转和实时高亮
+- **状态管理**：`useEditSession` 管理会话生命周期，`useWorkspaceLightEdit` 维护段级草稿状态，`useWorkspaceProcessing` 处理渲染作业提交与进度订阅
+- **进度流**：初始化和重推理全程通过 SSE 推送段级进度事件，前端实时展示进度条和段状态变更
+
 
 ## 技术栈
 
-### 后端
-
-- **Python**
-- **FastAPI**
-- **Pydantic**
-- **Uvicorn**
-
-### 前端
-
-- **TypeScript**
-- **Vue 3**
-- **Vite**
-- **Vue Router**
-- **Element Plus**
-- **Nuxt UI**
-
-### 推理与文本处理
-
-- **GPT-SoVITS**
-- **PyTorch**
-- **CNHubert**
-- **BERT / transformers**
-- **多语言文本处理依赖**：`pypinyin`、`opencc`、`pyopenjtalk`、`g2p_en`、`g2pk2`、`ToJyutping` 等
-
-## 核心架构
-
-### 产品结构
-
-- **输入页**：负责准备全文、导入文件、维护输入稿，并把初始化参数送入正式生成流程
-- **工作区**：负责后续正式编辑，包括段文本修改、停顿调整、参数补丁、模型切换、局部重推理、播放与导出
-- **模型管理页**：负责查看、上传、删除和刷新音色配置
-
-### 会话与版本结构
-
-- 当前主线围绕 `edit-session` 组织
-- 一次初始化会创建活动会话，并进入异步生成流程
-- 每次正式提交都会生成新的 `document_version`
-- 正式结果同时维护全文、段列表、边列表和时间线对象
-- 导出基于指定版本进行，不会隐式改变当前正式版本
-
-这套结构的目标不是把所有状态都压成一次同步请求，而是把长文本生成拆成可持续编辑、可恢复和可导出的正式工作流。
-
-### 段与边的编辑模型
-
-- **段** 是当前系统的核心编辑单元，维护文本、顺序、语言、版本、正式音频资产和段级覆盖项
-- **边** 负责描述相邻段之间的停顿与拼接方式，维护 `pause_duration_seconds` 与 `boundary_strategy`
-- 当前边界策略默认支持：
-  - `latent_overlap_then_equal_power_crossfade`
-  - `crossfade`
-  - `hard_cut`
-- 当左右相邻段使用不同音色或不同模型时，系统会把边界策略解析为兼容的 `crossfade_only`
-
-这使得“段内内容”和“段间衔接”可以分别控制，而不是把所有变化都揉进一次整条音频重算。
-
-### 参数与模型绑定层级
-
-- **渲染参数** 支持会话级、组级、段级和批量段级
-- **音色/模型绑定** 同样支持会话级、组级、段级和批量段级
-- 段级参数可以覆盖语速、采样参数、噪声参数、参考音频、参考文本和参考语言
-- 段级模型绑定可以覆盖 `voice_id`、`model_key`、`gpt_path`、`sovits_path`
-
-因此，同一篇文档内部可以形成细粒度的参数差异和模型差异，而不需要强制所有段共享一套完全相同的配置。
-
-### 推理运行时结构
-
-- 推理主线采用 PyTorch-first 的 GPT-SoVITS 运行时
-- 模型引擎按 `gpt_path + sovits_path` 维度缓存，避免重复初始化
-- 文本、参考音频、参数配置和模型绑定会在正式生成前被解析成统一的渲染上下文
-- 正式段资产、边界资产和时间线装配结果分别持久化，供播放、重推理和导出复用
-
-### 导出与资产组织
-
-- 分段导出与整条导出是两个独立入口
-- 正式段资产、边界资产、块资产、整条 composition 和临时 preview 音频分开管理
-- 工作区播放依赖正式时间线，而不是仅依赖零散的段音频返回值
-
+| 层 | 技术 |
+|---|---|
+| 后端 | Python 3.11、FastAPI、Pydantic、Uvicorn |
+| 前端 | TypeScript、Vue 3、Vite、Tiptap、Element Plus、Nuxt UI |
+| 推理 | GPT-SoVITS（PyTorch）、CNHubert、BERT / transformers |
+| 多语言 | pypinyin、opencc、pyopenjtalk、g2p_en、g2pk2、ToJyutping |
 
 ## 项目结构
 
@@ -203,10 +184,10 @@ neo-tts/
 │  ├─ app/
 │  │  ├─ api/               # FastAPI 路由
 │  │  ├─ core/              # settings、lifespan、日志、异常
-│  │  ├─ inference/         # GPT-SoVITS 推理运行时
+│  │  ├─ inference/         # GPT-SoVITS 推理运行时与边界增强
 │  │  ├─ repositories/      # voice / edit-session 存储访问
 │  │  ├─ schemas/           # Pydantic schema
-│  │  └─ services/          # segment、edge、render、timeline、export 核心服务
+│  │  └─ services/          # segment、edge、render、timeline、export 等核心服务
 │  └─ tests/                # 单元、集成、E2E 测试
 ├─ frontend/
 │  ├─ src/
@@ -218,12 +199,8 @@ neo-tts/
 │  │  └─ views/             # TextInput / Workspace / Studio / VoiceAdmin
 │  └─ tests/                # 前端行为测试
 ├─ GPT_SoVITS/              # 上游模型与文本处理代码
-├─ config/                  # 音色配置
-├─ storage/                 # 托管音色、结果与会话资产
-├─ docs/                    # 接口与系统文档
-├─ devdoc/                  # 分版本设计方案
-├─ llmdoc/                  # 局部实现说明
-├─ legacy/                  # 归档旧入口
+├─ config/                  # 音色配置（静态）
+├─ storage/                 # 托管音色、会话资产与导出结果
 └─ start_dev.bat            # Windows 开发启动脚本
 ```
 
