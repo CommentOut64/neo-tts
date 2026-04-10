@@ -8,7 +8,7 @@ import uvicorn
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GPT-SoVITS rebuild backend CLI")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=18600)
     parser.add_argument("--reload", action="store_true")
     return parser
 
