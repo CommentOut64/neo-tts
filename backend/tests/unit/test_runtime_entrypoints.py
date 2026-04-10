@@ -1,28 +1,32 @@
+import re
 from pathlib import Path
 
 from backend.app.cli import build_parser, main
 
 
-def test_backend_cli_defaults_to_fastapi_mainline_port():
+def test_backend_cli_defaults_to_launcher_port():
     parser = build_parser()
 
     args = parser.parse_args([])
 
-    assert args.port == 8000
+    assert args.port == 18600
 
 
-def test_frontend_dev_proxy_targets_fastapi_mainline_port():
+def test_frontend_dev_proxy_targets_env_or_launcher_port():
     source = Path("frontend/vite.config.ts").read_text(encoding="utf-8")
 
-    assert "http://127.0.0.1:8000" in source
-    assert "http://127.0.0.1:8001" not in source
+    assert 'loadEnv(mode, process.cwd(), "VITE_")' in source
+    assert re.search(
+        r'const\s+backendOrigin\s*=\s*env\.VITE_BACKEND_ORIGIN\s*\|\|\s*"http://127\.0\.0\.1:18600"',
+        source,
+    )
+    assert source.count("target: backendOrigin") == 2
 
 
-def test_start_dev_launcher_targets_fastapi_mainline_port():
+def test_start_dev_launcher_mentions_launcher_or_18600():
     source = Path("start_dev.bat").read_text(encoding="utf-8")
 
-    assert "8000" in source
-    assert "8001" not in source
+    assert "18600" in source
 
 
 def test_backend_cli_disables_uvicorn_default_log_config(monkeypatch):
