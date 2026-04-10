@@ -107,18 +107,32 @@ Set-Location ..
 #### 3. 启动
 
 ```powershell
-# 一键启动（推荐）
+# launcher 主入口（推荐）
+Set-Location launcher
+go run ./cmd/launcher --runtime-mode dev --frontend-mode web
+
+# 兼容入口
+Set-Location ..
 .\start_dev.bat
 
 # 或分别启动
-uv run python -m backend.app.cli --port 8000   # 后端
-Set-Location frontend && npm run dev             # 前端
+uv run python -m backend.app.cli --port 18600
+Set-Location frontend
+$env:VITE_BACKEND_ORIGIN="http://127.0.0.1:18600"
+npm run dev
 ```
+
+补充说明：
+
+- 高频启动变量放项目根目录 `.env`
+- 低频结构化配置放 `launcher/launcher.json`
+- `start_dev.bat` 只保留为源码联调兼容入口，不包含单实例、旧进程清理与守护逻辑
+- `backend.mode=external` 时，launcher 只探活外部后端，不接管也不清理它
 
 #### 4. 打开页面
 
 - 前端开发地址：`http://127.0.0.1:5175`
-- 后端接口文档：`http://127.0.0.1:8000/docs`
+- 后端接口文档：`http://127.0.0.1:18600/docs`
 
 ## 技术架构
 
@@ -199,9 +213,10 @@ neo-tts/
 │  │  └─ views/             # TextInput / Workspace / Studio / VoiceAdmin
 │  └─ tests/                # 前端行为测试
 ├─ GPT_SoVITS/              # 上游模型与文本处理代码
+├─ launcher/                # Go launcher、构建脚本与 Windows 平台层
 ├─ config/                  # 音色配置（静态）
 ├─ storage/                 # 托管音色、会话资产与导出结果
-└─ start_dev.bat            # Windows 开发启动脚本
+└─ start_dev.bat            # Windows 开发兼容启动脚本
 ```
 
 ## 开源协议
