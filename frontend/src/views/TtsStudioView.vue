@@ -54,7 +54,7 @@ const {
   requestForcePause,
   requestCleanupResiduals,
   clearRuntimeError,
-} = useInferenceRuntime()
+} = useInferenceRuntime('TtsStudioView')
 
 // 参数缓存
 const {
@@ -242,7 +242,7 @@ async function init() {
     isRestoring.value = false
 
     // 建立 SSE 连接
-    connectProgressStream()
+    connectProgressStream('TtsStudioView:init')
   } catch (err: unknown) {
     isRestoring.value = false
     ElMessage.error(`初始化失败: ${(err as Error).message}`)

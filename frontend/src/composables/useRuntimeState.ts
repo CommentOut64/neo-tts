@@ -256,6 +256,13 @@ export function useRuntimeState() {
     isInitialRendering.value = options.initialRendering ?? false;
     lockedSegmentIds.value = new Set(options.lockedSegmentIds ?? []);
     sseConnectionState.value = "connected";
+    console.warn("[useRuntimeState] tracking render job", {
+      jobId: job.job_id,
+      initialRendering: isInitialRendering.value,
+      lockedSegmentCount: lockedSegmentIds.value.size,
+      preservedProgressiveSegmentCount: progressiveSegments.value.length,
+      refreshSessionOnTerminal: options.refreshSessionOnTerminal ?? true,
+    });
     terminalStatusPromise = new Promise((resolve) => {
       resolveTerminalStatus = resolve;
     });
@@ -294,6 +301,11 @@ export function useRuntimeState() {
               renderAssetId: null,
             }))
             .sort((a: any, b: any) => a.orderKey - b.orderKey);
+          console.warn("[useRuntimeState] received segments_initialized", {
+            jobId: job.job_id,
+            segmentCount: progressiveSegments.value.length,
+            sseConnectionState: sseConnectionState.value,
+          });
         } else if (type === "segment_completed") {
           const compPayload = payload as SegmentCompletedPayload;
           progressiveSegments.value = progressiveSegments.value.map((s) =>
@@ -342,7 +354,12 @@ export function useRuntimeState() {
         }
       },
       onError: (err: any) => {
-        console.warn("SSE disconnected, falling back to polling", err);
+        console.warn("[useRuntimeState] render job SSE disconnected, falling back to polling", {
+          jobId: job.job_id,
+          error: err,
+          progressiveSegmentCount: progressiveSegments.value.length,
+          isInitialRendering: isInitialRendering.value,
+        });
         sseConnectionState.value = "polling";
         if (unsubscribeSse) unsubscribeSse();
         unsubscribeSse = null;
