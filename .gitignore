@@ -8,6 +8,7 @@ frontend/node_modules/.vite/
 .codex/
 .superpowers/
 .venv/
+.env
 .github
 
 /GEMINI.md
@@ -21,6 +22,7 @@ frontend/node_modules/.vite/
 /onnx_export/
 /frontend/node_modules/
 /frontend/dist/
+/launcher/dist/
 /frontend/components.d.ts
 /frontend/auto-imports.d.ts
 /docs/superpowers/
