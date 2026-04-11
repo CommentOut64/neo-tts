@@ -68,6 +68,9 @@ class PyTorchModelCache:
             model_cache_logger.debug("模型缓存命中 cache_key={}", cache_key)
         return self._engines[cache_key]
 
+    def clear(self) -> None:
+        self._engines.clear()
+
     def _resolve_path(self, raw_path: str | Path) -> str:
         path = Path(raw_path)
         if not path.is_absolute():
