@@ -10,6 +10,7 @@ import { useRuntimeState } from "@/composables/useRuntimeState";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPersistence";
+import { registerWorkspaceExitHandlers } from "@/composables/useWorkspaceExitBridge";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
@@ -423,6 +424,23 @@ const segmentDeletionGuard = computed(() =>
 );
 
 const canDeleteFromMenu = computed(() => segmentDeletionGuard.value.allowed);
+const unregisterWorkspaceExitHandlers = registerWorkspaceExitHandlers({
+  hasPendingTextChanges: () => lightEdit.dirtyCount.value > 0,
+  flushDraft: () => {
+    clearPendingDraftPersist();
+    if (lightEdit.dirtyCount.value === 0) {
+      return;
+    }
+    persistWorkspaceDraftSnapshot(
+      isEditing.value ? "editing" : "preview",
+      currentViewDoc.value,
+    );
+  },
+  clearDraft: () => {
+    clearPendingDraftPersist();
+    clearPersistedWorkspaceDraft();
+  },
+});
 
 function clearPendingDraftPersist() {
   if (draftPersistTimeoutId === null) {
@@ -527,6 +545,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleGlobalKeyDown);
   clearPendingDraftPersist();
+  unregisterWorkspaceExitHandlers();
   unregisterReorderDraftActions();
 });
 

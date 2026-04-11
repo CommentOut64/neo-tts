@@ -12,6 +12,7 @@ import type {
   RenderJobAcceptedResponse,
   RenderJobResponse,
   RenderJob,
+  RenderJobStatus,
   TimelineManifest,
   RenderJobEventType,
   VoiceBindingListResponse,
@@ -51,6 +52,39 @@ export async function uploadEditSessionReferenceAudio(file: File): Promise<Refer
 export async function getRenderJob(jobId: string): Promise<RenderJob> {
   const { data } = await axios.get<RenderJob>('/v1/edit-session/render-jobs/' + jobId)
   return data
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms)
+  })
+}
+
+export async function waitForRenderJobTerminal(
+  jobId: string,
+  options: {
+    timeoutMs?: number
+    pollIntervalMs?: number
+    terminalStatuses?: RenderJobStatus[]
+  } = {},
+): Promise<RenderJobStatus> {
+  const timeoutMs = options.timeoutMs ?? 10000
+  const pollIntervalMs = options.pollIntervalMs ?? 200
+  const terminalStatuses = new Set<RenderJobStatus>(
+    options.terminalStatuses ?? ['paused', 'completed', 'failed', 'cancelled_partial'],
+  )
+  const deadline = Date.now() + timeoutMs
+
+  while (true) {
+    const job = await getRenderJob(jobId)
+    if (terminalStatuses.has(job.status)) {
+      return job.status
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`等待 render job 进入终态超时: ${jobId}`)
+    }
+    await sleep(pollIntervalMs)
+  }
 }
 
 export async function getTimeline(): Promise<TimelineManifest> {
