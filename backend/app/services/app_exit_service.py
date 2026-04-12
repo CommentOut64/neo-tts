@@ -69,12 +69,22 @@ class AppExitService:
         if not runtime_state_path.exists():
             return False
 
+        try:
+            runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        launcher_pid = runtime_state.get("launcherPid")
+        if not isinstance(launcher_pid, int) or launcher_pid <= 0:
+            return False
+
         exit_request_path = self._settings.project_root / "logs" / "launcher" / "control" / "exit-request.json"
         exit_request_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "kind": "user_exit",
             "source": "frontend",
             "requested_at": datetime.now().astimezone().isoformat(),
+            "launcher_pid": launcher_pid,
         }
         temp_path = exit_request_path.with_name(f"{exit_request_path.name}.tmp")
         try:

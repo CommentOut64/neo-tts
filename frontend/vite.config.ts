@@ -1,8 +1,11 @@
+import dns from "node:dns";
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import ui from '@nuxt/ui/vite'
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
+
+dns.setDefaultResultOrder("verbatim");
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
@@ -23,7 +26,9 @@ export default defineConfig(({ mode }) => {
       ],
     },
     server: {
+      host: "localhost",
       port: 5175,
+      strictPort: true,
       proxy: {
         "/v1": { target: backendOrigin, changeOrigin: true },
         "/health": { target: backendOrigin, changeOrigin: true },

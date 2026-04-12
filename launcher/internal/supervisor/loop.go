@@ -10,22 +10,30 @@ import (
 	"time"
 
 	"neo-tts/launcher/internal/config"
+	"neo-tts/launcher/internal/control"
 	"neo-tts/launcher/internal/logging"
 	"neo-tts/launcher/internal/state"
+	"neo-tts/launcher/internal/web"
 )
 
 const loopInterval = time.Second
 
+var errLoopStopped = fmt.Errorf("launcher loop stopped")
+
 type LoopDeps struct {
-	Tick             <-chan time.Time
-	Now              func() time.Time
-	Sleep            func(delay time.Duration)
-	IsProcessRunning func(pid int) bool
-	KillProcess      func(pid int) error
-	FindPIDByPort    func(port int) (int, error)
-	SaveState        func(current state.RuntimeState) error
-	Log              func(line string)
-	StartFrontend    func(ctx context.Context, cfg config.Config, current state.RuntimeState) (FrontendResult, error)
+	Tick              <-chan time.Time
+	Now               func() time.Time
+	Sleep             func(delay time.Duration)
+	IsProcessRunning  func(pid int) bool
+	KillProcess       func(pid int) error
+	FindPIDByPort     func(port int) (int, error)
+	SaveState         func(current state.RuntimeState) error
+	Log               func(line string)
+	ReadExitRequest   func() (*control.ExitRequest, error)
+	DeleteExitRequest func() error
+	StaticServer      *web.StaticServer
+	GracefulStop      func(ctx context.Context) error
+	StartFrontend     func(ctx context.Context, cfg config.Config, current state.RuntimeState) (FrontendResult, error)
 }
 
 func RunLoop(ctx context.Context, cfg config.Config, current state.RuntimeState, deps LoopDeps) error {
@@ -51,6 +59,9 @@ func RunLoop(ctx context.Context, cfg config.Config, current state.RuntimeState,
 		case <-tick:
 			next, restartWindow, err := stepLoop(ctx, cfg, current, crashTimes, deps)
 			if err != nil {
+				if err == errLoopStopped {
+					return nil
+				}
 				return err
 			}
 			current = next
@@ -66,11 +77,43 @@ func stepLoop(
 	crashTimes []time.Time,
 	deps LoopDeps,
 ) (state.RuntimeState, []time.Time, error) {
+	exitRequest, err := deps.ReadExitRequest()
+	if err != nil {
+		return current, crashTimes, err
+	}
+	if exitRequest != nil {
+		if !targetsCurrentLauncher(current, exitRequest) {
+			deps.Log(fmt.Sprintf(
+				"ignoring stale launcher exit request target_pid=%d current_pid=%d",
+				exitRequest.LauncherPID,
+				current.LauncherPID,
+			))
+			if err := deps.DeleteExitRequest(); err != nil {
+				return current, crashTimes, err
+			}
+			return current, crashTimes, nil
+		}
+		deps.Log(fmt.Sprintf("launcher exit requested kind=%s source=%s", exitRequest.Kind, exitRequest.Source))
+		if err := handleShutdown(current, deps); err != nil {
+			return current, crashTimes, err
+		}
+		if err := deps.DeleteExitRequest(); err != nil {
+			return current, crashTimes, err
+		}
+		return current, crashTimes, errLoopStopped
+	}
+
 	if isOwnedBackendDown(current, deps) {
 		deps.Log(fmt.Sprintf("backend lost pid=%d", current.Backend.PID))
 		next, err := HandleBackendLoss(current, BackendLossDeps{
 			StopFrontend: func() error {
-				return stopFrontendHost(&current, deps)
+				return stopFrontendHost(&current, FrontendStopDeps{
+					IsProcessRunning: deps.IsProcessRunning,
+					KillProcess:      deps.KillProcess,
+					FindPIDByPort:    deps.FindPIDByPort,
+					StaticServer:     deps.StaticServer,
+					GracefulStop:     deps.GracefulStop,
+				})
 			},
 		})
 		if err != nil {
@@ -123,6 +166,8 @@ func stepLoop(
 		}
 
 		next = mergeLoopState(next, restarted.State)
+		deps.StaticServer = restarted.StaticServer
+		deps.GracefulStop = restarted.GracefulStop
 		if err := deps.SaveState(next); err != nil {
 			return current, result.CrashTimes, err
 		}
@@ -131,6 +176,16 @@ func stepLoop(
 	}
 
 	return current, crashTimes, nil
+}
+
+func targetsCurrentLauncher(current state.RuntimeState, request *control.ExitRequest) bool {
+	if request == nil {
+		return false
+	}
+	if request.LauncherPID <= 0 || current.LauncherPID <= 0 {
+		return false
+	}
+	return request.LauncherPID == current.LauncherPID
 }
 
 func withLoopDefaults(cfg config.Config, current state.RuntimeState, deps LoopDeps) LoopDeps {
@@ -164,6 +219,16 @@ func withLoopDefaults(cfg config.Config, current state.RuntimeState, deps LoopDe
 			}
 		}
 	}
+	if deps.ReadExitRequest == nil {
+		deps.ReadExitRequest = func() (*control.ExitRequest, error) {
+			return control.ReadExitRequest(cfg.ProjectRoot)
+		}
+	}
+	if deps.DeleteExitRequest == nil {
+		deps.DeleteExitRequest = func() error {
+			return control.DeleteExitRequest(cfg.ProjectRoot)
+		}
+	}
 	if deps.StartFrontend == nil {
 		deps.StartFrontend = func(ctx context.Context, cfg config.Config, current state.RuntimeState) (FrontendResult, error) {
 			return StartFrontendHost(ctx, cfg, current, FrontendDeps{})
@@ -180,29 +245,6 @@ func isFrontendDown(current state.RuntimeState, deps LoopDeps) bool {
 	return current.FrontendHost.PID > 0 && !deps.IsProcessRunning(current.FrontendHost.PID)
 }
 
-func stopFrontendHost(current *state.RuntimeState, deps LoopDeps) error {
-	if current == nil || current.FrontendHost.PID <= 0 {
-		return nil
-	}
-	pid := current.FrontendHost.PID
-	if deps.IsProcessRunning(pid) {
-		if err := deps.KillProcess(pid); err != nil {
-			return err
-		}
-	}
-	current.FrontendHost.PID = 0
-	current.FrontendHost.Command = ""
-	if current.FrontendHost.Port > 0 && deps.FindPIDByPort != nil {
-		portPID, err := deps.FindPIDByPort(current.FrontendHost.Port)
-		if err == nil && portPID > 0 && portPID != pid {
-			if err := deps.KillProcess(portPID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func stopOwnedBackend(current *state.RuntimeState, deps LoopDeps) error {
 	if current == nil || current.Backend.Mode != "owned" || current.Backend.PID <= 0 {
 		return nil
@@ -210,7 +252,9 @@ func stopOwnedBackend(current *state.RuntimeState, deps LoopDeps) error {
 	pid := current.Backend.PID
 	if deps.IsProcessRunning(pid) {
 		if err := deps.KillProcess(pid); err != nil {
-			return err
+			if tolerateMissingProcess(pid, deps.IsProcessRunning, err) != nil {
+				return err
+			}
 		}
 	}
 	current.Backend.PID = 0
@@ -226,7 +270,13 @@ func handleShutdown(current state.RuntimeState, deps LoopDeps) error {
 	}
 	deps.Log("launcher stopping")
 
-	if err := stopFrontendHost(&stopping, deps); err != nil {
+	if err := stopFrontendHost(&stopping, FrontendStopDeps{
+		IsProcessRunning: deps.IsProcessRunning,
+		KillProcess:      deps.KillProcess,
+		FindPIDByPort:    deps.FindPIDByPort,
+		StaticServer:     deps.StaticServer,
+		GracefulStop:     deps.GracefulStop,
+	}); err != nil {
 		return err
 	}
 	if err := stopOwnedBackend(&stopping, deps); err != nil {
@@ -235,6 +285,7 @@ func handleShutdown(current state.RuntimeState, deps LoopDeps) error {
 
 	stopping.LastPhase = "stopped"
 	stopping.LastError = ""
+	stopping.FrontendHost.BrowserOpened = false
 	if err := deps.SaveState(stopping); err != nil {
 		return err
 	}

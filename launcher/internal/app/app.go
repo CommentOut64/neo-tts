@@ -52,7 +52,7 @@ type AppDeps struct {
 	EnsureBackend                func(ctx context.Context, cfg config.Config, previous state.RuntimeState) (supervisor.BackendResult, error)
 	StartFrontend                func(ctx context.Context, cfg config.Config, current state.RuntimeState) (supervisor.FrontendResult, error)
 	IsExistingWebInstanceHealthy func(ctx context.Context, existing state.RuntimeState) bool
-	WaitForSupervisor            func(ctx context.Context, cfg config.Config, current state.RuntimeState) error
+	WaitForSupervisor            func(ctx context.Context, cfg config.Config, current state.RuntimeState, frontendResult supervisor.FrontendResult) error
 }
 
 type RunResult struct {
@@ -116,7 +116,9 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 		return RunResult{}, ErrAlreadyRunning
 	}
 
-	current := previous
+	// 新 launcher 进程不应继承上一次残留的运行态，否则会把陈旧的
+	// FrontendHost.BrowserOpened 等标记误当成当前会话状态。
+	current := state.RuntimeState{}
 	current.LauncherPID = os.Getpid()
 	current.RuntimeMode = cfg.RuntimeMode
 	current.FrontendMode = cfg.FrontendMode
@@ -152,7 +154,7 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	}
 	logPhase(current, "phase=running frontend_pid="+fmt.Sprint(current.FrontendHost.PID))
 
-	if err := deps.WaitForSupervisor(ctx, cfg, current); err != nil {
+	if err := deps.WaitForSupervisor(ctx, cfg, current, frontendResult); err != nil {
 		return RunResult{}, err
 	}
 
@@ -221,15 +223,22 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	}
 	if deps.StartFrontend == nil {
 		deps.StartFrontend = func(ctx context.Context, cfg config.Config, current state.RuntimeState) (supervisor.FrontendResult, error) {
-			return supervisor.StartFrontendHost(ctx, cfg, current, supervisor.FrontendDeps{})
+			return supervisor.StartFrontendHost(ctx, cfg, current, supervisor.FrontendDeps{
+				Log: func(line string) {
+					logPhase(current, line)
+				},
+			})
 		}
 	}
 	if deps.IsExistingWebInstanceHealthy == nil {
 		deps.IsExistingWebInstanceHealthy = isExistingWebInstanceHealthy
 	}
 	if deps.WaitForSupervisor == nil {
-		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState) error {
-			return supervisor.RunLoop(ctx, cfg, current, supervisor.LoopDeps{})
+		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState, frontendResult supervisor.FrontendResult) error {
+			return supervisor.RunLoop(ctx, cfg, current, supervisor.LoopDeps{
+				StaticServer: frontendResult.StaticServer,
+				GracefulStop: frontendResult.GracefulStop,
+			})
 		}
 	}
 	return deps
