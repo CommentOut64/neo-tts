@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 from typing import Any
 
 from backend.app.core.settings import AppSettings, get_settings
@@ -10,6 +11,9 @@ from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 
 
 class VoiceRepository:
+    _MANAGED_VOICE_METADATA_FILENAME = "voice.json"
+    _REFERENCE_AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac")
+
     def __init__(self, config_path: str | Path | None = None, settings: AppSettings | None = None) -> None:
         settings = settings or get_settings()
         self._settings = settings
@@ -52,14 +56,15 @@ class VoiceRepository:
         ref_audio_bytes: bytes,
     ) -> dict[str, Any]:
         normalized_name = self._normalize_voice_name(name)
-        data = self._load()
-        if normalized_name in data:
+        configured_data = self._load_config_only()
+        if normalized_name in configured_data:
             raise ValueError(f"Voice '{normalized_name}' already exists.")
 
         target_dir = self._managed_voices_dir / normalized_name
         if target_dir.exists():
-            raise ValueError(f"Voice storage for '{normalized_name}' already exists.")
+            self._remove_orphaned_managed_directory(target_dir, voice_name=normalized_name)
 
+        data = self._load()
         target_dir.mkdir(parents=True, exist_ok=False)
         gpt_path = self._write_binary_file(target_dir / Path(gpt_filename).name, gpt_bytes)
         sovits_path = self._write_binary_file(target_dir / Path(sovits_filename).name, sovits_bytes)
@@ -79,6 +84,7 @@ class VoiceRepository:
             created_at=timestamp,
             updated_at=timestamp,
         )
+        self._write_managed_voice_metadata(profile=profile, target_dir=target_dir)
         data[normalized_name] = profile.model_dump(exclude={"name"})
         self._write(data)
         return profile.model_dump()
@@ -97,9 +103,22 @@ class VoiceRepository:
                 resolved_path = self._resolve_project_path(raw_path)
                 if resolved_path.exists() and self._is_managed_file(resolved_path):
                     resolved_path.unlink()
+            metadata_path = self._managed_voice_metadata_path(self._managed_voices_dir / voice_name)
+            if metadata_path.exists() and self._is_managed_file(metadata_path):
+                metadata_path.unlink()
             self._cleanup_empty_directories(self._managed_voices_dir / voice_name)
 
     def _load(self) -> dict[str, dict[str, Any]]:
+        data = self._load_config_only()
+        recovered = self._discover_managed_voice_configs(existing_names=set(data))
+        if recovered:
+            merged = dict(data)
+            merged.update(recovered)
+            self._write(merged)
+            return merged
+        return data
+
+    def _load_config_only(self) -> dict[str, dict[str, Any]]:
         if not self._config_path.exists():
             return {}
         with self._config_path.open("r", encoding="utf-8") as file:
@@ -116,6 +135,90 @@ class VoiceRepository:
         entry["name"] = name
         entry.setdefault("managed", False)
         return entry
+
+    def _discover_managed_voice_configs(self, *, existing_names: set[str]) -> dict[str, dict[str, Any]]:
+        if not self._managed_voices_dir.exists():
+            return {}
+
+        recovered: dict[str, dict[str, Any]] = {}
+        for directory in sorted(self._managed_voices_dir.iterdir(), key=lambda item: item.name):
+            if not directory.is_dir() or directory.name.startswith("_"):
+                continue
+            voice_name = directory.name
+            if voice_name in existing_names:
+                continue
+            config = self._recover_managed_voice_config(directory=directory, voice_name=voice_name)
+            if config is not None:
+                recovered[voice_name] = config
+        return recovered
+
+    def _recover_managed_voice_config(self, *, directory: Path, voice_name: str) -> dict[str, Any] | None:
+        gpt_path = self._find_single_file(directory=directory, suffix=".ckpt")
+        sovits_path = self._find_single_file(directory=directory, suffix=".pth")
+        ref_audio_path = self._find_reference_audio_file(directory=directory)
+        if gpt_path is None or sovits_path is None or ref_audio_path is None:
+            return None
+
+        metadata_path = self._managed_voice_metadata_path(directory)
+        if metadata_path.exists():
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            profile = VoiceProfile(
+                name=voice_name,
+                gpt_path=payload.get("gpt_path") or self._to_relative_path(gpt_path),
+                sovits_path=payload.get("sovits_path") or self._to_relative_path(sovits_path),
+                ref_audio=payload.get("ref_audio") or self._to_relative_path(ref_audio_path),
+                ref_text=payload.get("ref_text", ""),
+                ref_lang=payload.get("ref_lang", "zh"),
+                description=payload.get("description", ""),
+                defaults=VoiceDefaults.model_validate(payload.get("defaults", {})),
+                managed=True,
+                created_at=payload.get("created_at"),
+                updated_at=payload.get("updated_at"),
+            )
+            return profile.model_dump(exclude={"name"})
+
+        return VoiceProfile(
+            name=voice_name,
+            gpt_path=self._to_relative_path(gpt_path),
+            sovits_path=self._to_relative_path(sovits_path),
+            ref_audio=self._to_relative_path(ref_audio_path),
+            ref_text="",
+            ref_lang="zh",
+            description="",
+            defaults=VoiceDefaults(),
+            managed=True,
+        ).model_dump(exclude={"name"})
+
+    def _write_managed_voice_metadata(self, *, profile: VoiceProfile, target_dir: Path) -> None:
+        metadata_path = self._managed_voice_metadata_path(target_dir)
+        metadata_path.write_text(
+            json.dumps(profile.model_dump(exclude={"name"}), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _managed_voice_metadata_path(self, directory: Path) -> Path:
+        return directory / self._MANAGED_VOICE_METADATA_FILENAME
+
+    def _find_single_file(self, *, directory: Path, suffix: str) -> Path | None:
+        matches = sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == suffix)
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def _find_reference_audio_file(self, *, directory: Path) -> Path | None:
+        matches = sorted(
+            path
+            for path in directory.iterdir()
+            if path.is_file() and path.suffix.lower() in self._REFERENCE_AUDIO_EXTENSIONS
+        )
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def _remove_orphaned_managed_directory(self, target_dir: Path, *, voice_name: str) -> None:
+        if not self._is_managed_file(target_dir):
+            raise ValueError(f"Voice storage for '{voice_name}' already exists.")
+        shutil.rmtree(target_dir)
 
     def _write_binary_file(self, target_path: Path, payload: bytes) -> Path:
         target_path.parent.mkdir(parents=True, exist_ok=True)
