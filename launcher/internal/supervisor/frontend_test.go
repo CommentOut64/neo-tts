@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -309,16 +308,8 @@ func TestFrontendDevWebLogsReadyFallbackBeforeBrowserOpen(t *testing.T) {
 	}
 }
 
-func TestFrontendProductWebStartsStaticServer(t *testing.T) {
+func TestFrontendRejectsNonDevRuntime(t *testing.T) {
 	projectRoot := t.TempDir()
-	distDir := filepath.Join(projectRoot, "frontend", "dist")
-	if err := os.MkdirAll(distDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%q): %v", distDir, err)
-	}
-	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html>ok</html>"), 0o644); err != nil {
-		t.Fatalf("WriteFile(index.html): %v", err)
-	}
-
 	cfg := newFrontendConfig(projectRoot)
 	cfg.RuntimeMode = "product"
 	current := state.RuntimeState{
@@ -329,33 +320,12 @@ func TestFrontendProductWebStartsStaticServer(t *testing.T) {
 		},
 	}
 
-	openCalls := 0
-	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
-		OpenBrowser: func(url string) error {
-			openCalls++
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("StartFrontendHost returned error: %v", err)
+	_, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{})
+	if err == nil {
+		t.Fatal("StartFrontendHost returned nil error, want dev-only frontend host")
 	}
-	defer func() {
-		if result.StaticServer == nil {
-			return
-		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = result.StaticServer.Stop(shutdownCtx)
-	}()
-
-	if result.StaticServer == nil {
-		t.Fatal("StaticServer = nil, want started server")
-	}
-	if result.State.FrontendHost.Kind != "static-server" {
-		t.Fatalf("FrontendHost Kind = %q, want static-server", result.State.FrontendHost.Kind)
-	}
-	if openCalls != 1 {
-		t.Fatalf("OpenBrowser calls = %d, want 1", openCalls)
+	if !strings.Contains(err.Error(), "dev") {
+		t.Fatalf("StartFrontendHost error = %v, want explicit dev-only message", err)
 	}
 }
 
@@ -459,68 +429,6 @@ func TestFrontendStopsRetryingAfterThreeCrashesInSixtySeconds(t *testing.T) {
 	}
 	if result.State.LastPhase != "degraded" {
 		t.Fatalf("LastPhase = %q, want degraded", result.State.LastPhase)
-	}
-}
-
-func TestFrontendStopUsesGracefulHookBeforeKill(t *testing.T) {
-	current := state.RuntimeState{
-		FrontendHost: state.FrontendHostState{
-			Kind: "electron",
-			PID:  2002,
-		},
-	}
-	order := make([]string, 0, 2)
-
-	err := stopFrontendHost(&current, FrontendStopDeps{
-		GracefulStop: func(ctx context.Context) error {
-			order = append(order, "graceful")
-			return nil
-		},
-		IsProcessRunning: func(pid int) bool {
-			return true
-		},
-		KillProcess: func(pid int) error {
-			order = append(order, "kill")
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("stopFrontendHost returned error: %v", err)
-	}
-
-	if len(order) != 2 || order[0] != "graceful" || order[1] != "kill" {
-		t.Fatalf("order = %+v, want graceful then kill", order)
-	}
-}
-
-func TestFrontendStopContractTreatsElectronAsGracefulFirst(t *testing.T) {
-	current := state.RuntimeState{
-		FrontendHost: state.FrontendHostState{
-			Kind: "electron",
-			PID:  2002,
-		},
-	}
-	order := make([]string, 0, 2)
-
-	err := stopFrontendHost(&current, FrontendStopDeps{
-		GracefulStop: func(ctx context.Context) error {
-			order = append(order, "graceful")
-			return nil
-		},
-		IsProcessRunning: func(pid int) bool {
-			return false
-		},
-		KillProcess: func(pid int) error {
-			order = append(order, "kill")
-			return errors.New("kill should not be called")
-		},
-	})
-	if err != nil {
-		t.Fatalf("stopFrontendHost returned error: %v", err)
-	}
-
-	if len(order) != 1 || order[0] != "graceful" {
-		t.Fatalf("order = %+v, want graceful only", order)
 	}
 }
 

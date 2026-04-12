@@ -15,7 +15,6 @@ import (
 	"neo-tts/launcher/internal/control"
 	"neo-tts/launcher/internal/state"
 	"neo-tts/launcher/internal/supervisor"
-	"neo-tts/launcher/internal/web"
 )
 
 type stubLock struct{}
@@ -212,10 +211,8 @@ func TestSecondLaunchExitsSilentlyWhenHealthyWebInstanceExists(t *testing.T) {
 	}
 }
 
-func TestAppPassesFrontendRuntimeHandleToSupervisor(t *testing.T) {
-	staticServer := new(web.StaticServer)
-	supervisorReceivedRuntime := false
-
+func TestAppRejectsProductElectronProfileBeforeStartingRuntime(t *testing.T) {
+	startedRuntime := false
 	_, err := app.Run(context.Background(), app.RunOptions{
 		ProjectRoot:   `F:\neo-tts`,
 		StartupSource: "double-click",
@@ -224,7 +221,7 @@ func TestAppPassesFrontendRuntimeHandleToSupervisor(t *testing.T) {
 			return config.Config{
 				ProjectRoot:  projectRoot,
 				RuntimeMode:  "product",
-				FrontendMode: "web",
+				FrontendMode: "electron",
 				Backend: config.BackendConfig{
 					Mode: "owned",
 					Host: "127.0.0.1",
@@ -249,41 +246,23 @@ func TestAppPassesFrontendRuntimeHandleToSupervisor(t *testing.T) {
 			return "", nil
 		},
 		EnsureBackend: func(ctx context.Context, cfg config.Config, previous state.RuntimeState, ownerSession *control.Session) (supervisor.BackendResult, error) {
-			return supervisor.BackendResult{
-				State: state.RuntimeState{
-					Backend: state.BackendState{
-						Mode:   "owned",
-						PID:    24680,
-						Port:   18600,
-						Origin: "http://127.0.0.1:18600",
-					},
-					LastPhase: app.PhaseBackendReady,
-				},
-			}, nil
+			startedRuntime = true
+			return supervisor.BackendResult{}, nil
 		},
 		StartFrontend: func(ctx context.Context, cfg config.Config, current state.RuntimeState) (supervisor.FrontendResult, error) {
-			return supervisor.FrontendResult{
-				State: state.RuntimeState{
-					FrontendHost: state.FrontendHostState{
-						Kind:   "static-server",
-						Port:   15175,
-						Origin: "http://127.0.0.1:15175",
-					},
-					LastPhase: app.PhaseRunning,
-				},
-				StaticServer: staticServer,
-			}, nil
+			startedRuntime = true
+			return supervisor.FrontendResult{}, nil
 		},
 		WaitForSupervisor: func(ctx context.Context, cfg config.Config, current state.RuntimeState, backendResult supervisor.BackendResult, frontendResult supervisor.FrontendResult) error {
-			supervisorReceivedRuntime = frontendResult.StaticServer == staticServer
+			startedRuntime = true
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
+	if !errors.Is(err, app.ErrUnsupportedLauncherProfile) {
+		t.Fatalf("Run error = %v, want ErrUnsupportedLauncherProfile", err)
 	}
-	if !supervisorReceivedRuntime {
-		t.Fatal("WaitForSupervisor did not receive frontend runtime handle")
+	if startedRuntime {
+		t.Fatal("legacy runtime startup hooks were called for unsupported launcher profile")
 	}
 }
 

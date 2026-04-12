@@ -1,6 +1,12 @@
 package app
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"neo-tts/launcher/internal/config"
+)
 
 func TestInstanceNameDependsOnProjectRoot(t *testing.T) {
 	nameA := BuildInstanceName(`F:\neo-tts`)
@@ -31,5 +37,23 @@ func TestStartupContextCapturesElevationAndSource(t *testing.T) {
 	}
 	if ctx.InstanceName == "" {
 		t.Fatal("InstanceName is empty")
+	}
+}
+
+func TestRunRejectsNonDevWebLauncherProfile(t *testing.T) {
+	_, err := Run(context.Background(), RunOptions{
+		ProjectRoot: `F:\neo-tts`,
+	}, AppDeps{
+		LoadConfig: func(projectRoot string, overrides config.CLIOverrides) (config.Config, error) {
+			return config.Config{
+				ProjectRoot:  projectRoot,
+				Profile:      config.ProfileProductElectron,
+				RuntimeMode:  "product",
+				FrontendMode: "electron",
+			}, nil
+		},
+	})
+	if !errors.Is(err, ErrUnsupportedLauncherProfile) {
+		t.Fatalf("Run error = %v, want ErrUnsupportedLauncherProfile", err)
 	}
 }
