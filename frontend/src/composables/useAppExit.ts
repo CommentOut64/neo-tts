@@ -2,11 +2,11 @@ import { ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import { pauseRenderJob, waitForRenderJobTerminal } from "@/api/editSession";
-import { prepareExit } from "@/api/system";
 import { useInferenceRuntime } from "@/composables/useInferenceRuntime";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useRuntimeState } from "@/composables/useRuntimeState";
 import { useWorkspaceExitBridge } from "@/composables/useWorkspaceExitBridge";
+import { getRuntimeHost } from "@/platform/runtimeHost";
 import type { ExitChoice } from "@/types/system";
 import type { RenderJobStatus } from "@/types/editSession";
 import type { InferenceProgressStatus } from "@/types/tts";
@@ -129,6 +129,7 @@ async function stopActiveTasks(): Promise<void> {
 
 export function useAppExit() {
   const parameterPanel = useParameterPanel();
+  const runtimeHost = getRuntimeHost();
 
   async function requestExit(): Promise<void> {
     if (isExiting.value) {
@@ -157,7 +158,7 @@ export function useAppExit() {
         }
       }
 
-      const result = await prepareExit();
+      const result = await runtimeHost.requestExit();
 
       if (choice === "discard_and_exit") {
         if (hasPendingTextChanges) {
@@ -168,7 +169,7 @@ export function useAppExit() {
         }
       }
 
-      if (result.launcher_exit_requested) {
+      if (result.launcherExitRequested) {
         ElMessage.success("退出请求已提交，应用即将关闭");
       } else {
         ElMessage.info("退出准备已完成，请手动关闭页面或进程");

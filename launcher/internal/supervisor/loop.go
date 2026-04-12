@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 	"time"
 
 	"neo-tts/launcher/internal/config"
 	"neo-tts/launcher/internal/control"
 	"neo-tts/launcher/internal/logging"
+	winplatform "neo-tts/launcher/internal/platform/windows"
 	"neo-tts/launcher/internal/state"
 	"neo-tts/launcher/internal/web"
 )
@@ -36,6 +34,8 @@ type LoopDeps struct {
 	StartFrontend     func(ctx context.Context, cfg config.Config, current state.RuntimeState) (FrontendResult, error)
 }
 
+// RunLoop 是旧的轮询式监督器，只保留给非 dev/web 的 fallback 路径与 legacy 测试。
+// 正式的 dev/web owner 已切换到事件驱动的 RunOwner。
 func RunLoop(ctx context.Context, cfg config.Config, current state.RuntimeState, deps LoopDeps) error {
 	deps = withLoopDefaults(cfg, current, deps)
 
@@ -328,32 +328,5 @@ func mergeLoopState(base state.RuntimeState, update state.RuntimeState) state.Ru
 }
 
 func findPIDByPort(port int) (int, error) {
-	if port <= 0 {
-		return 0, nil
-	}
-
-	command := exec.Command(
-		"powershell",
-		"-NoProfile",
-		"-Command",
-		fmt.Sprintf(
-			"$line = Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if ($line) { $line }",
-			port,
-		),
-	)
-	output, err := command.Output()
-	if err != nil {
-		return 0, err
-	}
-
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return 0, nil
-	}
-
-	pid, err := strconv.Atoi(text)
-	if err != nil {
-		return 0, err
-	}
-	return pid, nil
+	return winplatform.FindListeningPIDByPort(port)
 }

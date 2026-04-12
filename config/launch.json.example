@@ -1,0 +1,11 @@
+{
+  "profile": "dev-web",
+  "backend": {
+    "mode": "owned",
+    "host": "127.0.0.1",
+    "port": 18600,
+    "devPython": ".venv\\Scripts\\python.exe",
+    "productPython": "runtime\\python\\python.exe",
+    "externalOrigin": "http://127.0.0.1:18600"
+  }
+}

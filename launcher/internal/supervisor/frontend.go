@@ -26,11 +26,12 @@ const (
 )
 
 type FrontendDeps struct {
-	StartProcess func(spec winplatform.ProcessSpec) (ProcessHandle, error)
-	RunAsync     func(task func())
-	WaitForReady func(ctx context.Context, url string, interval time.Duration) error
-	Log          func(line string)
-	OpenBrowser  func(url string) error
+	StartProcess       func(spec winplatform.ProcessSpec) (ProcessHandle, error)
+	AttachOwnedProcess func(pid int) error
+	RunAsync           func(task func())
+	WaitForReady       func(ctx context.Context, url string, interval time.Duration) error
+	Log                func(line string)
+	OpenBrowser        func(url string) error
 }
 
 type FrontendStopDeps struct {
@@ -51,6 +52,7 @@ type FrontendResult struct {
 	State        state.RuntimeState
 	StaticServer *web.StaticServer
 	GracefulStop func(ctx context.Context) error
+	Exit         <-chan error
 }
 
 type FrontendCrashResult struct {
@@ -77,7 +79,8 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	}
 
 	handle, err := deps.StartProcess(winplatform.ProcessSpec{
-		Command:          "npm run dev",
+		Exe:              "npm.cmd",
+		Args:             []string{"run", "dev"},
 		WorkingDirectory: filepath.Join(cfg.ProjectRoot, "frontend"),
 		Environment: map[string]string{
 			"VITE_BACKEND_ORIGIN": backendOrigin,
@@ -87,6 +90,11 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	})
 	if err != nil {
 		return FrontendResult{}, err
+	}
+	if attach := resolveFrontendOwnedProcessAttacher(ctx, deps); attach != nil && handle.PID > 0 {
+		if err := attach(handle.PID); err != nil {
+			return FrontendResult{}, err
+		}
 	}
 
 	next := current
@@ -107,7 +115,10 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	}
 
 	next.LastPhase = "running"
-	return FrontendResult{State: next}, nil
+	return FrontendResult{
+		State: next,
+		Exit:  handle.Exit,
+	}, nil
 }
 
 func HandleFrontendCrash(current state.RuntimeState, crashTimes []time.Time, deps FrontendCrashDeps) (FrontendCrashResult, error) {
@@ -201,6 +212,13 @@ func withFrontendDefaults(deps FrontendDeps) FrontendDeps {
 		deps.OpenBrowser = winplatform.OpenBrowser
 	}
 	return deps
+}
+
+func resolveFrontendOwnedProcessAttacher(ctx context.Context, deps FrontendDeps) func(pid int) error {
+	if deps.AttachOwnedProcess != nil {
+		return deps.AttachOwnedProcess
+	}
+	return attachOwnedProcessFromContext(ctx)
 }
 
 func scheduleBrowserOpen(openURL string, readyURL string, deps FrontendDeps) {

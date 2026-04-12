@@ -56,8 +56,8 @@ func openBrowserWithShellExecute(url string) error {
 	return nil
 }
 
-func buildOpenBrowserInvocation(url string) PowerShellInvocation {
-	return PowerShellInvocation{
+func buildOpenBrowserInvocation(url string) CommandInvocation {
+	return CommandInvocation{
 		Executable: "cmd",
 		Args: []string{
 			"/c",

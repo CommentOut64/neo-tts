@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"neo-tts/launcher/internal/config"
+	"neo-tts/launcher/internal/control"
 	"neo-tts/launcher/internal/httpcheck"
 	winplatform "neo-tts/launcher/internal/platform/windows"
 	"neo-tts/launcher/internal/state"
@@ -30,19 +31,22 @@ const (
 )
 
 type ProcessHandle struct {
-	PID int
+	PID  int
+	Exit <-chan error
 }
 
 type BackendResult struct {
 	State state.RuntimeState
+	Exit  <-chan error
 }
 
 type BackendDeps struct {
-	StartProcess     func(spec winplatform.ProcessSpec) (ProcessHandle, error)
-	WaitForHealthy   func(ctx context.Context, url string, interval time.Duration) error
-	CleanupResiduals func(ctx context.Context, url string) error
-	IsProcessRunning func(pid int) bool
-	KillProcess      func(pid int) error
+	StartProcess       func(spec winplatform.ProcessSpec) (ProcessHandle, error)
+	AttachOwnedProcess func(pid int) error
+	WaitForHealthy     func(ctx context.Context, url string, interval time.Duration) error
+	CleanupResiduals   func(ctx context.Context, url string) error
+	IsProcessRunning   func(pid int) bool
+	KillProcess        func(pid int) error
 }
 
 type BackendLossDeps struct {
@@ -50,7 +54,13 @@ type BackendLossDeps struct {
 	TakeoverBackend func() error
 }
 
-func EnsureBackend(ctx context.Context, cfg config.Config, previous state.RuntimeState, deps BackendDeps) (BackendResult, error) {
+func EnsureBackend(
+	ctx context.Context,
+	cfg config.Config,
+	previous state.RuntimeState,
+	ownerSession *control.Session,
+	deps BackendDeps,
+) (BackendResult, error) {
 	deps = withBackendDefaults(deps)
 	origin := backendOrigin(cfg)
 	healthURL := healthURL(origin)
@@ -88,16 +98,19 @@ func EnsureBackend(ctx context.Context, cfg config.Config, previous state.Runtim
 		return BackendResult{}, err
 	}
 
-	command := buildBackendCommand(pythonExecutable, cfg)
-	handle, err := deps.StartProcess(winplatform.ProcessSpec{
-		Command:          command,
-		WorkingDirectory: cfg.ProjectRoot,
-		WindowStyle:      backendWindowStyle(cfg.RuntimeMode),
-		AttachStdIO:      shouldAttachBackendStdIO(cfg.RuntimeMode),
-	})
+	spec := buildBackendProcessSpec(pythonExecutable, cfg, ownerSession)
+	handle, err := deps.StartProcess(spec)
 	if err != nil {
 		return BackendResult{}, err
 	}
+	if attach := resolveBackendOwnedProcessAttacher(ctx, deps); attach != nil && handle.PID > 0 {
+		if err := attach(handle.PID); err != nil {
+			_ = deps.KillProcess(handle.PID)
+			return BackendResult{}, err
+		}
+	}
+
+	command := buildProcessCommandLine(spec.Exe, spec.Args)
 
 	if err := deps.WaitForHealthy(ctx, healthURL, backendHealthInterval); err != nil {
 		if handle.PID > 0 {
@@ -119,7 +132,20 @@ func EnsureBackend(ctx context.Context, cfg config.Config, previous state.Runtim
 			},
 			LastPhase: "backend-ready",
 		},
+		Exit: handle.Exit,
 	}, nil
+}
+
+func buildOwnerSessionEnvironment(ownerSession *control.Session) map[string]string {
+	if ownerSession == nil {
+		return nil
+	}
+
+	return map[string]string{
+		"NEO_TTS_OWNER_CONTROL_ORIGIN": ownerSession.ControlOrigin,
+		"NEO_TTS_OWNER_CONTROL_TOKEN":  ownerSession.ControlToken,
+		"NEO_TTS_OWNER_SESSION_ID":     ownerSession.ID,
+	}
 }
 
 func HandleBackendLoss(current state.RuntimeState, deps BackendLossDeps) (state.RuntimeState, error) {
@@ -185,13 +211,30 @@ func resolvePythonExecutable(cfg config.Config) (string, error) {
 	return "python", nil
 }
 
-func buildBackendCommand(pythonExecutable string, cfg config.Config) string {
-	return fmt.Sprintf(
-		"& %s -m backend.app.cli --host %s --port %d",
-		quotePowerShell(pythonExecutable),
+func buildBackendProcessSpec(
+	pythonExecutable string,
+	cfg config.Config,
+	ownerSession *control.Session,
+) winplatform.ProcessSpec {
+	return winplatform.ProcessSpec{
+		Exe:              pythonExecutable,
+		Args:             buildBackendArgs(cfg),
+		WorkingDirectory: cfg.ProjectRoot,
+		Environment:      buildOwnerSessionEnvironment(ownerSession),
+		WindowStyle:      backendWindowStyle(cfg.RuntimeMode),
+		AttachStdIO:      shouldAttachBackendStdIO(cfg.RuntimeMode),
+	}
+}
+
+func buildBackendArgs(cfg config.Config) []string {
+	return []string{
+		"-m",
+		"backend.app.cli",
+		"--host",
 		cfg.Backend.Host,
-		cfg.Backend.Port,
-	)
+		"--port",
+		strconv.Itoa(cfg.Backend.Port),
+	}
 }
 
 func backendOrigin(cfg config.Config) string {
@@ -230,8 +273,13 @@ func fileExists(path string) bool {
 	return !info.IsDir()
 }
 
-func quotePowerShell(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+func buildProcessCommandLine(exe string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	if exe != "" {
+		parts = append(parts, exe)
+	}
+	parts = append(parts, args...)
+	return strings.Join(parts, " ")
 }
 
 func withBackendDefaults(deps BackendDeps) BackendDeps {
@@ -253,12 +301,31 @@ func withBackendDefaults(deps BackendDeps) BackendDeps {
 	return deps
 }
 
+func resolveBackendOwnedProcessAttacher(ctx context.Context, deps BackendDeps) func(pid int) error {
+	if deps.AttachOwnedProcess != nil {
+		return deps.AttachOwnedProcess
+	}
+	return attachOwnedProcessFromContext(ctx)
+}
+
 func startProcess(spec winplatform.ProcessSpec) (ProcessHandle, error) {
-	if spec.WindowStyle == winplatform.WindowNewConsole {
-		return startDetachedProcess(spec)
+	if winplatform.ShouldUseNativeNewConsoleLaunch(spec) {
+		process, err := winplatform.StartNativeNewConsoleProcess(spec)
+		if err != nil {
+			return ProcessHandle{}, err
+		}
+		exitCh := make(chan error, 1)
+		go func() {
+			_, waitErr := process.Wait()
+			exitCh <- waitErr
+		}()
+		return ProcessHandle{
+			PID:  process.Pid,
+			Exit: exitCh,
+		}, nil
 	}
 
-	invocation := winplatform.BuildPowerShellInvocation(spec)
+	invocation := winplatform.BuildProcessInvocation(spec)
 	command := exec.Command(invocation.Executable, invocation.Args...)
 	command.Dir = invocation.WorkingDirectory
 	command.Env = invocation.Environment
@@ -267,26 +334,14 @@ func startProcess(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 	if err := command.Start(); err != nil {
 		return ProcessHandle{}, err
 	}
-	return ProcessHandle{PID: command.Process.Pid}, nil
-}
-
-func startDetachedProcess(spec winplatform.ProcessSpec) (ProcessHandle, error) {
-	invocation := winplatform.BuildDetachedPowerShellInvocation(spec)
-	command := exec.Command(invocation.Executable, invocation.Args...)
-	command.Dir = invocation.WorkingDirectory
-	command.Env = invocation.Environment
-	winplatform.ConfigureCommand(command, winplatform.WindowHidden)
-
-	output, err := command.Output()
-	if err != nil {
-		return ProcessHandle{}, err
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return ProcessHandle{}, err
-	}
-	return ProcessHandle{PID: pid}, nil
+	exitCh := make(chan error, 1)
+	go func() {
+		exitCh <- command.Wait()
+	}()
+	return ProcessHandle{
+		PID:  command.Process.Pid,
+		Exit: exitCh,
+	}, nil
 }
 
 func cleanupResiduals(ctx context.Context, url string) error {
@@ -319,22 +374,7 @@ func shouldAttachBackendStdIO(runtimeMode string) bool {
 }
 
 func isProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	command := exec.Command(
-		"powershell",
-		"-NoProfile",
-		"-Command",
-		fmt.Sprintf("[bool](Get-Process -Id %d -ErrorAction SilentlyContinue)", pid),
-	)
-	winplatform.ConfigureCommand(command, winplatform.WindowHidden)
-	output, err := command.Output()
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(string(output)), "True")
+	return winplatform.IsProcessRunning(pid)
 }
 
 func killProcess(pid int) error {

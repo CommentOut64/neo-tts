@@ -1,0 +1,6 @@
+appId: com.neo-tts.desktop
+productName: NeoTTS
+directories:
+  output: release
+files:
+  - dist/**/*

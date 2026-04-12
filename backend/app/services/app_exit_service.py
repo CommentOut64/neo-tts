@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from contextlib import suppress
-from datetime import datetime
 import gc
-import json
 from typing import Any
 
 from backend.app.core.settings import AppSettings
@@ -12,6 +9,7 @@ from backend.app.schemas.system import PrepareExitResponse
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.inference_residual_service import InferenceResidualService
 from backend.app.services.inference_runtime import InferenceRuntimeController
+from backend.app.services.owner_control_client import OwnerControlClient
 
 
 class AppExitService:
@@ -25,6 +23,7 @@ class AppExitService:
         residual_service: InferenceResidualService,
         model_cache: Any | None = None,
         editable_inference_gateway_cache: dict[tuple[str, str], Any] | None = None,
+        owner_control_client: OwnerControlClient | None = None,
     ) -> None:
         self._settings = settings
         self._edit_session_repository = edit_session_repository
@@ -33,6 +32,11 @@ class AppExitService:
         self._residual_service = residual_service
         self._model_cache = model_cache
         self._editable_inference_gateway_cache = editable_inference_gateway_cache
+        self._owner_control_client = owner_control_client or OwnerControlClient(
+            origin=settings.owner_control_origin,
+            token=settings.owner_control_token,
+            session_id=settings.owner_session_id,
+        )
 
     def prepare_exit(self) -> PrepareExitResponse:
         active_render_job_status = self._prepare_edit_session_job_for_exit()
@@ -41,7 +45,7 @@ class AppExitService:
             reset_message="退出准备已完成，推理残留已清理。",
         )
         self._release_inference_resources()
-        launcher_exit_requested = self._request_launcher_exit()
+        launcher_exit_requested = self._request_owner_shutdown()
         return PrepareExitResponse(
             launcher_exit_requested=launcher_exit_requested,
             active_render_job_status=active_render_job_status,
@@ -64,36 +68,10 @@ class AppExitService:
         terminal_snapshot = self._edit_session_runtime.wait_for_job_terminal(job_id)
         return terminal_snapshot.status if terminal_snapshot is not None else None
 
-    def _request_launcher_exit(self) -> bool:
-        runtime_state_path = self._settings.project_root / "logs" / "launcher" / "runtime-state.json"
-        if not runtime_state_path.exists():
-            return False
-
+    def _request_owner_shutdown(self) -> bool:
         try:
-            runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return False
-
-        launcher_pid = runtime_state.get("launcherPid")
-        if not isinstance(launcher_pid, int) or launcher_pid <= 0:
-            return False
-
-        exit_request_path = self._settings.project_root / "logs" / "launcher" / "control" / "exit-request.json"
-        exit_request_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "kind": "user_exit",
-            "source": "frontend",
-            "requested_at": datetime.now().astimezone().isoformat(),
-            "launcher_pid": launcher_pid,
-        }
-        temp_path = exit_request_path.with_name(f"{exit_request_path.name}.tmp")
-        try:
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp_path.replace(exit_request_path)
-            return True
-        except OSError:
-            with suppress(OSError):
-                temp_path.unlink()
+            return self._owner_control_client.request_shutdown(source="backend_prepare_exit")
+        except Exception:
             return False
 
     def _release_inference_resources(self) -> None:

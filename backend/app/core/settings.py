@@ -9,6 +9,9 @@ from pathlib import Path
 class AppSettings:
     project_root: Path
     voices_config_path: Path
+    owner_control_origin: str | None = None
+    owner_control_token: str | None = None
+    owner_session_id: str | None = None
     managed_voices_dir: Path = Path("storage/managed_voices")
     synthesis_results_dir: Path = Path("storage/synthesis_results")
     inference_params_cache_file: Path = Path("storage/inference/params_cache.json")
@@ -32,6 +35,9 @@ def get_settings() -> AppSettings:
     edit_session_staging_ttl_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_STAGING_TTL_SECONDS")
     cnhubert_path_env = os.environ.get("CNHUBERT_PATH") or os.environ.get("GPT_SOVITS_CNHUBERT_PATH")
     bert_path_env = os.environ.get("BERT_PATH") or os.environ.get("GPT_SOVITS_BERT_PATH")
+    owner_control_origin = os.environ.get("NEO_TTS_OWNER_CONTROL_ORIGIN")
+    owner_control_token = os.environ.get("NEO_TTS_OWNER_CONTROL_TOKEN")
+    owner_session_id = os.environ.get("NEO_TTS_OWNER_SESSION_ID")
     voices_config_path = Path(voices_config_env) if voices_config_env else project_root / "config" / "voices.json"
     managed_voices_dir = (
         Path(managed_voices_dir_env) if managed_voices_dir_env else Path("storage/managed_voices")
@@ -59,6 +65,9 @@ def get_settings() -> AppSettings:
     return AppSettings(
         project_root=project_root,
         voices_config_path=voices_config_path,
+        owner_control_origin=owner_control_origin,
+        owner_control_token=owner_control_token,
+        owner_session_id=owner_session_id,
         managed_voices_dir=managed_voices_dir,
         synthesis_results_dir=synthesis_results_dir,
         inference_params_cache_file=inference_params_cache_file,
