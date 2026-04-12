@@ -143,6 +143,7 @@ describe("useRuntimeState", () => {
         segmentId: "seg-1",
         orderKey: 1,
         rawText: "第一段",
+        displayText: "第一段",
         renderStatus: "completed",
         renderAssetId: null,
       },
@@ -317,6 +318,7 @@ describe("useRuntimeState", () => {
         segmentId: "seg-1",
         orderKey: 1,
         rawText: "第一句",
+        displayText: "第一句",
         renderStatus: "completed",
         renderAssetId: null,
       },
@@ -324,10 +326,56 @@ describe("useRuntimeState", () => {
         segmentId: "seg-2",
         orderKey: 2,
         rawText: "第二句",
+        displayText: "第二句",
         renderStatus: "completed",
         renderAssetId: "asset-2",
       },
     ]);
+  });
+
+  it("segments_initialized 会同时映射用户可见 displayText", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    subscribeRenderJobEvents.mockImplementation(() => () => {});
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-display",
+        document_id: "doc-1",
+        status: "queued",
+        progress: 0,
+        message: "queued",
+      },
+      {
+        initialRendering: true,
+        refreshSessionOnTerminal: false,
+      },
+    );
+
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+
+    await handler.onEvent("segments_initialized", {
+      document_id: "doc-1",
+      document_version: 1,
+      segments: [
+        {
+          segment_id: "seg-1",
+          order_key: 1,
+          raw_text: "Hello world。",
+          terminal_raw: "",
+          terminal_closer_suffix: "",
+          terminal_source: "synthetic",
+          detected_language: "en",
+          render_status: "completed",
+        },
+      ],
+    });
+
+    expect(runtimeState.progressiveSegments.value[0]).toMatchObject({
+      rawText: "Hello world。",
+      displayText: "Hello world.",
+    });
   });
 
   it("render job 到达 completed 后会清空 currentRenderJob 并重新允许变更", async () => {

@@ -50,6 +50,8 @@ from backend.app.schemas.edit_session import (
     SegmentBatchVoiceBindingPatchRequest,
     SegmentListResponse,
     SplitSegmentRequest,
+    StandardizationPreviewRequest,
+    StandardizationPreviewResponse,
     SwapSegmentsRequest,
     TimelineManifest,
     UpdateEdgeRequest,
@@ -911,6 +913,20 @@ def get_composition(request: Request) -> CompositionResponse:
 )
 def get_playback_map(request: Request) -> PlaybackMapResponse:
     return _build_readonly_render_job_service(request).get_playback_map_response()
+
+
+@router.post(
+    "/standardization-preview",
+    response_model=StandardizationPreviewResponse,
+    summary="预览文本标准化结果",
+    description="按后端权威标准化器切段并返回 canonical/capsule/语言元数据预览，不写入正式会话。",
+    responses=BAD_REQUEST_RESPONSE,
+)
+def get_standardization_preview(
+    request: Request,
+    body: StandardizationPreviewRequest,
+) -> StandardizationPreviewResponse:
+    return _build_readonly_render_job_service(request).get_standardization_preview_response(body)
 
 
 @router.get(

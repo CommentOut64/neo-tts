@@ -4,6 +4,7 @@ import type { Router } from 'vue-router'
 const STORAGE_KEY = 'neo-tts-input-draft'
 
 export type InputDraftSource = 'manual' | 'applied_text' | 'input_handoff'
+export type InputTextLanguage = 'auto' | 'zh' | 'en' | 'ja' | 'ko'
 
 interface InputDraftEnvelope {
   text: string
@@ -11,6 +12,7 @@ interface InputDraftEnvelope {
   lastSentToSessionRevision: number | null
   source: InputDraftSource
   lastSessionInitialText: string | null
+  textLanguage: InputTextLanguage
 }
 
 const text = ref<string>('')
@@ -18,6 +20,7 @@ const draftRevision = ref<number>(0)
 const lastSentToSessionRevision = ref<number | null>(null)
 const source = ref<InputDraftSource>('manual')
 const lastSessionInitialText = ref<string | null>(null)
+const textLanguage = ref<InputTextLanguage>('auto')
 let hydrated = false
 
 function hasBrowserStorage(): boolean {
@@ -76,13 +79,20 @@ function normalizeEnvelope(raw: unknown): InputDraftEnvelope | null {
       typeof candidate.lastSessionInitialText === 'string' && candidate.lastSessionInitialText.length > 0
         ? candidate.lastSessionInitialText
         : null,
+    textLanguage:
+      candidate.textLanguage === 'zh' ||
+      candidate.textLanguage === 'en' ||
+      candidate.textLanguage === 'ja' ||
+      candidate.textLanguage === 'ko'
+        ? candidate.textLanguage
+        : 'auto',
   }
 }
 
 function persistDraftState() {
   if (!hasBrowserStorage()) return
 
-  if (text.value.length === 0 && !lastSessionInitialText.value) {
+  if (text.value.length === 0 && !lastSessionInitialText.value && textLanguage.value === 'auto') {
     window.localStorage.removeItem(STORAGE_KEY)
     return
   }
@@ -93,6 +103,7 @@ function persistDraftState() {
     lastSentToSessionRevision: lastSentToSessionRevision.value,
     source: source.value,
     lastSessionInitialText: lastSessionInitialText.value,
+    textLanguage: textLanguage.value,
   }
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope))
 }
@@ -116,6 +127,7 @@ function hydrateDraftState() {
     lastSentToSessionRevision.value = envelope.lastSentToSessionRevision
     source.value = envelope.source
     lastSessionInitialText.value = envelope.lastSessionInitialText
+    textLanguage.value = envelope.textLanguage
   } catch {
     window.localStorage.removeItem(STORAGE_KEY)
   }
@@ -182,8 +194,17 @@ export function useInputDraft() {
     persistDraftState()
   }
 
+  function setTextLanguage(nextTextLanguage: InputTextLanguage) {
+    if (textLanguage.value === nextTextLanguage) {
+      return
+    }
+    textLanguage.value = nextTextLanguage
+    persistDraftState()
+  }
+
   return {
     text,
+    textLanguage,
     draftRevision,
     lastSentToSessionRevision,
     source,
@@ -196,6 +217,7 @@ export function useInputDraft() {
     handoffFromWorkspace,
     rememberLastSessionInitialText,
     restoreLastSessionInitialText,
-    setText
+    setText,
+    setTextLanguage,
   }
 }

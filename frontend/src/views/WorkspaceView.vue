@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick, h } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { useEditSession } from '@/composables/useEditSession'
-import { useInputDraft } from '@/composables/useInputDraft'
+import { useInputDraft, type InputTextLanguage } from '@/composables/useInputDraft'
 import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
 import { buildInitializeRequest } from '@/api/editSessionContract'
 import { uploadEditSessionReferenceAudio } from '@/api/editSession'
@@ -25,6 +25,7 @@ import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
 import ParameterDraftConfirm from '@/components/workspace/ParameterDraftConfirm.vue'
 import { resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
+import { buildTextLanguageResolutionDialogModel } from '@/utils/textLanguageResolution'
 
 const route = useRoute()
 const {
@@ -38,9 +39,11 @@ const {
 } = useEditSession()
 const {
   text,
+  textLanguage,
   draftRevision,
   lastSentToSessionRevision,
   source,
+  setTextLanguage,
 } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const parameterPanel = useParameterPanel()
@@ -71,7 +74,7 @@ const initParams = ref({
   pause_length: 0.3,
   chunk_length: 24,
   text_lang: 'auto',
-  text_split_method: 'cut3',
+  text_split_method: 'cut5',
   ref_source: 'preset' as 'preset' | 'custom',
   custom_ref_file: null as File | null,
   custom_ref_path: null as string | null,
@@ -100,6 +103,15 @@ watch(
     persistCacheWhenIdle(buildCachePayload())
   },
   { deep: true }
+)
+
+watch(
+  textLanguage,
+  (nextLanguage) => {
+    if (initParams.value.text_lang !== nextLanguage) {
+      initParams.value.text_lang = nextLanguage
+    }
+  },
 )
 
 async function hydrateWorkspaceRoute() {
@@ -136,8 +148,6 @@ async function hydrateWorkspaceRoute() {
       if (typeof p.top_p === 'number') initParams.value.top_p = p.top_p
       if (typeof p.top_k === 'number') initParams.value.top_k = p.top_k
       if (typeof p.pause_length === 'number') initParams.value.pause_length = p.pause_length
-      if (typeof p.text_lang === 'string') initParams.value.text_lang = p.text_lang
-      if (typeof p.text_split_method === 'string') initParams.value.text_split_method = p.text_split_method
       if (typeof p.chunk_length === 'number') initParams.value.chunk_length = p.chunk_length
       if (typeof p.refText === 'string') initParams.value.ref_text = p.refText
       if (typeof p.refLang === 'string') initParams.value.ref_lang = p.refLang
@@ -148,6 +158,8 @@ async function hydrateWorkspaceRoute() {
       }
     }
 
+    initParams.value.text_lang = textLanguage.value
+
     await nextTick()
     isRestoring.value = false
   } catch (err) {
@@ -157,6 +169,51 @@ async function hydrateWorkspaceRoute() {
     await nextTick()
     isBootstrappingWorkspace.value = false
   }
+}
+
+function handleInitParamsChange(nextParams: typeof initParams.value) {
+  initParams.value = {
+    ...nextParams,
+    text_lang: textLanguage.value,
+  }
+}
+
+async function handleRequestTextLanguageChange(nextLanguage: InputTextLanguage) {
+  const currentLanguage = textLanguage.value
+  if (nextLanguage === currentLanguage) {
+    return
+  }
+
+  const dialogModel = buildTextLanguageResolutionDialogModel(currentLanguage, nextLanguage)
+
+  try {
+    await ElMessageBox.confirm(
+      h('div', { class: 'space-y-3 leading-6' }, [
+        h('p', { class: 'text-sm text-foreground' }, dialogModel.intro),
+        h('div', { class: 'rounded-md border border-border bg-muted/30 p-3' }, [
+          h('p', { class: 'text-xs font-semibold text-foreground' }, dialogModel.currentOption.actionLabel),
+          h('p', { class: 'mt-1 text-xs text-muted-fg' }, dialogModel.currentOption.description),
+        ]),
+        h('div', { class: 'rounded-md border border-accent/30 bg-accent/5 p-3' }, [
+          h('p', { class: 'text-xs font-semibold text-foreground' }, dialogModel.nextOption.actionLabel),
+          h('p', { class: 'mt-1 text-xs text-muted-fg' }, dialogModel.nextOption.description),
+        ]),
+      ]),
+      dialogModel.title,
+      {
+        confirmButtonText: dialogModel.nextOption.actionLabel,
+        cancelButtonText: dialogModel.currentOption.actionLabel,
+        distinguishCancelAndClose: true,
+        closeOnClickModal: false,
+        closeOnPressEscape: false,
+        lockScroll: false,
+      },
+    )
+  } catch {
+    return
+  }
+
+  setTextLanguage(nextLanguage)
 }
 
 onMounted(() => {
@@ -247,7 +304,6 @@ const handleInit = async () => {
     topP: initParams.value.top_p,
     topK: initParams.value.top_k,
     pauseLength: initParams.value.pause_length,
-    textSplitMethod: initParams.value.text_split_method,
     refSource: initParams.value.ref_source,
     refText: initParams.value.ref_text,
     refLang: initParams.value.ref_lang,
@@ -352,8 +408,10 @@ watch(
       />
       <WorkspaceInitForm
         v-else
-        v-model="initParams"
+        :model-value="initParams"
         :voices="voices"
+        @update:model-value="handleInitParamsChange"
+        @request-text-language-change="handleRequestTextLanguageChange"
         @upload-custom-ref="handleUploadCustomRef"
         @reset="handleResetParams"
       />

@@ -173,6 +173,48 @@ def test_render_segment_base_shrinks_margin_when_segment_is_too_short():
     assert asset.trace["right_margin_frames"] == [12.0, 13.0]
 
 
+def test_render_segment_base_prefers_detected_language_for_auto_segment():
+    inference = _build_inference(decoder_frame_count=14)
+    context = inference.build_reference_context(
+        InitializeEditSessionRequest(
+            raw_text="Hello world!",
+            voice_id="voice-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+        )
+    )
+    calls: list[tuple[str, str, str | None]] = []
+
+    def fake_get_phones_and_bert(text, language, version, default_lang=None):
+        del version
+        calls.append((text, language, default_lang))
+        width = 3 if len(calls) == 1 else 2
+        return [11] * width, torch.zeros((1024, width), dtype=torch.float32), text
+
+    inference.get_phones_and_bert = fake_get_phones_and_bert
+    segment = EditableSegment(
+        segment_id="seg-auto-en",
+        document_id="doc-1",
+        order_key=1,
+        raw_text="Hello world!",
+        normalized_text="Hello world。",
+        text_language="auto",
+        terminal_raw="!",
+        terminal_source="original",
+        detected_language="en",
+        render_version=2,
+    )
+
+    asset = inference.render_segment_base(segment, context)
+
+    assert calls[0][1] == "zh"
+    assert calls[1][0] == "Hello world!"
+    assert calls[1][1] == "en"
+    assert calls[1][2] == "zh"
+    assert asset.render_version == 2
+
+
 def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
     inference = _build_inference()
     context = inference.build_reference_context(

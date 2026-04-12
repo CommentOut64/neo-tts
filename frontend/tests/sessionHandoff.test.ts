@@ -74,13 +74,29 @@ describe("sessionHandoff", () => {
     ).toBe("rebuild");
   });
 
-  it("buildSessionHeadText 会按 order_key 顺序拼接当前 session 正文", () => {
+  it("buildSessionHeadText 会按 order_key 顺序拼接当前 session display 正文", () => {
     expect(
       buildSessionHeadText([
-        { segment_id: "seg-2", raw_text: "第二句", order_key: 2 },
-        { segment_id: "seg-1", raw_text: "第一句。", order_key: 1 },
+        {
+          segment_id: "seg-2",
+          raw_text: "Hello world。",
+          order_key: 2,
+          terminal_raw: "",
+          terminal_closer_suffix: "",
+          terminal_source: "synthetic",
+          detected_language: "en",
+        },
+        {
+          segment_id: "seg-1",
+          raw_text: "第一句。",
+          order_key: 1,
+          terminal_raw: "？！",
+          terminal_closer_suffix: "”",
+          terminal_source: "original",
+          detected_language: "zh",
+        },
       ]),
-    ).toBe("第一句。第二句");
+    ).toBe('第一句？！”Hello world.');
   });
 
   it("target_dir 只允许相对路径", () => {

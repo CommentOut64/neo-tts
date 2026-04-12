@@ -50,9 +50,12 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
                 segment_id="seg-1",
                 document_id="doc-1",
                 order_key=1,
-                raw_text="甲。",
+                raw_text="甲？」",
                 normalized_text="甲。",
                 text_language="zh",
+                terminal_raw="？",
+                terminal_closer_suffix="」",
+                terminal_source="original",
             ),
             EditableSegment(
                 segment_id="seg-2",
@@ -100,6 +103,9 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
 
     assert loaded_snapshot is not None
     assert loaded_snapshot.snapshot_id == "snap-1"
+    assert loaded_snapshot.segments[0].terminal_raw == "？"
+    assert loaded_snapshot.segments[0].terminal_closer_suffix == "」"
+    assert loaded_snapshot.segments[0].terminal_source == "original"
     assert [segment.segment_id for segment in first_page_segments] == ["seg-1", "seg-2"]
     assert [segment.segment_id for segment in second_page_segments] == ["seg-3"]
     assert [edge.edge_id for edge in first_page_edges] == ["edge-1"]
