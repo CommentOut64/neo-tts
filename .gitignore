@@ -17,10 +17,14 @@ frontend/node_modules/.vite/
 *.onnx
 *.zip
 *.wav
+logs/
 /onnx
 /pretrained_models
 /onnx_export/
 /frontend/node_modules/
+desktop/node_modules/
+/desktop/dist/
+/desktop/release/
 /frontend/dist/
 /launcher/dist/
 /frontend/components.d.ts
