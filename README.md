@@ -182,7 +182,7 @@ npm run dev
 
 段实体还会持久化最小句尾胶囊：`terminal_raw`、`terminal_closer_suffix`、`terminal_source`，用于晚绑定 display / render 口径；同时持久化 `detected_language`、`inference_exclusion_reason`，用于记录段级语言解析结果与是否排除出主推理路径。`text_language=auto` 时，标准化器会复用 GPT-SoVITS 现有的 `LangSegmenter` / `fast_langdetect` 检测链。
 
-后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 canonical 文本、terminal capsule、文档级语言摘要与分页 preview 结果。
+后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 canonical 文本、terminal capsule、文档级语言摘要与分页 preview 结果。前端输入页会基于 capsule 派生用户可见 display 文本；当输入达到 5000 字及以上时，preview 先走 `light` 快速分析并按 `next_cursor` 继续加载后续分段。
 
 切分策略支持 6 种模式（cut0 – cut5），覆盖按标点、按句号、按字符数等场景。
 
