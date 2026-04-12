@@ -3,6 +3,7 @@ import pytest
 from backend.app.inference.text_processing import (
     normalize_whitespace,
     split_text_segments,
+    split_text_segments_raw_strong_punctuation,
     split_text_segments_zh_period,
     split_text_segments_official,
 )
@@ -51,4 +52,45 @@ def test_split_text_segments_zh_period_only_splits_on_chinese_period():
         "第一句，带逗号。",
         "第二句，还有逗号。",
         "第三句，没有别的句号",
+    ]
+
+
+def test_split_text_segments_zh_period_supports_english_period_and_skips_decimal_dot():
+    text = "The price is 3.14.\nNext sentence."
+
+    segments = split_text_segments_zh_period(text)
+
+    assert segments == [
+        "The price is 3.14.",
+        "\nNext sentence.",
+    ]
+
+
+def test_split_text_segments_zh_period_keeps_trailing_closer_with_previous_segment():
+    text = "第一句。”\n\n第二句。"
+
+    segments = split_text_segments_zh_period(text)
+
+    assert segments == [
+        "第一句。”",
+        "\n\n第二句。",
+    ]
+
+
+def test_split_text_segments_zh_period_does_not_create_closer_only_tail_segment():
+    text = "第一句。”"
+
+    segments = split_text_segments_zh_period(text)
+
+    assert segments == ["第一句。”"]
+
+
+def test_split_text_segments_raw_strong_punctuation_keeps_trailing_closer_with_previous_segment():
+    text = 'Hello!”Next sentence.'
+
+    segments = split_text_segments_raw_strong_punctuation(text)
+
+    assert segments == [
+        "Hello!”",
+        "Next sentence.",
     ]

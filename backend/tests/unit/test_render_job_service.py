@@ -257,6 +257,29 @@ def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
     assert snapshot.total_edge_count == 4
 
 
+def test_run_initialize_job_supports_english_period_in_zh_period_segment_boundary_mode(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="Hello world.\nNext line.",
+            voice_id="demo",
+            text_language="en",
+            segment_boundary_mode="zh_period",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_snapshot()
+
+    assert snapshot.session_status == "ready"
+    assert [segment.raw_text for segment in snapshot.segments] == [
+        "Hello world.",
+        "Next line.",
+    ]
+    assert snapshot.total_segment_count == 2
+    assert snapshot.total_edge_count == 1
+
+
 def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule_fields(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(

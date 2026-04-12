@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildInitializeRequest, unwrapAcceptedExportJob, unwrapAcceptedRenderJob } from "../src/api/editSessionContract.ts";
+import {
+  buildInitializeRequest,
+  WORKSPACE_SEGMENT_BOUNDARY_MODE,
+  unwrapAcceptedExportJob,
+  unwrapAcceptedRenderJob,
+} from "../src/api/editSessionContract.ts";
 import { ApiRequestError, extractStatusCode, resolveApiUrl, toApiRequestError } from "../src/api/requestSupport.ts";
 
 describe("phase3 regression", () => {
@@ -19,7 +24,6 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
       topP: 0.9,
       topK: 12,
       pauseLength: 0.45,
-      textSplitMethod: "cut5",
       refSource: "preset",
       refText: "示例参考文本",
       refLang: "zh",
@@ -40,14 +44,34 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
     top_p: 0.9,
     top_k: 12,
     pause_duration_seconds: 0.45,
-    segment_boundary_mode: "zh_period",
+    segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
     reference_audio_path: "voices/demo/reference.wav",
     reference_text: "示例参考文本",
     reference_language: "zh",
   });
 });
 
-it("buildInitializeRequest preserves supported boundary modes", () => {
+it("buildInitializeRequest uses the fixed workspace strong-terminal segmentation standard", () => {
+  const payload = buildInitializeRequest({
+    text: "第一句！第二句？第三句。",
+    voiceId: "voice-a",
+    textLang: "zh",
+    speed: 1,
+    temperature: 1,
+    topP: 1,
+    topK: 15,
+    pauseLength: 0.3,
+    refSource: "custom",
+    refText: "",
+    refLang: "auto",
+    customRefFile: null,
+    customRefPath: null,
+  });
+
+  expect(payload.segment_boundary_mode).toBe(WORKSPACE_SEGMENT_BOUNDARY_MODE);
+});
+
+it("buildInitializeRequest no longer accepts a user-provided segmentation mode", () => {
   const payload = buildInitializeRequest({
     text: "test",
     voiceId: "voice-a",
@@ -57,7 +81,6 @@ it("buildInitializeRequest preserves supported boundary modes", () => {
     topP: 1,
     topK: 15,
     pauseLength: 0.3,
-    textSplitMethod: "zh_period",
     refSource: "custom",
     refText: "",
     refLang: "auto",
@@ -65,7 +88,7 @@ it("buildInitializeRequest preserves supported boundary modes", () => {
     customRefPath: null,
   });
 
-  expect(payload.segment_boundary_mode).toBe("zh_period");
+  expect(payload.segment_boundary_mode).toBe(WORKSPACE_SEGMENT_BOUNDARY_MODE);
   expect("reference_audio_path" in payload).toBe(false);
 });
 
@@ -79,7 +102,6 @@ it("buildInitializeRequest uses uploaded custom reference path", () => {
     topP: 1,
     topK: 15,
     pauseLength: 0.3,
-    textSplitMethod: "cut3",
     refSource: "custom",
     refText: "自定义参考文本",
     refLang: "zh",

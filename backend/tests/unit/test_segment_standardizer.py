@@ -1,5 +1,9 @@
 import backend.app.text.segment_standardizer as segment_standardizer
-from backend.app.text.segment_standardizer import standardize_segment_text, standardize_segment_texts
+from backend.app.text.segment_standardizer import (
+    split_text_segments_with_terminal_capsules,
+    standardize_segment_text,
+    standardize_segment_texts,
+)
 
 
 def test_standardize_segment_text_auto_detects_en_for_single_segment():
@@ -77,3 +81,12 @@ def test_standardize_segment_text_auto_marks_real_mixed_script_segment_as_unknow
 
     assert result.detected_language == "unknown"
     assert result.inference_exclusion_reason == "language_unresolved"
+
+
+def test_split_text_segments_with_terminal_capsules_skips_decimal_dot_and_keeps_english_period():
+    segments = split_text_segments_with_terminal_capsules("The price is 3.14. Next sentence.")
+
+    assert segments == [
+        "The price is 3.14.",
+        "Next sentence.",
+    ]
