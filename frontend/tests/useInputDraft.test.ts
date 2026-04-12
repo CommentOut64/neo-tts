@@ -74,6 +74,31 @@ describe("useInputDraft", () => {
     expect(localStorageMock.getItem("neo-tts-input-draft")).toBeNull();
   });
 
+  it("会持久化输入页文本语言，并在重新加载后恢复", async () => {
+    const { useInputDraft } = await loadUseInputDraftModule();
+    const draft = useInputDraft();
+
+    draft.setTextLanguage("ja");
+
+    expect(localStorageMock.getItem("neo-tts-input-draft")).toContain('"textLanguage":"ja"');
+
+    const reloadedModule = await loadUseInputDraftModule();
+    const reloadedDraft = reloadedModule.useInputDraft();
+
+    expect(reloadedDraft.textLanguage.value).toBe("ja");
+  });
+
+  it("没有正文时，非 auto 语言配置仍会保留持久化状态", async () => {
+    const { useInputDraft } = await loadUseInputDraftModule();
+    const draft = useInputDraft();
+
+    draft.setTextLanguage("zh");
+    draft.setText("临时正文");
+    draft.setText("");
+
+    expect(localStorageMock.getItem("neo-tts-input-draft")).toContain('"textLanguage":"zh"');
+  });
+
   it("从正式正文回填后也会同步持久化，并记录为 applied_text 来源", async () => {
     const { useInputDraft } = await loadUseInputDraftModule();
     const draft = useInputDraft();
