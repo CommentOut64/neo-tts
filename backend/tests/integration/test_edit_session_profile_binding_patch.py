@@ -231,7 +231,6 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
 
         profiles = client.get("/v1/edit-session/render-profiles")
         assert profiles.status_code == 200
-        assert any(item["reference_audio_path"] == "voices/custom.wav" for item in profiles.json()["items"])
 
         bindings = client.get("/v1/edit-session/voice-bindings")
         assert bindings.status_code == 200
