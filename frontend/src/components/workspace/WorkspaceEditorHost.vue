@@ -16,6 +16,7 @@ import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
 import type { EditableEdge, EditableSegment } from "@/types/editSession";
+import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
 import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
 
@@ -106,7 +107,18 @@ const renderMap = ref<ReturnType<typeof extractRenderMapFromDoc> | null>(null);
 const editorRef = ref<{ editor: any } | null>(null);
 const canvasRef = ref<HTMLElement | null>(null);
 const lastSessionSegments = ref<
-  Array<Pick<EditableSegment, "segment_id" | "order_key" | "raw_text">>
+  Array<
+    Pick<
+      EditableSegment,
+      | "segment_id"
+      | "order_key"
+      | "raw_text"
+      | "terminal_raw"
+      | "terminal_closer_suffix"
+      | "terminal_source"
+      | "detected_language"
+    >
+  >
 >([]);
 const lastSessionEdges = ref<EditableEdge[]>([]);
 
@@ -164,7 +176,10 @@ const workspaceEdges = computed<WorkspaceSemanticEdge[]>(() =>
 );
 const backendSegmentTextById = computed<Record<string, string>>(() =>
   Object.fromEntries(
-    sortedReadySegments.value.map((segment) => [segment.segment_id, segment.raw_text]),
+    sortedReadySegments.value.map((segment) => [
+      segment.segment_id,
+      buildSegmentDisplayText(segment),
+    ]),
   ),
 );
 const pendingRerenderTargets = computed(() =>
@@ -209,7 +224,7 @@ const sourceDocSegmentTexts = computed(() => {
     return sortedReadySegments.value.map((segment) => ({
       segmentId: segment.segment_id,
       orderKey: segment.order_key,
-      text: segment.raw_text,
+      text: buildSegmentDisplayText(segment),
     }));
   }
 
@@ -300,7 +315,7 @@ const semanticDocument = computed(() => {
       segments: runtimeState.progressiveSegments.value.map((segment) => ({
         segmentId: segment.segmentId,
         orderKey: segment.orderKey,
-        text: segment.rawText,
+        text: segment.displayText,
         renderStatus: segment.renderStatus,
       })),
       edges: [],
@@ -824,7 +839,7 @@ function getBackendSegmentText(segmentId: string): string {
   const segment = sortedReadySegments.value.find(
     (item) => item.segment_id === segmentId,
   );
-  return segment?.raw_text ?? "";
+  return segment ? buildSegmentDisplayText(segment) : "";
 }
 
 function syncPauseBoundaryAttrsInEditor(nextEdges: EditableEdge[]) {
@@ -1418,7 +1433,7 @@ watch(
           nextSegments: sortedReadySegments.value.map((segment) => ({
             segment_id: segment.segment_id,
             order_key: segment.order_key,
-            raw_text: segment.raw_text,
+            raw_text: buildSegmentDisplayText(segment),
           })),
           previousEdges: lastSessionEdges.value,
           nextEdges: sessionEdges.value,
@@ -1435,7 +1450,7 @@ watch(
           segments: sortedReadySegments.value.map((segment) => ({
             segmentId: segment.segment_id,
             orderKey: segment.order_key,
-            text: segment.raw_text,
+            text: buildSegmentDisplayText(segment),
           })),
           edges: workspaceEdges.value,
         }));
@@ -1453,7 +1468,11 @@ watch(
     lastSessionSegments.value = sortedReadySegments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,
-      raw_text: segment.raw_text,
+      raw_text: buildSegmentDisplayText(segment),
+      terminal_raw: segment.terminal_raw,
+      terminal_closer_suffix: segment.terminal_closer_suffix,
+      terminal_source: segment.terminal_source,
+      detected_language: segment.detected_language,
     }));
     lastSessionEdges.value = sessionEdges.value.map((edge) => ({ ...edge }));
     restoredSessionKey.value = currentSessionKey.value;

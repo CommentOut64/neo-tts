@@ -56,6 +56,11 @@ export interface EditableSegment {
   raw_text: string
   normalized_text: string
   text_language: string
+  terminal_raw?: string
+  terminal_closer_suffix?: string
+  terminal_source?: 'original' | 'synthetic'
+  detected_language?: ResolvedLanguage | null
+  inference_exclusion_reason?: InferenceExclusionReason | null
   render_version: number
   render_asset_id: string | null
   group_id: string | null
@@ -164,6 +169,44 @@ export interface InitializeRequest {
   pause_duration_seconds?: number
   noise_scale?: number
   segment_boundary_mode?: 'raw_strong_punctuation' | 'zh_period'
+}
+
+export type ResolvedLanguage = 'zh' | 'ja' | 'en' | 'unknown'
+export type InferenceExclusionReason =
+  | 'none'
+  | 'other_language_segment'
+  | 'unsupported_language'
+  | 'language_unresolved'
+
+export interface StandardizationPreviewRequest {
+  raw_text: string
+  text_language: 'auto' | 'zh' | 'ja' | 'en'
+  request_id?: string
+  segment_limit?: number
+  cursor?: number | null
+  include_language_analysis?: boolean
+}
+
+export interface StandardizationPreviewSegment {
+  order_key: number
+  canonical_text: string
+  terminal_raw: string
+  terminal_closer_suffix: string
+  terminal_source: 'original' | 'synthetic'
+  detected_language: ResolvedLanguage | null
+  inference_exclusion_reason: InferenceExclusionReason | null
+  warnings: string[]
+}
+
+export interface StandardizationPreviewResponse {
+  analysis_stage: 'light' | 'complete'
+  document_char_count: number
+  total_segments: number
+  next_cursor: number | null
+  resolved_document_language: ResolvedLanguage | null
+  language_detection_source: 'explicit' | 'auto' | null
+  warnings: string[]
+  segments: StandardizationPreviewSegment[]
 }
 
 export interface ReferenceAudioUploadResponse {
@@ -347,6 +390,11 @@ export interface SegmentsInitializedPayload {
     segment_id: string
     order_key: number
     raw_text: string
+    terminal_raw?: string
+    terminal_closer_suffix?: string
+    terminal_source?: 'original' | 'synthetic'
+    detected_language?: ResolvedLanguage | null
+    inference_exclusion_reason?: InferenceExclusionReason | null
     render_status: string
   }>
 }
@@ -363,6 +411,7 @@ export interface ProgressiveSegment {
   segmentId: string
   orderKey: number
   rawText: string
+  displayText: string
   renderStatus: 'pending' | 'completed'
   renderAssetId: string | null
 }

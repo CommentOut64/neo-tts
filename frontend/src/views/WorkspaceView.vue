@@ -38,9 +38,11 @@ const {
 } = useEditSession()
 const {
   text,
+  textLanguage,
   draftRevision,
   lastSentToSessionRevision,
   source,
+  setTextLanguage,
 } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const parameterPanel = useParameterPanel()
@@ -102,6 +104,13 @@ watch(
   { deep: true }
 )
 
+watch(
+  () => initParams.value.text_lang,
+  (nextLanguage) => {
+    setTextLanguage(nextLanguage)
+  },
+)
+
 async function hydrateWorkspaceRoute() {
   try {
     const [, loadedVoices] = await Promise.all([discoverSession(), fetchVoices()])
@@ -147,6 +156,8 @@ async function hydrateWorkspaceRoute() {
         initParams.value.ref_source = p.ref_source
       }
     }
+
+    initParams.value.text_lang = textLanguage.value
 
     await nextTick()
     isRestoring.value = false

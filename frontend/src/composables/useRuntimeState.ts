@@ -19,6 +19,7 @@ import {
   subscribeExportJobEvents,
   getExportJob,
 } from "@/api/editSession";
+import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 
 export type SseConnectionState = "connected" | "disconnected" | "polling";
 export type TrackedRenderJob = RenderJob | RenderJobResponse | RenderJobSummary;
@@ -401,6 +402,13 @@ export function useRuntimeState() {
               segmentId: seg.segment_id,
               orderKey: seg.order_key,
               rawText: seg.raw_text,
+              displayText: buildSegmentDisplayText({
+                raw_text: seg.raw_text,
+                terminal_raw: seg.terminal_raw,
+                terminal_closer_suffix: seg.terminal_closer_suffix,
+                terminal_source: seg.terminal_source,
+                detected_language: seg.detected_language,
+              }),
               renderStatus: seg.render_status,
               renderAssetId: null,
             }))

@@ -5,6 +5,7 @@ import { usePlayback } from "@/composables/usePlayback";
 import { useEditSession } from "@/composables/useEditSession";
 import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
+import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 import DirtySegmentBadge from "./DirtySegmentBadge.vue";
 import WorkspaceEditorHost from "./WorkspaceEditorHost.vue";
 
@@ -20,7 +21,7 @@ const segmentTexts = computed(() => {
   const map = new Map<string, string>();
   for (const segment of segments.value) {
     if (segment.raw_text) {
-      map.set(segment.segment_id, segment.raw_text);
+      map.set(segment.segment_id, buildSegmentDisplayText(segment));
     }
   }
   return map;

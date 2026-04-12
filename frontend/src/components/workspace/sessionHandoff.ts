@@ -1,5 +1,6 @@
 import type { ExportJobResponse, RenderJobSummary } from "@/types/editSession";
 import type { InputDraftSource } from "@/composables/useInputDraft";
+import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 
 export type WorkspaceSessionStatus = "empty" | "initializing" | "ready" | "failed";
 export type WorkspaceEntryAction = "idle" | "initialize" | "rebuild";
@@ -27,6 +28,10 @@ interface SessionSegmentLike {
   segment_id: string;
   raw_text: string;
   order_key: number;
+  terminal_raw?: string;
+  terminal_closer_suffix?: string;
+  terminal_source?: "original" | "synthetic";
+  detected_language?: "zh" | "ja" | "en" | "unknown" | null;
 }
 
 interface ResolveNavbarRuntimeHintInput {
@@ -174,7 +179,7 @@ export function resolveEndSessionChoiceResult(
 export function buildSessionHeadText(segments: SessionSegmentLike[]): string {
   return [...segments]
     .sort((left, right) => left.order_key - right.order_key)
-    .map((segment) => segment.raw_text)
+    .map((segment) => buildSegmentDisplayText(segment))
     .join("");
 }
 

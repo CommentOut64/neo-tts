@@ -5,7 +5,6 @@ import type {
   ExportJobAcceptedResponse,
   ExportJobResponse,
 } from "../types/editSession";
-import { ensureTerminalStrongBoundary } from "../utils/textSegmenter.ts";
 
 export interface WorkspaceInitializeDraft {
   text: string;
@@ -49,7 +48,7 @@ export function buildInitializeRequest(
   voice?: VoiceReferenceSource,
 ): InitializeRequest {
   const payload: InitializeRequest = {
-    raw_text: ensureTerminalStrongBoundary(draft.text),
+    raw_text: draft.text,
     text_language: draft.textLang,
     voice_id: draft.voiceId,
     speed: draft.speed,
