@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import threading
 import time
+from unittest.mock import Mock
 
 from backend.app.core.settings import AppSettings
 from backend.app.repositories.edit_session_repository import EditSessionRepository
@@ -25,6 +25,9 @@ def _build_settings(tmp_path: Path) -> AppSettings:
         edit_session_db_file=tmp_path / "storage" / "edit_session" / "session.db",
         edit_session_assets_dir=tmp_path / "storage" / "edit_session" / "assets",
         edit_session_exports_dir=tmp_path / "storage" / "edit_session" / "exports",
+        owner_control_origin="http://127.0.0.1:43125",
+        owner_control_token="owner-token",
+        owner_session_id="session-1",
     )
 
 
@@ -64,42 +67,6 @@ def _seed_active_edit_session(
                 voice_id="demo",
             ),
         )
-    )
-
-
-def _write_launcher_runtime_state(project_root: Path) -> None:
-    runtime_state_path = project_root / "logs" / "launcher" / "runtime-state.json"
-    runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_state_path.write_text(
-        json.dumps(
-            {
-                "launcherPid": 12345,
-                "runtimeMode": "dev",
-                "frontendMode": "web",
-                "startupSource": "double-click",
-                "isElevated": False,
-                "backend": {
-                    "mode": "owned",
-                    "pid": 24680,
-                    "port": 18600,
-                    "origin": "http://127.0.0.1:18600",
-                    "command": "python -m backend.app.cli --port 18600",
-                },
-                "frontendHost": {
-                    "kind": "vite",
-                    "pid": 13579,
-                    "port": 5175,
-                    "origin": "http://127.0.0.1:5175",
-                    "command": "npm run dev",
-                    "browserOpened": True,
-                },
-                "lastPhase": "running",
-                "lastError": "",
-                "logFilePath": str(project_root / "logs" / "launcher" / "launcher.log"),
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
     )
 
 
@@ -148,7 +115,8 @@ def test_prepare_exit_pauses_active_render_job_and_requests_launcher_exit(tmp_pa
         runtime=inference_runtime,
         result_store=result_store,
     )
-    _write_launcher_runtime_state(tmp_path)
+    owner_control_client = Mock()
+    owner_control_client.request_shutdown.return_value = True
 
     job_id = "job-1"
     _seed_active_edit_session(repository, job_id=job_id)
@@ -161,6 +129,7 @@ def test_prepare_exit_pauses_active_render_job_and_requests_launcher_exit(tmp_pa
         edit_session_runtime=edit_session_runtime,
         inference_runtime=inference_runtime,
         residual_service=residual_service,
+        owner_control_client=owner_control_client,
     )
 
     response = service.prepare_exit()
@@ -171,10 +140,7 @@ def test_prepare_exit_pauses_active_render_job_and_requests_launcher_exit(tmp_pa
     assert response.active_render_job_status == "paused"
     assert response.inference_status == "idle"
     assert edit_session_runtime.get_job(job_id).pause_requested is True
-
-    exit_request_path = tmp_path / "logs" / "launcher" / "control" / "exit-request.json"
-    assert exit_request_path.exists()
-    assert json.loads(exit_request_path.read_text(encoding="utf-8"))["launcher_pid"] == 12345
+    owner_control_client.request_shutdown.assert_called_once_with(source="backend_prepare_exit")
 
 
 def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Path):
@@ -191,7 +157,8 @@ def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Pa
         runtime=inference_runtime,
         result_store=result_store,
     )
-    _write_launcher_runtime_state(tmp_path)
+    owner_control_client = Mock()
+    owner_control_client.request_shutdown.return_value = True
 
     temp_ref_dir = settings.managed_voices_dir / "_temp_refs" / "dangling"
     temp_ref_dir.mkdir(parents=True, exist_ok=True)
@@ -207,6 +174,7 @@ def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Pa
         edit_session_runtime=edit_session_runtime,
         inference_runtime=inference_runtime,
         residual_service=residual_service,
+        owner_control_client=owner_control_client,
     )
 
     response = service.prepare_exit()
@@ -218,11 +186,10 @@ def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Pa
     assert response.inference_status == "idle"
     assert not temp_ref_dir.exists()
     assert not saved_result.file_path.exists()
-    exit_request_path = tmp_path / "logs" / "launcher" / "control" / "exit-request.json"
-    assert json.loads(exit_request_path.read_text(encoding="utf-8"))["launcher_pid"] == 12345
+    owner_control_client.request_shutdown.assert_called_once_with(source="backend_prepare_exit")
 
 
-def test_prepare_exit_is_idempotent_when_no_launcher_state_exists(tmp_path: Path):
+def test_prepare_exit_is_idempotent_when_owner_session_is_missing(tmp_path: Path):
     settings = _build_settings(tmp_path)
     repository = _build_repository(settings)
     edit_session_runtime = EditSessionRuntime()
@@ -236,12 +203,15 @@ def test_prepare_exit_is_idempotent_when_no_launcher_state_exists(tmp_path: Path
         runtime=inference_runtime,
         result_store=result_store,
     )
+    owner_control_client = Mock()
+    owner_control_client.request_shutdown.return_value = False
     service = AppExitService(
         settings=settings,
         edit_session_repository=repository,
         edit_session_runtime=edit_session_runtime,
         inference_runtime=inference_runtime,
         residual_service=residual_service,
+        owner_control_client=owner_control_client,
     )
 
     first = service.prepare_exit()
@@ -255,9 +225,7 @@ def test_prepare_exit_is_idempotent_when_no_launcher_state_exists(tmp_path: Path
     assert second.active_render_job_status is None
     assert first.inference_status == "idle"
     assert second.inference_status == "idle"
-
-    exit_request_path = tmp_path / "logs" / "launcher" / "control" / "exit-request.json"
-    assert not exit_request_path.exists()
+    assert owner_control_client.request_shutdown.call_count == 2
 
 
 def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path: Path):
@@ -292,6 +260,8 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
     model_cache = FakeModelCache()
     first_gateway = FakeGateway()
     second_gateway = FakeGateway()
+    owner_control_client = Mock()
+    owner_control_client.request_shutdown.return_value = False
 
     service = AppExitService(
         settings=settings,
@@ -300,6 +270,7 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
         inference_runtime=inference_runtime,
         residual_service=residual_service,
         model_cache=model_cache,
+        owner_control_client=owner_control_client,
         editable_inference_gateway_cache={
             ("gpt-a", "sovits-a"): first_gateway,
             ("gpt-b", "sovits-b"): second_gateway,

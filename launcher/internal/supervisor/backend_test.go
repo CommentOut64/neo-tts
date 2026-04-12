@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"neo-tts/launcher/internal/config"
+	"neo-tts/launcher/internal/control"
 	winplatform "neo-tts/launcher/internal/platform/windows"
 	"neo-tts/launcher/internal/state"
 )
@@ -21,16 +23,25 @@ func TestOwnedBackendStartsProcessAndWaitsForHealth(t *testing.T) {
 	cfg := newBackendConfig(projectRoot, "dev", "owned")
 
 	var (
-		startCalls int
-		waitCalls  int
-		gotSpec    winplatform.ProcessSpec
+		startCalls  int
+		waitCalls   int
+		attachCalls []int
+		gotSpec     winplatform.ProcessSpec
 	)
 
-	result, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, BackendDeps{
+	result, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, &control.Session{
+		ID:            "session-1",
+		ControlOrigin: "http://127.0.0.1:43125",
+		ControlToken:  "owner-token",
+	}, BackendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			startCalls++
 			gotSpec = spec
 			return ProcessHandle{PID: 24680}, nil
+		},
+		AttachOwnedProcess: func(pid int) error {
+			attachCalls = append(attachCalls, pid)
+			return nil
 		},
 		WaitForHealthy: func(ctx context.Context, url string, interval time.Duration) error {
 			waitCalls++
@@ -53,6 +64,9 @@ func TestOwnedBackendStartsProcessAndWaitsForHealth(t *testing.T) {
 	if waitCalls != 2 {
 		t.Fatalf("WaitForHealthy calls = %d, want 2", waitCalls)
 	}
+	if !reflect.DeepEqual(attachCalls, []int{24680}) {
+		t.Fatalf("AttachOwnedProcess calls = %#v, want [24680]", attachCalls)
+	}
 	if gotSpec.WorkingDirectory != projectRoot {
 		t.Fatalf("WorkingDirectory = %q, want %q", gotSpec.WorkingDirectory, projectRoot)
 	}
@@ -62,17 +76,29 @@ func TestOwnedBackendStartsProcessAndWaitsForHealth(t *testing.T) {
 	if !gotSpec.AttachStdIO {
 		t.Fatal("AttachStdIO = false, want true")
 	}
-	if !strings.Contains(gotSpec.Command, filepath.Join(projectRoot, ".venv", "Scripts", "python.exe")) {
-		t.Fatalf("Command = %q, want venv python path", gotSpec.Command)
+	if gotSpec.Exe != filepath.Join(projectRoot, ".venv", "Scripts", "python.exe") {
+		t.Fatalf("Exe = %q, want venv python path", gotSpec.Exe)
 	}
-	if !strings.Contains(gotSpec.Command, "-m backend.app.cli --host 127.0.0.1 --port 18600") {
-		t.Fatalf("Command = %q, want backend cli args", gotSpec.Command)
+	if !reflect.DeepEqual(gotSpec.Args, []string{"-m", "backend.app.cli", "--host", "127.0.0.1", "--port", "18600"}) {
+		t.Fatalf("Args = %#v, want backend cli args", gotSpec.Args)
+	}
+	if gotSpec.Environment["NEO_TTS_OWNER_CONTROL_ORIGIN"] != "http://127.0.0.1:43125" {
+		t.Fatalf("owner control origin = %q, want http://127.0.0.1:43125", gotSpec.Environment["NEO_TTS_OWNER_CONTROL_ORIGIN"])
+	}
+	if gotSpec.Environment["NEO_TTS_OWNER_CONTROL_TOKEN"] != "owner-token" {
+		t.Fatalf("owner control token = %q, want owner-token", gotSpec.Environment["NEO_TTS_OWNER_CONTROL_TOKEN"])
+	}
+	if gotSpec.Environment["NEO_TTS_OWNER_SESSION_ID"] != "session-1" {
+		t.Fatalf("owner session id = %q, want session-1", gotSpec.Environment["NEO_TTS_OWNER_SESSION_ID"])
 	}
 	if result.State.Backend.PID != 24680 {
 		t.Fatalf("Backend PID = %d, want 24680", result.State.Backend.PID)
 	}
 	if result.State.Backend.Mode != "owned" {
 		t.Fatalf("Backend Mode = %q, want owned", result.State.Backend.Mode)
+	}
+	if !strings.Contains(result.State.Backend.Command, "backend.app.cli --host 127.0.0.1 --port 18600") {
+		t.Fatalf("Command = %q, want backend cli args", result.State.Backend.Command)
 	}
 }
 
@@ -82,7 +108,7 @@ func TestExternalBackendOnlyChecksHealth(t *testing.T) {
 	cfg.Backend.ExternalOrigin = "http://127.0.0.1:19600"
 
 	waitCalls := 0
-	result, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, BackendDeps{
+	result, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, nil, BackendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			t.Fatalf("StartProcess should not be called for external backend")
 			return ProcessHandle{}, nil
@@ -119,7 +145,7 @@ func TestBackendUnknownPortOccupantFailsWithoutKill(t *testing.T) {
 		killCalls  int
 	)
 
-	_, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, BackendDeps{
+	_, err := EnsureBackend(context.Background(), cfg, state.RuntimeState{}, nil, BackendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			startCalls++
 			return ProcessHandle{}, nil
@@ -163,7 +189,7 @@ func TestBackendOwnedCleanupResidualsThenKillsPreviousProcess(t *testing.T) {
 		oldAlive     = true
 	)
 
-	_, err := EnsureBackend(context.Background(), cfg, previous, BackendDeps{
+	_, err := EnsureBackend(context.Background(), cfg, previous, nil, BackendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			return ProcessHandle{PID: 2468}, nil
 		},

@@ -29,11 +29,16 @@ func TestFrontendDevWebStartsViteWithBackendOrigin(t *testing.T) {
 	var gotSpec winplatform.ProcessSpec
 	openCalls := 0
 	asyncCalls := 0
+	attachCalls := make([]int, 0, 1)
 
 	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			gotSpec = spec
 			return ProcessHandle{PID: 97531}, nil
+		},
+		AttachOwnedProcess: func(pid int) error {
+			attachCalls = append(attachCalls, pid)
+			return nil
 		},
 		RunAsync: func(task func()) {
 			asyncCalls++
@@ -57,8 +62,11 @@ func TestFrontendDevWebStartsViteWithBackendOrigin(t *testing.T) {
 		t.Fatalf("StartFrontendHost returned error: %v", err)
 	}
 
-	if gotSpec.Command != "npm run dev" {
-		t.Fatalf("Command = %q, want npm run dev", gotSpec.Command)
+	if gotSpec.Exe != "npm.cmd" {
+		t.Fatalf("Exe = %q, want npm.cmd", gotSpec.Exe)
+	}
+	if len(gotSpec.Args) != 2 || gotSpec.Args[0] != "run" || gotSpec.Args[1] != "dev" {
+		t.Fatalf("Args = %#v, want [run dev]", gotSpec.Args)
 	}
 	if gotSpec.WorkingDirectory != filepath.Join(projectRoot, "frontend") {
 		t.Fatalf("WorkingDirectory = %q, want frontend dir", gotSpec.WorkingDirectory)
@@ -77,6 +85,9 @@ func TestFrontendDevWebStartsViteWithBackendOrigin(t *testing.T) {
 	}
 	if asyncCalls != 1 {
 		t.Fatalf("RunAsync calls = %d, want 1", asyncCalls)
+	}
+	if len(attachCalls) != 1 || attachCalls[0] != 97531 {
+		t.Fatalf("AttachOwnedProcess calls = %#v, want [97531]", attachCalls)
 	}
 	if openCalls != 1 {
 		t.Fatalf("OpenBrowser calls = %d, want 1 in dev mode", openCalls)
