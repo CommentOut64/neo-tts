@@ -38,7 +38,7 @@ const displaySegments = computed(() =>
       </div>
       <span class="text-xs text-muted-fg">{{ totalSegments }} 段</span>
     </div>
-    <div class="flex-1 min-h-0 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+    <div class="flex-1 min-h-0 overflow-auto space-y-2 pr-2 pb-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
       <div v-if="!text?.trim()" class="text-sm text-muted-fg/60 flex items-center justify-center h-full">
         暂无正文
       </div>
@@ -57,7 +57,7 @@ const displaySegments = computed(() =>
       <div 
         v-for="seg in displaySegments" 
         :key="seg.order_key"
-        class="text-[13px] text-foreground bg-muted/30 px-3 py-2.5 rounded leading-relaxed break-words border border-border/30 hover:border-border/60 transition-colors"
+        class="text-[13px] text-foreground bg-muted/30 px-3 py-2.5 rounded leading-relaxed whitespace-nowrap border border-border/30 hover:border-border/60 transition-colors w-max min-w-full"
       >
         <span class="inline-block text-[10px] text-muted-fg/50 mr-2 select-none">{{ seg.order_key }}.</span>
         {{ seg.displayText }}

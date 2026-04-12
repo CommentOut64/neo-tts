@@ -78,7 +78,7 @@ function handleInput(val: string) {
       type="textarea"
       class="flex-1 min-h-[220px] w-full text-input-textarea"
       :input-style="{ resize: 'vertical' }"
-      placeholder="从这里开始输入要合成的文本..."
+      placeholder="在此处输入要合成的文本..."
       @update:model-value="handleInput"
     />
     <div class="mt-2 flex items-center justify-between gap-3 shrink-0 text-xs text-muted-fg">

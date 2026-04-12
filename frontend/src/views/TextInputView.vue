@@ -32,8 +32,23 @@ function handleTextLanguageChange(nextLanguage: InputTextLanguage) {
 </script>
 
 <template>
-  <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:flex-row gap-6">
-    <aside class="w-full md:w-[35%] lg:w-[30%] shrink-0 flex flex-col gap-5">
+  <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:grid md:grid-cols-[35%_minmax(0,1fr)] lg:grid-cols-[30%_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)] gap-6">
+    
+    <!-- 左上：拖曳上传区 -->
+    <div class="w-full min-w-0 bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall flex flex-col self-stretch">
+      <h3 class="text-[13px] font-semibold text-foreground mb-3 shrink-0">文件导入</h3>
+      <div class="flex-1 min-h-[160px] flex flex-col">
+        <FileImportZone class="file-import-zone-stretch flex-1 w-full" />
+      </div>
+    </div>
+
+    <!-- 右上：输入稿正文 -->
+    <div class="w-full min-w-0 flex flex-col self-stretch">
+      <TextInputArea class="w-full flex-1" />
+    </div>
+
+    <!-- 左下：文本统计与参数调整 -->
+    <div class="w-full flex flex-col gap-5 min-h-0 overflow-y-auto pr-1">
       <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
         <h3 class="text-[13px] font-semibold text-foreground mb-3">文本统计</h3>
         <div class="space-y-3 text-[13px] text-foreground">
@@ -56,9 +71,11 @@ function handleTextLanguageChange(nextLanguage: InputTextLanguage) {
         </div>
       </section>
 
-      <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
-        <h3 class="text-[13px] font-semibold text-foreground mb-3">参数调整</h3>
-        <div class="flex flex-col gap-1.5">
+      <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall flex-1 flex flex-col">
+        <div class="shrink-0 mb-3">
+          <h3 class="text-[13px] font-semibold text-foreground">参数调整</h3>
+        </div>
+        <div class="flex flex-col gap-1.5 shrink-0">
           <label class="text-[13px] font-semibold text-foreground">文本语言</label>
           <el-select
             :model-value="textLanguage"
@@ -78,19 +95,10 @@ function handleTextLanguageChange(nextLanguage: InputTextLanguage) {
           </p>
         </div>
       </section>
-    </aside>
+    </div>
 
-    <!-- 右侧主内容：输入区 + 预览区 -->
-    <main class="w-full md:w-[65%] lg:w-[70%] flex flex-col gap-5 min-w-0 min-h-0 overflow-hidden">
-      <!-- 上半区：文本输入 + 文件导入 -->
-      <div class="flex flex-col xl:flex-row gap-5 shrink-0">
-        <TextInputArea class="flex-1 min-w-0" />
-        <div class="w-full xl:w-[280px] shrink-0 xl:self-start">
-          <FileImportZone />
-        </div>
-      </div>
-
-      <!-- 下半区：切分预览（完全吸收剩余高度，底部位置锁死） -->
+    <!-- 右下：切分预览与动作条 -->
+    <div class="w-full flex flex-col gap-5 min-w-0 min-h-0 overflow-hidden">
       <SegmentPreviewList
         class="flex-1 min-h-[120px]"
         :text="text"
@@ -104,8 +112,33 @@ function handleTextLanguageChange(nextLanguage: InputTextLanguage) {
         :load-more="loadMore"
       />
 
-      <!-- 底部动作条（始终固定在底部） -->
       <SendToWorkspaceBar class="shrink-0" />
-    </main>
+    </div>
   </div>
 </template>
+
+<style scoped>
+:deep(.file-import-zone-stretch),
+:deep(.file-import-zone-stretch .el-upload),
+:deep(.file-import-zone-stretch .el-upload-dragger) {
+  height: 100%;
+}
+:deep(.file-import-zone-stretch .el-upload-dragger) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+/* 解决 element-plus 组件默认无法 100% 高度 */
+:deep(.file-import-zone-stretch) {
+  display: flex !important;
+  flex-direction: column;
+}
+:deep(.file-import-zone-stretch > .el-upload) {
+  flex: 1;
+}
+:deep(.file-import-zone-stretch .el-upload .el-upload-dragger) {
+  flex: 1;
+  width: 100%;
+}
+</style>

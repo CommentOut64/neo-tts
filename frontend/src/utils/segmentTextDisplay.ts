@@ -14,6 +14,31 @@ function deriveStem(rawText: string): string {
     : rawText;
 }
 
+function stripTerminalCluster(
+  rawText: string,
+  terminal: string,
+  closerSuffix: string,
+): string {
+  const exactCluster = `${terminal}${closerSuffix}`;
+  if (exactCluster.length > 0 && rawText.endsWith(exactCluster)) {
+    return rawText.slice(0, -exactCluster.length);
+  }
+
+  if (closerSuffix.length > 0 && rawText.endsWith(closerSuffix)) {
+    const withoutCloserSuffix = rawText.slice(0, -closerSuffix.length);
+    if (terminal.length > 0 && withoutCloserSuffix.endsWith(terminal)) {
+      return withoutCloserSuffix.slice(0, -terminal.length);
+    }
+    return withoutCloserSuffix;
+  }
+
+  if (terminal.length > 0 && rawText.endsWith(terminal)) {
+    return rawText.slice(0, -terminal.length);
+  }
+
+  return deriveStem(rawText);
+}
+
 function resolveSyntheticTerminal(language: ResolvedLanguage | null | undefined): string {
   return language === "en" ? "." : "。";
 }
@@ -31,5 +56,5 @@ export function buildSegmentDisplayText(segment: SegmentDisplayLike): string {
     ? segment.terminal_raw
     : resolveSyntheticTerminal(segment.detected_language);
   const closerSuffix = segment.terminal_closer_suffix ?? "";
-  return `${deriveStem(segment.raw_text)}${terminal}${closerSuffix}`;
+  return `${stripTerminalCluster(segment.raw_text, terminal, closerSuffix)}${terminal}${closerSuffix}`;
 }
