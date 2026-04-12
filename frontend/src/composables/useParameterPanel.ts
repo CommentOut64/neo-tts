@@ -10,29 +10,35 @@ import {
   commitSessionVoiceBinding,
   updateEdge,
 } from "@/api/editSession";
+import {
+  MIXED_VALUE,
+  resolveEffectiveParameters,
+  type ResolvedParameterPanelValues,
+} from "@/components/workspace/parameter-panel/resolveEffectiveParameters";
 import { shouldBlockEdgeEditing } from "@/components/workspace/workspace-editor/workspaceEditorHostModel";
 import { useEditSession } from "@/composables/useEditSession";
 import { useRuntimeState } from "@/composables/useRuntimeState";
-import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
-import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   useSegmentSelection,
   type SelectionSnapshot,
 } from "@/composables/useSegmentSelection";
-import type {
-  EdgeUpdateBody,
-  RenderProfilePatch,
-  VoiceBindingPatch,
-} from "@/types/editSession";
-import {
-  resolveEffectiveParameters,
-  type ResolvedParameterPanelValues,
-} from "@/components/workspace/parameter-panel/resolveEffectiveParameters";
+import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
+import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
+import { createParameterPatchQueue } from "@/components/workspace/parameter-panel/submitParameterPatchQueue";
+import { resolveBindingReferenceState } from "@/features/reference-binding";
 import {
   resolveParameterScope,
   type ParameterPanelScopeContext,
 } from "@/components/workspace/parameter-panel/resolveParameterScope";
-import { createParameterPatchQueue } from "@/components/workspace/parameter-panel/submitParameterPatchQueue";
+import type {
+  EdgeUpdateBody,
+  ReferenceBindingOverridePatch,
+  RenderProfile,
+  RenderProfilePatch,
+  VoiceBinding,
+  VoiceBindingPatch,
+} from "@/types/editSession";
+import type { VoiceProfile } from "@/types/tts";
 
 const scopeContext = ref<ParameterPanelScopeContext>({
   scope: "session",
@@ -61,8 +67,14 @@ const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
 });
 const lastStableScopeKey = ref<string | null>(null);
 const lastStableResolvedValues = ref<ResolvedParameterPanelValues | null>(null);
+const availableVoices = ref<VoiceProfile[]>([]);
+const referenceSourceIntent = ref<"preset" | "custom" | null>(null);
 
 type ParameterPanelResolvedStatus = "ready" | "resolving" | "unresolved";
+type ReferenceFieldKey =
+  | "reference_audio_path"
+  | "reference_text"
+  | "reference_language";
 
 function cloneScopeContext(context: ParameterPanelScopeContext): ParameterPanelScopeContext {
   return {
@@ -90,6 +102,7 @@ function clearDraftState() {
     voiceBinding: {},
     edge: {},
   };
+  referenceSourceIntent.value = null;
   dirtyFieldSet.value = new Set();
 }
 
@@ -109,15 +122,22 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
       top_p: null,
       temperature: null,
       noise_scale: null,
-      reference_audio_path: null,
-      reference_text: null,
-      reference_language: null,
     },
     voiceBinding: {
       voice_id: null,
       model_key: null,
       gpt_path: null,
       sovits_path: null,
+    },
+    reference: {
+      source: null,
+      binding_key: null,
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
+      preset_audio_path: null,
+      preset_text: null,
+      preset_language: null,
     },
     edge: null,
   };
@@ -130,6 +150,9 @@ function cloneResolvedValues(values: ResolvedParameterPanelValues): ResolvedPara
     },
     voiceBinding: {
       ...values.voiceBinding,
+    },
+    reference: {
+      ...values.reference,
     },
     edge: values.edge
       ? {
@@ -156,6 +179,18 @@ function hasResolvedValues(
     values.voiceBinding.voice_id !== null &&
     values.voiceBinding.model_key !== null
   );
+}
+
+function isMixedValue(value: unknown): value is typeof MIXED_VALUE {
+  return value === MIXED_VALUE;
+}
+
+function isConcreteString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function setVoices(voices: VoiceProfile[]) {
+  availableVoices.value = [...voices];
 }
 
 export function useParameterPanel() {
@@ -201,6 +236,7 @@ export function useParameterPanel() {
       renderProfiles: editSession.renderProfiles.value,
       voiceBindings: editSession.voiceBindings.value,
       edges: editSession.edges.value,
+      voices: availableVoices.value,
     }),
   );
 
@@ -253,16 +289,31 @@ export function useParameterPanel() {
 
   const displayValues = computed<ResolvedParameterPanelValues>(() => {
     const base = resolvedValues.value;
+    const displayBinding = {
+      ...base.voiceBinding,
+      ...draftPatch.value.voiceBinding,
+    };
+    const displayProfile = {
+      speed: draftPatch.value.renderProfile.speed ?? base.renderProfile.speed,
+      top_k: draftPatch.value.renderProfile.top_k ?? base.renderProfile.top_k,
+      top_p: draftPatch.value.renderProfile.top_p ?? base.renderProfile.top_p,
+      temperature: draftPatch.value.renderProfile.temperature ?? base.renderProfile.temperature,
+      noise_scale: draftPatch.value.renderProfile.noise_scale ?? base.renderProfile.noise_scale,
+    };
 
     return {
-      renderProfile: {
-        ...base.renderProfile,
-        ...draftPatch.value.renderProfile,
-      },
-      voiceBinding: {
-        ...base.voiceBinding,
-        ...draftPatch.value.voiceBinding,
-      },
+      renderProfile: displayProfile,
+      voiceBinding: displayBinding,
+      reference: buildDisplayReference({
+        base,
+        displayBinding,
+        currentScope: scopeContext.value,
+        renderProfiles: editSession.renderProfiles.value,
+        snapshot: editSession.snapshot.value,
+        segments: editSession.segments.value,
+        groups: editSession.groups.value,
+        draftReferenceOverride: draftPatch.value.renderProfile.reference_override ?? null,
+      }),
       edge: base.edge
         ? {
             ...base.edge,
@@ -330,7 +381,7 @@ export function useParameterPanel() {
     if (isSameAsOriginal) {
       delete nextProfile[key];
     }
-    
+
     draftPatch.value = {
       ...draftPatch.value,
       renderProfile: nextProfile,
@@ -348,6 +399,7 @@ export function useParameterPanel() {
     key: K,
     value: VoiceBindingPatch[K],
   ) {
+    referenceSourceIntent.value = null;
     const isSameAsOriginal =
       value ===
       resolvedValues.value.voiceBinding[
@@ -369,6 +421,111 @@ export function useParameterPanel() {
     } else {
       markDirty(fieldKey);
     }
+  }
+
+  function updateReferenceSource(source: "preset" | "custom") {
+    const currentBindingKey = getActiveBindingKey();
+    if (!currentBindingKey) {
+      return;
+    }
+
+    if (source === "custom") {
+      referenceSourceIntent.value = "custom";
+
+      if (draftPatch.value.renderProfile.reference_override?.operation === "clear") {
+        replaceReferenceOverride(null);
+      }
+
+      if (resolvedValues.value.reference.source === "custom") {
+        clearDirty("reference.source");
+      }
+      return;
+    }
+
+    referenceSourceIntent.value = "preset";
+    const baseReference = resolvedValues.value.reference;
+    if (
+      baseReference.binding_key === currentBindingKey &&
+      baseReference.source === "preset"
+    ) {
+      replaceReferenceOverride(null);
+      clearDirty("reference.source");
+      clearDirty("reference.reference_audio_path");
+      clearDirty("reference.reference_text");
+      clearDirty("reference.reference_language");
+      return;
+    }
+
+    replaceReferenceOverride({
+      binding_key: currentBindingKey,
+      operation: "clear",
+    });
+    markDirty("reference.source");
+  }
+
+  function updateReferenceField(
+    field: ReferenceFieldKey,
+    value: string | null,
+  ) {
+    const currentBindingKey = getActiveBindingKey();
+    if (!currentBindingKey) {
+      return;
+    }
+
+    referenceSourceIntent.value = "custom";
+    const currentReference = displayValues.value.reference;
+    const nextOverride: ReferenceBindingOverridePatch = {
+      binding_key: currentBindingKey,
+      operation: "upsert",
+      reference_audio_path:
+        field === "reference_audio_path"
+          ? value
+          : normalizeReferenceFieldValue(currentReference.reference_audio_path),
+      reference_text:
+        field === "reference_text"
+          ? value
+          : normalizeReferenceFieldValue(currentReference.reference_text),
+      reference_language:
+        field === "reference_language"
+          ? value
+          : normalizeReferenceFieldValue(currentReference.reference_language),
+    };
+
+    replaceReferenceOverride(nextOverride);
+    markDirty(`reference.${field}`);
+    if (resolvedValues.value.reference.source !== "custom") {
+      markDirty("reference.source");
+    }
+  }
+
+  function replaceReferenceOverride(
+    nextOverride: RenderProfilePatch["reference_override"] | null,
+  ) {
+    const nextProfile = { ...draftPatch.value.renderProfile };
+    if (nextOverride) {
+      nextProfile.reference_override = nextOverride;
+    } else {
+      delete nextProfile.reference_override;
+    }
+
+    draftPatch.value = {
+      ...draftPatch.value,
+      renderProfile: nextProfile,
+    };
+  }
+
+  function getActiveBindingKey(): string | null {
+    const displayBinding = displayValues.value.voiceBinding;
+    if (
+      !isConcreteString(displayBinding.voice_id) ||
+      !isConcreteString(displayBinding.model_key) ||
+      isMixedValue(displayBinding.voice_id) ||
+      isMixedValue(displayBinding.model_key)
+    ) {
+      return null;
+    }
+
+    return `${displayBinding.voice_id}:${displayBinding.model_key}`;
   }
 
   function updateEdgeField<K extends keyof EdgeUpdateBody>(
@@ -452,7 +609,11 @@ export function useParameterPanel() {
       submit: () => Promise<void>;
     }> = [];
 
-    if (scopeContext.value.scope === "session" || scopeContext.value.scope === "segment" || scopeContext.value.scope === "batch") {
+    if (
+      scopeContext.value.scope === "session" ||
+      scopeContext.value.scope === "segment" ||
+      scopeContext.value.scope === "batch"
+    ) {
       if (Object.keys(draftPatch.value.voiceBinding).length > 0) {
         tasks.push({
           kind: "voice-binding",
@@ -462,7 +623,10 @@ export function useParameterPanel() {
               return;
             }
             if (scopeContext.value.scope === "segment") {
-              await commitSegmentVoiceBinding(scopeContext.value.segmentIds[0], draftPatch.value.voiceBinding);
+              await commitSegmentVoiceBinding(
+                scopeContext.value.segmentIds[0],
+                draftPatch.value.voiceBinding,
+              );
               return;
             }
             await commitSegmentVoiceBindingBatch({
@@ -497,7 +661,11 @@ export function useParameterPanel() {
       }
     }
 
-    if (scopeContext.value.scope === "edge" && scopeContext.value.edgeId && Object.keys(draftPatch.value.edge).length > 0) {
+    if (
+      scopeContext.value.scope === "edge" &&
+      scopeContext.value.edgeId &&
+      Object.keys(draftPatch.value.edge).length > 0
+    ) {
       tasks.push({
         kind: "edge",
         submit: async () => {
@@ -537,7 +705,10 @@ export function useParameterPanel() {
     if (!hasDirty.value) {
       return;
     }
-    if (!runtimeState.canMutate.value || workspaceProcessing.isInteractionLocked.value) {
+    if (
+      !runtimeState.canMutate.value ||
+      workspaceProcessing.isInteractionLocked.value
+    ) {
       throw new Error("当前存在活动作业，暂时不能提交参数");
     }
 
@@ -616,8 +787,11 @@ export function useParameterPanel() {
         ? cloneScopeContext(pendingScopeContext.value)
         : null,
     ),
+    setVoices,
     updateRenderProfileField,
     updateVoiceBindingField,
+    updateReferenceSource,
+    updateReferenceField,
     updateEdgeField,
     discardDraft,
     submitDraft,
@@ -625,5 +799,180 @@ export function useParameterPanel() {
     discardAndContinue,
     submitAndContinue,
     triggerFlash,
+  };
+}
+
+function normalizeReferenceFieldValue(
+  value: string | typeof MIXED_VALUE | null,
+): string | null {
+  if (value === null || value === MIXED_VALUE) {
+    return null;
+  }
+  return value;
+}
+
+function buildDisplayReference(input: {
+  base: ResolvedParameterPanelValues;
+  displayBinding: ResolvedParameterPanelValues["voiceBinding"];
+  currentScope: ParameterPanelScopeContext;
+  renderProfiles: RenderProfile[];
+  snapshot: {
+    default_render_profile_id?: string | null;
+  } | null;
+  segments: Array<{
+    segment_id: string;
+    group_id: string | null;
+    render_profile_id: string | null;
+  }>;
+  groups: Array<{
+    group_id: string;
+    render_profile_id: string | null;
+  }>;
+  draftReferenceOverride: ReferenceBindingOverridePatch | null;
+}): ResolvedParameterPanelValues["reference"] {
+  if (
+    !isConcreteString(input.displayBinding.voice_id) ||
+    !isConcreteString(input.displayBinding.model_key) ||
+    isMixedValue(input.displayBinding.voice_id) ||
+    isMixedValue(input.displayBinding.model_key)
+  ) {
+    return input.base.reference;
+  }
+
+  const baseProfiles = resolveScopeRenderProfiles({
+    currentScope: input.currentScope,
+    renderProfiles: input.renderProfiles,
+    snapshot: input.snapshot,
+    segments: input.segments,
+    groups: input.groups,
+  });
+  const resolvedStates = baseProfiles.map((profile) =>
+    resolveBindingReferenceState({
+      binding: {
+        voice_id: input.displayBinding.voice_id,
+        model_key: input.displayBinding.model_key,
+      } as VoiceBinding,
+      profile: applyReferenceOverrideDraft(
+        profile,
+        input.draftReferenceOverride,
+      ),
+      voices: availableVoices.value,
+    }),
+  );
+  const resolved = pickDisplayReferenceState(resolvedStates);
+
+  if (referenceSourceIntent.value === "custom" && resolved.source === "preset") {
+    return {
+      ...resolved,
+      source: "custom",
+    };
+  }
+
+  if (referenceSourceIntent.value === "preset") {
+    return {
+      ...resolved,
+      source: "preset",
+    };
+  }
+
+  return resolved;
+}
+
+function resolveScopeRenderProfiles(input: {
+  currentScope: ParameterPanelScopeContext;
+  renderProfiles: RenderProfile[];
+  snapshot: {
+    default_render_profile_id?: string | null;
+  } | null;
+  segments: Array<{
+    segment_id: string;
+    group_id: string | null;
+    render_profile_id: string | null;
+  }>;
+  groups: Array<{
+    group_id: string;
+    render_profile_id: string | null;
+  }>;
+}): RenderProfile[] {
+  const profileById = new Map(
+    input.renderProfiles.map((profile) => [profile.render_profile_id, profile] as const),
+  );
+  const groupById = new Map(
+    input.groups.map((group) => [group.group_id, group] as const),
+  );
+  const defaultProfileId = input.snapshot?.default_render_profile_id ?? null;
+
+  if (input.currentScope.scope === "segment" || input.currentScope.scope === "batch") {
+    return input.currentScope.segmentIds
+      .map((segmentId) => {
+        const segment = input.segments.find((item) => item.segment_id === segmentId);
+        let profileId = defaultProfileId;
+        if (segment?.group_id) {
+          profileId = groupById.get(segment.group_id)?.render_profile_id ?? profileId;
+        }
+        profileId = segment?.render_profile_id ?? profileId;
+        return profileId ? profileById.get(profileId) ?? null : null;
+      })
+      .filter((profile): profile is RenderProfile => profile !== null);
+  }
+
+  return defaultProfileId ? [profileById.get(defaultProfileId) ?? null].filter((profile): profile is RenderProfile => profile !== null) : [];
+}
+
+function applyReferenceOverrideDraft(
+  profile: RenderProfile | null,
+  draftReferenceOverride: ReferenceBindingOverridePatch | null,
+): RenderProfile | null {
+  if (!profile || !draftReferenceOverride?.binding_key) {
+    return profile;
+  }
+
+  const nextOverrides = { ...profile.reference_overrides_by_binding };
+  if (draftReferenceOverride.operation === "clear") {
+    delete nextOverrides[draftReferenceOverride.binding_key];
+  } else {
+    nextOverrides[draftReferenceOverride.binding_key] = {
+      reference_audio_path: draftReferenceOverride.reference_audio_path ?? null,
+      reference_text: draftReferenceOverride.reference_text ?? null,
+      reference_language: draftReferenceOverride.reference_language ?? null,
+    };
+  }
+
+  return {
+    ...profile,
+    reference_overrides_by_binding: nextOverrides,
+  };
+}
+
+function pickDisplayReferenceState(
+  states: Array<ReturnType<typeof resolveBindingReferenceState>>,
+): ResolvedParameterPanelValues["reference"] {
+  if (states.length === 0) {
+    return {
+      source: null,
+      binding_key: null,
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
+      preset_audio_path: null,
+      preset_text: null,
+      preset_language: null,
+    };
+  }
+
+  const pickValue = <T>(values: T[]): T | typeof MIXED_VALUE | null => {
+    const first = values[0];
+    return values.every((value) => value === first) ? first : MIXED_VALUE;
+  };
+
+  return {
+    source: pickValue(states.map((state) => state.source)),
+    binding_key: pickValue(states.map((state) => state.binding_key)),
+    reference_audio_path: pickValue(states.map((state) => state.reference_audio_path)),
+    reference_text: pickValue(states.map((state) => state.reference_text)),
+    reference_language: pickValue(states.map((state) => state.reference_language)),
+    preset_audio_path: pickValue(states.map((state) => state.preset_audio_path)),
+    preset_text: pickValue(states.map((state) => state.preset_text)),
+    preset_language: pickValue(states.map((state) => state.preset_language)),
   };
 }
