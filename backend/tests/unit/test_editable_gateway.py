@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 import torch
 
-from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
+from backend.app.inference.editable_gateway import (
+    EditableInferenceGateway,
+    LazyEditableInferenceGateway,
+    RoutingEditableInferenceGateway,
+)
 from backend.app.inference.editable_types import ReferenceContext, ResolvedRenderContext, ResolvedVoiceBinding
 from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
 from backend.app.schemas.edit_session import EditableEdge, EditableSegment, InitializeEditSessionRequest
@@ -373,3 +377,80 @@ def test_lazy_editable_gateway_clear_backend_forces_rebuild():
     assert first == ("context", 1, "voice-demo")
     assert second == ("context", 2, "voice-demo")
     assert len(created) == 2
+
+
+def test_routing_editable_gateway_dispatches_by_binding_paths():
+    created: list[tuple[str, str]] = []
+
+    def build_backend(tag: str):
+        return SimpleNamespace(
+            build_reference_context=lambda resolved_context, current=tag: ReferenceContext(
+                reference_context_id=f"{current}:{resolved_context.voice_id}",
+                voice_id=resolved_context.voice_id,
+                model_id=resolved_context.model_key,
+                reference_audio_path=resolved_context.reference_audio_path,
+                reference_text=resolved_context.reference_text,
+                reference_language=resolved_context.reference_language,
+                reference_semantic_tokens=np.array([1], dtype=np.int64),
+                reference_spectrogram=torch.zeros((1, 1, 1), dtype=torch.float32),
+                reference_speaker_embedding=torch.zeros((1, 1), dtype=torch.float32),
+                inference_config_fingerprint=current,
+            ),
+            render_segment_base=lambda segment, context, *, progress_callback=None, current=tag: (
+                current,
+                segment.segment_id,
+                context.backend_cache_key,
+            ),
+            render_boundary_asset=lambda left_asset, right_asset, edge, context, current=tag: (
+                current,
+                edge.edge_id,
+                context.backend_cache_key,
+            ),
+        )
+
+    def build_default_backend():
+        return build_backend("default")
+
+    def build_backend_for_paths(gpt_path: str, sovits_path: str):
+        created.append((gpt_path, sovits_path))
+        return build_backend(f"{gpt_path}|{sovits_path}")
+
+    gateway = RoutingEditableInferenceGateway(
+        default_gateway=build_default_backend(),
+        gateway_cache={},
+        gateway_factory=build_backend_for_paths,
+    )
+    segment = EditableSegment(
+        segment_id="seg-1",
+        document_id="doc-1",
+        order_key=1,
+        raw_text="你好",
+        normalized_text="你好",
+        text_language="zh",
+    )
+    routed_context = gateway.build_reference_context(
+        ResolvedRenderContext(
+            voice_id="voice-b",
+            model_key="model-b",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-b",
+                voice_id="voice-b",
+                model_key="model-b",
+                gpt_path="voices/b.ckpt",
+                sovits_path="voices/b.pth",
+            ),
+            render_profile_id="profile-b",
+            render_profile_fingerprint="fp-b",
+        )
+    )
+
+    assert routed_context.backend_cache_key == ("voices/b.ckpt", "voices/b.pth")
+    assert gateway.render_segment_base(segment, routed_context) == (
+        "voices/b.ckpt|voices/b.pth",
+        "seg-1",
+        ("voices/b.ckpt", "voices/b.pth"),
+    )
+    assert created == [("voices/b.ckpt", "voices/b.pth")]

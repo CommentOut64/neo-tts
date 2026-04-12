@@ -12,7 +12,11 @@ from backend.app.api.reference_audio_upload import (
     validate_reference_audio_filename,
 )
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
-from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
+from backend.app.inference.editable_gateway import (
+    EditableInferenceGateway,
+    LazyEditableInferenceGateway,
+    RoutingEditableInferenceGateway,
+)
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -108,7 +112,11 @@ def _resolve_project_path(project_root: Path, raw_path: str) -> str:
     return str((project_root / path).resolve())
 
 
-def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway | LazyEditableInferenceGateway:
+def _build_editable_gateway(
+    request: Request,
+    *,
+    voice_id: str,
+) -> EditableInferenceGateway | LazyEditableInferenceGateway | RoutingEditableInferenceGateway:
     existing = getattr(request.app.state, "editable_inference_gateway", None)
     if existing is not None:
         return existing
@@ -116,15 +124,16 @@ def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInfer
     settings = request.app.state.settings
     voice_service = _build_voice_service(request)
     voice = voice_service.get_voice(voice_id)
-    cache: dict[tuple[str, str], EditableInferenceGateway] = getattr(
+    cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway] = getattr(
         request.app.state,
         "editable_inference_gateway_cache",
         {},
     )
-    cache_key = (voice.gpt_path, voice.sovits_path)
-    if cache_key not in cache:
-        resolved_gpt_path = _resolve_project_path(settings.project_root, voice.gpt_path)
-        resolved_sovits_path = _resolve_project_path(settings.project_root, voice.sovits_path)
+    default_cache_key = (voice.gpt_path, voice.sovits_path)
+
+    def _build_cached_gateway(gpt_path: str, sovits_path: str) -> LazyEditableInferenceGateway:
+        resolved_gpt_path = _resolve_project_path(settings.project_root, gpt_path)
+        resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
 
         def _build_backend():
             from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
@@ -136,9 +145,16 @@ def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInfer
                 settings.bert_path,
             )
 
-        cache[cache_key] = LazyEditableInferenceGateway(backend_factory=_build_backend)
+        return LazyEditableInferenceGateway(backend_factory=_build_backend)
+
+    if default_cache_key not in cache:
+        cache[default_cache_key] = _build_cached_gateway(*default_cache_key)
         request.app.state.editable_inference_gateway_cache = cache
-    return cache[cache_key]
+    return RoutingEditableInferenceGateway(
+        default_gateway=cache[default_cache_key],
+        gateway_cache=cache,
+        gateway_factory=_build_cached_gateway,
+    )
 
 
 def _build_edit_session_service(request: Request) -> EditSessionService:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import threading
 from typing import Callable, Protocol
 
@@ -97,3 +98,90 @@ class LazyEditableInferenceGateway:
     def clear_backend(self) -> None:
         with self._backend_lock:
             self._backend = None
+
+
+class RoutingEditableInferenceGateway:
+    def __init__(
+        self,
+        *,
+        default_gateway: EditableInferenceGateway | LazyEditableInferenceGateway,
+        gateway_cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway],
+        gateway_factory: Callable[[str, str], EditableInferenceGateway | LazyEditableInferenceGateway],
+    ) -> None:
+        self._default_gateway = default_gateway
+        self._gateway_cache = gateway_cache
+        self._gateway_factory = gateway_factory
+        self._gateway_lock = threading.Lock()
+
+    @staticmethod
+    def _resolve_cache_key(resolved_context: ResolvedRenderContext) -> tuple[str, str] | None:
+        binding = resolved_context.resolved_voice_binding
+        if binding is None:
+            return None
+        if not binding.gpt_path or not binding.sovits_path:
+            return None
+        return (binding.gpt_path, binding.sovits_path)
+
+    def _get_gateway(
+        self,
+        cache_key: tuple[str, str] | None,
+    ) -> EditableInferenceGateway | LazyEditableInferenceGateway:
+        if cache_key is None:
+            return self._default_gateway
+
+        gateway = self._gateway_cache.get(cache_key)
+        if gateway is not None:
+            return gateway
+
+        with self._gateway_lock:
+            cached = self._gateway_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            created = self._gateway_factory(*cache_key)
+            self._gateway_cache[cache_key] = created
+            return created
+
+    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+        cache_key = self._resolve_cache_key(resolved_context)
+        context = self._get_gateway(cache_key).build_reference_context(resolved_context)
+        if cache_key is None:
+            return context
+        return replace(context, backend_cache_key=cache_key)
+
+    def render_segment_base(
+        self,
+        segment: EditableSegment,
+        context: ReferenceContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> SegmentRenderAssetPayload:
+        return self._get_gateway(context.backend_cache_key).render_segment_base(
+            segment,
+            context,
+            progress_callback=progress_callback,
+        )
+
+    def render_boundary_asset(
+        self,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+        edge: EditableEdge,
+        context: ReferenceContext,
+    ) -> BoundaryAssetPayload:
+        return self._get_gateway(context.backend_cache_key).render_boundary_asset(
+            left_asset,
+            right_asset,
+            edge,
+            context,
+        )
+
+    def clear_backend(self) -> None:
+        seen: set[int] = set()
+        for gateway in [self._default_gateway, *self._gateway_cache.values()]:
+            identity = id(gateway)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            clear_backend = getattr(gateway, "clear_backend", None)
+            if callable(clear_backend):
+                clear_backend()

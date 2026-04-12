@@ -24,6 +24,7 @@ class ReferenceContext:
     reference_speaker_embedding: torch.Tensor
     inference_config_fingerprint: str
     inference_config: dict[str, Any] = field(default_factory=dict)
+    backend_cache_key: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
