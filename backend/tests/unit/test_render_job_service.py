@@ -21,6 +21,7 @@ from backend.app.schemas.edit_session import (
     InitializeEditSessionRequest,
     PreviewRequest,
     ReorderSegmentsRequest,
+    StandardizationPreviewRequest,
     SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
@@ -254,6 +255,71 @@ def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
     ]
     assert snapshot.total_segment_count == 5
     assert snapshot.total_edge_count == 4
+
+
+def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule_fields(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text='第一句？！\n第二句”',
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    events = service._runtime._events[accepted.job.job_id]  # noqa: SLF001
+    payload = next(event["data"] for event in events if event["event"] == "segments_initialized")
+
+    assert payload["segments"] == [
+        {
+            "segment_id": payload["segments"][0]["segment_id"],
+            "order_key": 1,
+            "raw_text": "第一句？！",
+            "terminal_raw": "？！",
+            "terminal_closer_suffix": "",
+            "terminal_source": "original",
+            "detected_language": "zh",
+            "inference_exclusion_reason": "none",
+            "render_status": "pending",
+        },
+        {
+            "segment_id": payload["segments"][1]["segment_id"],
+            "order_key": 2,
+            "raw_text": '第二句。”',
+            "terminal_raw": "",
+            "terminal_closer_suffix": "”",
+            "terminal_source": "synthetic",
+            "detected_language": "zh",
+            "inference_exclusion_reason": "none",
+            "render_status": "pending",
+        },
+    ]
+
+
+def test_get_standardization_preview_response_paginates_and_marks_other_language_segments(tmp_path):
+    service = _build_service(tmp_path)
+
+    response = service.get_standardization_preview_response(
+        StandardizationPreviewRequest(
+            raw_text='第一句？！\nSecond sentence!\n第三句”',
+            text_language="auto",
+            segment_limit=2,
+        )
+    )
+
+    assert response.analysis_stage == "complete"
+    assert response.total_segments == 3
+    assert response.next_cursor == 2
+    assert response.resolved_document_language == "zh"
+    assert response.language_detection_source == "auto"
+    assert [segment.order_key for segment in response.segments] == [1, 2]
+    assert response.segments[0].canonical_text == "第一句。"
+    assert response.segments[0].terminal_raw == "？！"
+    assert response.segments[0].detected_language == "zh"
+    assert response.segments[0].inference_exclusion_reason == "none"
+    assert response.segments[1].canonical_text == "Second sentence。"
+    assert response.segments[1].detected_language == "en"
+    assert response.segments[1].inference_exclusion_reason == "other_language_segment"
 
 
 def test_run_initialize_job_marks_job_failed_when_render_raises(tmp_path):
@@ -666,6 +732,22 @@ def test_create_update_segment_job_preserves_planner_metadata_for_queued_edit_jo
     assert queued_job.earliest_changed_order_key == 1
     assert queued_job.timeline_reflow_required is True
     assert queued_job.change_reason == "segment_update"
+
+
+def test_run_initialize_job_persists_canonical_text_in_normalized_text_only(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text='第一句？！第二句”',
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    assert [segment.raw_text for segment in snapshot.segments] == ['第一句？！', '第二句。”']
+    assert [segment.normalized_text for segment in snapshot.segments] == ["第一句。", "第二句。"]
 
 
 def test_run_edit_job_restores_planner_metadata_into_render_plan(tmp_path, monkeypatch):

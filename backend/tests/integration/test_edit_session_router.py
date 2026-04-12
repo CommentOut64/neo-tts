@@ -726,6 +726,32 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         assert restored_snapshot["edges"][0]["pause_duration_seconds"] == 0.3
 
 
+def test_standardization_preview_route_returns_capsules_and_language_summary(test_app_settings):
+    app = create_app(settings=test_app_settings)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/edit-session/standardization-preview",
+            json={
+                "raw_text": '第一句？！\nSecond sentence!\n第三句”',
+                "text_language": "auto",
+                "segment_limit": 2,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["analysis_stage"] == "complete"
+        assert payload["total_segments"] == 3
+        assert payload["next_cursor"] == 2
+        assert payload["resolved_document_language"] == "zh"
+        assert payload["language_detection_source"] == "auto"
+        assert payload["segments"][0]["terminal_raw"] == "？！"
+        assert payload["segments"][0]["detected_language"] == "zh"
+        assert payload["segments"][1]["detected_language"] == "en"
+        assert payload["segments"][1]["inference_exclusion_reason"] == "other_language_segment"
+
+
 def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)

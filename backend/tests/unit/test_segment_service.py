@@ -41,18 +41,23 @@ def _segment(segment_id: str, order_key: int, raw_text: str) -> EditableSegment:
     )
 
 
-def test_insert_segment_requires_strong_boundary_punctuation(tmp_path):
+def test_insert_segment_auto_appends_synthetic_period_when_boundary_is_missing(tmp_path):
     service = _build_service(tmp_path)
     snapshot = _snapshot(_segment("seg-1", 1, "原句。"))
 
-    with pytest.raises(ValueError, match="强标点"):
-        service.insert_segment(
-            after_segment_id="seg-1",
-            raw_text="没有句末标点",
-            text_language="zh",
-            inference_override={},
-            snapshot=snapshot,
-        )
+    mutation = service.insert_segment(
+        after_segment_id="seg-1",
+        raw_text="没有句末标点",
+        text_language="zh",
+        inference_override={},
+        snapshot=snapshot,
+    )
+
+    assert mutation.segment is not None
+    assert mutation.segment.raw_text == "没有句末标点。"
+    assert mutation.segment.normalized_text == "没有句末标点。"
+    assert mutation.segment.terminal_raw == ""
+    assert mutation.segment.terminal_source == "synthetic"
 
 
 def test_insert_segment_marks_short_segment_risk(tmp_path):
@@ -71,6 +76,26 @@ def test_insert_segment_marks_short_segment_risk(tmp_path):
     assert "short_naturalness_risk" in mutation.segment.risk_flags
 
 
+def test_insert_segment_preserves_terminal_capsule_but_keeps_display_text_in_raw_text(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = _snapshot(_segment("seg-1", 1, "原句。"))
+
+    mutation = service.insert_segment(
+        after_segment_id="seg-1",
+        raw_text='真的么？！」',
+        text_language="zh",
+        inference_override={},
+        snapshot=snapshot,
+    )
+
+    assert mutation.segment is not None
+    assert mutation.segment.raw_text == '真的么？！」'
+    assert mutation.segment.normalized_text == "真的么。"
+    assert mutation.segment.terminal_raw == "？！"
+    assert mutation.segment.terminal_closer_suffix == "」"
+    assert mutation.segment.terminal_source == "original"
+
+
 def test_update_segment_marks_long_segment_risk(tmp_path):
     service = _build_service(tmp_path)
     snapshot = _snapshot(_segment("seg-1", 1, "原句。"))
@@ -84,6 +109,65 @@ def test_update_segment_marks_long_segment_risk(tmp_path):
 
     assert mutation.segment is not None
     assert "long_edit_cost_risk" in mutation.segment.risk_flags
+
+
+def test_update_segment_auto_appends_synthetic_period_without_restoring_question_tone(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = _snapshot(_segment("seg-1", 1, "真的吗？"))
+
+    mutation = service.update_segment(
+        "seg-1",
+        UpdateSegmentRequest(raw_text="真的吗"),
+        snapshot=snapshot,
+    )
+
+    assert mutation.segment is not None
+    assert mutation.segment.raw_text == "真的吗。"
+    assert mutation.segment.normalized_text == "真的吗。"
+    assert mutation.segment.terminal_raw == ""
+    assert mutation.segment.terminal_closer_suffix == ""
+    assert mutation.segment.terminal_source == "synthetic"
+
+
+def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = _snapshot(
+        EditableSegment(
+            segment_id="seg-1",
+            document_id="doc-1",
+            order_key=1,
+            previous_segment_id=None,
+            next_segment_id="seg-2",
+            raw_text="你好？",
+            normalized_text="你好。",
+            text_language="zh",
+            terminal_raw="？",
+            terminal_closer_suffix="",
+            terminal_source="original",
+        ),
+        EditableSegment(
+            segment_id="seg-2",
+            document_id="doc-1",
+            order_key=2,
+            previous_segment_id="seg-1",
+            next_segment_id=None,
+            raw_text='世界！”',
+            normalized_text="世界。",
+            text_language="zh",
+            terminal_raw="！",
+            terminal_closer_suffix="”",
+            terminal_source="original",
+        ),
+    )
+
+    mutation = service.merge_segments("seg-1", "seg-2", snapshot=snapshot)
+
+    assert mutation.segment is not None
+    assert mutation.segment.raw_text == '你好世界！”'
+    assert mutation.segment.normalized_text == "你好世界。"
+    assert mutation.segment.terminal_raw == "！"
+    assert mutation.segment.terminal_closer_suffix == "”"
+    assert mutation.segment.terminal_source == "original"
 
 
 def test_reorder_segments_reorders_snapshot_and_rebuilds_neighbors(tmp_path):
