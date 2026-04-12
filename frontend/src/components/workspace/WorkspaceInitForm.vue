@@ -3,6 +3,7 @@ import { computed } from "vue";
 import type { VoiceProfile } from "@/types/tts";
 import VoiceSelect from "@/components/VoiceSelect.vue";
 import InferenceSettingsPanel from "@/components/InferenceSettingsPanel.vue";
+import type { InputTextLanguage } from "@/composables/useInputDraft";
 
 const props = defineProps<{
   modelValue: {
@@ -25,6 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:modelValue": [value: any];
+  "request-text-language-change": [value: InputTextLanguage];
   reset: [];
 }>();
 
@@ -51,6 +53,15 @@ function handleVoiceChange(val: string) {
     newParams.custom_ref_file = null;
   }
   emit("update:modelValue", newParams);
+}
+
+function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
+  if (nextParams.text_lang !== props.modelValue.text_lang) {
+    emit("request-text-language-change", nextParams.text_lang as InputTextLanguage);
+    return;
+  }
+
+  emit("update:modelValue", nextParams);
 }
 </script>
 
@@ -154,7 +165,8 @@ function handleVoiceChange(val: string) {
     <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
       <InferenceSettingsPanel
         :params="modelValue"
-        @update:params="emit('update:modelValue', { ...modelValue, ...$event })"
+        :show-text-split-method="false"
+        @update:params="handleInferenceParamsUpdate"
         @reset="emit('reset')"
       />
     </section>
