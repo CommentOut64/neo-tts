@@ -133,6 +133,7 @@ npm run dev
 - 当前配置优先级是：CLI > 进程环境变量 > `config/launch.json` > 默认值
 - 推荐把项目级启动配置写到 `config/launch.json`
 - `start_dev.bat` 只保留为源码联调兼容入口，不包含单实例、旧进程清理与守护逻辑
+- Go launcher 现在只接受 `dev/web`；`product/electron` 必须由 `desktop` 下的 Electron main 作为正式入口
 - `backend.mode=external` 时，launcher 只探活外部后端，不接管也不清理它
 - `dev/web` 下由 Go launcher 持有 owner 生命周期；产品态由 Electron main 持有 owner 生命周期
 - `runtime-state.json` 与 `exit-request.json` 若存在，也只作为调试快照，不再作为关键控制真相
