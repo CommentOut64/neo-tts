@@ -6,6 +6,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
+InferenceExclusionReason = Literal[
+    "none",
+    "other_language_segment",
+    "unsupported_language",
+    "language_unresolved",
+]
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -96,6 +105,17 @@ class EditableSegment(BaseModel):
     raw_text: str = Field(description="用户编辑的原始段文本。")
     normalized_text: str = Field(description="归一化后的段文本。")
     text_language: str = Field(description="该段文本语言。")
+    terminal_raw: str = Field(default="", description="句尾区域原始强标点簇；synthetic 时为空串。")
+    terminal_closer_suffix: str = Field(default="", description="句尾尾随闭合符串。")
+    terminal_source: Literal["original", "synthetic"] = Field(
+        default="synthetic",
+        description="句尾来源；original 表示源文本自带，synthetic 表示系统自动补齐。",
+    )
+    detected_language: ResolvedLanguage = Field(default="unknown", description="标准化阶段解析出的段级语言。")
+    inference_exclusion_reason: InferenceExclusionReason = Field(
+        default="language_unresolved",
+        description="当前段是否应进入推理主路径的排除原因。",
+    )
     render_version: int = Field(default=0, description="当前段正式渲染资产的版本号。")
     render_asset_id: str | None = Field(default=None, description="当前段正式渲染资产 ID；未生成时为 null。")
     group_id: str | None = Field(default=None, description="所属分组 ID；未分组时为 null。")
@@ -629,6 +649,43 @@ class PreviewResponse(BaseModel):
         if self.audio_delivery.expires_at is None:
             raise ValueError("PreviewResponse.audio_delivery.expires_at is required.")
         return self
+
+
+class StandardizationPreviewRequest(BaseModel):
+    raw_text: str = Field(min_length=1, description="待标准化预览的原始全文文本。")
+    text_language: str = Field(default="auto", description="文本语言，支持 `auto`、`zh`、`ja`、`en`。")
+    request_id: str | None = Field(default=None, description="可选请求 ID，仅用于追踪。")
+    segment_limit: int = Field(default=80, ge=1, le=500, description="当前页最多返回的 preview 段数。")
+    cursor: int | None = Field(default=None, ge=0, description="下一页游标；null 表示从头开始。")
+    include_language_analysis: bool = Field(default=True, description="是否包含语言分析结果。")
+
+
+class StandardizationPreviewSegment(BaseModel):
+    order_key: int = Field(description="preview 段顺序。")
+    canonical_text: str = Field(description="canonical 段文本。")
+    terminal_raw: str = Field(description="原始强标点簇；synthetic 时为空串。")
+    terminal_closer_suffix: str = Field(description="尾随闭合符串。")
+    terminal_source: Literal["original", "synthetic"] = Field(description="句尾来源。")
+    detected_language: ResolvedLanguage | None = Field(default=None, description="段级语言；未分析时为 null。")
+    inference_exclusion_reason: InferenceExclusionReason | None = Field(
+        default=None,
+        description="段是否进入推理主路径的排除原因；未分析时为 null。",
+    )
+    warnings: list[str] = Field(default_factory=list, description="当前段的 warning 列表。")
+
+
+class StandardizationPreviewResponse(BaseModel):
+    analysis_stage: Literal["light", "complete"] = Field(description="本次 preview 的分析阶段。")
+    document_char_count: int = Field(ge=0, description="预览输入的字符数。")
+    total_segments: int = Field(ge=0, description="标准化后的总段数。")
+    next_cursor: int | None = Field(default=None, description="下一页游标；无下一页时为 null。")
+    resolved_document_language: ResolvedLanguage | None = Field(default=None, description="文档级解析语言。")
+    language_detection_source: Literal["explicit", "auto"] | None = Field(
+        default=None,
+        description="语言检测来源；未分析时为 null。",
+    )
+    warnings: list[str] = Field(default_factory=list, description="文档级 warning 列表。")
+    segments: list[StandardizationPreviewSegment] = Field(default_factory=list, description="当前页 preview 段列表。")
 
 
 class SegmentAssetResponse(BaseModel):

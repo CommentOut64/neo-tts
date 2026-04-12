@@ -54,6 +54,7 @@ from backend.app.inference.text_processing import (
     build_phones_and_bert_features,
     split_text_segments_official,
 )
+from backend.app.text.segment_standardizer import build_segment_render_text
 from backend.app.inference.types import InferenceCancelledError
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -431,7 +432,14 @@ class GPTSoVITSOptimizedInference:
             context.reference_language,
             self.hps.model.version,
         )
-        segment_text = ensure_sentence_end(segment.normalized_text or segment.raw_text, segment.text_language)
+        segment_text = build_segment_render_text(
+            raw_text=segment.raw_text,
+            normalized_text=segment.normalized_text,
+            text_language=segment.text_language,
+            terminal_raw=getattr(segment, "terminal_raw", ""),
+            terminal_closer_suffix=getattr(segment, "terminal_closer_suffix", ""),
+            terminal_source=getattr(segment, "terminal_source", "synthetic"),
+        )
         segment_phones, segment_bert, _ = self.get_phones_and_bert(
             segment_text,
             segment.text_language,

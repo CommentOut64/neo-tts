@@ -1,28 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import string
 from uuid import uuid4
 
 from backend.app.core.exceptions import EditSessionNotFoundError
-from backend.app.inference.text_processing import normalize_whitespace
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
-    CreateSegmentRequest,
     DocumentSnapshot,
     EditableSegment,
     UpdateSegmentRequest,
 )
 from backend.app.services.edge_service import EdgeService
-
-
-SHORT_NATURALNESS_RISK = "short_naturalness_risk"
-LONG_EDIT_COST_RISK = "long_edit_cost_risk"
-_STRONG_BOUNDARY_TERMINATORS = ("。", "！", "？", "!", "?", "…")
-_NON_SPEECH_CHARACTERS = set(string.punctuation) | set("，。！？；：、（）【】《》“”‘’…·—")
-_APPROX_CHARS_PER_SECOND = 5.0
-_SHORT_SEGMENT_SECONDS = 3.0
-_LONG_SEGMENT_SECONDS = 30.0
+from backend.app.text.segment_standardizer import (
+    LONG_EDIT_COST_RISK,
+    SHORT_NATURALNESS_RISK,
+    build_segment_display_text,
+    extract_segment_stem,
+    standardize_segment_text,
+    standardize_segment_texts,
+)
 
 
 @dataclass(frozen=True)
@@ -82,22 +78,28 @@ class SegmentService:
             if insert_index < 0:
                 raise EditSessionNotFoundError(f"Segment '{after_segment_id}' not found.")
 
-        normalized_text, risk_flags = self.describe_segment_text(raw_text)
+        standardized = standardize_segment_text(raw_text, text_language)
         inserted_segment = EditableSegment(
             segment_id=f"segment-{uuid4().hex}",
             document_id=head_snapshot.document_id,
             order_key=0,
-            raw_text=normalized_text,
-            normalized_text=normalized_text,
+            raw_text=standardized.raw_text,
+            normalized_text=standardized.normalized_text,
             text_language=text_language,
+            terminal_raw=standardized.terminal_raw,
+            terminal_closer_suffix=standardized.terminal_closer_suffix,
+            terminal_source=standardized.terminal_source,
+            detected_language=standardized.detected_language,
+            inference_exclusion_reason=standardized.inference_exclusion_reason,
             render_version=1,
             render_asset_id=None,
             group_id=group_id,
             render_profile_id=render_profile_id,
             voice_binding_id=voice_binding_id,
             inference_override=dict(inference_override),
-            risk_flags=risk_flags,
+            risk_flags=standardized.risk_flags,
             assembled_audio_span=None,
+            render_status="pending",
         )
         segments.insert(insert_index, inserted_segment)
         normalized_segments = self._normalize_segment_order(segments)
@@ -130,22 +132,28 @@ class SegmentService:
                 raise EditSessionNotFoundError(f"Segment '{after_segment_id}' not found.")
 
         inserted_segments: list[EditableSegment] = []
-        for raw_text in raw_segments:
-            normalized_text, risk_flags = self.describe_segment_text(raw_text)
+        standardized_batch = standardize_segment_texts(raw_segments, text_language)
+        for standardized in standardized_batch.segments:
             inserted_segments.append(
                 EditableSegment(
                     segment_id=f"segment-{uuid4().hex}",
                     document_id=head_snapshot.document_id,
                     order_key=0,
-                    raw_text=normalized_text,
-                    normalized_text=normalized_text,
+                    raw_text=standardized.raw_text,
+                    normalized_text=standardized.normalized_text,
                     text_language=text_language,
+                    terminal_raw=standardized.terminal_raw,
+                    terminal_closer_suffix=standardized.terminal_closer_suffix,
+                    terminal_source=standardized.terminal_source,
+                    detected_language=standardized.detected_language,
+                    inference_exclusion_reason=standardized.inference_exclusion_reason,
                     render_version=1,
                     render_asset_id=None,
                     group_id=group_id,
                     inference_override={},
-                    risk_flags=risk_flags,
+                    risk_flags=standardized.risk_flags,
                     assembled_audio_span=None,
+                    render_status="pending",
                 )
             )
         segments[insert_index:insert_index] = inserted_segments
@@ -180,11 +188,16 @@ class SegmentService:
         rerender_required = False
 
         if patch.raw_text is not None:
-            normalized_text, risk_flags = self.describe_segment_text(patch.raw_text)
-            if normalized_text != current_segment.raw_text:
-                updated_segment.raw_text = normalized_text
-                updated_segment.normalized_text = normalize_whitespace(normalized_text)
-                updated_segment.risk_flags = risk_flags
+            standardized = standardize_segment_text(patch.raw_text, patch.text_language or current_segment.text_language)
+            if standardized.raw_text != current_segment.raw_text or standardized.normalized_text != current_segment.normalized_text:
+                updated_segment.raw_text = standardized.raw_text
+                updated_segment.normalized_text = standardized.normalized_text
+                updated_segment.terminal_raw = standardized.terminal_raw
+                updated_segment.terminal_closer_suffix = standardized.terminal_closer_suffix
+                updated_segment.terminal_source = standardized.terminal_source
+                updated_segment.detected_language = standardized.detected_language
+                updated_segment.inference_exclusion_reason = standardized.inference_exclusion_reason
+                updated_segment.risk_flags = standardized.risk_flags
                 rerender_required = True
         if patch.text_language is not None and patch.text_language != current_segment.text_language:
             updated_segment.text_language = patch.text_language
@@ -388,23 +401,28 @@ class SegmentService:
         if target_index is None:
             raise EditSessionNotFoundError(f"Segment '{segment_id}' not found.")
         original = segments[target_index]
-        left_normalized_text, left_risk_flags = self.describe_segment_text(left_text)
-        right_normalized_text, right_risk_flags = self.describe_segment_text(right_text)
         next_language = text_language or original.text_language
+        standardized_batch = standardize_segment_texts([left_text, right_text], next_language)
+        left_standardized, right_standardized = standardized_batch.segments
         left_segment = EditableSegment(
             segment_id=f"segment-{uuid4().hex}",
             document_id=original.document_id,
             order_key=0,
-            raw_text=left_normalized_text,
-            normalized_text=left_normalized_text,
+            raw_text=left_standardized.raw_text,
+            normalized_text=left_standardized.normalized_text,
             text_language=next_language,
+            terminal_raw=left_standardized.terminal_raw,
+            terminal_closer_suffix=left_standardized.terminal_closer_suffix,
+            terminal_source=left_standardized.terminal_source,
+            detected_language=left_standardized.detected_language,
+            inference_exclusion_reason=left_standardized.inference_exclusion_reason,
             render_version=1,
             render_asset_id=None,
             group_id=original.group_id,
             render_profile_id=original.render_profile_id,
             voice_binding_id=original.voice_binding_id,
             inference_override=dict(original.inference_override),
-            risk_flags=left_risk_flags,
+            risk_flags=left_standardized.risk_flags,
             assembled_audio_span=None,
             render_status="pending",
         )
@@ -412,16 +430,21 @@ class SegmentService:
             segment_id=f"segment-{uuid4().hex}",
             document_id=original.document_id,
             order_key=0,
-            raw_text=right_normalized_text,
-            normalized_text=right_normalized_text,
+            raw_text=right_standardized.raw_text,
+            normalized_text=right_standardized.normalized_text,
             text_language=next_language,
+            terminal_raw=right_standardized.terminal_raw,
+            terminal_closer_suffix=right_standardized.terminal_closer_suffix,
+            terminal_source=right_standardized.terminal_source,
+            detected_language=right_standardized.detected_language,
+            inference_exclusion_reason=right_standardized.inference_exclusion_reason,
             render_version=1,
             render_asset_id=None,
             group_id=original.group_id,
             render_profile_id=original.render_profile_id,
             voice_binding_id=original.voice_binding_id,
             inference_override=dict(original.inference_override),
-            risk_flags=right_risk_flags,
+            risk_flags=right_standardized.risk_flags,
             assembled_audio_span=None,
             render_status="pending",
         )
@@ -459,21 +482,38 @@ class SegmentService:
             raise ValueError("Merge requires adjacent segments in current order.")
         left_segment = segments[left_index]
         right_segment = segments[right_index]
-        merged_text, risk_flags = self.describe_segment_text(f"{left_segment.raw_text}{right_segment.raw_text}")
+        left_stem = extract_segment_stem(
+            raw_text=left_segment.raw_text,
+            normalized_text=left_segment.normalized_text,
+        )
+        right_display_text = build_segment_display_text(
+            raw_text=right_segment.raw_text,
+            normalized_text=right_segment.normalized_text,
+            text_language=right_segment.text_language,
+            terminal_raw=right_segment.terminal_raw,
+            terminal_closer_suffix=right_segment.terminal_closer_suffix,
+            terminal_source=right_segment.terminal_source,
+        )
+        merged_standardized = standardize_segment_text(f"{left_stem}{right_display_text}", left_segment.text_language)
         merged_segment = EditableSegment(
             segment_id=f"segment-{uuid4().hex}",
             document_id=left_segment.document_id,
             order_key=0,
-            raw_text=merged_text,
-            normalized_text=merged_text,
+            raw_text=merged_standardized.raw_text,
+            normalized_text=merged_standardized.normalized_text,
             text_language=left_segment.text_language,
+            terminal_raw=merged_standardized.terminal_raw,
+            terminal_closer_suffix=merged_standardized.terminal_closer_suffix,
+            terminal_source=merged_standardized.terminal_source,
+            detected_language=merged_standardized.detected_language,
+            inference_exclusion_reason=merged_standardized.inference_exclusion_reason,
             render_version=1,
             render_asset_id=None,
             group_id=left_segment.group_id,
             render_profile_id=left_segment.render_profile_id,
             voice_binding_id=left_segment.voice_binding_id,
             inference_override=dict(left_segment.inference_override),
-            risk_flags=risk_flags,
+            risk_flags=merged_standardized.risk_flags,
             assembled_audio_span=None,
             render_status="pending",
         )
@@ -642,25 +682,5 @@ class SegmentService:
 
     @staticmethod
     def describe_segment_text(raw_text: str) -> tuple[str, list[str]]:
-        normalized = normalize_whitespace(raw_text)
-        if not normalized:
-            raise ValueError("Segment text must not be empty.")
-        if not normalized.endswith(_STRONG_BOUNDARY_TERMINATORS):
-            raise ValueError("Segment text must end with a strong boundary punctuation (强标点).")
-
-        speech_char_count = sum(
-            1
-            for char in normalized
-            if not char.isspace() and char not in _NON_SPEECH_CHARACTERS
-        )
-        if speech_char_count <= 0:
-            raise ValueError("Segment text must contain readable speech content.")
-
-        approx_seconds = speech_char_count / _APPROX_CHARS_PER_SECOND
-        risk_flags: list[str] = []
-        # v0.0.1 先用字符数近似语速，兑现设计文档里的长短段风险提示。
-        if approx_seconds < _SHORT_SEGMENT_SECONDS:
-            risk_flags.append(SHORT_NATURALNESS_RISK)
-        if approx_seconds > _LONG_SEGMENT_SECONDS:
-            risk_flags.append(LONG_EDIT_COST_RISK)
-        return normalized, risk_flags
+        standardized = standardize_segment_text(raw_text, "unknown")
+        return standardized.raw_text, standardized.risk_flags

@@ -31,11 +31,7 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
-from backend.app.inference.text_processing import (
-    normalize_whitespace,
-    split_text_segments_raw_strong_punctuation,
-    split_text_segments_zh_period,
-)
+from backend.app.inference.text_processing import split_text_segments_zh_period
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
@@ -59,6 +55,9 @@ from backend.app.schemas.edit_session import (
     RenderProfilePatchRequest,
     RenderProfileListResponse,
     SegmentAssetResponse,
+    StandardizationPreviewRequest,
+    StandardizationPreviewResponse,
+    StandardizationPreviewSegment,
     SegmentBatchRenderProfilePatchRequest,
     SegmentBatchVoiceBindingPatchRequest,
     SegmentGroup,
@@ -90,6 +89,12 @@ from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
+from backend.app.text.segment_standardizer import (
+    build_standardization_preview,
+    split_text_segments_with_terminal_capsules,
+    standardize_segment_text,
+    standardize_segment_texts,
+)
 
 render_job_logger = get_logger("render_job_service")
 
@@ -1209,6 +1214,40 @@ class RenderJobService:
             ),
         )
 
+    def get_standardization_preview_response(
+        self,
+        request: StandardizationPreviewRequest,
+    ) -> StandardizationPreviewResponse:
+        preview = build_standardization_preview(
+            raw_text=request.raw_text,
+            text_language=request.text_language,
+            segment_limit=request.segment_limit,
+            cursor=request.cursor,
+            include_language_analysis=request.include_language_analysis,
+        )
+        return StandardizationPreviewResponse(
+            analysis_stage=preview.analysis_stage,
+            document_char_count=preview.document_char_count,
+            total_segments=preview.total_segments,
+            next_cursor=preview.next_cursor,
+            resolved_document_language=preview.resolved_document_language,
+            language_detection_source=preview.language_detection_source,
+            warnings=preview.warnings,
+            segments=[
+                StandardizationPreviewSegment(
+                    order_key=segment.order_key,
+                    canonical_text=segment.canonical_text,
+                    terminal_raw=segment.terminal_raw,
+                    terminal_closer_suffix=segment.terminal_closer_suffix,
+                    terminal_source=segment.terminal_source,
+                    detected_language=segment.detected_language,
+                    inference_exclusion_reason=segment.inference_exclusion_reason,
+                    warnings=segment.warnings,
+                )
+                for segment in preview.segments
+            ],
+        )
+
     def get_segment_asset_response(self, render_asset_id: str) -> SegmentAssetResponse:
         asset = self._load_segment_asset_or_404(render_asset_id)
         sample_rate = self._load_sample_rate(self._asset_store.segment_asset_path(render_asset_id), asset_id=render_asset_id)
@@ -1290,7 +1329,6 @@ class RenderJobService:
         )
         if not segments:
             raise ValueError("请输入有效文本")
-        normalized_text = normalize_whitespace(plan.request.raw_text)
         plan.segments = self._build_segments(plan.document_id, segments, plan.request.text_language)
         plan.edges = self._build_edges(plan.document_id, plan.segments, plan.request.pause_duration_seconds)
         self._runtime.update_job(
@@ -1309,6 +1347,11 @@ class RenderJobService:
                         "segment_id": segment.segment_id,
                         "order_key": segment.order_key,
                         "raw_text": segment.raw_text,
+                        "terminal_raw": segment.terminal_raw,
+                        "terminal_closer_suffix": segment.terminal_closer_suffix,
+                        "terminal_source": segment.terminal_source,
+                        "detected_language": segment.detected_language,
+                        "inference_exclusion_reason": segment.inference_exclusion_reason,
                         "render_status": segment.render_status,
                     }
                     for segment in plan.segments
@@ -1316,7 +1359,6 @@ class RenderJobService:
             },
         )
         self._persist_runtime_job(plan.job_id)
-        self._ = normalized_text
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
@@ -1341,7 +1383,7 @@ class RenderJobService:
     @staticmethod
     def _split_raw_segments(raw_text: str, *, segment_boundary_mode: str) -> list[str]:
         if segment_boundary_mode == "raw_strong_punctuation":
-            return split_text_segments_raw_strong_punctuation(raw_text)
+            return split_text_segments_with_terminal_capsules(raw_text)
         if segment_boundary_mode == "zh_period":
             return split_text_segments_zh_period(raw_text)
         raise ValueError(f"Unsupported segment_boundary_mode '{segment_boundary_mode}'.")
@@ -2093,20 +2135,26 @@ class RenderJobService:
         text_language: str,
     ) -> list[EditableSegment]:
         segments: list[EditableSegment] = []
-        for index, raw_text in enumerate(raw_segments, start=1):
+        standardized_batch = standardize_segment_texts(raw_segments, text_language)
+        for index, standardized in enumerate(standardized_batch.segments, start=1):
             previous_segment_id = segments[-1].segment_id if segments else None
             segment_id = f"segment-{uuid4().hex}"
-            normalized_text, risk_flags = self._segment_service.describe_segment_text(raw_text)
             segment = EditableSegment(
                 segment_id=segment_id,
                 document_id=document_id,
                 order_key=index,
                 previous_segment_id=previous_segment_id,
-                raw_text=normalized_text,
-                normalized_text=normalized_text,
+                raw_text=standardized.raw_text,
+                normalized_text=standardized.normalized_text,
                 text_language=text_language,
+                terminal_raw=standardized.terminal_raw,
+                terminal_closer_suffix=standardized.terminal_closer_suffix,
+                terminal_source=standardized.terminal_source,
+                detected_language=standardized.detected_language,
+                inference_exclusion_reason=standardized.inference_exclusion_reason,
                 render_version=1,
-                risk_flags=risk_flags,
+                risk_flags=standardized.risk_flags,
+                render_status="pending",
             )
             if segments:
                 segments[-1].next_segment_id = segment_id
