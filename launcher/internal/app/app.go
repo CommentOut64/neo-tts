@@ -32,6 +32,7 @@ const (
 )
 
 var ErrAlreadyRunning = errors.New("launcher instance is already running")
+var ErrUnsupportedLauncherProfile = errors.New("launcher only supports dev/web; product/electron is owned by desktop Electron")
 
 type InstanceLock interface {
 	Close() error
@@ -98,6 +99,9 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	cfg, err := deps.LoadConfig(opts.ProjectRoot, opts.Overrides)
 	if err != nil {
 		return RunResult{}, err
+	}
+	if cfg.RuntimeMode != "dev" || cfg.FrontendMode != "web" {
+		return RunResult{}, fmt.Errorf("%w: %s/%s", ErrUnsupportedLauncherProfile, cfg.RuntimeMode, cfg.FrontendMode)
 	}
 
 	startup, err := deps.BuildStartupContext(opts.ProjectRoot, opts.StartupSource)
@@ -254,9 +258,6 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	}
 	if deps.StartOwnerControl == nil {
 		deps.StartOwnerControl = func(ctx context.Context, cfg config.Config, shutdown context.CancelFunc) (OwnerControlHandle, error) {
-			if cfg.RuntimeMode != "dev" || cfg.FrontendMode != "web" {
-				return nil, nil
-			}
 			return control.StartServer(ctx, control.ServerOptions{
 				OnShutdown: shutdown,
 			})
@@ -264,9 +265,6 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	}
 	if deps.StartOwnedProcessGroup == nil {
 		deps.StartOwnedProcessGroup = func(ctx context.Context, cfg config.Config) (OwnedProcessGroup, error) {
-			if cfg.RuntimeMode != "dev" || cfg.FrontendMode != "web" {
-				return nil, nil
-			}
 			return winplatform.CreateOwnedProcessJobObject()
 		}
 	}
@@ -289,17 +287,9 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	}
 	if deps.WaitForSupervisor == nil {
 		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState, backendResult supervisor.BackendResult, frontendResult supervisor.FrontendResult) error {
-			if cfg.RuntimeMode == "dev" && cfg.FrontendMode == "web" {
-				return supervisor.RunOwner(ctx, cfg, current, supervisor.OwnerDeps{
-					BackendExit:   backendResult.Exit,
-					FrontendExit:  frontendResult.Exit,
-					StaticServer:  frontendResult.StaticServer,
-					GracefulStop:  frontendResult.GracefulStop,
-				})
-			}
-			return supervisor.RunLoop(ctx, cfg, current, supervisor.LoopDeps{
-				StaticServer: frontendResult.StaticServer,
-				GracefulStop: frontendResult.GracefulStop,
+			return supervisor.RunOwner(ctx, cfg, current, supervisor.OwnerDeps{
+				BackendExit:  backendResult.Exit,
+				FrontendExit: frontendResult.Exit,
 			})
 		}
 	}

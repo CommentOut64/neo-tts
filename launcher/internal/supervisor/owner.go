@@ -7,7 +7,6 @@ import (
 
 	"neo-tts/launcher/internal/config"
 	"neo-tts/launcher/internal/state"
-	"neo-tts/launcher/internal/web"
 )
 
 type OwnerDeps struct {
@@ -20,8 +19,6 @@ type OwnerDeps struct {
 	FindPIDByPort    func(port int) (int, error)
 	SaveState        func(current state.RuntimeState) error
 	Log              func(line string)
-	StaticServer     *web.StaticServer
-	GracefulStop     func(ctx context.Context) error
 	StartFrontend    func(ctx context.Context, cfg config.Config, current state.RuntimeState) (FrontendResult, error)
 }
 
@@ -35,7 +32,7 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 	for {
 		select {
 		case <-ctx.Done():
-			return handleShutdown(current, toOwnerLoopDeps(cfg, current, deps))
+			return handleShutdown(current, toLifecycleDeps(cfg, current, deps))
 		case err := <-backendExit:
 			deps.Log(fmt.Sprintf("backend lost pid=%d err=%v", current.Backend.PID, err))
 			next, handleErr := HandleBackendLoss(current, BackendLossDeps{
@@ -44,8 +41,6 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 						IsProcessRunning: deps.IsProcessRunning,
 						KillProcess:      deps.KillProcess,
 						FindPIDByPort:    deps.FindPIDByPort,
-						StaticServer:     deps.StaticServer,
-						GracefulStop:     deps.GracefulStop,
 					})
 				},
 			})
@@ -63,15 +58,13 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 			current = next
 			backendExit = nil
 			frontendExit = nil
-			deps.StaticServer = nil
-			deps.GracefulStop = nil
 		case err := <-frontendExit:
 			deps.Log(fmt.Sprintf("frontend host lost pid=%d err=%v", current.FrontendHost.PID, err))
 			result, handleErr := HandleFrontendCrash(current, crashTimes, FrontendCrashDeps{
 				Now:   deps.Now,
 				Sleep: deps.Sleep,
 				StopBackend: func() error {
-					return stopOwnedBackend(&current, toOwnerLoopDeps(cfg, current, deps))
+					return stopOwnedBackend(&current, toLifecycleDeps(cfg, current, deps))
 				},
 			})
 			if handleErr != nil {
@@ -95,8 +88,6 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 				crashTimes = result.CrashTimes
 				backendExit = nil
 				frontendExit = nil
-				deps.StaticServer = nil
-				deps.GracefulStop = nil
 				continue
 			}
 
@@ -114,9 +105,7 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 				continue
 			}
 
-			next = mergeLoopState(next, restarted.State)
-			deps.StaticServer = restarted.StaticServer
-			deps.GracefulStop = restarted.GracefulStop
+			next = mergeLifecycleState(next, restarted.State)
 			frontendExit = restarted.Exit
 			if err := deps.SaveState(next); err != nil {
 				return err
@@ -129,7 +118,7 @@ func RunOwner(ctx context.Context, cfg config.Config, current state.RuntimeState
 }
 
 func withOwnerDefaults(cfg config.Config, current state.RuntimeState, deps OwnerDeps) OwnerDeps {
-	loopDeps := withLoopDefaults(cfg, current, LoopDeps{
+	lifecycle := withLifecycleDefaults(cfg, current, lifecycleDeps{
 		Now:              deps.Now,
 		Sleep:            deps.Sleep,
 		IsProcessRunning: deps.IsProcessRunning,
@@ -137,30 +126,22 @@ func withOwnerDefaults(cfg config.Config, current state.RuntimeState, deps Owner
 		FindPIDByPort:    deps.FindPIDByPort,
 		SaveState:        deps.SaveState,
 		Log:              deps.Log,
-		StaticServer:     deps.StaticServer,
-		GracefulStop:     deps.GracefulStop,
 		StartFrontend:    deps.StartFrontend,
 	})
 
-	deps.Now = loopDeps.Now
-	deps.Sleep = loopDeps.Sleep
-	deps.IsProcessRunning = loopDeps.IsProcessRunning
-	deps.KillProcess = loopDeps.KillProcess
-	deps.FindPIDByPort = loopDeps.FindPIDByPort
-	deps.SaveState = loopDeps.SaveState
-	deps.Log = loopDeps.Log
-	deps.StartFrontend = loopDeps.StartFrontend
-	if deps.StaticServer == nil {
-		deps.StaticServer = loopDeps.StaticServer
-	}
-	if deps.GracefulStop == nil {
-		deps.GracefulStop = loopDeps.GracefulStop
-	}
+	deps.Now = lifecycle.Now
+	deps.Sleep = lifecycle.Sleep
+	deps.IsProcessRunning = lifecycle.IsProcessRunning
+	deps.KillProcess = lifecycle.KillProcess
+	deps.FindPIDByPort = lifecycle.FindPIDByPort
+	deps.SaveState = lifecycle.SaveState
+	deps.Log = lifecycle.Log
+	deps.StartFrontend = lifecycle.StartFrontend
 	return deps
 }
 
-func toOwnerLoopDeps(cfg config.Config, current state.RuntimeState, deps OwnerDeps) LoopDeps {
-	return withLoopDefaults(cfg, current, LoopDeps{
+func toLifecycleDeps(cfg config.Config, current state.RuntimeState, deps OwnerDeps) lifecycleDeps {
+	return withLifecycleDefaults(cfg, current, lifecycleDeps{
 		Now:              deps.Now,
 		Sleep:            deps.Sleep,
 		IsProcessRunning: deps.IsProcessRunning,
@@ -168,8 +149,6 @@ func toOwnerLoopDeps(cfg config.Config, current state.RuntimeState, deps OwnerDe
 		FindPIDByPort:    deps.FindPIDByPort,
 		SaveState:        deps.SaveState,
 		Log:              deps.Log,
-		StaticServer:     deps.StaticServer,
-		GracefulStop:     deps.GracefulStop,
 		StartFrontend:    deps.StartFrontend,
 	})
 }
