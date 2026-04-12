@@ -36,6 +36,7 @@ export function buildInitializeRequest(
     raw_text: draft.text,
     text_language: draft.textLang,
     voice_id: draft.voiceId,
+    reference_source: draft.refSource,
     speed: draft.speed,
     temperature: draft.temperature,
     top_p: draft.topP,

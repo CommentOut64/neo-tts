@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { getInferenceParamsCache, putInferenceParamsCache } from '@/api/tts'
+import { upgradeInferenceParamsCachePayload } from '@/features/reference-binding'
 import type { InferenceParamsCacheEnvelope } from '@/types/tts'
 
 const STORAGE_KEY = 'gpt-sovits-inference-params-cache'
@@ -39,7 +40,7 @@ function normalizeEnvelope(raw: unknown): InferenceParamsCacheEnvelope | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
   if (updatedAt !== null && updatedAt !== undefined && typeof updatedAt !== 'string') return null
   return {
-    payload: payload as Record<string, unknown>,
+    payload: upgradeInferenceParamsCachePayload(payload as Record<string, unknown>),
     updatedAt: (updatedAt as string | null | undefined) ?? null,
   }
 }
@@ -65,7 +66,10 @@ export function useInferenceParamsCache() {
   }
 
   function saveLocalCache(payload: Record<string, unknown>, updatedAt: string | null = null): InferenceParamsCacheEnvelope {
-    const envelope: InferenceParamsCacheEnvelope = { payload, updatedAt }
+    const envelope: InferenceParamsCacheEnvelope = {
+      payload: upgradeInferenceParamsCachePayload(payload),
+      updatedAt,
+    }
     if (hasBrowserStorage()) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope))
     }
@@ -75,8 +79,9 @@ export function useInferenceParamsCache() {
   async function restoreCache(): Promise<InferenceParamsCacheEnvelope | null> {
     const local = readLocalCache()
     if (local) {
-      lastSyncedAt.value = local.updatedAt
-      return local
+      const upgradedLocal = saveLocalCache(local.payload, local.updatedAt)
+      lastSyncedAt.value = upgradedLocal.updatedAt
+      return upgradedLocal
     }
 
     try {
@@ -92,12 +97,13 @@ export function useInferenceParamsCache() {
   }
 
   async function flushToRemote(payload: Record<string, unknown>): Promise<void> {
+    const upgradedPayload = upgradeInferenceParamsCachePayload(payload)
     putInFlight = true
     pendingPayload = null
     try {
-      const remote = await putInferenceParamsCache(payload)
+      const remote = await putInferenceParamsCache(upgradedPayload)
       lastSyncedAt.value = remote.updated_at
-      saveLocalCache(payload, remote.updated_at)
+      saveLocalCache(upgradedPayload, remote.updated_at)
       cacheError.value = null
     } catch (error) {
       cacheError.value = error instanceof Error ? error.message : String(error)
@@ -113,12 +119,12 @@ export function useInferenceParamsCache() {
   }
 
   function persistCacheWhenIdle(payload: Record<string, unknown>) {
-    saveLocalCache(payload, lastSyncedAt.value)
+    const upgradedPayload = saveLocalCache(payload, lastSyncedAt.value).payload
     cacheError.value = null
 
     // PUT 进行中时只暂存最新 payload，等当前 PUT 完成后再发
     if (putInFlight) {
-      pendingPayload = payload
+      pendingPayload = upgradedPayload
       return
     }
 
@@ -129,16 +135,16 @@ export function useInferenceParamsCache() {
 
     cancelIdleTask = scheduleWhenIdle(async () => {
       cancelIdleTask = null
-      await flushToRemote(payload)
+      await flushToRemote(upgradedPayload)
     })
   }
 
   async function persistCacheNow(payload: Record<string, unknown>): Promise<InferenceParamsCacheEnvelope> {
-    saveLocalCache(payload, lastSyncedAt.value)
-    const remote = await putInferenceParamsCache(payload)
+    const upgradedPayload = saveLocalCache(payload, lastSyncedAt.value).payload
+    const remote = await putInferenceParamsCache(upgradedPayload)
     lastSyncedAt.value = remote.updated_at
     cacheError.value = null
-    return saveLocalCache(payload, remote.updated_at)
+    return saveLocalCache(upgradedPayload, remote.updated_at)
   }
 
   function clearLocalCache() {
