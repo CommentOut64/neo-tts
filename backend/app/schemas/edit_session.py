@@ -24,6 +24,7 @@ class InitializeEditSessionRequest(BaseModel):
     text_language: str = Field(default="auto", description="全文文本语言，通常为 `auto` 或 `zh`。")
     voice_id: str = Field(description="初始化使用的音色 ID。")
     model_id: str = Field(default="gpt-sovits-v2", description="兼容字段，初始化时记录的模型标识。")
+    reference_source: Literal["preset", "custom"] = Field(default="preset", description="初始化参考来源。")
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径；未提供时使用 voice 配置默认值。")
     reference_text: str | None = Field(default=None, description="可选的参考文本；未提供时使用 voice 配置默认值。")
     reference_language: str | None = Field(default=None, description="可选的参考文本语言；未提供时使用 voice 配置默认值。")
@@ -70,10 +71,28 @@ class RenderProfile(BaseModel):
     top_p: float = Field(default=1.0, description="采样 top_p。")
     temperature: float = Field(default=1.0, description="采样温度。")
     noise_scale: float = Field(default=0.35, description="noise scale。")
+    reference_overrides_by_binding: dict[str, "ReferenceBindingOverride"] = Field(
+        default_factory=dict,
+        description="按 binding_key 组织的参考覆写映射。",
+    )
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径。")
     reference_text: str | None = Field(default=None, description="可选的参考文本。")
     reference_language: str | None = Field(default=None, description="可选的参考文本语言。")
     extra_overrides: dict[str, Any] = Field(default_factory=dict, description="额外透传给推理层的覆盖项。")
+
+
+class ReferenceBindingOverride(BaseModel):
+    reference_audio_path: str | None = Field(default=None, description="binding 维度的参考音频覆写。")
+    reference_text: str | None = Field(default=None, description="binding 维度的参考文本覆写。")
+    reference_language: str | None = Field(default=None, description="binding 维度的参考语言覆写。")
+
+
+class ReferenceBindingOverridePatchRequest(BaseModel):
+    binding_key: str = Field(description="目标 binding key。")
+    operation: Literal["upsert", "clear"] = Field(description="reference override 操作。")
+    reference_audio_path: str | None = Field(default=None, description="新的参考音频路径。")
+    reference_text: str | None = Field(default=None, description="新的参考文本。")
+    reference_language: str | None = Field(default=None, description="新的参考语言。")
 
 
 class VoiceBinding(BaseModel):
@@ -156,6 +175,10 @@ class RenderProfilePatchRequest(BaseModel):
     top_p: float | None = Field(default=None, description="新的 top_p。")
     temperature: float | None = Field(default=None, description="新的 temperature。")
     noise_scale: float | None = Field(default=None, description="新的 noise scale。")
+    reference_override: ReferenceBindingOverridePatchRequest | None = Field(
+        default=None,
+        description="按 binding 写入或清理 reference override。",
+    )
     reference_audio_path: str | None = Field(default=None, description="新的参考音频路径。")
     reference_text: str | None = Field(default=None, description="新的参考文本。")
     reference_language: str | None = Field(default=None, description="新的参考文本语言。")
@@ -172,6 +195,7 @@ class RenderProfilePatchRequest(BaseModel):
                 self.top_p,
                 self.temperature,
                 self.noise_scale,
+                self.reference_override,
                 self.reference_audio_path,
                 self.reference_text,
                 self.reference_language,

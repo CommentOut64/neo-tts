@@ -45,6 +45,7 @@ from backend.app.schemas.edit_session import (
     EditableSegment,
     GroupListResponse,
     InitializeEditSessionRequest,
+    ReferenceBindingOverride,
     MergeSegmentsRequest,
     MoveSegmentRangeRequest,
     PlaybackMapResponse,
@@ -89,6 +90,7 @@ from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
+from backend.app.services.reference_binding import build_binding_key
 from backend.app.text.segment_standardizer import (
     build_standardization_preview,
     split_text_segments_with_terminal_capsules,
@@ -204,7 +206,7 @@ class RenderJobService:
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
-        self._render_config_resolver = RenderConfigResolver()
+        self._render_config_resolver = RenderConfigResolver(voice_service=session_service)
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._checkpoint_service = checkpoint_service or CheckpointService(
             repository=repository,
@@ -2702,7 +2704,7 @@ class RenderJobService:
                 snapshot=after_snapshot,
                 segment_id=segment.segment_id,
             )
-            if before_resolved.render_profile_fingerprint != after_resolved.render_profile_fingerprint:
+            if before_resolved.render_context_fingerprint != after_resolved.render_context_fingerprint:
                 changed_segment_ids.add(segment.segment_id)
                 continue
             if before_resolved.model_cache_key != after_resolved.model_cache_key:
@@ -2746,6 +2748,21 @@ class RenderJobService:
 
     @staticmethod
     def _build_default_configuration(request: InitializeEditSessionRequest) -> tuple[RenderProfile, VoiceBinding]:
+        voice_binding = VoiceBinding(
+            voice_binding_id=f"binding-session-{uuid4().hex}",
+            scope="session",
+            voice_id=request.voice_id,
+            model_key=request.model_id,
+        )
+        reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
+        if request.reference_source == "custom":
+            reference_overrides_by_binding[
+                build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+            ] = ReferenceBindingOverride(
+                reference_audio_path=request.reference_audio_path,
+                reference_text=request.reference_text,
+                reference_language=request.reference_language,
+            )
         render_profile = RenderProfile(
             render_profile_id=f"profile-session-{uuid4().hex}",
             scope="session",
@@ -2755,15 +2772,7 @@ class RenderJobService:
             top_p=request.top_p,
             temperature=request.temperature,
             noise_scale=request.noise_scale,
-            reference_audio_path=request.reference_audio_path,
-            reference_text=request.reference_text,
-            reference_language=request.reference_language,
-        )
-        voice_binding = VoiceBinding(
-            voice_binding_id=f"binding-session-{uuid4().hex}",
-            scope="session",
-            voice_id=request.voice_id,
-            model_key=request.model_id,
+            reference_overrides_by_binding=reference_overrides_by_binding,
         )
         return render_profile, voice_binding
 
@@ -2775,16 +2784,29 @@ class RenderJobService:
         segment: EditableSegment,
     ) -> ReferenceContext:
         resolved = self._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)
-        cache_key = f"{resolved.model_cache_key}:{resolved.render_profile_fingerprint}"
+        cache_key = f"{resolved.model_cache_key}:{resolved.render_context_fingerprint}"
         context = plan.context_cache.get(cache_key)
         if context is not None:
             return context
+        resolved_reference = resolved.resolved_reference
         resolved_context = ResolvedRenderContext(
             voice_id=resolved.voice_binding.voice_id,
             model_key=resolved.voice_binding.model_key,
-            reference_audio_path=resolved.render_profile.reference_audio_path or plan.request.reference_audio_path or "",
-            reference_text=resolved.render_profile.reference_text or plan.request.reference_text or "",
-            reference_language=resolved.render_profile.reference_language or plan.request.reference_language or "",
+            reference_audio_path=(
+                resolved_reference.reference_audio_path
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_audio_path or "")
+            ),
+            reference_text=(
+                resolved_reference.reference_text
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_text or "")
+            ),
+            reference_language=(
+                resolved_reference.reference_language
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_language or "")
+            ),
             speed=resolved.render_profile.speed,
             top_k=resolved.render_profile.top_k,
             top_p=resolved.render_profile.top_p,
@@ -2799,7 +2821,7 @@ class RenderJobService:
                 speaker_meta=dict(resolved.voice_binding.speaker_meta),
             ),
             render_profile_id=resolved.render_profile.render_profile_id,
-            render_profile_fingerprint=resolved.render_profile_fingerprint,
+            render_profile_fingerprint=resolved.render_context_fingerprint,
         )
         render_job_logger.info(
             "resolved segment context segment_id={} voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={} render_profile_id={} voice_binding_id={}",

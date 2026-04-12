@@ -54,6 +54,9 @@ class EditSessionService:
             }
         )
 
+    def get_voice_profile(self, voice_id: str):
+        return self._voice_service.get_voice(voice_id)
+
     def initialize_document(self, request: InitializeEditSessionRequest) -> tuple[ActiveDocumentState, RenderJobResponse]:
         now = datetime.now(timezone.utc)
         document_id = uuid4().hex
