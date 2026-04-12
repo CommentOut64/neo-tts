@@ -1323,14 +1323,63 @@ class RenderJobService:
         plan.voice_bindings = [default_voice_binding]
         plan.default_render_profile_id = default_render_profile.render_profile_id
         plan.default_voice_binding_id = default_voice_binding.voice_binding_id
+        split_started = time.perf_counter()
+        render_job_logger.info(
+            "initialize segment split start job_id={} segment_boundary_mode={} raw_text_length={}",
+            plan.job_id,
+            plan.request.segment_boundary_mode,
+            len(plan.request.raw_text),
+        )
         segments = self._split_raw_segments(
             plan.request.raw_text,
             segment_boundary_mode=plan.request.segment_boundary_mode,
         )
+        render_job_logger.info(
+            "initialize segment split completed job_id={} segment_count={} elapsed_ms={:.2f}",
+            plan.job_id,
+            len(segments),
+            (time.perf_counter() - split_started) * 1000,
+        )
         if not segments:
             raise ValueError("请输入有效文本")
+        build_segments_started = time.perf_counter()
+        render_job_logger.info(
+            "initialize build segments start job_id={} segment_count={} text_language={}",
+            plan.job_id,
+            len(segments),
+            plan.request.text_language,
+        )
         plan.segments = self._build_segments(plan.document_id, segments, plan.request.text_language)
+        detected_language_summary: dict[str, int] = {}
+        exclusion_reason_summary: dict[str, int] = {}
+        for segment in plan.segments:
+            detected_language_summary[segment.detected_language] = (
+                detected_language_summary.get(segment.detected_language, 0) + 1
+            )
+            exclusion_reason_summary[segment.inference_exclusion_reason] = (
+                exclusion_reason_summary.get(segment.inference_exclusion_reason, 0) + 1
+            )
+        render_job_logger.info(
+            "initialize build segments completed job_id={} segment_count={} elapsed_ms={:.2f} detected_language_summary={} exclusion_reason_summary={}",
+            plan.job_id,
+            len(plan.segments),
+            (time.perf_counter() - build_segments_started) * 1000,
+            detected_language_summary,
+            exclusion_reason_summary,
+        )
+        build_edges_started = time.perf_counter()
         plan.edges = self._build_edges(plan.document_id, plan.segments, plan.request.pause_duration_seconds)
+        render_job_logger.info(
+            "initialize build edges completed job_id={} edge_count={} elapsed_ms={:.2f}",
+            plan.job_id,
+            len(plan.edges),
+            (time.perf_counter() - build_edges_started) * 1000,
+        )
+        render_job_logger.info(
+            "initialize runtime sync start job_id={} total_segments={}",
+            plan.job_id,
+            len(plan.segments),
+        )
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.segments),
@@ -1358,7 +1407,14 @@ class RenderJobService:
                 ],
             },
         )
+        render_job_logger.info("initialize runtime sync completed job_id={}", plan.job_id)
+        persist_started = time.perf_counter()
         self._persist_runtime_job(plan.job_id)
+        render_job_logger.info(
+            "initialize prepare persisted job_id={} elapsed_ms={:.2f}",
+            plan.job_id,
+            (time.perf_counter() - persist_started) * 1000,
+        )
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
@@ -2135,8 +2191,43 @@ class RenderJobService:
         text_language: str,
     ) -> list[EditableSegment]:
         segments: list[EditableSegment] = []
-        standardized_batch = standardize_segment_texts(raw_segments, text_language)
-        for index, standardized in enumerate(standardized_batch.segments, start=1):
+        normalized_text_language = text_language.lower()
+        if normalized_text_language == "auto":
+            batch_started = time.perf_counter()
+            render_job_logger.info(
+                "initialize build segments auto standardization start segment_count={} text_language={}",
+                len(raw_segments),
+                text_language,
+            )
+            standardized_segments = standardize_segment_texts(raw_segments, text_language).segments
+            render_job_logger.info(
+                "initialize build segments auto standardization completed segment_count={} elapsed_ms={:.2f}",
+                len(standardized_segments),
+                (time.perf_counter() - batch_started) * 1000,
+            )
+        else:
+            standardized_segments = []
+            for index, raw_text in enumerate(raw_segments, start=1):
+                item_started = time.perf_counter()
+                render_job_logger.info(
+                    "initialize build segment item start index={}/{} text_language={} raw_preview={}",
+                    index,
+                    len(raw_segments),
+                    text_language,
+                    raw_text[:80].replace("\r", "\\r").replace("\n", "\\n"),
+                )
+                standardized = standardize_segment_text(raw_text, text_language)
+                render_job_logger.info(
+                    "initialize build segment item completed index={}/{} elapsed_ms={:.2f} detected_language={} inference_exclusion_reason={} normalized_length={}",
+                    index,
+                    len(raw_segments),
+                    (time.perf_counter() - item_started) * 1000,
+                    standardized.detected_language,
+                    standardized.inference_exclusion_reason,
+                    len(standardized.normalized_text),
+                )
+                standardized_segments.append(standardized)
+        for index, standardized in enumerate(standardized_segments, start=1):
             previous_segment_id = segments[-1].segment_id if segments else None
             segment_id = f"segment-{uuid4().hex}"
             segment = EditableSegment(

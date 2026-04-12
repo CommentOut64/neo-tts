@@ -4,7 +4,7 @@ import string
 from dataclasses import dataclass
 from typing import Literal
 
-from backend.app.inference.text_processing import normalize_whitespace
+from backend.app.inference.text_processing import is_decimal_dot_at, normalize_whitespace
 from backend.app.text.language_profiles import ResolvedLanguage, get_language_profile
 from backend.app.text.terminal_capsule import (
     CLOSER_CHARACTERS,
@@ -294,6 +294,8 @@ def _append_segment_slice(segments: list[str], text: str) -> None:
 
 def _match_terminal_at(text: str, index: int) -> str | None:
     for terminal in TERMINAL_STRINGS:
+        if terminal == "." and is_decimal_dot_at(text, index):
+            continue
         if text.startswith(terminal, index):
             return terminal
     return None

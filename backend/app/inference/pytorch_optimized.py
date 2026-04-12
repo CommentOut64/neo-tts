@@ -62,6 +62,14 @@ IS_HALF = DEVICE == "cuda"
 inference_logger = get_logger("pytorch_inference")
 
 
+def _resolve_segment_inference_language(segment) -> str:
+    declared_language = (getattr(segment, "text_language", "") or "auto").lower()
+    detected_language = (getattr(segment, "detected_language", "unknown") or "unknown").lower()
+    if declared_language in {"auto", "unknown", ""} and detected_language in {"zh", "ja", "en"}:
+        return detected_language
+    return declared_language or "auto"
+
+
 class DictToAttrRecursive(dict):
     def __init__(self, input_dict):
         super().__init__(input_dict)
@@ -432,17 +440,26 @@ class GPTSoVITSOptimizedInference:
             context.reference_language,
             self.hps.model.version,
         )
+        segment_inference_language = _resolve_segment_inference_language(segment)
+        if segment_inference_language != segment.text_language:
+            inference_logger.info(
+                "segment inference language resolved segment_id={} declared_language={} detected_language={} resolved_language={}",
+                segment.segment_id,
+                segment.text_language,
+                getattr(segment, "detected_language", "unknown"),
+                segment_inference_language,
+            )
         segment_text = build_segment_render_text(
             raw_text=segment.raw_text,
             normalized_text=segment.normalized_text,
-            text_language=segment.text_language,
+            text_language=segment_inference_language,
             terminal_raw=getattr(segment, "terminal_raw", ""),
             terminal_closer_suffix=getattr(segment, "terminal_closer_suffix", ""),
             terminal_source=getattr(segment, "terminal_source", "synthetic"),
         )
         segment_phones, segment_bert, _ = self.get_phones_and_bert(
             segment_text,
-            segment.text_language,
+            segment_inference_language,
             self.hps.model.version,
             default_lang=context.reference_language,
         )
