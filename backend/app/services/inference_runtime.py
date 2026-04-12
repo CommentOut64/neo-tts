@@ -4,6 +4,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 import queue
 import threading
+import time
 from uuid import uuid4
 
 from backend.app.schemas.inference import InferenceProgressState
@@ -11,6 +12,7 @@ from backend.app.schemas.inference import InferenceProgressState
 
 class InferenceRuntimeController:
     _ACTIVE_STATUSES = {"preparing", "inferencing", "cancelling"}
+    TERMINAL_STATUSES = {"idle", "completed", "cancelled", "error"}
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -131,6 +133,21 @@ class InferenceRuntimeController:
             self._state = InferenceProgressState(message=message)
             self._broadcast_locked()
             return True
+
+    def wait_for_terminal(
+        self,
+        *,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> InferenceProgressState:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            snapshot = self.snapshot()
+            if snapshot.status in self.TERMINAL_STATUSES:
+                return snapshot
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for inference runtime to reach a terminal state.")
+            time.sleep(poll_interval_seconds)
 
     def _broadcast_locked(self) -> None:
         payload = self._state.model_dump(mode="json")

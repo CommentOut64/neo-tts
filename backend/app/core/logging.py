@@ -9,7 +9,13 @@ from pathlib import Path
 from loguru import logger
 
 _DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_LOG_FORMAT = "{time:HH:mm:ss.SSS} [{level}] [{extra[component]}] {message}"
+_CONSOLE_LOG_FORMAT = (
+    "<green>{time:HH:mm:ss.SSS}</green> "
+    "[<level>{level}</level>] "
+    "[<cyan>{extra[component]}</cyan>] "
+    "<level>{message}</level>"
+)
+_FILE_LOG_FORMAT = "{time:HH:mm:ss.SSS} [{level}] [{extra[component]}] {message}"
 _CRASH_LOOP_WINDOW_SECONDS = 30
 _configured_log_dir: Path | None = None
 _configured_log_file: Path | None = None
@@ -87,7 +93,7 @@ def configure_logging(project_root: Path | None = None, *, force: bool = False) 
     _base_logger.add(
         sys.stderr,
         level="INFO",
-        format=_LOG_FORMAT,
+        format=_CONSOLE_LOG_FORMAT,
         colorize=True,
         backtrace=False,
         diagnose=False,
@@ -95,7 +101,7 @@ def configure_logging(project_root: Path | None = None, *, force: bool = False) 
     _base_logger.add(
         str(log_file),
         level="DEBUG",
-        format=_LOG_FORMAT,
+        format=_FILE_LOG_FORMAT,
         colorize=False,
         retention="14 days",
         encoding="utf-8",

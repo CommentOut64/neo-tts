@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 import time
 
+import backend.app.core.logging as logging_setup
 from backend.app.core.logging import configure_logging, get_logger
 
 
@@ -56,6 +58,31 @@ def test_configure_logging_keeps_health_logs_at_warning_or_higher(tmp_path: Path
 
     content = _read_latest_log_file(tmp_path / "logs")
     assert '[WARNING] [uvicorn.access] 127.0.0.1:52371 - "GET /health HTTP/1.1" 503' in content
+
+
+def test_configure_logging_colorizes_console_sink(tmp_path: Path, monkeypatch):
+    console_buffer = io.StringIO()
+    monkeypatch.setattr(logging_setup.sys, "stderr", console_buffer)
+
+    configure_logging(project_root=tmp_path, force=True)
+
+    get_logger("job_queue_service").info("控制台日志应带颜色")
+
+    console_output = console_buffer.getvalue()
+    assert "\x1b[" in console_output
+    assert "控制台日志应带颜色" in console_output
+
+
+def test_configure_logging_colorizes_console_timestamp(tmp_path: Path, monkeypatch):
+    console_buffer = io.StringIO()
+    monkeypatch.setattr(logging_setup.sys, "stderr", console_buffer)
+
+    configure_logging(project_root=tmp_path, force=True)
+
+    get_logger("job_queue_service").info("时间戳也应带颜色")
+
+    first_line = console_buffer.getvalue().splitlines()[0]
+    assert first_line.startswith("\x1b[")
 
 
 def test_configure_logging_force_reconfiguration_reuses_recent_session_log_file_within_30_seconds(

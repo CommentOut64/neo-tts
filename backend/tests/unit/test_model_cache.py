@@ -127,3 +127,26 @@ def test_pytorch_runtime_bootstraps_gpt_sovits_import_paths():
 
     assert repo_root in sys.path
     assert gpt_sovits_root in sys.path
+
+
+def test_model_cache_clear_drops_cached_engines(tmp_path: pathlib.Path):
+    created = []
+
+    def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        engine = {"gpt": gpt_path, "sovits": sovits_path, "created_index": len(created)}
+        created.append((gpt_path, sovits_path, cnhubert_path, bert_path))
+        return engine
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+    )
+
+    first = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+    cache.clear()
+    second = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+
+    assert first is not second
+    assert len(created) == 2

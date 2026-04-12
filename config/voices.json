@@ -33,7 +33,7 @@
     "gpt_path": "storage/managed_voices/neuro2/neuro2-e4.ckpt",
     "sovits_path": "storage/managed_voices/neuro2/neuro2_e4_s424.pth",
     "ref_audio": "storage/managed_voices/neuro2/audio1.wav",
-    "ref_text": "Then tomorrow we can celebrate her birthday and maybe even get her a laval lamp",
+    "ref_text": "Then tomorrow we can celebrate her birthday and maybe even get her a laval lamp.",
     "ref_lang": "en",
     "description": "Neuro2 (V2 Pro, English)",
     "defaults": {

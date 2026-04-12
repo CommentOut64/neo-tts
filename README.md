@@ -63,6 +63,12 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 > 整合包正在准备中，发布后将提供一键启动的使用说明。
 
+当前产品态正式入口约束：
+
+- 开发态主入口是 `dev/web`
+- 打包后的唯一正式产品入口是 Electron 主程序
+- Go launcher 只作为开发态 owner，不再承担正式产品入口身份
+
 ### 本地开发部署
 
 #### 1. 安装依赖
@@ -107,18 +113,35 @@ Set-Location ..
 #### 3. 启动
 
 ```powershell
-# 一键启动（推荐）
+# launcher 主入口（推荐）
+Set-Location launcher
+go run ./cmd/launcher --runtime-mode dev --frontend-mode web
+
+# 兼容入口
+Set-Location ..
 .\start_dev.bat
 
 # 或分别启动
-uv run python -m backend.app.cli --port 8000   # 后端
-Set-Location frontend && npm run dev             # 前端
+uv run python -m backend.app.cli --port 18600
+Set-Location frontend
+$env:VITE_BACKEND_ORIGIN="http://127.0.0.1:18600"
+npm run dev
 ```
+
+补充说明：
+
+- 当前配置优先级是：CLI > 进程环境变量 > `config/launch.json` > 默认值
+- 推荐把项目级启动配置写到 `config/launch.json`
+- `start_dev.bat` 只保留为源码联调兼容入口，不包含单实例、旧进程清理与守护逻辑
+- Go launcher 现在只接受 `dev/web`；`product/electron` 必须由 `desktop` 下的 Electron main 作为正式入口
+- `backend.mode=external` 时，launcher 只探活外部后端，不接管也不清理它
+- `dev/web` 下由 Go launcher 持有 owner 生命周期；产品态由 Electron main 持有 owner 生命周期
+- `runtime-state.json` 与 `exit-request.json` 若存在，也只作为调试快照，不再作为关键控制真相
 
 #### 4. 打开页面
 
-- 前端开发地址：`http://127.0.0.1:5175`
-- 后端接口文档：`http://127.0.0.1:8000/docs`
+- 前端开发地址：`http://localhost:5175`
+- 后端接口文档：`http://127.0.0.1:18600/docs`
 
 ## 技术架构
 
@@ -198,10 +221,12 @@ neo-tts/
 │  │  ├─ utils/             # 文本与编辑辅助
 │  │  └─ views/             # TextInput / Workspace / Studio / VoiceAdmin
 │  └─ tests/                # 前端行为测试
+├─ desktop/                 # Electron main / preload / 打包骨架（产品态入口）
 ├─ GPT_SoVITS/              # 上游模型与文本处理代码
+├─ launcher/                # Go launcher、构建脚本与 Windows 平台层
 ├─ config/                  # 音色配置（静态）
 ├─ storage/                 # 托管音色、会话资产与导出结果
-└─ start_dev.bat            # Windows 开发启动脚本
+└─ start_dev.bat            # Windows 开发兼容启动脚本
 ```
 
 ## 开源协议

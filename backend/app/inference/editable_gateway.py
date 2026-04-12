@@ -93,3 +93,7 @@ class LazyEditableInferenceGateway:
         context: ReferenceContext,
     ) -> BoundaryAssetPayload:
         return self._get_backend().render_boundary_asset(left_asset, right_asset, edge, context)
+
+    def clear_backend(self) -> None:
+        with self._backend_lock:
+            self._backend = None

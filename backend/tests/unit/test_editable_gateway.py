@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from backend.app.inference.editable_gateway import EditableInferenceGateway
+from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
 from backend.app.inference.editable_types import ReferenceContext, ResolvedRenderContext, ResolvedVoiceBinding
 from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
 from backend.app.schemas.edit_session import EditableEdge, EditableSegment, InitializeEditSessionRequest
@@ -278,7 +278,7 @@ def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
 def test_editable_gateway_delegates_to_backend():
     backend = SimpleNamespace(
         build_reference_context=lambda resolved_context: ("context", resolved_context.voice_id),
-        render_segment_base=lambda segment, context: ("segment", segment.segment_id, context),
+        render_segment_base=lambda segment, context, *, progress_callback=None: ("segment", segment.segment_id, context),
         render_boundary_asset=lambda left_asset, right_asset, edge, context: (
             "boundary",
             left_asset,
@@ -329,3 +329,47 @@ def test_editable_gateway_delegates_to_backend():
         "edge-1",
         context,
     )
+
+
+def test_lazy_editable_gateway_clear_backend_forces_rebuild():
+    created = []
+
+    def build_backend():
+        index = len(created) + 1
+        backend = SimpleNamespace(
+            build_reference_context=lambda resolved_context, current=index: ("context", current, resolved_context.voice_id),
+            render_segment_base=lambda segment, context: ("segment", segment.segment_id, context),
+            render_boundary_asset=lambda left_asset, right_asset, edge, context: (
+                "boundary",
+                left_asset,
+                right_asset,
+                edge.edge_id,
+                context,
+            ),
+        )
+        created.append(backend)
+        return backend
+
+    gateway = LazyEditableInferenceGateway(build_backend)
+    context = ResolvedRenderContext(
+        voice_id="voice-demo",
+        model_key="model-demo",
+        reference_audio_path="ref.wav",
+        reference_text="参考文本",
+        reference_language="zh",
+        resolved_voice_binding=ResolvedVoiceBinding(
+            voice_binding_id="binding-1",
+            voice_id="voice-demo",
+            model_key="model-demo",
+        ),
+        render_profile_id="profile-1",
+        render_profile_fingerprint="fp-1",
+    )
+
+    first = gateway.build_reference_context(context)
+    gateway.clear_backend()
+    second = gateway.build_reference_context(context)
+
+    assert first == ("context", 1, "voice-demo")
+    assert second == ("context", 2, "voice-demo")
+    assert len(created) == 2
