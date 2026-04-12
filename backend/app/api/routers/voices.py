@@ -89,6 +89,58 @@ def upload_voice(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.patch(
+    "/{voice_name}",
+    response_model=VoiceProfile,
+    summary="编辑托管音色",
+    description="更新托管音色的元数据，或按需替换 GPT、SoVITS 与参考音频文件。",
+    responses={
+        400: {"description": "上传文件扩展名不合法。"},
+        404: {"description": "目标音色不存在。"},
+        409: {"description": "目标音色不是托管音色，无法编辑。"},
+    },
+)
+def update_voice(
+    voice_name: str,
+    request: Request,
+    description: str | None = Form(default=None, description="音色说明；未传则保留原值。"),
+    ref_text: str | None = Form(default=None, description="参考音频对应的参考文本；未传则保留原值。"),
+    ref_lang: str | None = Form(default=None, description="参考文本语言；未传则保留原值。"),
+    gpt_file: UploadFile | None = File(default=None, description="可选替换的 GPT 权重文件。"),
+    sovits_file: UploadFile | None = File(default=None, description="可选替换的 SoVITS 权重文件。"),
+    ref_audio_file: UploadFile | None = File(default=None, description="可选替换的参考音频文件。"),
+) -> VoiceProfile:
+    if gpt_file is not None:
+        _validate_upload_file(filename=gpt_file.filename, allowed_extensions={".ckpt"}, field_name="gpt_file")
+    if sovits_file is not None:
+        _validate_upload_file(filename=sovits_file.filename, allowed_extensions={".pth"}, field_name="sovits_file")
+    if ref_audio_file is not None:
+        _validate_upload_file(
+            filename=ref_audio_file.filename,
+            allowed_extensions={".wav", ".mp3", ".flac"},
+            field_name="ref_audio_file",
+        )
+
+    service = _build_service(request)
+    try:
+        return service.update_managed_voice(
+            voice_name=voice_name,
+            description=description,
+            ref_text=ref_text,
+            ref_lang=ref_lang,
+            gpt_filename=gpt_file.filename if gpt_file is not None else None,
+            gpt_bytes=gpt_file.file.read() if gpt_file is not None else None,
+            sovits_filename=sovits_file.filename if sovits_file is not None else None,
+            sovits_bytes=sovits_file.file.read() if sovits_file is not None else None,
+            ref_audio_filename=ref_audio_file.filename if ref_audio_file is not None else None,
+            ref_audio_bytes=ref_audio_file.file.read() if ref_audio_file is not None else None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get(
     "/{voice_name}",
     response_model=VoiceProfile,

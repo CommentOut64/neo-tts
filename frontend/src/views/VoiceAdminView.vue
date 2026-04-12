@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Plus, Microphone } from '@element-plus/icons-vue'
 import type { VoiceProfile } from '@/types/tts'
-import { fetchVoices, fetchVoiceDetail, reloadVoices, uploadVoice, deleteVoice } from '@/api/voices'
+import { fetchVoices, fetchVoiceDetail, reloadVoices, uploadVoice, updateVoice, deleteVoice } from '@/api/voices'
 import FileUploader from '@/components/FileUploader.vue'
 
 const voices = ref<VoiceProfile[]>([])
@@ -15,22 +15,27 @@ const detailDrawerVisible = ref(false)
 const detailVoice = ref<VoiceProfile | null>(null)
 const detailLoading = ref(false)
 
-async function handleDetail(voice: VoiceProfile) {
-  detailDrawerVisible.value = true
+async function loadVoiceDetail(name: string, fallback?: VoiceProfile) {
   detailLoading.value = true
   try {
-    detailVoice.value = await fetchVoiceDetail(voice.name)
+    detailVoice.value = await fetchVoiceDetail(name)
   } catch (err: unknown) {
     ElMessage.error(`加载详情失败: ${(err as Error).message}`)
-    detailVoice.value = voice
+    detailVoice.value = fallback ?? null
   } finally {
     detailLoading.value = false
   }
 }
 
+async function handleDetail(voice: VoiceProfile) {
+  detailDrawerVisible.value = true
+  await loadVoiceDetail(voice.name, voice)
+}
+
 // Upload dialog state
 const uploadDialogVisible = ref(false)
 const uploading = ref(false)
+const dialogMode = ref<'create' | 'edit'>('create')
 const uploadForm = ref({
   name: '',
   description: '',
@@ -45,6 +50,31 @@ function resetUploadForm() {
   uploadForm.value = {
     name: '', description: '', ref_text: '', ref_lang: 'zh',
     gpt_file: null, sovits_file: null, ref_audio_file: null,
+  }
+}
+
+function openCreateDialog() {
+  dialogMode.value = 'create'
+  resetUploadForm()
+  uploadDialogVisible.value = true
+}
+
+async function handleEdit(voice: VoiceProfile) {
+  try {
+    const detail = await fetchVoiceDetail(voice.name)
+    dialogMode.value = 'edit'
+    uploadForm.value = {
+      name: detail.name,
+      description: detail.description ?? '',
+      ref_text: detail.ref_text,
+      ref_lang: detail.ref_lang,
+      gpt_file: null,
+      sovits_file: null,
+      ref_audio_file: null,
+    }
+    uploadDialogVisible.value = true
+  } catch (err: unknown) {
+    ElMessage.error(`加载编辑信息失败: ${(err as Error).message}`)
   }
 }
 
@@ -74,27 +104,47 @@ async function handleReload() {
 
 async function handleUploadSubmit() {
   const f = uploadForm.value
-  if (!f.name || !f.gpt_file || !f.sovits_file || !f.ref_audio_file || !f.ref_text) {
+  if (!f.name || !f.ref_text) {
+    ElMessage.warning('请填写所有必填项')
+    return
+  }
+  if (dialogMode.value === 'create' && (!f.gpt_file || !f.sovits_file || !f.ref_audio_file)) {
     ElMessage.warning('请填写所有必填项')
     return
   }
   uploading.value = true
   try {
-    await uploadVoice({
-      name: f.name,
-      description: f.description,
-      ref_text: f.ref_text,
-      ref_lang: f.ref_lang,
-      gpt_file: f.gpt_file,
-      sovits_file: f.sovits_file,
-      ref_audio_file: f.ref_audio_file,
-    })
-    ElMessage.success(`上传成功: ${f.name}`)
+    if (dialogMode.value === 'create') {
+      await uploadVoice({
+        name: f.name,
+        description: f.description,
+        ref_text: f.ref_text,
+        ref_lang: f.ref_lang,
+        gpt_file: f.gpt_file as File,
+        sovits_file: f.sovits_file as File,
+        ref_audio_file: f.ref_audio_file as File,
+      })
+      ElMessage.success(`上传成功: ${f.name}`)
+    } else {
+      await updateVoice(f.name, {
+        description: f.description,
+        ref_text: f.ref_text,
+        ref_lang: f.ref_lang,
+        gpt_file: f.gpt_file,
+        sovits_file: f.sovits_file,
+        ref_audio_file: f.ref_audio_file,
+      })
+      ElMessage.success(`更新成功: ${f.name}`)
+    }
     uploadDialogVisible.value = false
     resetUploadForm()
     await loadVoices()
+    if (detailDrawerVisible.value && detailVoice.value?.name === f.name) {
+      await loadVoiceDetail(f.name, detailVoice.value)
+    }
   } catch (err: unknown) {
-    ElMessage.error(`上传失败: ${(err as Error).message}`)
+    const action = dialogMode.value === 'create' ? '上传' : '更新'
+    ElMessage.error(`${action}失败: ${(err as Error).message}`)
   } finally {
     uploading.value = false
   }
@@ -125,7 +175,7 @@ onMounted(loadVoices)
       <h1 class="text-2xl font-bold text-foreground">模型管理</h1>
       <div class="flex items-center gap-3">
         <el-button :icon="Refresh" :loading="reloading" @click="handleReload">刷新配置</el-button>
-        <el-button type="primary" :icon="Plus" @click="uploadDialogVisible = true">上传模型</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreateDialog">上传模型</el-button>
       </div>
     </div>
 
@@ -153,9 +203,10 @@ onMounted(loadVoices)
         </template>
       </el-table-column>
       <el-table-column prop="ref_text" label="参考文本" width="240" show-overflow-tooltip />
-      <el-table-column label="操作" width="160" align="center">
+      <el-table-column label="操作" width="220" align="center">
         <template #default="{ row }">
           <el-button size="small" text type="primary" @click="handleDetail(row)">详情</el-button>
+          <el-button v-if="row.managed" size="small" text type="primary" @click="handleEdit(row)">编辑</el-button>
           <el-button size="small" text type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -175,27 +226,57 @@ onMounted(loadVoices)
     </div>
 
     <!-- Upload dialog -->
-    <el-dialog :lock-scroll="false" v-model="uploadDialogVisible" title="上传模型" width="520px" @close="resetUploadForm">
+    <el-dialog
+      :lock-scroll="false"
+      v-model="uploadDialogVisible"
+      :title="dialogMode === 'edit' ? '编辑模型' : '上传模型'"
+      width="520px"
+      @close="resetUploadForm"
+    >
       <div class="space-y-4">
         <div>
           <label class="text-[13px] font-semibold text-foreground block mb-1.5">模型名称 *</label>
-          <el-input v-model="uploadForm.name" placeholder="唯一标识，如 neuro1" />
+          <el-input v-model="uploadForm.name" :disabled="dialogMode === 'edit'" placeholder="唯一标识，如 neuro1" />
         </div>
         <div>
           <label class="text-[13px] font-semibold text-foreground block mb-1.5">描述</label>
           <el-input v-model="uploadForm.description" placeholder="模型描述（选填）" />
         </div>
         <div>
-          <label class="text-[13px] font-semibold text-foreground block mb-1.5">GPT 权重 (.ckpt) *</label>
-          <FileUploader accept=".ckpt" :max-size="500 * 1024 * 1024" placeholder="选择 GPT 权重文件" @change="uploadForm.gpt_file = $event" />
+          <label class="text-[13px] font-semibold text-foreground block mb-1.5">
+            GPT 权重 (.ckpt) {{ dialogMode === 'edit' ? '' : '*' }}
+          </label>
+          <FileUploader
+            accept=".ckpt"
+            :max-size="500 * 1024 * 1024"
+            :placeholder="dialogMode === 'edit' ? '选择新的 GPT 权重文件（留空则保留当前文件）' : '选择 GPT 权重文件'"
+            :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
+            @change="uploadForm.gpt_file = $event"
+          />
         </div>
         <div>
-          <label class="text-[13px] font-semibold text-foreground block mb-1.5">SoVITS 权重 (.pth) *</label>
-          <FileUploader accept=".pth" :max-size="500 * 1024 * 1024" placeholder="选择 SoVITS 权重文件" @change="uploadForm.sovits_file = $event" />
+          <label class="text-[13px] font-semibold text-foreground block mb-1.5">
+            SoVITS 权重 (.pth) {{ dialogMode === 'edit' ? '' : '*' }}
+          </label>
+          <FileUploader
+            accept=".pth"
+            :max-size="500 * 1024 * 1024"
+            :placeholder="dialogMode === 'edit' ? '选择新的 SoVITS 权重文件（留空则保留当前文件）' : '选择 SoVITS 权重文件'"
+            :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
+            @change="uploadForm.sovits_file = $event"
+          />
         </div>
         <div>
-          <label class="text-[13px] font-semibold text-foreground block mb-1.5">参考音频 *</label>
-          <FileUploader accept=".wav,.mp3,.flac" :max-size="10 * 1024 * 1024" placeholder="选择参考音频文件（< 30s）" @change="uploadForm.ref_audio_file = $event" />
+          <label class="text-[13px] font-semibold text-foreground block mb-1.5">
+            参考音频 {{ dialogMode === 'edit' ? '' : '*' }}
+          </label>
+          <FileUploader
+            accept=".wav,.mp3,.flac"
+            :max-size="10 * 1024 * 1024"
+            :placeholder="dialogMode === 'edit' ? '选择新的参考音频文件（留空则保留当前文件）' : '选择参考音频文件（< 30s）'"
+            :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
+            @change="uploadForm.ref_audio_file = $event"
+          />
         </div>
         <div>
           <label class="text-[13px] font-semibold text-foreground block mb-1.5">参考文本 *</label>
@@ -214,7 +295,11 @@ onMounted(loadVoices)
       <template #footer>
         <el-button @click="uploadDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="handleUploadSubmit">
-          {{ uploading ? '上传中...' : '确认上传' }}
+          {{
+            uploading
+              ? (dialogMode === 'edit' ? '更新中...' : '上传中...')
+              : (dialogMode === 'edit' ? '确认更新' : '确认上传')
+          }}
         </el-button>
       </template>
     </el-dialog>
