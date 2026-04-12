@@ -520,11 +520,7 @@ watch(
   <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:flex-row gap-6">
     <!-- Left panel: parameters -->
     <aside class="w-full md:w-[35%] lg:w-[30%] md:max-h-[calc(100vh-8rem)] md:overflow-y-auto space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent pr-1">
-      <div v-if="isBootstrappingWorkspace" class="space-y-5 animate-pulse">
-        <div class="h-[72px] rounded-card border border-border bg-card/70 shadow-card"></div>
-        <div class="h-28 rounded-card border border-border bg-card/70 shadow-card"></div>
-        <div class="h-56 rounded-card border border-border bg-card/70 shadow-card"></div>
-      </div>
+      <div v-if="isBootstrappingWorkspace"></div>
       <ParameterPanelHost
         v-else-if="sessionStatus === 'ready'"
         :voices="voices"
@@ -542,16 +538,7 @@ watch(
     
     <!-- Right Panel: State Management -->
     <main class="w-full md:w-[65%] lg:w-[70%] flex flex-col min-w-0 min-h-0 overflow-hidden relative">
-      <div
-        v-if="isBootstrappingWorkspace"
-        class="h-full flex flex-col items-center justify-center gap-4 rounded-card border border-border bg-card/80 shadow-card"
-      >
-        <div class="h-11 w-11 rounded-full border-2 border-accent/30 border-t-accent animate-spin"></div>
-        <div class="text-center space-y-1">
-          <p class="text-sm font-semibold text-foreground">正在恢复语音合成工作区</p>
-          <p class="text-xs text-muted-fg">等待会话快照与参数缓存完成同步…</p>
-        </div>
-      </div>
+      <div v-if="isBootstrappingWorkspace" class="h-full"></div>
       <WorkspaceEmptyState 
         v-else-if="sessionStatus === 'empty'" 
         :text="text" 

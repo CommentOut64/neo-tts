@@ -286,9 +286,9 @@ onMounted(loadVoices)
           <label class="text-[13px] font-semibold text-foreground whitespace-nowrap">参考语言</label>
           <el-select v-model="uploadForm.ref_lang" size="small" class="w-28">
             <el-option value="zh" label="中文" />
-            <el-option value="en" label="English" />
-            <el-option value="ja" label="日本語" />
-            <el-option value="ko" label="한국어" />
+            <el-option value="en" label="英文" />
+            <el-option value="ja" label="日文" />
+            <el-option value="ko" label="韩文" />
           </el-select>
         </div>
       </div>
