@@ -2,8 +2,11 @@ package supervisor
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,16 +28,27 @@ func TestFrontendDevWebStartsViteWithBackendOrigin(t *testing.T) {
 
 	var gotSpec winplatform.ProcessSpec
 	openCalls := 0
+	asyncCalls := 0
 
 	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			gotSpec = spec
 			return ProcessHandle{PID: 97531}, nil
 		},
+		RunAsync: func(task func()) {
+			asyncCalls++
+			task()
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			if url != "http://localhost:5175/" {
+				t.Fatalf("WaitForReady url = %q, want http://localhost:5175/", url)
+			}
+			return nil
+		},
 		OpenBrowser: func(url string) error {
 			openCalls++
-			if url != "http://127.0.0.1:5175" {
-				t.Fatalf("OpenBrowser url = %q, want http://127.0.0.1:5175", url)
+			if url != "http://localhost:5175" {
+				t.Fatalf("OpenBrowser url = %q, want http://localhost:5175", url)
 			}
 			return nil
 		},
@@ -58,14 +72,229 @@ func TestFrontendDevWebStartsViteWithBackendOrigin(t *testing.T) {
 	if gotSpec.Environment["VITE_BACKEND_ORIGIN"] != "http://127.0.0.1:18600" {
 		t.Fatalf("VITE_BACKEND_ORIGIN = %q, want http://127.0.0.1:18600", gotSpec.Environment["VITE_BACKEND_ORIGIN"])
 	}
+	if gotSpec.Environment["VITE_LAUNCHER_OPEN_BROWSER"] != "" {
+		t.Fatalf("VITE_LAUNCHER_OPEN_BROWSER = %q, want empty", gotSpec.Environment["VITE_LAUNCHER_OPEN_BROWSER"])
+	}
+	if asyncCalls != 1 {
+		t.Fatalf("RunAsync calls = %d, want 1", asyncCalls)
+	}
 	if openCalls != 1 {
-		t.Fatalf("OpenBrowser calls = %d, want 1", openCalls)
+		t.Fatalf("OpenBrowser calls = %d, want 1 in dev mode", openCalls)
 	}
 	if result.State.FrontendHost.PID != 97531 {
 		t.Fatalf("FrontendHost PID = %d, want 97531", result.State.FrontendHost.PID)
 	}
 	if result.State.FrontendHost.Kind != "vite" {
 		t.Fatalf("FrontendHost Kind = %q, want vite", result.State.FrontendHost.Kind)
+	}
+	if !result.State.FrontendHost.BrowserOpened {
+		t.Fatal("BrowserOpened = false, want true")
+	}
+}
+
+func TestFrontendDevWebSchedulesBrowserOpenWithoutBlockingStartup(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := newFrontendConfig(projectRoot)
+	current := state.RuntimeState{
+		Backend: state.BackendState{
+			Mode:   "owned",
+			Port:   18600,
+			Origin: "http://127.0.0.1:18600",
+		},
+	}
+
+	order := make([]string, 0, 2)
+	var scheduled func()
+
+	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
+		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
+			return ProcessHandle{PID: 97531}, nil
+		},
+		RunAsync: func(task func()) {
+			scheduled = task
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			if url != "http://localhost:5175/" {
+				t.Fatalf("WaitForReady url = %q, want http://localhost:5175/", url)
+			}
+			order = append(order, "wait")
+			return nil
+		},
+		OpenBrowser: func(url string) error {
+			if url != "http://localhost:5175" {
+				t.Fatalf("OpenBrowser url = %q, want http://localhost:5175", url)
+			}
+			order = append(order, "open")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartFrontendHost returned error: %v", err)
+	}
+	if scheduled == nil {
+		t.Fatal("scheduled task = nil, want async browser open task")
+	}
+	if result.State.LastPhase != "running" {
+		t.Fatalf("LastPhase = %q, want running", result.State.LastPhase)
+	}
+	if !result.State.FrontendHost.BrowserOpened {
+		t.Fatal("BrowserOpened = false, want true")
+	}
+	if len(order) != 0 {
+		t.Fatalf("order before scheduled run = %+v, want no wait/open before return", order)
+	}
+
+	scheduled()
+
+	if len(order) != 2 || order[0] != "wait" || order[1] != "open" {
+		t.Fatalf("order = %+v, want wait then open", order)
+	}
+}
+
+func TestFrontendDevWebStillOpensBrowserWhenReadyProbeFails(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := newFrontendConfig(projectRoot)
+	current := state.RuntimeState{
+		Backend: state.BackendState{
+			Mode:   "owned",
+			Port:   18600,
+			Origin: "http://127.0.0.1:18600",
+		},
+	}
+
+	openCalls := 0
+	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
+		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
+			return ProcessHandle{PID: 97531}, nil
+		},
+		RunAsync: func(task func()) {
+			task()
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			if url != "http://localhost:5175/" {
+				t.Fatalf("WaitForReady url = %q, want http://localhost:5175/", url)
+			}
+			return errors.New("probe timed out")
+		},
+		OpenBrowser: func(url string) error {
+			if url != "http://localhost:5175" {
+				t.Fatalf("OpenBrowser url = %q, want http://localhost:5175", url)
+			}
+			openCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartFrontendHost returned error: %v", err)
+	}
+	if result.State.LastPhase != "running" {
+		t.Fatalf("LastPhase = %q, want running", result.State.LastPhase)
+	}
+	if openCalls != 1 {
+		t.Fatalf("OpenBrowser calls = %d, want 1", openCalls)
+	}
+}
+
+func TestFrontendDevWebLogsReadyWaitAndBrowserOpen(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := newFrontendConfig(projectRoot)
+	current := state.RuntimeState{
+		Backend: state.BackendState{
+			Mode:   "owned",
+			Port:   18600,
+			Origin: "http://127.0.0.1:18600",
+		},
+	}
+
+	logs := make([]string, 0, 4)
+	_, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
+		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
+			return ProcessHandle{PID: 97531}, nil
+		},
+		RunAsync: func(task func()) {
+			task()
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			return nil
+		},
+		Log: func(line string) {
+			logs = append(logs, line)
+		},
+		OpenBrowser: func(url string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartFrontendHost returned error: %v", err)
+	}
+
+	if len(logs) != 4 {
+		t.Fatalf("log count = %d, want 4; logs=%+v", len(logs), logs)
+	}
+	if logs[0] != "frontend browser wait begin probe_url=http://localhost:5175/ open_url=http://localhost:5175" {
+		t.Fatalf("logs[0] = %q, want wait begin", logs[0])
+	}
+	if !strings.HasPrefix(logs[1], "frontend browser wait ready probe_url=http://localhost:5175/ elapsed_ms=") {
+		t.Fatalf("logs[1] = %q, want wait ready", logs[1])
+	}
+	if logs[2] != "frontend browser open begin url=http://localhost:5175" {
+		t.Fatalf("logs[2] = %q, want open begin", logs[2])
+	}
+	if !strings.HasPrefix(logs[3], "frontend browser open dispatched url=http://localhost:5175 elapsed_ms=") {
+		t.Fatalf("logs[3] = %q, want open dispatched", logs[3])
+	}
+}
+
+func TestFrontendDevWebLogsReadyFallbackBeforeBrowserOpen(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := newFrontendConfig(projectRoot)
+	current := state.RuntimeState{
+		Backend: state.BackendState{
+			Mode:   "owned",
+			Port:   18600,
+			Origin: "http://127.0.0.1:18600",
+		},
+	}
+
+	logs := make([]string, 0, 4)
+	_, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
+		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
+			return ProcessHandle{PID: 97531}, nil
+		},
+		RunAsync: func(task func()) {
+			task()
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			return errors.New("probe timed out")
+		},
+		Log: func(line string) {
+			logs = append(logs, line)
+		},
+		OpenBrowser: func(url string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartFrontendHost returned error: %v", err)
+	}
+
+	if len(logs) != 4 {
+		t.Fatalf("log count = %d, want 4; logs=%+v", len(logs), logs)
+	}
+	if logs[0] != "frontend browser wait begin probe_url=http://localhost:5175/ open_url=http://localhost:5175" {
+		t.Fatalf("logs[0] = %q, want wait begin", logs[0])
+	}
+	if !strings.HasPrefix(logs[1], "frontend browser wait fallback probe_url=http://localhost:5175/ elapsed_ms=") {
+		t.Fatalf("logs[1] = %q, want wait fallback", logs[1])
+	}
+	if !strings.Contains(logs[1], "err=probe timed out") {
+		t.Fatalf("logs[1] = %q, want probe error", logs[1])
+	}
+	if logs[2] != "frontend browser open begin url=http://localhost:5175" {
+		t.Fatalf("logs[2] = %q, want open begin", logs[2])
+	}
+	if !strings.HasPrefix(logs[3], "frontend browser open dispatched url=http://localhost:5175 elapsed_ms=") {
+		t.Fatalf("logs[3] = %q, want open dispatched", logs[3])
 	}
 }
 
@@ -138,6 +367,13 @@ func TestFrontendRepeatedLaunchDoesNotReopenBrowser(t *testing.T) {
 	result, err := StartFrontendHost(context.Background(), cfg, current, FrontendDeps{
 		StartProcess: func(spec winplatform.ProcessSpec) (ProcessHandle, error) {
 			return ProcessHandle{PID: 86420}, nil
+		},
+		RunAsync: func(task func()) {
+			t.Fatal("RunAsync should not be called when browser already opened")
+		},
+		WaitForReady: func(ctx context.Context, url string, interval time.Duration) error {
+			t.Fatal("WaitForReady should not be called when browser already opened")
+			return nil
 		},
 		OpenBrowser: func(url string) error {
 			openCalls++
@@ -213,6 +449,125 @@ func TestFrontendStopsRetryingAfterThreeCrashesInSixtySeconds(t *testing.T) {
 	if result.State.LastPhase != "degraded" {
 		t.Fatalf("LastPhase = %q, want degraded", result.State.LastPhase)
 	}
+}
+
+func TestFrontendStopUsesGracefulHookBeforeKill(t *testing.T) {
+	current := state.RuntimeState{
+		FrontendHost: state.FrontendHostState{
+			Kind: "electron",
+			PID:  2002,
+		},
+	}
+	order := make([]string, 0, 2)
+
+	err := stopFrontendHost(&current, FrontendStopDeps{
+		GracefulStop: func(ctx context.Context) error {
+			order = append(order, "graceful")
+			return nil
+		},
+		IsProcessRunning: func(pid int) bool {
+			return true
+		},
+		KillProcess: func(pid int) error {
+			order = append(order, "kill")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("stopFrontendHost returned error: %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "graceful" || order[1] != "kill" {
+		t.Fatalf("order = %+v, want graceful then kill", order)
+	}
+}
+
+func TestFrontendStopContractTreatsElectronAsGracefulFirst(t *testing.T) {
+	current := state.RuntimeState{
+		FrontendHost: state.FrontendHostState{
+			Kind: "electron",
+			PID:  2002,
+		},
+	}
+	order := make([]string, 0, 2)
+
+	err := stopFrontendHost(&current, FrontendStopDeps{
+		GracefulStop: func(ctx context.Context) error {
+			order = append(order, "graceful")
+			return nil
+		},
+		IsProcessRunning: func(pid int) bool {
+			return false
+		},
+		KillProcess: func(pid int) error {
+			order = append(order, "kill")
+			return errors.New("kill should not be called")
+		},
+	})
+	if err != nil {
+		t.Fatalf("stopFrontendHost returned error: %v", err)
+	}
+
+	if len(order) != 1 || order[0] != "graceful" {
+		t.Fatalf("order = %+v, want graceful only", order)
+	}
+}
+
+func TestFrontendStopIgnoresKillErrorWhenTrackedPidAlreadyExited(t *testing.T) {
+	current := state.RuntimeState{
+		FrontendHost: state.FrontendHostState{
+			Kind: "vite",
+			PID:  2002,
+		},
+	}
+	checks := 0
+
+	err := stopFrontendHost(&current, FrontendStopDeps{
+		IsProcessRunning: func(pid int) bool {
+			checks++
+			return checks == 1
+		},
+		KillProcess: func(pid int) error {
+			return errors.New("process already exited")
+		},
+	})
+	if err != nil {
+		t.Fatalf("stopFrontendHost returned error: %v", err)
+	}
+	if current.FrontendHost.PID != 0 {
+		t.Fatalf("FrontendHost.PID = %d, want 0", current.FrontendHost.PID)
+	}
+}
+
+func TestWaitForFrontendReadyAcceptsTCPListenerBeforeHTTPReady(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer listener.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	url := "http://" + listener.Addr().String() + "/"
+	if err := waitForFrontendReady(waitCtx, url, 20*time.Millisecond); err != nil {
+		t.Fatalf("waitForFrontendReady returned error: %v", err)
+	}
+
+	_ = listener.Close()
+	<-done
 }
 
 func newFrontendConfig(projectRoot string) config.Config {

@@ -174,6 +174,7 @@ def test_prepare_exit_pauses_active_render_job_and_requests_launcher_exit(tmp_pa
 
     exit_request_path = tmp_path / "logs" / "launcher" / "control" / "exit-request.json"
     assert exit_request_path.exists()
+    assert json.loads(exit_request_path.read_text(encoding="utf-8"))["launcher_pid"] == 12345
 
 
 def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Path):
@@ -217,6 +218,8 @@ def test_prepare_exit_force_pauses_tts_runtime_and_cleans_residuals(tmp_path: Pa
     assert response.inference_status == "idle"
     assert not temp_ref_dir.exists()
     assert not saved_result.file_path.exists()
+    exit_request_path = tmp_path / "logs" / "launcher" / "control" / "exit-request.json"
+    assert json.loads(exit_request_path.read_text(encoding="utf-8"))["launcher_pid"] == 12345
 
 
 def test_prepare_exit_is_idempotent_when_no_launcher_state_exists(tmp_path: Path):
