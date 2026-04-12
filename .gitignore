@@ -40,5 +40,5 @@ desktop/node_modules/
 /docker/
 /llmdoc/
 legacy/
-
+config/voices.json
 
