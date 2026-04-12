@@ -13,7 +13,6 @@ import (
 	"neo-tts/launcher/internal/httpcheck"
 	winplatform "neo-tts/launcher/internal/platform/windows"
 	"neo-tts/launcher/internal/state"
-	"neo-tts/launcher/internal/web"
 )
 
 const (
@@ -26,19 +25,18 @@ const (
 )
 
 type FrontendDeps struct {
-	StartProcess func(spec winplatform.ProcessSpec) (ProcessHandle, error)
-	RunAsync     func(task func())
-	WaitForReady func(ctx context.Context, url string, interval time.Duration) error
-	Log          func(line string)
-	OpenBrowser  func(url string) error
+	StartProcess       func(spec winplatform.ProcessSpec) (ProcessHandle, error)
+	AttachOwnedProcess func(pid int) error
+	RunAsync           func(task func())
+	WaitForReady       func(ctx context.Context, url string, interval time.Duration) error
+	Log                func(line string)
+	OpenBrowser        func(url string) error
 }
 
 type FrontendStopDeps struct {
 	IsProcessRunning func(pid int) bool
 	KillProcess      func(pid int) error
 	FindPIDByPort    func(port int) (int, error)
-	StaticServer     *web.StaticServer
-	GracefulStop     func(ctx context.Context) error
 }
 
 type FrontendCrashDeps struct {
@@ -48,9 +46,8 @@ type FrontendCrashDeps struct {
 }
 
 type FrontendResult struct {
-	State        state.RuntimeState
-	StaticServer *web.StaticServer
-	GracefulStop func(ctx context.Context) error
+	State state.RuntimeState
+	Exit  <-chan error
 }
 
 type FrontendCrashResult struct {
@@ -61,14 +58,11 @@ type FrontendCrashResult struct {
 
 func StartFrontendHost(ctx context.Context, cfg config.Config, current state.RuntimeState, deps FrontendDeps) (FrontendResult, error) {
 	deps = withFrontendDefaults(deps)
-	if cfg.FrontendMode != "web" {
-		return FrontendResult{}, errors.New("electron frontend host is not implemented yet")
-	}
-	if cfg.RuntimeMode == "product" {
-		return startProductWebFrontend(current, deps, cfg)
-	}
 	if cfg.RuntimeMode != "dev" {
-		return FrontendResult{}, fmt.Errorf("unsupported runtime mode: %s", cfg.RuntimeMode)
+		return FrontendResult{}, fmt.Errorf("launcher frontend host only supports dev runtime, got %s", cfg.RuntimeMode)
+	}
+	if cfg.FrontendMode != "web" {
+		return FrontendResult{}, errors.New("launcher frontend host only supports web frontend in dev runtime")
 	}
 
 	backendOrigin := current.Backend.Origin
@@ -77,7 +71,8 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	}
 
 	handle, err := deps.StartProcess(winplatform.ProcessSpec{
-		Command:          "npm run dev",
+		Exe:              "npm.cmd",
+		Args:             []string{"run", "dev"},
 		WorkingDirectory: filepath.Join(cfg.ProjectRoot, "frontend"),
 		Environment: map[string]string{
 			"VITE_BACKEND_ORIGIN": backendOrigin,
@@ -87,6 +82,11 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	})
 	if err != nil {
 		return FrontendResult{}, err
+	}
+	if attach := resolveFrontendOwnedProcessAttacher(ctx, deps); attach != nil && handle.PID > 0 {
+		if err := attach(handle.PID); err != nil {
+			return FrontendResult{}, err
+		}
 	}
 
 	next := current
@@ -107,7 +107,10 @@ func StartFrontendHost(ctx context.Context, cfg config.Config, current state.Run
 	}
 
 	next.LastPhase = "running"
-	return FrontendResult{State: next}, nil
+	return FrontendResult{
+		State: next,
+		Exit:  handle.Exit,
+	}, nil
 }
 
 func HandleFrontendCrash(current state.RuntimeState, crashTimes []time.Time, deps FrontendCrashDeps) (FrontendCrashResult, error) {
@@ -149,42 +152,6 @@ func HandleFrontendCrash(current state.RuntimeState, crashTimes []time.Time, dep
 	}, nil
 }
 
-func startProductWebFrontend(current state.RuntimeState, deps FrontendDeps, cfg config.Config) (FrontendResult, error) {
-	server, err := web.StartStaticServer(web.Config{
-		Host:    "127.0.0.1",
-		Port:    web.DefaultStaticServerPort,
-		DistDir: filepath.Join(cfg.ProjectRoot, "frontend", "dist"),
-	})
-	if err != nil {
-		return FrontendResult{}, err
-	}
-
-	next := current
-	next.RuntimeMode = cfg.RuntimeMode
-	next.FrontendMode = cfg.FrontendMode
-	next.FrontendHost = state.FrontendHostState{
-		Kind:          "static-server",
-		Port:          server.Port,
-		Origin:        server.Origin,
-		Command:       "builtin static server",
-		BrowserOpened: current.FrontendHost.BrowserOpened,
-	}
-
-	if !next.FrontendHost.BrowserOpened {
-		if err := deps.OpenBrowser(next.FrontendHost.Origin); err != nil {
-			_ = server.Stop(context.Background())
-			return FrontendResult{}, err
-		}
-		next.FrontendHost.BrowserOpened = true
-	}
-
-	next.LastPhase = "running"
-	return FrontendResult{
-		State:        next,
-		StaticServer: server,
-	}, nil
-}
-
 func withFrontendDefaults(deps FrontendDeps) FrontendDeps {
 	if deps.StartProcess == nil {
 		deps.StartProcess = startProcess
@@ -201,6 +168,13 @@ func withFrontendDefaults(deps FrontendDeps) FrontendDeps {
 		deps.OpenBrowser = winplatform.OpenBrowser
 	}
 	return deps
+}
+
+func resolveFrontendOwnedProcessAttacher(ctx context.Context, deps FrontendDeps) func(pid int) error {
+	if deps.AttachOwnedProcess != nil {
+		return deps.AttachOwnedProcess
+	}
+	return attachOwnedProcessFromContext(ctx)
 }
 
 func scheduleBrowserOpen(openURL string, readyURL string, deps FrontendDeps) {
@@ -323,19 +297,6 @@ func stopFrontendHost(current *state.RuntimeState, deps FrontendStopDeps) error 
 	}
 
 	deps = withFrontendStopDefaults(deps)
-	gracefulStop := deps.GracefulStop
-	if gracefulStop == nil && deps.StaticServer != nil {
-		gracefulStop = deps.StaticServer.Stop
-	}
-	if gracefulStop != nil {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := gracefulStop(stopCtx)
-		cancel()
-		if err != nil {
-			return err
-		}
-	}
-
 	pid := current.FrontendHost.PID
 	if pid > 0 && deps.IsProcessRunning(pid) {
 		if err := deps.KillProcess(pid); err != nil {

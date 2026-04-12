@@ -1,0 +1,18 @@
+{
+  "name": "desktop",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.json",
+    "package": "npm run build && electron-builder --config electron-builder.yml --dir"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.4"
+  }
+}

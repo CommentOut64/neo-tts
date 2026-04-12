@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"neo-tts/launcher/internal/config"
+	"neo-tts/launcher/internal/control"
 	"neo-tts/launcher/internal/logging"
 	winplatform "neo-tts/launcher/internal/platform/windows"
 	"neo-tts/launcher/internal/state"
@@ -31,8 +32,19 @@ const (
 )
 
 var ErrAlreadyRunning = errors.New("launcher instance is already running")
+var ErrUnsupportedLauncherProfile = errors.New("launcher only supports dev/web; product/electron is owned by desktop Electron")
 
 type InstanceLock interface {
+	Close() error
+}
+
+type OwnerControlHandle interface {
+	Session() control.Session
+	Close() error
+}
+
+type OwnedProcessGroup interface {
+	Attach(pid int) error
 	Close() error
 }
 
@@ -49,10 +61,12 @@ type AppDeps struct {
 	AcquireInstanceLock          func(name string) (InstanceLock, bool, error)
 	LoadState                    func(projectRoot string) (state.RuntimeState, error)
 	SaveState                    func(projectRoot string, runtimeState state.RuntimeState) (string, error)
-	EnsureBackend                func(ctx context.Context, cfg config.Config, previous state.RuntimeState) (supervisor.BackendResult, error)
+	StartOwnerControl            func(ctx context.Context, cfg config.Config, shutdown context.CancelFunc) (OwnerControlHandle, error)
+	StartOwnedProcessGroup       func(ctx context.Context, cfg config.Config) (OwnedProcessGroup, error)
+	EnsureBackend                func(ctx context.Context, cfg config.Config, previous state.RuntimeState, ownerSession *control.Session) (supervisor.BackendResult, error)
 	StartFrontend                func(ctx context.Context, cfg config.Config, current state.RuntimeState) (supervisor.FrontendResult, error)
 	IsExistingWebInstanceHealthy func(ctx context.Context, existing state.RuntimeState) bool
-	WaitForSupervisor            func(ctx context.Context, cfg config.Config, current state.RuntimeState, frontendResult supervisor.FrontendResult) error
+	WaitForSupervisor            func(ctx context.Context, cfg config.Config, current state.RuntimeState, backendResult supervisor.BackendResult, frontendResult supervisor.FrontendResult) error
 }
 
 type RunResult struct {
@@ -85,6 +99,9 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	cfg, err := deps.LoadConfig(opts.ProjectRoot, opts.Overrides)
 	if err != nil {
 		return RunResult{}, err
+	}
+	if cfg.RuntimeMode != "dev" || cfg.FrontendMode != "web" {
+		return RunResult{}, fmt.Errorf("%w: %s/%s", ErrUnsupportedLauncherProfile, cfg.RuntimeMode, cfg.FrontendMode)
 	}
 
 	startup, err := deps.BuildStartupContext(opts.ProjectRoot, opts.StartupSource)
@@ -134,7 +151,30 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	}
 	logPhase(current, "phase=booting")
 
-	backendResult, err := deps.EnsureBackend(ctx, cfg, previous)
+	ownerCtx, ownerCancel := context.WithCancel(ctx)
+	defer ownerCancel()
+
+	var ownerSession *control.Session
+	ownerControl, err := deps.StartOwnerControl(ownerCtx, cfg, ownerCancel)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if ownerControl != nil {
+		defer ownerControl.Close()
+		session := ownerControl.Session()
+		ownerSession = &session
+	}
+
+	processGroup, err := deps.StartOwnedProcessGroup(ownerCtx, cfg)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if processGroup != nil {
+		defer processGroup.Close()
+		ownerCtx = supervisor.WithOwnedProcessAttacher(ownerCtx, processGroup.Attach)
+	}
+
+	backendResult, err := deps.EnsureBackend(ownerCtx, cfg, previous, ownerSession)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -144,7 +184,7 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	}
 	logPhase(current, "phase=backend-ready backend_pid="+fmt.Sprint(current.Backend.PID))
 
-	frontendResult, err := deps.StartFrontend(ctx, cfg, current)
+	frontendResult, err := deps.StartFrontend(ownerCtx, cfg, current)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -154,7 +194,7 @@ func Run(ctx context.Context, opts RunOptions, deps AppDeps) (RunResult, error) 
 	}
 	logPhase(current, "phase=running frontend_pid="+fmt.Sprint(current.FrontendHost.PID))
 
-	if err := deps.WaitForSupervisor(ctx, cfg, current, frontendResult); err != nil {
+	if err := deps.WaitForSupervisor(ownerCtx, cfg, current, backendResult, frontendResult); err != nil {
 		return RunResult{}, err
 	}
 
@@ -216,9 +256,21 @@ func withAppDefaults(deps AppDeps) AppDeps {
 	if deps.SaveState == nil {
 		deps.SaveState = state.Save
 	}
+	if deps.StartOwnerControl == nil {
+		deps.StartOwnerControl = func(ctx context.Context, cfg config.Config, shutdown context.CancelFunc) (OwnerControlHandle, error) {
+			return control.StartServer(ctx, control.ServerOptions{
+				OnShutdown: shutdown,
+			})
+		}
+	}
+	if deps.StartOwnedProcessGroup == nil {
+		deps.StartOwnedProcessGroup = func(ctx context.Context, cfg config.Config) (OwnedProcessGroup, error) {
+			return winplatform.CreateOwnedProcessJobObject()
+		}
+	}
 	if deps.EnsureBackend == nil {
-		deps.EnsureBackend = func(ctx context.Context, cfg config.Config, previous state.RuntimeState) (supervisor.BackendResult, error) {
-			return supervisor.EnsureBackend(ctx, cfg, previous, supervisor.BackendDeps{})
+		deps.EnsureBackend = func(ctx context.Context, cfg config.Config, previous state.RuntimeState, ownerSession *control.Session) (supervisor.BackendResult, error) {
+			return supervisor.EnsureBackend(ctx, cfg, previous, ownerSession, supervisor.BackendDeps{})
 		}
 	}
 	if deps.StartFrontend == nil {
@@ -234,10 +286,10 @@ func withAppDefaults(deps AppDeps) AppDeps {
 		deps.IsExistingWebInstanceHealthy = isExistingWebInstanceHealthy
 	}
 	if deps.WaitForSupervisor == nil {
-		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState, frontendResult supervisor.FrontendResult) error {
-			return supervisor.RunLoop(ctx, cfg, current, supervisor.LoopDeps{
-				StaticServer: frontendResult.StaticServer,
-				GracefulStop: frontendResult.GracefulStop,
+		deps.WaitForSupervisor = func(ctx context.Context, cfg config.Config, current state.RuntimeState, backendResult supervisor.BackendResult, frontendResult supervisor.FrontendResult) error {
+			return supervisor.RunOwner(ctx, cfg, current, supervisor.OwnerDeps{
+				BackendExit:  backendResult.Exit,
+				FrontendExit: frontendResult.Exit,
 			})
 		}
 	}

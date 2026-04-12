@@ -1,17 +1,17 @@
 package config
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 type Config struct {
 	ProjectRoot   string
+	Profile       LaunchProfile
 	RuntimeMode   string
 	FrontendMode  string
 	StartupSource string
@@ -28,14 +28,14 @@ type BackendConfig struct {
 }
 
 type CLIOverrides struct {
+	Profile      LaunchProfile
 	RuntimeMode  string
 	FrontendMode string
 }
 
-type launcherJSON struct {
-	RuntimeMode  string          `json:"runtimeMode"`
-	FrontendMode string          `json:"frontendMode"`
-	Backend      backendJSONFile `json:"backend"`
+type launchJSON struct {
+	Profile string          `json:"profile"`
+	Backend backendJSONFile `json:"backend"`
 }
 
 type backendJSONFile struct {
@@ -50,13 +50,14 @@ type backendJSONFile struct {
 func Load(projectRoot string, overrides CLIOverrides) (Config, error) {
 	cfg := defaultConfig(projectRoot)
 
-	if err := mergeLauncherJSON(&cfg, filepath.Join(projectRoot, "launcher", "launcher.json")); err != nil {
+	if err := mergeLaunchJSON(&cfg, filepath.Join(projectRoot, "config", "launch.json")); err != nil {
 		return Config{}, err
 	}
-	if err := mergeDotEnv(&cfg, filepath.Join(projectRoot, ".env")); err != nil {
-		return Config{}, err
-	}
+	mergeEnvironment(&cfg)
 	mergeCLIOverrides(&cfg, overrides)
+	if err := finalizeProfile(&cfg); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
 }
@@ -64,8 +65,6 @@ func Load(projectRoot string, overrides CLIOverrides) (Config, error) {
 func defaultConfig(projectRoot string) Config {
 	return Config{
 		ProjectRoot:   projectRoot,
-		RuntimeMode:   "dev",
-		FrontendMode:  "web",
 		StartupSource: "double-click",
 		Backend: BackendConfig{
 			Mode:          "owned",
@@ -77,7 +76,7 @@ func defaultConfig(projectRoot string) Config {
 	}
 }
 
-func mergeLauncherJSON(cfg *Config, path string) error {
+func mergeLaunchJSON(cfg *Config, path string) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -86,16 +85,13 @@ func mergeLauncherJSON(cfg *Config, path string) error {
 		return err
 	}
 
-	var parsed launcherJSON
+	var parsed launchJSON
 	if err := json.Unmarshal(content, &parsed); err != nil {
 		return err
 	}
 
-	if parsed.RuntimeMode != "" {
-		cfg.RuntimeMode = parsed.RuntimeMode
-	}
-	if parsed.FrontendMode != "" {
-		cfg.FrontendMode = parsed.FrontendMode
+	if parsed.Profile != "" {
+		cfg.Profile = LaunchProfile(parsed.Profile)
 	}
 	if parsed.Backend.Mode != "" {
 		cfg.Backend.Mode = parsed.Backend.Mode
@@ -119,70 +115,40 @@ func mergeLauncherJSON(cfg *Config, path string) error {
 	return nil
 }
 
-func mergeDotEnv(cfg *Config, path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+func mergeEnvironment(cfg *Config) {
+	if value := os.Getenv("LAUNCHER_PROFILE"); value != "" {
+		cfg.Profile = LaunchProfile(value)
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = trimEnvValue(strings.TrimSpace(value))
-
-		switch key {
-		case "LAUNCHER_RUNTIME_MODE":
-			if value != "" {
-				cfg.RuntimeMode = value
-			}
-		case "LAUNCHER_FRONTEND_MODE":
-			if value != "" {
-				cfg.FrontendMode = value
-			}
-		case "LAUNCHER_BACKEND_MODE":
-			if value != "" {
-				cfg.Backend.Mode = value
-			}
-		case "LAUNCHER_BACKEND_HOST":
-			if value != "" {
-				cfg.Backend.Host = value
-			}
-		case "LAUNCHER_BACKEND_PORT":
-			if value != "" {
-				cfg.Backend.Port = atoiOrDefault(value, cfg.Backend.Port)
-			}
-		case "LAUNCHER_BACKEND_DEV_PYTHON":
-			if value != "" {
-				cfg.Backend.DevPython = value
-			}
-		case "LAUNCHER_BACKEND_PRODUCT_PYTHON":
-			if value != "" {
-				cfg.Backend.ProductPython = value
-			}
-		case "LAUNCHER_BACKEND_EXTERNAL_ORIGIN":
-			if value != "" {
-				cfg.Backend.ExternalOrigin = value
-			}
-		}
+	if value := os.Getenv("LAUNCHER_RUNTIME_MODE"); value != "" {
+		cfg.RuntimeMode = value
 	}
-
-	return scanner.Err()
+	if value := os.Getenv("LAUNCHER_FRONTEND_MODE"); value != "" {
+		cfg.FrontendMode = value
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_MODE"); value != "" {
+		cfg.Backend.Mode = value
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_HOST"); value != "" {
+		cfg.Backend.Host = value
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_PORT"); value != "" {
+		cfg.Backend.Port = atoiOrDefault(value, cfg.Backend.Port)
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_DEV_PYTHON"); value != "" {
+		cfg.Backend.DevPython = value
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_PRODUCT_PYTHON"); value != "" {
+		cfg.Backend.ProductPython = value
+	}
+	if value := os.Getenv("LAUNCHER_BACKEND_EXTERNAL_ORIGIN"); value != "" {
+		cfg.Backend.ExternalOrigin = value
+	}
 }
 
 func mergeCLIOverrides(cfg *Config, overrides CLIOverrides) {
+	if overrides.Profile != "" {
+		cfg.Profile = overrides.Profile
+	}
 	if overrides.RuntimeMode != "" {
 		cfg.RuntimeMode = overrides.RuntimeMode
 	}
@@ -191,16 +157,49 @@ func mergeCLIOverrides(cfg *Config, overrides CLIOverrides) {
 	}
 }
 
-func trimEnvValue(value string) string {
-	if len(value) >= 2 {
-		if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
-			return strings.Trim(value, "\"")
-		}
-		if strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'") {
-			return strings.Trim(value, "'")
-		}
+func finalizeProfile(cfg *Config) error {
+	if cfg == nil {
+		return nil
 	}
-	return value
+
+	if cfg.Profile == "" && cfg.RuntimeMode == "" && cfg.FrontendMode == "" {
+		cfg.Profile = ProfileDevWeb
+	}
+
+	if cfg.Profile != "" {
+		profile, runtimeMode, frontendMode, err := normalizeProfile(cfg.Profile)
+		if err != nil {
+			return err
+		}
+		if cfg.RuntimeMode != "" && cfg.RuntimeMode != runtimeMode {
+			return fmt.Errorf("launcher profile %s conflicts with runtime mode %s", profile, cfg.RuntimeMode)
+		}
+		if cfg.FrontendMode != "" && cfg.FrontendMode != frontendMode {
+			return fmt.Errorf("launcher profile %s conflicts with frontend mode %s", profile, cfg.FrontendMode)
+		}
+		cfg.Profile = profile
+		cfg.RuntimeMode = runtimeMode
+		cfg.FrontendMode = frontendMode
+		return nil
+	}
+
+	switch {
+	case cfg.RuntimeMode == "dev" && cfg.FrontendMode == "":
+		cfg.FrontendMode = "web"
+	case cfg.RuntimeMode == "product" && cfg.FrontendMode == "":
+		cfg.FrontendMode = "electron"
+	case cfg.RuntimeMode == "" && cfg.FrontendMode == "web":
+		cfg.RuntimeMode = "dev"
+	case cfg.RuntimeMode == "" && cfg.FrontendMode == "electron":
+		cfg.RuntimeMode = "product"
+	}
+
+	profile, err := deriveProfile(cfg.RuntimeMode, cfg.FrontendMode)
+	if err != nil {
+		return err
+	}
+	cfg.Profile = profile
+	return nil
 }
 
 func atoiOrDefault(value string, fallback int) int {

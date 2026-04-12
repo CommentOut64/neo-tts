@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadConfigDefaultsToOwnedDevWeb(t *testing.T) {
+func TestLoadConfigDefaultsToOwnedDevWebProfile(t *testing.T) {
 	projectRoot := t.TempDir()
 
 	cfg, err := Load(projectRoot, CLIOverrides{})
@@ -14,6 +14,9 @@ func TestLoadConfigDefaultsToOwnedDevWeb(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
+	if cfg.Profile != ProfileDevWeb {
+		t.Fatalf("Profile = %q, want %q", cfg.Profile, ProfileDevWeb)
+	}
 	if cfg.RuntimeMode != "dev" {
 		t.Fatalf("RuntimeMode = %q, want dev", cfg.RuntimeMode)
 	}
@@ -28,23 +31,27 @@ func TestLoadConfigDefaultsToOwnedDevWeb(t *testing.T) {
 	}
 }
 
-func TestDotenvOverridesLauncherJSON(t *testing.T) {
+func TestProcessEnvOverridesLaunchJSON(t *testing.T) {
 	projectRoot := t.TempDir()
-	writeFile(t, filepath.Join(projectRoot, "launcher", "launcher.json"), `{
-  "runtimeMode": "product",
-  "frontendMode": "electron",
+	writeFile(t, filepath.Join(projectRoot, "config", "launch.json"), `{
+  "profile": "product-electron",
   "backend": {
     "mode": "external",
     "port": 19000
   }
 }`)
-	writeFile(t, filepath.Join(projectRoot, ".env"), "LAUNCHER_RUNTIME_MODE=dev\nLAUNCHER_FRONTEND_MODE=web\nLAUNCHER_BACKEND_MODE=owned\nLAUNCHER_BACKEND_PORT=18600\n")
+	t.Setenv("LAUNCHER_PROFILE", "dev-web")
+	t.Setenv("LAUNCHER_BACKEND_MODE", "owned")
+	t.Setenv("LAUNCHER_BACKEND_PORT", "18600")
 
 	cfg, err := Load(projectRoot, CLIOverrides{})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
+	if cfg.Profile != ProfileDevWeb {
+		t.Fatalf("Profile = %q, want %q", cfg.Profile, ProfileDevWeb)
+	}
 	if cfg.RuntimeMode != "dev" {
 		t.Fatalf("RuntimeMode = %q, want dev", cfg.RuntimeMode)
 	}
@@ -59,18 +66,20 @@ func TestDotenvOverridesLauncherJSON(t *testing.T) {
 	}
 }
 
-func TestCLIFlagsOverrideDotenv(t *testing.T) {
+func TestCLIOverridesProcessEnv(t *testing.T) {
 	projectRoot := t.TempDir()
-	writeFile(t, filepath.Join(projectRoot, ".env"), "LAUNCHER_RUNTIME_MODE=dev\nLAUNCHER_FRONTEND_MODE=web\n")
+	t.Setenv("LAUNCHER_PROFILE", "dev-web")
 
 	cfg, err := Load(projectRoot, CLIOverrides{
-		RuntimeMode:  "product",
-		FrontendMode: "electron",
+		Profile: ProfileProductElectron,
 	})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
+	if cfg.Profile != ProfileProductElectron {
+		t.Fatalf("Profile = %q, want %q", cfg.Profile, ProfileProductElectron)
+	}
 	if cfg.RuntimeMode != "product" {
 		t.Fatalf("RuntimeMode = %q, want product", cfg.RuntimeMode)
 	}
@@ -81,7 +90,8 @@ func TestCLIFlagsOverrideDotenv(t *testing.T) {
 
 func TestExternalBackendSkipsOwnedCommandRequirement(t *testing.T) {
 	projectRoot := t.TempDir()
-	writeFile(t, filepath.Join(projectRoot, ".env"), "LAUNCHER_BACKEND_MODE=external\nLAUNCHER_BACKEND_EXTERNAL_ORIGIN=http://127.0.0.1:18600\n")
+	t.Setenv("LAUNCHER_BACKEND_MODE", "external")
+	t.Setenv("LAUNCHER_BACKEND_EXTERNAL_ORIGIN", "http://127.0.0.1:18600")
 
 	cfg, err := Load(projectRoot, CLIOverrides{})
 	if err != nil {
@@ -109,6 +119,32 @@ func TestProductDefaultsToRuntimePython(t *testing.T) {
 	want := filepath.Join("runtime", "python", "python.exe")
 	if cfg.Backend.ProductPython != want {
 		t.Fatalf("Backend.ProductPython = %q, want %q", cfg.Backend.ProductPython, want)
+	}
+}
+
+func TestRejectsUnsupportedProductWebProfile(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	_, err := Load(projectRoot, CLIOverrides{
+		RuntimeMode:  "product",
+		FrontendMode: "web",
+	})
+	if err == nil {
+		t.Fatal("Load returned nil error, want unsupported product/web profile")
+	}
+}
+
+func TestRejectsUnsupportedDevElectronProfile(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeFile(t, filepath.Join(projectRoot, "config", "launch.json"), `{
+  "profile": "product-electron"
+}`)
+
+	_, err := Load(projectRoot, CLIOverrides{
+		RuntimeMode: "dev",
+	})
+	if err == nil {
+		t.Fatal("Load returned nil error, want unsupported dev/electron profile")
 	}
 }
 

@@ -2,30 +2,30 @@ package httpcheck
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	winplatform "neo-tts/launcher/internal/platform/windows"
 )
 
-func TestBuildPowerShellCommandPreservesWorkingDirAndEnv(t *testing.T) {
-	invocation := winplatform.BuildPowerShellInvocation(winplatform.ProcessSpec{
-		Command:          "npm run dev",
+func TestBuildProcessInvocationPreservesWorkingDirAndEnv(t *testing.T) {
+	invocation := winplatform.BuildProcessInvocation(winplatform.ProcessSpec{
+		Exe:              "npm.cmd",
+		Args:             []string{"run", "dev"},
 		WorkingDirectory: `F:\neo-tts\frontend`,
 		Environment: map[string]string{
 			"VITE_BACKEND_ORIGIN": "http://127.0.0.1:18600",
 		},
 	})
 
-	if invocation.Executable != "powershell" {
-		t.Fatalf("Executable = %q, want powershell", invocation.Executable)
+	if invocation.Executable != "npm.cmd" {
+		t.Fatalf("Executable = %q, want npm.cmd", invocation.Executable)
 	}
 	if invocation.WorkingDirectory != `F:\neo-tts\frontend` {
 		t.Fatalf("WorkingDirectory = %q, want F:\\neo-tts\\frontend", invocation.WorkingDirectory)
 	}
-	if strings.Join(invocation.Args, " ") == "" {
-		t.Fatal("Args is empty")
+	if len(invocation.Args) != 2 || invocation.Args[0] != "run" || invocation.Args[1] != "dev" {
+		t.Fatalf("Args = %#v, want [run dev]", invocation.Args)
 	}
 	found := false
 	for _, item := range invocation.Environment {

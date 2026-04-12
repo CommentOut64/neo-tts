@@ -118,6 +118,7 @@ describe("useAppExit", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    Reflect.deleteProperty(globalThis, "window");
     runtimeStateMock.currentRenderJob.value = null;
     inferenceRuntimeMock.progress.value = {
       task_id: null,
@@ -150,6 +151,27 @@ describe("useAppExit", () => {
 
     expect(elementPlusMock.confirm).not.toHaveBeenCalled();
     expect(systemApiMock.prepareExit).toHaveBeenCalledTimes(1);
+  });
+
+  it("electron host 退出时不再直接调用 prepare-exit HTTP", async () => {
+    const requestAppExit = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        neoTTS: {
+          runtime: "electron",
+          requestAppExit,
+        },
+      },
+      configurable: true,
+    });
+
+    const { useAppExit } = await import("../src/composables/useAppExit");
+    const appExit = useAppExit();
+
+    await appExit.requestExit();
+
+    expect(requestAppExit).toHaveBeenCalledTimes(1);
+    expect(systemApiMock.prepareExit).not.toHaveBeenCalled();
   });
 
   it("有未决修改时会先弹三选一确认", async () => {
