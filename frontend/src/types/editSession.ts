@@ -433,21 +433,41 @@ export interface ProgressiveSegment {
   renderAssetId: string | null
 }
 
-export interface ExportSegmentsBody {
-  document_version: number;
-  target_dir: string;
+export interface ExportAudioRequest {
+  kind: "segments" | "composition";
   overwrite_policy?: "fail" | "replace" | "new_folder";
 }
 
-export type ExportCompositionBody = ExportSegmentsBody;
+export interface ExportSubtitleRequest {
+  enabled?: boolean;
+  format?: "srt";
+  offset_seconds?: number;
+  strip_trailing_punctuation?: boolean;
+}
+
+export interface ExportRequestBody {
+  document_version: number;
+  target_dir: string;
+  audio: ExportAudioRequest;
+  subtitle?: ExportSubtitleRequest;
+}
+
+export interface ExportSubtitleManifest {
+  format: "srt";
+  offset_seconds: number;
+  strip_trailing_punctuation: boolean;
+}
 
 export interface ExportOutputManifest {
   export_kind: "segments" | "composition";
   target_dir: string;
   files: string[];
+  audio_files: string[];
+  subtitle_files: string[];
   segment_files: string[];
   composition_file: string | null;
   composition_manifest_id: string | null;
+  subtitle_manifest: ExportSubtitleManifest | null;
   manifest_file: string;
   exported_at: string;
 }
@@ -458,6 +478,7 @@ export interface ExportJobResponse {
   document_version: number;
   timeline_manifest_id: string;
   export_kind: "segments" | "composition";
+  subtitle?: ExportSubtitleRequest;
   status: "queued" | "exporting" | "completed" | "failed";
   target_dir: string;
   overwrite_policy: "fail" | "replace" | "new_folder";

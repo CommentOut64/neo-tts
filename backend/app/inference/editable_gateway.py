@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import threading
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
@@ -11,6 +11,9 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
 )
 from backend.app.schemas.edit_session import EditableEdge, EditableSegment
+
+if TYPE_CHECKING:
+    from backend.app.inference.model_cache import PyTorchModelCache
 
 
 class EditableInferenceBackend(Protocol):
@@ -57,6 +60,52 @@ class EditableInferenceGateway:
         context: ReferenceContext,
     ) -> BoundaryAssetPayload:
         return self._backend.render_boundary_asset(left_asset, right_asset, edge, context)
+
+
+class CacheBackedEditableInferenceBackend:
+    def __init__(
+        self,
+        *,
+        model_cache: "PyTorchModelCache",
+        gpt_path: str,
+        sovits_path: str,
+    ) -> None:
+        self._model_cache = model_cache
+        self._gpt_path = gpt_path
+        self._sovits_path = sovits_path
+
+    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+        handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
+        try:
+            return handle.engine.build_reference_context(resolved_context)
+        finally:
+            self._model_cache.release_model_handle(handle.cache_key)
+
+    def render_segment_base(
+        self,
+        segment: EditableSegment,
+        context: ReferenceContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> SegmentRenderAssetPayload:
+        handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
+        try:
+            return handle.engine.render_segment_base(segment, context, progress_callback=progress_callback)
+        finally:
+            self._model_cache.release_model_handle(handle.cache_key)
+
+    def render_boundary_asset(
+        self,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+        edge: EditableEdge,
+        context: ReferenceContext,
+    ) -> BoundaryAssetPayload:
+        handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
+        try:
+            return handle.engine.render_boundary_asset(left_asset, right_asset, edge, context)
+        finally:
+            self._model_cache.release_model_handle(handle.cache_key)
 
 
 class LazyEditableInferenceGateway:

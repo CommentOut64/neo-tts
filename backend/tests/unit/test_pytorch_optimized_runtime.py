@@ -1,0 +1,147 @@
+from types import SimpleNamespace
+
+from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+
+
+class _FakeModule:
+    def __init__(self) -> None:
+        self.moves: list[str] = []
+
+    def to(self, device: str):
+        self.moves.append(device)
+        return self
+
+
+def _build_runtime() -> GPTSoVITSOptimizedInference:
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cuda"
+    runtime.is_half = True
+    runtime.resident_device = "cuda"
+    runtime.ssl_model = _FakeModule()
+    runtime.bert_model = _FakeModule()
+    runtime.t2s_model = _FakeModule()
+    runtime.vq_model = _FakeModule()
+    runtime.sv_model = SimpleNamespace(embedding_model=_FakeModule())
+    return runtime
+
+
+def test_offload_from_gpu_moves_all_runtime_modules_to_cpu(monkeypatch):
+    empty_cache_calls: list[str] = []
+    gc_collect_calls: list[str] = []
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.torch.cuda.empty_cache", lambda: empty_cache_calls.append("ok"))
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.gc.collect", lambda: gc_collect_calls.append("ok"))
+
+    runtime = _build_runtime()
+
+    runtime.offload_from_gpu()
+
+    assert runtime.resident_device == "cpu"
+    assert runtime.device == "cpu"
+    assert runtime.ssl_model.moves == ["cpu"]
+    assert runtime.bert_model.moves == ["cpu"]
+    assert runtime.t2s_model.moves == ["cpu"]
+    assert runtime.vq_model.moves == ["cpu"]
+    assert runtime.sv_model.embedding_model.moves == ["cpu"]
+    assert empty_cache_calls == ["ok"]
+    assert gc_collect_calls == ["ok"]
+
+
+def test_ensure_on_gpu_restores_offloaded_runtime_modules(monkeypatch):
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.torch.cuda.is_available", lambda: True)
+
+    runtime = _build_runtime()
+    runtime.offload_from_gpu()
+
+    runtime.ensure_on_gpu()
+
+    assert runtime.resident_device == "cuda"
+    assert runtime.device == "cuda"
+    assert runtime.ssl_model.moves == ["cpu", "cuda"]
+    assert runtime.bert_model.moves == ["cpu", "cuda"]
+    assert runtime.t2s_model.moves == ["cpu", "cuda"]
+    assert runtime.vq_model.moves == ["cpu", "cuda"]
+    assert runtime.sv_model.embedding_model.moves == ["cpu", "cuda"]
+
+
+def test_warmup_logs_stage_when_t2s_infer_panel_returns_none(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+        def exception(self, message, *args):
+            logged.append(("exception", (message, *args)))
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return None, 0
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = lambda *args, **kwargs: ([1, 2, 3], None, "norm")
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = SimpleNamespace(decode=lambda *args, **kwargs: "unused")
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+
+    runtime.warmup()
+
+    exception_entries = [entry for entry in logged if entry[0] == "exception"]
+    assert len(exception_entries) == 1
+    message, stage, reason = exception_entries[0][1]
+    assert message == "Warmup failed at stage={} reason={}"
+    assert stage == "t2s_infer_panel"
+    assert "returned no semantic tokens" in reason
+
+
+def test_warmup_passes_dummy_speaker_embedding_for_v2pro_decode(monkeypatch):
+    decode_calls: list[dict] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            raise AssertionError(f"warmup should not fail: {message} {args}")
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return __import__("torch").ones((1, 4), dtype=__import__("torch").long), 0
+
+    class _FakeVQModel:
+        is_v2pro = True
+
+        def decode(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None):
+            decode_calls.append(
+                {
+                    "codes_shape": tuple(codes.shape),
+                    "sv_emb": sv_emb,
+                }
+            )
+            return "ok"
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = lambda *args, **kwargs: ([1, 2, 3], None, "norm")
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = _FakeVQModel()
+    runtime._build_dummy_warmup_speaker_embedding = lambda: "dummy-sv-emb"
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+
+    runtime.warmup()
+
+    assert len(decode_calls) == 1
+    assert decode_calls[0]["sv_emb"] == ["dummy-sv-emb"]

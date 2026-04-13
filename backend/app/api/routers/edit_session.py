@@ -13,6 +13,7 @@ from backend.app.api.reference_audio_upload import (
 )
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
 from backend.app.inference.editable_gateway import (
+    CacheBackedEditableInferenceBackend,
     EditableInferenceGateway,
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
@@ -29,6 +30,7 @@ from backend.app.schemas.edit_session import (
     CurrentCheckpointResponse,
     EdgeListResponse,
     EditSessionSnapshotResponse,
+    ExportRequest,
     ExportJobAcceptedResponse,
     ExportJobResponse,
     GroupListResponse,
@@ -124,6 +126,15 @@ def _build_editable_gateway(
         return existing
 
     settings = request.app.state.settings
+    model_cache = getattr(request.app.state, "model_cache", None)
+    if model_cache is None:
+        from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
+
+        model_cache = build_model_cache_from_settings(
+            settings=settings,
+            model_cache_cls=PyTorchModelCache,
+        )
+        request.app.state.model_cache = model_cache
     voice_service = _build_voice_service(request)
     voice = voice_service.get_voice(voice_id)
     cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway] = getattr(
@@ -138,13 +149,10 @@ def _build_editable_gateway(
         resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
 
         def _build_backend():
-            from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
-
-            return GPTSoVITSOptimizedInference(
-                resolved_gpt_path,
-                resolved_sovits_path,
-                settings.cnhubert_base_path,
-                settings.bert_path,
+            return CacheBackedEditableInferenceBackend(
+                model_cache=model_cache,
+                gpt_path=resolved_gpt_path,
+                sovits_path=resolved_sovits_path,
             )
 
         return LazyEditableInferenceGateway(backend_factory=_build_backend)
@@ -804,6 +812,21 @@ def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest)
 )
 def rerender_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_rerender_segment_job(segment_id)
+
+
+@router.post(
+    "/exports",
+    response_model=ExportJobAcceptedResponse,
+    status_code=202,
+    summary="创建统一导出作业",
+    description=(
+        "统一导出指定 `document_version` 的正式音频与可选字幕。"
+        "前端应优先调用该接口，而不是分别调用分段导出和整条导出接口。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
+def create_export(request: Request, body: ExportRequest) -> ExportJobAcceptedResponse:
+    return _build_export_service(request).create_export_job(body)
 
 
 @router.post(

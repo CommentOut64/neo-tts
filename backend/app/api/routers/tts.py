@@ -92,7 +92,7 @@ def _build_voice_service(request: Request) -> VoiceService:
 
 def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
     from backend.app.inference.engine import PyTorchInferenceEngine
-    from backend.app.inference.model_cache import PyTorchModelCache
+    from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
 
     existing_engine = getattr(request.app.state, "inference_engine", None)
     if existing_engine is not None:
@@ -101,10 +101,9 @@ def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
     settings = request.app.state.settings
     model_cache = getattr(request.app.state, "model_cache", None)
     if model_cache is None:
-        model_cache = PyTorchModelCache(
-            project_root=settings.project_root,
-            cnhubert_base_path=settings.cnhubert_base_path,
-            bert_path=settings.bert_path,
+        model_cache = build_model_cache_from_settings(
+            settings=settings,
+            model_cache_cls=PyTorchModelCache,
         )
         request.app.state.model_cache = model_cache
 
