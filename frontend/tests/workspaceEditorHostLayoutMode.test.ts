@@ -37,6 +37,13 @@ const pauseBoundaryNodeViewSource = readFileSync(
   ),
   "utf8",
 );
+const editorSelectionHintBubbleSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/workspace-editor/EditorSelectionHintBubble.vue",
+  ),
+  "utf8",
+);
 const workspaceEditorHostModelSource = readFileSync(
   resolve(
     dirname(fileURLToPath(import.meta.url)),
@@ -451,6 +458,19 @@ describe("workspace editor host layout mode helpers", () => {
   it("不会再把 workspace working_text 实时回写到输入页", () => {
     expect(workspaceEditorHostSource).not.toContain("syncFromWorkspaceDraft");
     expect(workspaceEditorHostSource).not.toContain("syncInputDraftToSessionText");
+  });
+
+  it("会在宿主层接入 Editor 内句尾保护提示气泡", () => {
+    expect(workspaceEditorHostSource).toContain("EditorSelectionHintBubble");
+    expect(workspaceEditorHostSource).toContain("showEditorSelectionHint");
+    expect(workspaceEditorHostSource).toContain("句末标点不可修改");
+  });
+
+  it("句尾保护提示气泡应提供渐入渐出过渡，避免显隐过于突兀", () => {
+    expect(editorSelectionHintBubbleSource).toContain('<Transition name="editor-selection-hint">');
+    expect(editorSelectionHintBubbleSource).toContain(".editor-selection-hint-enter-active");
+    expect(editorSelectionHintBubbleSource).toContain(".editor-selection-hint-leave-active");
+    expect(editorSelectionHintBubbleSource).toContain("opacity:");
   });
 
   it("正文区顶部入口应改成结束会话，而不是继续暴露清空会话语义", () => {

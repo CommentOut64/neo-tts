@@ -12,6 +12,7 @@ import {
   extractOrderedSegmentTextsFromWorkspaceViewDoc,
   normalizeWorkspaceViewDocToSourceDoc,
 } from "../src/components/workspace/workspace-editor/sourceDocNormalizer";
+import { splitSegmentTerminalCapsule } from "../src/utils/segmentTextDisplay";
 
 function createSemanticDocument(): WorkspaceSemanticDocument {
   return {
@@ -305,6 +306,35 @@ describe("workspace editor document model", () => {
       { segmentId: "seg-1", text: "新第一段" },
       { segmentId: "seg-2", text: "更第二段" },
     ]);
+  });
+
+  it("组合式提取的段文本会保留完整句尾胶囊", () => {
+    const extracted = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+      {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "第一段？！」",
+                marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+              },
+            ],
+          },
+        ],
+      },
+      ["seg-1"],
+    );
+
+    expect(extracted).toEqual([{ segmentId: "seg-1", text: "第一段？！」" }]);
+    expect(splitSegmentTerminalCapsule(extracted[0]?.text ?? "")).toEqual({
+      stem: "第一段",
+      terminal: "？！",
+      closerSuffix: "」",
+      capsule: "？！」",
+    });
   });
 
   it("提交编辑时会按 segmentAnchor 聚合文本，并对比后端文本收集变更", () => {
