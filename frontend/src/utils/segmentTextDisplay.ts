@@ -8,6 +8,32 @@ export interface SegmentDisplayLike {
   detected_language?: ResolvedLanguage | null;
 }
 
+export interface SegmentTerminalCapsuleParts {
+  stem: string;
+  terminal: string;
+  closerSuffix: string;
+  capsule: string;
+}
+
+const TERMINAL_CANDIDATES = [
+  "......",
+  "……",
+  "...",
+  "？！",
+  "！？",
+  "?!",
+  "!?",
+  "。",
+  ".",
+  "？",
+  "?",
+  "！",
+  "!",
+  "…",
+] as const;
+
+const TERMINAL_CLOSER_CHARACTERS = new Set(["”", "’", "」", "』", "）", ")", "]", "】", "》"]);
+
 function deriveStem(rawText: string): string {
   return rawText.endsWith("。")
     ? rawText.slice(0, -1)
@@ -43,6 +69,30 @@ function resolveSyntheticTerminal(language: ResolvedLanguage | null | undefined)
   return language === "en" ? "." : "。";
 }
 
+export function splitSegmentTerminalCapsule(rawText: string): SegmentTerminalCapsuleParts {
+  const trimmed = rawText.trimEnd();
+  let cursor = trimmed.length - 1;
+  let closerSuffix = "";
+
+  while (cursor >= 0 && TERMINAL_CLOSER_CHARACTERS.has(trimmed[cursor])) {
+    closerSuffix = `${trimmed[cursor]}${closerSuffix}`;
+    cursor -= 1;
+  }
+
+  const baseText = trimmed.slice(0, cursor + 1);
+  const terminal = TERMINAL_CANDIDATES.find((candidate) => baseText.endsWith(candidate)) ?? "";
+  const stem = terminal.length > 0
+    ? baseText.slice(0, -terminal.length).trimEnd()
+    : baseText.trimEnd();
+
+  return {
+    stem,
+    terminal,
+    closerSuffix,
+    capsule: `${terminal}${closerSuffix}`,
+  };
+}
+
 export function buildSegmentDisplayText(segment: SegmentDisplayLike): string {
   if (
     segment.terminal_source === undefined &&
@@ -56,5 +106,8 @@ export function buildSegmentDisplayText(segment: SegmentDisplayLike): string {
     ? segment.terminal_raw
     : resolveSyntheticTerminal(segment.detected_language);
   const closerSuffix = segment.terminal_closer_suffix ?? "";
-  return `${stripTerminalCluster(segment.raw_text, terminal, closerSuffix)}${terminal}${closerSuffix}`;
+  const { stem } = splitSegmentTerminalCapsule(
+    stripTerminalCluster(segment.raw_text, terminal, closerSuffix),
+  );
+  return `${stem}${terminal}${closerSuffix}`;
 }
