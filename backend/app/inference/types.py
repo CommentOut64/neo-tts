@@ -33,12 +33,16 @@ class PreparedSynthesisRequest(InferenceRequest):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass
 class ModelHandle:
     cache_key: str
     gpt_path: str
     sovits_path: str
     engine: Any
+    active_count: int = 0
+    last_used_at: float = 0.0
+    resident_device: str = "cuda"
+    pinned: bool = False
 
 
 @dataclass(frozen=True)

@@ -41,10 +41,20 @@ def _preload_configured_voices(app: FastAPI, model_cache) -> None:
             continue
 
         try:
-            model_cache.get_engine(
-                gpt_path=_resolve_project_path(settings.project_root, str(voice["gpt_path"])),
-                sovits_path=_resolve_project_path(settings.project_root, str(voice["sovits_path"])),
-            )
+            resolved_gpt_path = _resolve_project_path(settings.project_root, str(voice["gpt_path"]))
+            resolved_sovits_path = _resolve_project_path(settings.project_root, str(voice["sovits_path"]))
+            get_model_handle = getattr(model_cache, "get_model_handle", None)
+            if callable(get_model_handle):
+                handle = get_model_handle(
+                    gpt_path=resolved_gpt_path,
+                    sovits_path=resolved_sovits_path,
+                )
+                handle.pinned = True
+            else:
+                model_cache.get_engine(
+                    gpt_path=resolved_gpt_path,
+                    sovits_path=resolved_sovits_path,
+                )
             lifespan_logger.info("启动预加载完成 voice_id={}", voice_id)
         except Exception as exc:
             lifespan_logger.warning("启动预加载失败 voice_id={} reason={}", voice_id, exc)
@@ -53,13 +63,12 @@ def _preload_configured_voices(app: FastAPI, model_cache) -> None:
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     from backend.app.inference.engine import PyTorchInferenceEngine
-    from backend.app.inference.model_cache import PyTorchModelCache
+    from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
 
     settings = app.state.settings
-    model_cache = PyTorchModelCache(
-        project_root=settings.project_root,
-        cnhubert_base_path=settings.cnhubert_base_path,
-        bert_path=settings.bert_path,
+    model_cache = build_model_cache_from_settings(
+        settings=settings,
+        model_cache_cls=PyTorchModelCache,
     )
     _preload_configured_voices(app, model_cache)
     inference_engine = PyTorchInferenceEngine(

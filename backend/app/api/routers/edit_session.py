@@ -13,6 +13,7 @@ from backend.app.api.reference_audio_upload import (
 )
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
 from backend.app.inference.editable_gateway import (
+    CacheBackedEditableInferenceBackend,
     EditableInferenceGateway,
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
@@ -127,12 +128,11 @@ def _build_editable_gateway(
     settings = request.app.state.settings
     model_cache = getattr(request.app.state, "model_cache", None)
     if model_cache is None:
-        from backend.app.inference.model_cache import PyTorchModelCache
+        from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
 
-        model_cache = PyTorchModelCache(
-            project_root=settings.project_root,
-            cnhubert_base_path=settings.cnhubert_base_path,
-            bert_path=settings.bert_path,
+        model_cache = build_model_cache_from_settings(
+            settings=settings,
+            model_cache_cls=PyTorchModelCache,
         )
         request.app.state.model_cache = model_cache
     voice_service = _build_voice_service(request)
@@ -149,7 +149,8 @@ def _build_editable_gateway(
         resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
 
         def _build_backend():
-            return model_cache.get_engine(
+            return CacheBackedEditableInferenceBackend(
+                model_cache=model_cache,
                 gpt_path=resolved_gpt_path,
                 sovits_path=resolved_sovits_path,
             )

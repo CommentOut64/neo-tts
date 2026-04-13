@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import sys
 import time
 from pathlib import Path
@@ -143,6 +144,7 @@ class GPTSoVITSOptimizedInference:
     def __init__(self, gpt_path, sovits_path, cnhubert_base_path, bert_path):
         self.device = DEVICE
         self.is_half = IS_HALF
+        self.resident_device = DEVICE
         init_started = time.perf_counter()
 
         inference_logger.info("Loading models on {} (half precision: {})", DEVICE, IS_HALF)
@@ -208,6 +210,34 @@ class GPTSoVITSOptimizedInference:
 
         self.warmup()
         inference_logger.info("模型初始化完成 total_ms={:.2f}", (time.perf_counter() - init_started) * 1000)
+
+    def offload_from_gpu(self) -> None:
+        if self.resident_device != "cuda":
+            return
+        self._move_runtime_to_device("cpu")
+        self.resident_device = "cpu"
+
+    def ensure_on_gpu(self) -> None:
+        if self.resident_device == "cuda":
+            return
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available, cannot restore model to GPU.")
+        self._move_runtime_to_device("cuda")
+        self.resident_device = "cuda"
+
+    def _move_runtime_to_device(self, target_device: str) -> None:
+        inference_logger.info("迁移推理模型 device={} -> {}", self.resident_device, target_device)
+        self.ssl_model = self.ssl_model.to(target_device)
+        self.bert_model = self.bert_model.to(target_device)
+        self.t2s_model = self.t2s_model.to(target_device)
+        self.vq_model = self.vq_model.to(target_device)
+        self.sv_model.embedding_model = self.sv_model.embedding_model.to(target_device)
+        if target_device == "cpu":
+            gc.collect()
+        if hasattr(torch.cuda, "empty_cache"):
+            torch.cuda.empty_cache()
+        if self.device != target_device:
+            self.device = target_device
 
     def warmup(self):
         warmup_started = time.perf_counter()
