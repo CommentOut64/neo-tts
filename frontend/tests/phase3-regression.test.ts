@@ -158,6 +158,63 @@ it("unwrapAcceptedExportJob returns nested export job payload", () => {
   expect(job.export_kind).toBe("composition");
 });
 
+it("exportAudio posts unified export payload", async () => {
+  const post = vi.fn().mockResolvedValue({
+    data: {
+      job: {
+        export_job_id: "export-123",
+        document_id: "doc-1",
+        document_version: 1,
+        timeline_manifest_id: "timeline-1",
+        export_kind: "segments",
+        status: "queued",
+        target_dir: "F:/exports",
+        overwrite_policy: "fail",
+        progress: 0,
+        message: "queued",
+        output_manifest: null,
+        staging_dir: null,
+        updated_at: "2026-04-13T00:00:00Z",
+      },
+    },
+  });
+
+  vi.doMock("../src/api/http.ts", () => ({
+    default: {
+      post,
+      get: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    },
+  }));
+
+  const { exportAudio } = await import("../src/api/editSession.ts");
+
+  await exportAudio({
+    document_version: 1,
+    target_dir: "F:/exports",
+    audio: { kind: "segments", overwrite_policy: "fail" },
+    subtitle: {
+      enabled: true,
+      format: "srt",
+      offset_seconds: -0.4,
+      strip_trailing_punctuation: true,
+    },
+  });
+
+  expect(post).toHaveBeenCalledWith(
+    "/v1/edit-session/exports",
+    expect.objectContaining({
+      audio: expect.objectContaining({ kind: "segments" }),
+      subtitle: expect.objectContaining({
+        format: "srt",
+        offset_seconds: -0.4,
+        strip_trailing_punctuation: true,
+      }),
+    }),
+  );
+});
+
 it("resumeRenderJob unwraps accepted response payload", async () => {
   const post = vi.fn().mockResolvedValue({
     data: {
