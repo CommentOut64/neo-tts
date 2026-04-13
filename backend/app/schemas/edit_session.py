@@ -32,7 +32,12 @@ class InitializeEditSessionRequest(BaseModel):
     top_k: int = Field(default=15, description="初始化默认采样 top_k。")
     top_p: float = Field(default=1.0, description="初始化默认采样 top_p。")
     temperature: float = Field(default=1.0, description="初始化默认采样温度。")
-    pause_duration_seconds: float = Field(default=0.3, description="默认段间停顿秒数。")
+    pause_duration_seconds: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=10.0,
+        description="默认段间停顿秒数。",
+    )
     noise_scale: float = Field(default=0.35, description="初始化默认 noise scale。")
     segment_boundary_mode: str = Field(
         default="raw_strong_punctuation",
@@ -315,7 +320,12 @@ class EditableEdge(BaseModel):
     document_id: str = Field(description="所属文档 ID。")
     left_segment_id: str = Field(description="左侧相邻段 ID。")
     right_segment_id: str = Field(description="右侧相邻段 ID。")
-    pause_duration_seconds: float = Field(default=0.3, description="用户配置的段间停顿秒数。")
+    pause_duration_seconds: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=10.0,
+        description="用户配置的段间停顿秒数。",
+    )
     boundary_strategy: str = Field(
         default="latent_overlap_then_equal_power_crossfade",
         description="请求使用的边界拼接策略。",
@@ -339,7 +349,12 @@ class EditableEdgeResponse(EditableEdge):
 
 
 class UpdateEdgeRequest(BaseModel):
-    pause_duration_seconds: float | None = Field(default=None, description="新的段间停顿秒数。")
+    pause_duration_seconds: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=10.0,
+        description="新的段间停顿秒数。",
+    )
     boundary_strategy: str | None = Field(default=None, description="新的边界策略。")
 
     @model_validator(mode="after")

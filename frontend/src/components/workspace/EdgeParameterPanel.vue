@@ -26,9 +26,12 @@ const isBoundaryStrategyLocked = computed(
         label="停顿时长"
         :min="0"
         :max="2"
+        :slider-max="2"
+        :input-max="10"
         :step="0.01"
         unit="s"
         tooltip="控制两段之间的静音时长"
+        hint="滑杆支持 0 到 2 秒；超过 2 秒请在右侧输入框中输入，最大 10 秒。"
         :is-dirty="panel.dirtyFields.value.has('edge.pause_duration_seconds')"
         @update:model-value="panel.updateEdgeField('pause_duration_seconds', $event)"
       />

@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { uploadEditSessionReferenceAudio } from "@/api/editSession";
 import VoiceSelect from "@/components/VoiceSelect.vue";
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import { DEFAULT_REFERENCE_BINDING_MODEL_KEY } from "@/features/reference-binding";
 import type { VoiceProfile } from "@/types/tts";
 
 import RuntimeInferenceSettingsPanel from "./RuntimeInferenceSettingsPanel.vue";
@@ -73,10 +74,30 @@ const refSource = computed<"preset" | "custom">({
 });
 
 function updateVoice(voiceId: string) {
+  const isOriginalVoice = voiceId === panel.resolvedValues.value.voiceBinding.voice_id;
   const voice = props.voices.find((item) => item.name === voiceId);
+
   panel.updateVoiceBindingField("voice_id", voiceId);
-  panel.updateVoiceBindingField("model_key", voiceId);
-  if (voice) {
+
+  if (isOriginalVoice) {
+    const originalModelKey = panel.resolvedValues.value.voiceBinding.model_key as string | null;
+    if (originalModelKey !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("model_key", originalModelKey);
+    }
+  } else {
+    panel.updateVoiceBindingField("model_key", DEFAULT_REFERENCE_BINDING_MODEL_KEY);
+  }
+
+  if (isOriginalVoice) {
+    const origGpt = panel.resolvedValues.value.voiceBinding.gpt_path as string | null;
+    if (origGpt !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("gpt_path", origGpt);
+    }
+    const origSovits = panel.resolvedValues.value.voiceBinding.sovits_path as string | null;
+    if (origSovits !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("sovits_path", origSovits);
+    }
+  } else if (voice) {
     panel.updateVoiceBindingField("gpt_path", voice.gpt_path);
     panel.updateVoiceBindingField("sovits_path", voice.sovits_path);
   }
