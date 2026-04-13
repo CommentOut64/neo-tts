@@ -33,11 +33,18 @@ class _FakeBackend:
 class _FakeModelCache:
     def __init__(self, backend):
         self._backend = backend
-        self.calls: list[tuple[str, str]] = []
+        self.acquired: list[tuple[str, str]] = []
+        self.released: list[str] = []
 
-    def get_engine(self, *, gpt_path: str, sovits_path: str):
-        self.calls.append((gpt_path, sovits_path))
-        return self._backend
+    def acquire_model_handle(self, *, gpt_path: str, sovits_path: str):
+        self.acquired.append((gpt_path, sovits_path))
+        return SimpleNamespace(
+            cache_key=f"{gpt_path}|{sovits_path}",
+            engine=self._backend,
+        )
+
+    def release_model_handle(self, cache_key: str):
+        self.released.append(cache_key)
 
 
 def test_build_editable_gateway_reuses_app_model_cache(test_app_settings):
@@ -70,10 +77,15 @@ def test_build_editable_gateway_reuses_app_model_cache(test_app_settings):
 
     resolved = gateway.build_reference_context(context)
 
-    assert model_cache.calls == [
+    expected_cache_key = (
+        str((test_app_settings.project_root / "pretrained_models" / "demo.ckpt").resolve()),
+        str((test_app_settings.project_root / "pretrained_models" / "demo.pth").resolve()),
+    )
+    assert model_cache.acquired == [
         (
-            str((test_app_settings.project_root / "pretrained_models" / "demo.ckpt").resolve()),
-            str((test_app_settings.project_root / "pretrained_models" / "demo.pth").resolve()),
+            expected_cache_key[0],
+            expected_cache_key[1],
         )
     ]
+    assert model_cache.released == [f"{expected_cache_key[0]}|{expected_cache_key[1]}"]
     assert resolved.backend_cache_key == ("pretrained_models/demo.ckpt", "pretrained_models/demo.pth")
