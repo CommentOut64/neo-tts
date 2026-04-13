@@ -324,6 +324,43 @@ html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-sha
   }
 
 
+/* =========================================
+   Tooltip & Popper 暗色/亮色自适应适配
+   统一所有 Tooltip 为本项目的卡片风格
+   ========================================= */
+
+body .el-popper.is-dark,
+body .el-popper.is-light {
+  background-color: var(--color-card) !important;
+  color: var(--color-foreground) !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+
+body .el-popper.is-dark > .el-popper__arrow::before,
+body .el-popper.is-light > .el-popper__arrow::before {
+  background-color: var(--color-card) !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+/* 恢复箭头透明边框裁剪 (提高优先级强制覆盖上方的 border !important) */
+body .el-popper[data-popper-placement^="top"] > .el-popper__arrow::before {
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="bottom"] > .el-popper__arrow::before {
+  border-bottom-color: transparent !important;
+  border-right-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="left"] > .el-popper__arrow::before {
+  border-bottom-color: transparent !important;
+  border-left-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="right"] > .el-popper__arrow::before {
+  border-top-color: transparent !important;
+  border-right-color: transparent !important;
+}
+
 /* Fall 动画：仅在页面进入时生效，避免局部重渲染导致抖动 */
 .animate-fall {
   backface-visibility: hidden;

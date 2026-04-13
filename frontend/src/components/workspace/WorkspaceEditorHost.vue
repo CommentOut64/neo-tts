@@ -12,6 +12,7 @@ import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPersistence";
 import { registerWorkspaceExitHandlers } from "@/composables/useWorkspaceExitBridge";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
+import { useWorkspaceAutoplay } from "@/composables/useWorkspaceAutoplay";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
@@ -90,6 +91,7 @@ const { currentCursor, isPlaying, play, pause, seekToSegment } = usePlayback();
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
+const { isAutoPlayEnabled, toggleAutoPlay } = useWorkspaceAutoplay();
 const parameterPanel = useParameterPanel();
 const reorderDraft = useWorkspaceReorderDraft();
 
@@ -372,16 +374,17 @@ const orderedSegmentIds = computed(
   () => renderPlan.value.renderMap.orderedSegmentIds,
 );
 const segmentCount = computed(() => orderedSegmentIds.value.length);
-const charCount = computed(() => {
-  const editor = editorRef.value?.editor;
-  return editor ? editor.state.doc.textContent.length : 0;
-});
 const modeLabel = computed(() => (isEditing.value ? "编辑态" : "展示态"));
 const compositionAvailable = computed(
   () => semanticDocument.value.compositionAvailability.ready,
 );
 const isInteractionLocked = computed(
   () => workspaceProcessing.isInteractionLocked.value,
+);
+const autoPlayButtonTitle = computed(() =>
+  isAutoPlayEnabled.value
+    ? "开启后，单击段时自动跳转并播放"
+    : "关闭后，单击段时只更新选择",
 );
 const activeViewKey = computed(() =>
   buildWorkspaceViewRevisionKey({
@@ -1270,6 +1273,24 @@ function onCanvasPointerDown(event: PointerEvent) {
 
 let clickPlayTimer: ReturnType<typeof setTimeout> | null = null;
 
+function scheduleSegmentAutoPlay(segmentId: string) {
+  if (!isAutoPlayEnabled.value) {
+    return;
+  }
+
+  if (clickPlayTimer !== null) {
+    clearTimeout(clickPlayTimer);
+    clickPlayTimer = null;
+  }
+
+  clickPlayTimer = setTimeout(() => {
+    clickPlayTimer = null;
+    if (isEditing.value || !isAutoPlayEnabled.value) return;
+    seekToSegment(segmentId);
+    play();
+  }, 250);
+}
+
 function onCanvasClick(event: MouseEvent) {
   if (listReorder.consumeClickSuppression()) {
     event.preventDefault();
@@ -1310,18 +1331,7 @@ function onCanvasClick(event: MouseEvent) {
   }
 
   const segmentId = target.segmentId;
-
-  if (clickPlayTimer !== null) {
-    clearTimeout(clickPlayTimer);
-    clickPlayTimer = null;
-  }
-
-  clickPlayTimer = setTimeout(() => {
-    clickPlayTimer = null;
-    if (isEditing.value) return;
-    seekToSegment(segmentId);
-    play();
-  }, 250);
+  scheduleSegmentAutoPlay(segmentId);
 }
 
 function onCanvasDblClick(event: MouseEvent) {
@@ -1732,7 +1742,23 @@ watch(isEditing, (editing) => {
       </div>
 
       <div class="flex min-w-[240px] items-center justify-end gap-2">
-        <span class="mr-1 text-xs text-muted-fg">{{ charCount }} 字</span>
+        <el-tooltip
+          :content="autoPlayButtonTitle"
+          placement="bottom"
+        >
+          <button
+            type="button"
+            class="rounded border px-2.5 py-1 text-xs font-medium transition-colors"
+            :class="isAutoPlayEnabled
+              ? 'border-blue-400/30 bg-blue-50 text-blue-600 hover:bg-blue-100/80 dark:border-blue-400/30 dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/30'
+              : 'border-border text-muted-fg hover:bg-secondary/50'"
+            :aria-pressed="isAutoPlayEnabled"
+            :disabled="isInteractionLocked"
+            @click="toggleAutoPlay()"
+          >
+            自动播放
+          </button>
+        </el-tooltip>
 
         <button
           v-if="!isEditing && segmentCount > 0"
