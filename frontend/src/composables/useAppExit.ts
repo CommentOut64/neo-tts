@@ -51,7 +51,17 @@ function delay(ms: number): Promise<void> {
 
 async function resolveExitChoice(hasPendingChanges: boolean): Promise<ExitChoice> {
   if (!hasPendingChanges) {
-    return "save_and_exit";
+    try {
+      await ElMessageBox.confirm("确定要退出应用吗？", "退出应用", {
+        confirmButtonText: "确认退出",
+        cancelButtonText: "取消",
+        type: "warning",
+        lockScroll: false,
+      });
+      return "save_and_exit";
+    } catch {
+      return "continue_editing";
+    }
   }
 
   try {
@@ -65,6 +75,7 @@ async function resolveExitChoice(hasPendingChanges: boolean): Promise<ExitChoice
         closeOnClickModal: false,
         closeOnPressEscape: false,
         type: "warning",
+        lockScroll: false,
       },
     );
     return "save_and_exit";

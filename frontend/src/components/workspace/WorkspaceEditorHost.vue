@@ -1753,6 +1753,7 @@ watch(isEditing, (editing) => {
 
 :deep(.ProseMirror[contenteditable="false"]) {
   cursor: default;
+  user-select: none;
 }
 
 :deep(.ProseMirror ::selection) {
