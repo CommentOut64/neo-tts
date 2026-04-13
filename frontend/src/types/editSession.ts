@@ -107,10 +107,25 @@ export interface RenderProfile {
   top_p: number
   temperature: number
   noise_scale: number
+  reference_overrides_by_binding: Record<string, ReferenceBindingOverride>
   reference_audio_path: string | null
   reference_text: string | null
   reference_language: string | null
   extra_overrides: Record<string, unknown>
+}
+
+export interface ReferenceBindingOverride {
+  reference_audio_path: string | null
+  reference_text: string | null
+  reference_language: string | null
+}
+
+export interface ReferenceBindingOverridePatch {
+  binding_key: string
+  operation: 'upsert' | 'clear'
+  reference_audio_path?: string | null
+  reference_text?: string | null
+  reference_language?: string | null
 }
 
 export interface VoiceBinding {
@@ -159,6 +174,7 @@ export interface InitializeRequest {
   raw_text: string
   text_language?: string
   voice_id: string
+  reference_source?: 'preset' | 'custom'
   reference_audio_path?: string
   reference_text?: string
   reference_language?: string
@@ -227,6 +243,7 @@ export interface RenderProfilePatch {
   top_p?: number | null
   temperature?: number | null
   noise_scale?: number | null
+  reference_override?: ReferenceBindingOverridePatch | null
   reference_audio_path?: string | null
   reference_text?: string | null
   reference_language?: string | null

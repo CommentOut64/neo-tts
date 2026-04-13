@@ -4,6 +4,7 @@ import { useTimeline } from "@/composables/useTimeline";
 import { usePlayback } from "@/composables/usePlayback";
 import { useEditSession } from "@/composables/useEditSession";
 import { useSegmentSelection } from "@/composables/useSegmentSelection";
+import { useWorkspaceAutoplay } from "@/composables/useWorkspaceAutoplay";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
 import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 import DirtySegmentBadge from "./DirtySegmentBadge.vue";
@@ -13,6 +14,7 @@ const { segmentEntries } = useTimeline();
 const { currentCursor, play, seekToSegment } = usePlayback();
 const { segments, segmentsLoaded } = useEditSession();
 const segmentSelection = useSegmentSelection();
+const workspaceAutoplay = useWorkspaceAutoplay();
 const lightEdit = useWorkspaceLightEdit();
 
 const editingSegmentId = ref<string | null>(null);
@@ -75,7 +77,10 @@ function onSegmentClick(event: MouseEvent, segmentId: string) {
     segmentSelection.select(segmentId);
   }
 
-  // Also trigger playback jump
+  if (!workspaceAutoplay.isAutoPlayEnabled.value) {
+    return;
+  }
+
   seekToSegment(segmentId);
   play();
 }

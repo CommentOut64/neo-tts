@@ -53,7 +53,7 @@ function handleInput(val: string) {
 <template>
   <div class="flex flex-col h-full bg-card rounded-card shadow-card p-4 border border-border dark:border-transparent animate-fall">
     <div class="flex items-center justify-between mb-3 shrink-0">
-      <h3 class="text-[13px] font-semibold text-foreground">输入稿正文</h3>
+      <h3 class="text-[13px] font-semibold text-foreground">输入文本</h3>
       <div class="flex items-center gap-2">
         <el-button
           v-if="draft.lastSessionInitialText.value"

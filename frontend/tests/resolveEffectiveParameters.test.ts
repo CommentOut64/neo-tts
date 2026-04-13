@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { buildReferenceBindingKey } from "../src/features/reference-binding";
 import {
   MIXED_VALUE,
   resolveEffectiveParameters,
@@ -13,6 +14,7 @@ import type {
   TimelineManifest,
   VoiceBinding,
 } from "../src/types/editSession";
+import type { VoiceProfile } from "../src/types/tts";
 
 function createSnapshot(): EditSessionSnapshot {
   return {
@@ -27,6 +29,62 @@ function createSnapshot(): EditSessionSnapshot {
   };
 }
 
+function createVoices(): VoiceProfile[] {
+  return [
+    {
+      name: "voice-default",
+      gpt_path: "models/default.ckpt",
+      sovits_path: "models/default.pth",
+      ref_audio: "voices/default-preset.wav",
+      ref_text: "默认音色预设文本",
+      ref_lang: "zh",
+      description: "默认音色",
+      defaults: {
+        speed: 1,
+        temperature: 1,
+        top_p: 1,
+        top_k: 15,
+        pause_length: 0.3,
+      },
+      managed: true,
+    },
+    {
+      name: "voice-a",
+      gpt_path: "models/a.ckpt",
+      sovits_path: "models/a.pth",
+      ref_audio: "voices/a-preset.wav",
+      ref_text: "音色A预设文本",
+      ref_lang: "en",
+      description: "音色 A",
+      defaults: {
+        speed: 1.1,
+        temperature: 0.9,
+        top_p: 0.8,
+        top_k: 20,
+        pause_length: 0.35,
+      },
+      managed: true,
+    },
+    {
+      name: "voice-b",
+      gpt_path: "models/b.ckpt",
+      sovits_path: "models/b.pth",
+      ref_audio: "voices/b-preset.wav",
+      ref_text: "音色B预设文本",
+      ref_lang: "ja",
+      description: "音色 B",
+      defaults: {
+        speed: 1.2,
+        temperature: 1,
+        top_p: 0.7,
+        top_k: 25,
+        pause_length: 0.4,
+      },
+      managed: true,
+    },
+  ];
+}
+
 function createProfiles(): RenderProfile[] {
   return [
     {
@@ -38,9 +96,10 @@ function createProfiles(): RenderProfile[] {
       top_p: 1,
       temperature: 1,
       noise_scale: 0.35,
-      reference_audio_path: "voices/default.wav",
-      reference_text: "默认参考文本",
-      reference_language: "zh",
+      reference_overrides_by_binding: {},
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
       extra_overrides: {},
     },
     {
@@ -52,9 +111,19 @@ function createProfiles(): RenderProfile[] {
       top_p: 0.8,
       temperature: 0.9,
       noise_scale: 0.4,
-      reference_audio_path: "voices/seg-1.wav",
-      reference_text: "段一参考文本",
-      reference_language: "en",
+      reference_overrides_by_binding: {
+        [buildReferenceBindingKey({
+          voiceId: "voice-a",
+          modelKey: "voice-a",
+        })]: {
+          reference_audio_path: "voices/custom-a.wav",
+          reference_text: "音色A自定义文本",
+          reference_language: null,
+        },
+      },
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
       extra_overrides: {},
     },
     {
@@ -66,9 +135,10 @@ function createProfiles(): RenderProfile[] {
       top_p: 0.7,
       temperature: 1.2,
       noise_scale: 0.5,
-      reference_audio_path: "voices/seg-2.wav",
-      reference_text: "段二参考文本",
-      reference_language: "ja",
+      reference_overrides_by_binding: {},
+      reference_audio_path: null,
+      reference_text: null,
+      reference_language: null,
       extra_overrides: {},
     },
   ];
@@ -265,6 +335,7 @@ function createEdges(): EditableEdge[] {
 
 describe("resolveEffectiveParameters", () => {
   const snapshot = createSnapshot();
+  const voices = createVoices();
   const renderProfiles = createProfiles();
   const voiceBindings = createBindings();
   const groups = createGroups();
@@ -272,7 +343,7 @@ describe("resolveEffectiveParameters", () => {
   const timeline = createTimeline();
   const edges = createEdges();
 
-  it("会话态读取默认 session profile 和 binding", () => {
+  it("会话态会基于当前 binding 解析模型预设 reference", () => {
     const resolved = resolveEffectiveParameters({
       scope: "session",
       segmentIds: [],
@@ -284,15 +355,21 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-    });
+      voices,
+    } as never);
+    const reference = (resolved as any).reference;
 
     expect(resolved.renderProfile.speed).toBe(1);
-    expect(resolved.renderProfile.reference_text).toBe("默认参考文本");
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
-    expect(resolved.voiceBinding.gpt_path).toBe("models/default.ckpt");
+    expect(reference.source).toBe("preset");
+    expect(reference.binding_key).toBe("voice-default:voice-default");
+    expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
+    expect(reference.reference_text).toBe("默认音色预设文本");
+    expect(reference.reference_language).toBe("zh");
+    expect(reference.preset_text).toBe("默认音色预设文本");
   });
 
-  it("单段态读取 timeline 上当前生效的 profile 和 binding", () => {
+  it("单段态会把当前 binding 的 override 与 voice preset 合并", () => {
     const resolved = resolveEffectiveParameters({
       scope: "segment",
       segmentIds: ["seg-1"],
@@ -304,15 +381,21 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-    });
+      voices,
+    } as never);
+    const reference = (resolved as any).reference;
 
     expect(resolved.renderProfile.speed).toBe(1.1);
-    expect(resolved.renderProfile.reference_language).toBe("en");
     expect(resolved.voiceBinding.voice_id).toBe("voice-a");
-    expect(resolved.voiceBinding.sovits_path).toBe("models/a.pth");
+    expect(reference.source).toBe("custom");
+    expect(reference.binding_key).toBe("voice-a:voice-a");
+    expect(reference.reference_audio_path).toBe("voices/custom-a.wav");
+    expect(reference.reference_text).toBe("音色A自定义文本");
+    expect(reference.reference_language).toBe("en");
+    expect(reference.preset_audio_path).toBe("voices/a-preset.wav");
   });
 
-  it("单段态在没有直接 profile/binding 时回退到会话默认值", () => {
+  it("单段态在没有直接 profile 或 binding 时回退到会话默认 binding 的 preset", () => {
     const resolved = resolveEffectiveParameters({
       scope: "segment",
       segmentIds: ["seg-1"],
@@ -324,15 +407,18 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-    });
+      voices,
+    } as never);
+    const reference = (resolved as any).reference;
 
     expect(resolved.renderProfile.speed).toBe(1);
-    expect(resolved.renderProfile.reference_audio_path).toBe("voices/default.wav");
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
-    expect(resolved.voiceBinding.gpt_path).toBe("models/default.ckpt");
+    expect(reference.source).toBe("preset");
+    expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
+    expect(reference.reference_text).toBe("默认音色预设文本");
   });
 
-  it("批量态对不一致字段返回 MIXED_VALUE", () => {
+  it("批量态会对 reference 的 source、binding 与内容返回 MIXED_VALUE", () => {
     const resolved = resolveEffectiveParameters({
       scope: "batch",
       segmentIds: ["seg-1", "seg-2"],
@@ -344,15 +430,19 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-    });
+      voices,
+    } as never);
+    const reference = (resolved as any).reference;
 
     expect(resolved.renderProfile.speed).toBe(MIXED_VALUE);
-    expect(resolved.renderProfile.reference_language).toBe(MIXED_VALUE);
     expect(resolved.voiceBinding.voice_id).toBe(MIXED_VALUE);
-    expect(resolved.voiceBinding.model_key).toBe(MIXED_VALUE);
+    expect(reference.source).toBe(MIXED_VALUE);
+    expect(reference.binding_key).toBe(MIXED_VALUE);
+    expect(reference.reference_text).toBe(MIXED_VALUE);
+    expect(reference.reference_language).toBe(MIXED_VALUE);
   });
 
-  it("edge 态返回边参数", () => {
+  it("edge 态仍然只返回边参数", () => {
     const resolved = resolveEffectiveParameters({
       scope: "edge",
       segmentIds: [],
@@ -364,7 +454,8 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-    });
+      voices,
+    } as never);
 
     expect(resolved.edge?.pause_duration_seconds).toBe(0.45);
     expect(resolved.edge?.boundary_strategy).toBe("crossfade");

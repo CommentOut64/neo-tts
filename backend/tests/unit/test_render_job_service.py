@@ -17,14 +17,18 @@ from backend.app.inference.editable_types import (
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
+    DocumentSnapshot,
     EditableEdge,
+    EditableSegment,
     InitializeEditSessionRequest,
     PreviewRequest,
+    RenderProfile,
     ReorderSegmentsRequest,
     StandardizationPreviewRequest,
     SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
+    VoiceBinding,
 )
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
@@ -32,7 +36,8 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
-from backend.app.services.render_job_service import RenderJobService
+from backend.app.services.render_job_service import RenderJobService, RenderPlan
+from backend.app.services.reference_binding import build_binding_key
 
 
 class _FakeVoiceService:
@@ -207,6 +212,92 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     assert snapshot.total_edge_count == 1
     assert snapshot.ready_block_count == 1
     assert snapshot.composition_manifest_id is None
+
+
+def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
+    render_profile, voice_binding = RenderJobService._build_default_configuration(  # noqa: SLF001
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+            model_id="model-a",
+            reference_source="custom",
+            reference_audio_path="custom.wav",
+            reference_text="自定义参考",
+            reference_language="ja",
+        )
+    )
+
+    binding_key = build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+
+    assert render_profile.reference_overrides_by_binding[binding_key].reference_audio_path == "custom.wav"
+    assert render_profile.reference_audio_path is None
+    assert render_profile.reference_text is None
+    assert render_profile.reference_language is None
+
+
+def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallback(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        raw_text="第一句。",
+        normalized_text="第一句。",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                raw_text="第一句。",
+                normalized_text="第一句。",
+                text_language="zh",
+            )
+        ],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={},
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="demo",
+                model_key="gpt-sovits-v2",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+    plan = RenderPlan(
+        job_id="job-1",
+        job_kind="initialize",
+        document_id="doc-1",
+        request=InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+            reference_source="preset",
+            reference_audio_path="request.wav",
+            reference_text="请求参考",
+            reference_language="en",
+        ),
+    )
+
+    context = service._get_segment_context(  # noqa: SLF001
+        plan=plan,
+        snapshot=snapshot,
+        segment=snapshot.segments[0],
+    )
+
+    assert context.reference_audio_path == "fake.wav"
+    assert context.reference_text == "参考文本"
+    assert context.reference_language == "zh"
 
 
 def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):

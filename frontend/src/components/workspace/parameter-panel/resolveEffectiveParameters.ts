@@ -7,6 +7,8 @@ import type {
   TimelineManifest,
   VoiceBinding,
 } from "@/types/editSession";
+import type { VoiceProfile } from "@/types/tts";
+import { resolveBindingReferenceState } from "@/features/reference-binding";
 
 import type { ParameterPanelScopeContext } from "./resolveParameterScope";
 
@@ -15,6 +17,17 @@ export const MIXED_VALUE = "__MIXED__" as const;
 type MixedValue = typeof MIXED_VALUE;
 type MaybeMixed<T> = T | MixedValue | null;
 
+export interface ResolvedReferenceState {
+  source: MaybeMixed<"preset" | "custom">;
+  binding_key: MaybeMixed<string>;
+  reference_audio_path: MaybeMixed<string>;
+  reference_text: MaybeMixed<string>;
+  reference_language: MaybeMixed<string>;
+  preset_audio_path: MaybeMixed<string>;
+  preset_text: MaybeMixed<string>;
+  preset_language: MaybeMixed<string>;
+}
+
 export interface ResolvedParameterPanelValues {
   renderProfile: {
     speed: MaybeMixed<number>;
@@ -22,9 +35,6 @@ export interface ResolvedParameterPanelValues {
     top_p: MaybeMixed<number>;
     temperature: MaybeMixed<number>;
     noise_scale: MaybeMixed<number>;
-    reference_audio_path: MaybeMixed<string>;
-    reference_text: MaybeMixed<string>;
-    reference_language: MaybeMixed<string>;
   };
   voiceBinding: {
     voice_id: MaybeMixed<string>;
@@ -32,6 +42,7 @@ export interface ResolvedParameterPanelValues {
     gpt_path: MaybeMixed<string>;
     sovits_path: MaybeMixed<string>;
   };
+  reference: ResolvedReferenceState;
   edge: {
     pause_duration_seconds: number;
     boundary_strategy: string;
@@ -46,6 +57,19 @@ function pickMixed<T>(values: T[]): T | MixedValue | null {
   return values.every((value) => value === first) ? first : MIXED_VALUE;
 }
 
+function buildEmptyReferenceState(): ResolvedReferenceState {
+  return {
+    source: null,
+    binding_key: null,
+    reference_audio_path: null,
+    reference_text: null,
+    reference_language: null,
+    preset_audio_path: null,
+    preset_text: null,
+    preset_language: null,
+  };
+}
+
 function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
   return {
     renderProfile: {
@@ -54,9 +78,6 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
       top_p: null,
       temperature: null,
       noise_scale: null,
-      reference_audio_path: null,
-      reference_text: null,
-      reference_language: null,
     },
     voiceBinding: {
       voice_id: null,
@@ -64,7 +85,37 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
       gpt_path: null,
       sovits_path: null,
     },
+    reference: buildEmptyReferenceState(),
     edge: null,
+  };
+}
+
+function resolveProfileById(
+  profileById: Map<string, RenderProfile>,
+  profileId: string | null | undefined,
+): RenderProfile | null {
+  return profileId ? profileById.get(profileId) ?? null : null;
+}
+
+function resolveBindingById(
+  bindingById: Map<string, VoiceBinding>,
+  bindingId: string | null | undefined,
+): VoiceBinding | null {
+  return bindingId ? bindingById.get(bindingId) ?? null : null;
+}
+
+function pickReferenceState(
+  states: ReturnType<typeof resolveBindingReferenceState>[],
+): ResolvedReferenceState {
+  return {
+    source: pickMixed(states.map((state) => state.source)),
+    binding_key: pickMixed(states.map((state) => state.binding_key)),
+    reference_audio_path: pickMixed(states.map((state) => state.reference_audio_path)),
+    reference_text: pickMixed(states.map((state) => state.reference_text)),
+    reference_language: pickMixed(states.map((state) => state.reference_language)),
+    preset_audio_path: pickMixed(states.map((state) => state.preset_audio_path)),
+    preset_text: pickMixed(states.map((state) => state.preset_text)),
+    preset_language: pickMixed(states.map((state) => state.preset_language)),
   };
 }
 
@@ -79,6 +130,7 @@ export function resolveEffectiveParameters(input: {
   renderProfiles: RenderProfile[];
   voiceBindings: VoiceBinding[];
   edges: EditableEdge[];
+  voices: VoiceProfile[];
 }): ResolvedParameterPanelValues {
   const result = buildEmptyResolvedValues();
   const profileById = new Map(
@@ -106,12 +158,14 @@ export function resolveEffectiveParameters(input: {
   }
 
   if (input.scope === "session") {
-    const profile = input.snapshot?.default_render_profile_id
-      ? profileById.get(input.snapshot.default_render_profile_id)
-      : null;
-    const binding = input.snapshot?.default_voice_binding_id
-      ? bindingById.get(input.snapshot.default_voice_binding_id)
-      : null;
+    const profile = resolveProfileById(
+      profileById,
+      input.snapshot?.default_render_profile_id,
+    );
+    const binding = resolveBindingById(
+      bindingById,
+      input.snapshot?.default_voice_binding_id,
+    );
 
     return {
       ...result,
@@ -121,9 +175,6 @@ export function resolveEffectiveParameters(input: {
         top_p: profile?.top_p ?? null,
         temperature: profile?.temperature ?? null,
         noise_scale: profile?.noise_scale ?? null,
-        reference_audio_path: profile?.reference_audio_path ?? null,
-        reference_text: profile?.reference_text ?? null,
-        reference_language: profile?.reference_language ?? null,
       },
       voiceBinding: {
         voice_id: binding?.voice_id ?? null,
@@ -131,10 +182,17 @@ export function resolveEffectiveParameters(input: {
         gpt_path: binding?.gpt_path ?? null,
         sovits_path: binding?.sovits_path ?? null,
       },
+      reference: resolveBindingReferenceState({
+        binding,
+        profile,
+        voices: input.voices,
+      }),
     };
   }
 
-  const selectedSegments = input.segments.filter((segment) => input.segmentIds.includes(segment.segment_id));
+  const selectedSegments = input.segments.filter((segment) =>
+    input.segmentIds.includes(segment.segment_id),
+  );
 
   const resolveProfileForSegment = (segment: EditableSegment): RenderProfile | null => {
     let profileId = input.snapshot?.default_render_profile_id ?? null;
@@ -142,7 +200,7 @@ export function resolveEffectiveParameters(input: {
       profileId = groupById.get(segment.group_id)?.render_profile_id ?? profileId;
     }
     profileId = segment.render_profile_id ?? profileId;
-    return profileId ? profileById.get(profileId) ?? null : null;
+    return resolveProfileById(profileById, profileId);
   };
 
   const resolveBindingForSegment = (segment: EditableSegment): VoiceBinding | null => {
@@ -151,21 +209,34 @@ export function resolveEffectiveParameters(input: {
       bindingId = groupById.get(segment.group_id)?.voice_binding_id ?? bindingId;
     }
     bindingId = segment.voice_binding_id ?? bindingId;
-    return bindingId ? bindingById.get(bindingId) ?? null : null;
+    return resolveBindingById(bindingById, bindingId);
   };
 
-  const profiles = (selectedSegments.length > 0
-    ? selectedSegments.map(resolveProfileForSegment)
-    : input.timeline?.segment_entries
+  const resolvedPairs = selectedSegments.length > 0
+    ? selectedSegments.map((segment) => ({
+        profile: resolveProfileForSegment(segment),
+        binding: resolveBindingForSegment(segment),
+      }))
+    : (input.timeline?.segment_entries
         .filter((entry) => input.segmentIds.includes(entry.segment_id))
-        .map((entry) => (entry.render_profile_id ? profileById.get(entry.render_profile_id) ?? null : null)) ?? []
-  ).filter((profile): profile is RenderProfile => profile !== null);
-  const bindings = (selectedSegments.length > 0
-    ? selectedSegments.map(resolveBindingForSegment)
-    : input.timeline?.segment_entries
-        .filter((entry) => input.segmentIds.includes(entry.segment_id))
-        .map((entry) => (entry.voice_binding_id ? bindingById.get(entry.voice_binding_id) ?? null : null)) ?? []
-  ).filter((binding): binding is VoiceBinding => binding !== null);
+        .map((entry) => ({
+          profile: resolveProfileById(profileById, entry.render_profile_id),
+          binding: resolveBindingById(bindingById, entry.voice_binding_id),
+        })) ?? []);
+
+  const profiles = resolvedPairs
+    .map((pair) => pair.profile)
+    .filter((profile): profile is RenderProfile => profile !== null);
+  const bindings = resolvedPairs
+    .map((pair) => pair.binding)
+    .filter((binding): binding is VoiceBinding => binding !== null);
+  const referenceStates = resolvedPairs.map((pair) =>
+    resolveBindingReferenceState({
+      binding: pair.binding,
+      profile: pair.profile,
+      voices: input.voices,
+    }),
+  );
 
   return {
     ...result,
@@ -175,9 +246,6 @@ export function resolveEffectiveParameters(input: {
       top_p: pickMixed(profiles.map((profile) => profile.top_p)),
       temperature: pickMixed(profiles.map((profile) => profile.temperature)),
       noise_scale: pickMixed(profiles.map((profile) => profile.noise_scale)),
-      reference_audio_path: pickMixed(profiles.map((profile) => profile.reference_audio_path)),
-      reference_text: pickMixed(profiles.map((profile) => profile.reference_text)),
-      reference_language: pickMixed(profiles.map((profile) => profile.reference_language)),
     },
     voiceBinding: {
       voice_id: pickMixed(bindings.map((binding) => binding.voice_id)),
@@ -185,5 +253,6 @@ export function resolveEffectiveParameters(input: {
       gpt_path: pickMixed(bindings.map((binding) => binding.gpt_path)),
       sovits_path: pickMixed(bindings.map((binding) => binding.sovits_path)),
     },
+    reference: pickReferenceState(referenceStates),
   };
 }

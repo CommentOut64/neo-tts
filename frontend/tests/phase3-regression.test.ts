@@ -39,6 +39,7 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
     raw_text: "第一句。第二句。",
     text_language: "zh",
     voice_id: "demo-voice",
+    reference_source: "preset",
     speed: 1.1,
     temperature: 0.85,
     top_p: 0.9,

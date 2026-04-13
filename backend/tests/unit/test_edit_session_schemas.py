@@ -18,6 +18,7 @@ from backend.app.schemas.edit_session import (
     SegmentAssetResponse,
     StandardizationPreviewRequest,
     StandardizationPreviewResponse,
+    UpdateEdgeRequest,
 )
 
 
@@ -39,6 +40,18 @@ def test_initialize_edit_session_request_exposes_frozen_defaults():
     assert request.pause_duration_seconds == 0.3
     assert request.noise_scale == 0.35
     assert request.segment_boundary_mode == "raw_strong_punctuation"
+
+
+def test_pause_duration_seconds_rejects_out_of_range_values():
+    with pytest.raises(ValidationError):
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+            pause_duration_seconds=10.01,
+        )
+
+    with pytest.raises(ValidationError):
+        UpdateEdgeRequest(pause_duration_seconds=-0.01)
 
 
 def test_render_job_response_exposes_frozen_progress_fields():

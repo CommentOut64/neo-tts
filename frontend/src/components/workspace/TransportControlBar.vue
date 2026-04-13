@@ -2,6 +2,8 @@
 import { computed, ref, watch } from "vue";
 import { usePlayback } from "@/composables/usePlayback";
 import { useTimeline } from "@/composables/useTimeline";
+import { useSegmentSelection } from "@/composables/useSegmentSelection";
+import { useWorkspaceAutoplay } from "@/composables/useWorkspaceAutoplay";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import {
   findNextSegmentStartSample,
@@ -15,9 +17,19 @@ import {
   ArrowRight,
 } from "@element-plus/icons-vue";
 
-const { isPlaying, play, pause, currentSample, seekToSample, playbackCursorError } =
+const {
+  isPlaying,
+  play,
+  pause,
+  currentSample,
+  seekToSample,
+  seekToSegment,
+  playbackCursorError,
+} =
   usePlayback();
 const { totalSamples, sampleRate, segmentEntries } = useTimeline();
+const segmentSelection = useSegmentSelection();
+const workspaceAutoplay = useWorkspaceAutoplay();
 const workspaceProcessing = useWorkspaceProcessing();
 const isLocked = computed(() => workspaceProcessing.isInteractionLocked.value);
 const hasPlaybackCursorError = computed(() => Boolean(playbackCursorError.value));
@@ -71,7 +83,13 @@ function onSliderChange(value: number | number[]) {
 function onTogglePlay() {
   if (isLocked.value || hasPlaybackCursorError.value) return;
   if (isPlaying.value) pause();
-  else play();
+  else {
+    const primarySelectedSegmentId = segmentSelection.primarySelectedSegmentId.value;
+    if (!workspaceAutoplay.isAutoPlayEnabled.value && primarySelectedSegmentId) {
+      seekToSegment(primarySelectedSegmentId);
+    }
+    play();
+  }
 }
 
 function onPrevSegment() {

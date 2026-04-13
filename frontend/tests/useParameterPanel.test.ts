@@ -83,9 +83,10 @@ const {
         top_p: 1,
         temperature: 1,
         noise_scale: 0.35,
-        reference_audio_path: "default.wav",
-        reference_text: "默认",
-        reference_language: "zh",
+        reference_overrides_by_binding: {},
+        reference_audio_path: null,
+        reference_text: null,
+        reference_language: null,
         extra_overrides: {},
       },
       {
@@ -97,9 +98,16 @@ const {
         top_p: 0.8,
         temperature: 0.9,
         noise_scale: 0.4,
-        reference_audio_path: "seg.wav",
-        reference_text: "单段",
-        reference_language: "en",
+        reference_overrides_by_binding: {
+          "voice-a:voice-a": {
+            reference_audio_path: "seg.wav",
+            reference_text: "单段自定义",
+            reference_language: "en",
+          },
+        },
+        reference_audio_path: null,
+        reference_text: null,
+        reference_language: null,
         extra_overrides: {},
       },
     ]),
@@ -171,6 +179,62 @@ const {
     };
   })(),
 }));
+
+function createVoices() {
+  return [
+    {
+      name: "voice-default",
+      gpt_path: "default.ckpt",
+      sovits_path: "default.pth",
+      ref_audio: "default-preset.wav",
+      ref_text: "默认预设",
+      ref_lang: "zh",
+      description: "默认音色",
+      defaults: {
+        speed: 1,
+        top_k: 15,
+        top_p: 1,
+        temperature: 1,
+        pause_length: 0.3,
+      },
+      managed: true,
+    },
+    {
+      name: "voice-a",
+      gpt_path: "a.ckpt",
+      sovits_path: "a.pth",
+      ref_audio: "voice-a-preset.wav",
+      ref_text: "音色A预设",
+      ref_lang: "en",
+      description: "音色 A",
+      defaults: {
+        speed: 1.1,
+        top_k: 20,
+        top_p: 0.8,
+        temperature: 0.9,
+        pause_length: 0.35,
+      },
+      managed: true,
+    },
+    {
+      name: "voice-b",
+      gpt_path: "b.ckpt",
+      sovits_path: "b.pth",
+      ref_audio: "voice-b-preset.wav",
+      ref_text: "音色B预设",
+      ref_lang: "ja",
+      description: "音色 B",
+      defaults: {
+        speed: 1.2,
+        top_k: 25,
+        top_p: 0.7,
+        temperature: 1,
+        pause_length: 0.4,
+      },
+      managed: true,
+    },
+  ];
+}
 
 vi.mock("@/composables/useEditSession", () => ({
   useEditSession: () => editSessionMock,
@@ -244,6 +308,28 @@ describe("useParameterPanel", () => {
         risk_flags: [],
         assembled_audio_span: [0, 50],
       },
+      {
+        segment_id: "seg-2",
+        document_id: "doc-1",
+        order_key: 2,
+        previous_segment_id: "seg-1",
+        next_segment_id: null,
+        segment_kind: "speech",
+        raw_text: "第二句。",
+        normalized_text: "第二句。",
+        text_language: "zh",
+        render_version: 1,
+        render_asset_id: "render-seg-2",
+        group_id: null,
+        render_profile_id: "profile-seg-2",
+        voice_binding_id: "binding-seg-2",
+        render_status: "ready",
+        segment_revision: 1,
+        effective_duration_samples: 50,
+        inference_override: {},
+        risk_flags: [],
+        assembled_audio_span: [50, 100],
+      },
     ];
     editSessionMock.groups.value = [];
     editSessionMock.timeline.value = {
@@ -265,6 +351,16 @@ describe("useParameterPanel", () => {
           render_profile_id: "profile-seg-1",
           voice_binding_id: "binding-seg-1",
         },
+        {
+          segment_id: "seg-2",
+          order_key: 2,
+          start_sample: 50,
+          end_sample: 100,
+          render_status: "ready",
+          group_id: null,
+          render_profile_id: "profile-seg-2",
+          voice_binding_id: "binding-seg-2",
+        },
       ],
       edge_entries: [],
       markers: [],
@@ -279,9 +375,10 @@ describe("useParameterPanel", () => {
         top_p: 1,
         temperature: 1,
         noise_scale: 0.35,
-        reference_audio_path: "default.wav",
-        reference_text: "默认",
-        reference_language: "zh",
+        reference_overrides_by_binding: {},
+        reference_audio_path: null,
+        reference_text: null,
+        reference_language: null,
         extra_overrides: {},
       },
       {
@@ -293,9 +390,31 @@ describe("useParameterPanel", () => {
         top_p: 0.8,
         temperature: 0.9,
         noise_scale: 0.4,
-        reference_audio_path: "seg.wav",
-        reference_text: "单段",
-        reference_language: "en",
+        reference_overrides_by_binding: {
+          "voice-a:voice-a": {
+            reference_audio_path: "seg.wav",
+            reference_text: "单段自定义",
+            reference_language: "en",
+          },
+        },
+        reference_audio_path: null,
+        reference_text: null,
+        reference_language: null,
+        extra_overrides: {},
+      },
+      {
+        render_profile_id: "profile-seg-2",
+        scope: "segment",
+        name: "segment-2",
+        speed: 1.3,
+        top_k: 18,
+        top_p: 0.75,
+        temperature: 1.05,
+        noise_scale: 0.42,
+        reference_overrides_by_binding: {},
+        reference_audio_path: null,
+        reference_text: null,
+        reference_language: null,
         extra_overrides: {},
       },
     ];
@@ -316,6 +435,15 @@ describe("useParameterPanel", () => {
         model_key: "voice-a",
         gpt_path: "a.ckpt",
         sovits_path: "a.pth",
+        speaker_meta: {},
+      },
+      {
+        voice_binding_id: "binding-seg-2",
+        scope: "segment",
+        voice_id: "voice-b",
+        model_key: "voice-b",
+        gpt_path: "b.ckpt",
+        sovits_path: "b.pth",
         speaker_meta: {},
       },
     ];
@@ -400,6 +528,135 @@ describe("useParameterPanel", () => {
     await nextTick();
 
     expect(panel.displayValues.value.renderProfile.speed).toBe(1);
+  });
+
+  it("切换音色时会立即切换到目标 binding 的 reference，并在切回时恢复原 override", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    (panel as any).setVoices(createVoices());
+    selection.select("seg-1");
+    await nextTick();
+
+    expect((panel.displayValues.value as any).reference.source).toBe("custom");
+    expect((panel.displayValues.value as any).reference.reference_text).toBe("单段自定义");
+
+    panel.updateVoiceBindingField("voice_id", "voice-b");
+    panel.updateVoiceBindingField("model_key", "voice-b");
+    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
+    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    await nextTick();
+
+    expect((panel.displayValues.value as any).reference.source).toBe("preset");
+    expect((panel.displayValues.value as any).reference.reference_audio_path).toBe("voice-b-preset.wav");
+    expect((panel.displayValues.value as any).reference.reference_text).toBe("音色B预设");
+
+    panel.updateVoiceBindingField("voice_id", "voice-a");
+    panel.updateVoiceBindingField("model_key", "voice-a");
+    panel.updateVoiceBindingField("gpt_path", "a.ckpt");
+    panel.updateVoiceBindingField("sovits_path", "a.pth");
+    await nextTick();
+
+    expect((panel.displayValues.value as any).reference.source).toBe("custom");
+    expect((panel.displayValues.value as any).reference.reference_audio_path).toBe("seg.wav");
+    expect((panel.displayValues.value as any).reference.reference_text).toBe("单段自定义");
+  });
+
+  it("切回模型预设时会按当前 binding 提交 clear reference_override", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    (panel as any).setVoices(createVoices());
+    selection.select("seg-1");
+    await nextTick();
+
+    (panel as any).updateReferenceSource("preset");
+    await panel.submitDraft();
+
+    expect(apiMock.commitSegmentRenderProfile).toHaveBeenCalledWith("seg-1", {
+      reference_override: {
+        binding_key: "voice-a:voice-a",
+        operation: "clear",
+      },
+    });
+  });
+
+  it("同次切音色并写自定义参考时，会用新 binding key 提交 upsert", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const panel = useParameterPanel();
+
+    (panel as any).setVoices(createVoices());
+
+    panel.updateVoiceBindingField("voice_id", "voice-b");
+    panel.updateVoiceBindingField("model_key", "voice-b");
+    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
+    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    (panel as any).updateReferenceSource("custom");
+    (panel as any).updateReferenceField("reference_audio_path", "voice-b-custom.wav");
+    (panel as any).updateReferenceField("reference_text", "音色B自定义");
+    (panel as any).updateReferenceField("reference_language", "ja");
+    await panel.submitDraft();
+
+    expect(apiMock.commitSessionVoiceBinding).toHaveBeenCalledWith({
+      voice_id: "voice-b",
+      model_key: "voice-b",
+      gpt_path: "b.ckpt",
+      sovits_path: "b.pth",
+    });
+    expect(apiMock.commitSessionRenderProfile).toHaveBeenCalledWith({
+      reference_override: {
+        binding_key: "voice-b:voice-b",
+        operation: "upsert",
+        reference_audio_path: "voice-b-custom.wav",
+        reference_text: "音色B自定义",
+        reference_language: "ja",
+      },
+    });
+  });
+
+  it("批量态统一切到某个音色后，reference 预览仍按整批真实结果保留 mixed", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    editSessionMock.renderProfiles.value = [
+      editSessionMock.renderProfiles.value[0],
+      {
+        ...editSessionMock.renderProfiles.value[1],
+        reference_overrides_by_binding: {
+          ...editSessionMock.renderProfiles.value[1].reference_overrides_by_binding,
+          "voice-b:voice-b": {
+            reference_audio_path: "seg-b.wav",
+            reference_text: "段一切到B后的自定义",
+            reference_language: "ja",
+          },
+        },
+      },
+      editSessionMock.renderProfiles.value[2],
+    ];
+
+    (panel as any).setVoices(createVoices());
+    selection.select("seg-1");
+    selection.toggleSelect("seg-2");
+    await nextTick();
+
+    expect(panel.scopeContext.value.scope).toBe("batch");
+    expect((panel.displayValues.value as any).reference.source).toBe("__MIXED__");
+
+    panel.updateVoiceBindingField("voice_id", "voice-b");
+    panel.updateVoiceBindingField("model_key", "voice-b");
+    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
+    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    await nextTick();
+
+    expect((panel.displayValues.value as any).reference.source).toBe("__MIXED__");
+    expect((panel.displayValues.value as any).reference.reference_audio_path).toBe("__MIXED__");
+    expect((panel.displayValues.value as any).reference.reference_text).toBe("__MIXED__");
   });
 
   it("同一 scope 刷新中会保留最后一次稳定参数，并标记为 resolving", async () => {

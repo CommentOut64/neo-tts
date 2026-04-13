@@ -4,6 +4,7 @@ import {
   extractOrderedSegmentTextsFromWorkspaceViewDoc,
   normalizeWorkspaceViewDocToSourceDoc,
 } from "../src/components/workspace/workspace-editor/sourceDocNormalizer";
+import { splitSegmentTerminalCapsule } from "../src/utils/segmentTextDisplay";
 
 describe("workspace list view normalizer", () => {
   it("列表式会按 segmentBlock.attrs.segmentId 提取文本，而不是依赖 segmentAnchor", () => {
@@ -165,6 +166,30 @@ describe("workspace list view normalizer", () => {
           attrs: { segmentId: "seg-2" },
         },
       ],
+    });
+  });
+
+  it("列表式提取的段文本会保留完整句尾胶囊", () => {
+    const extracted = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+      {
+        type: "doc",
+        content: [
+          {
+            type: "segmentBlock",
+            attrs: { segmentId: "seg-1" },
+            content: [{ type: "text", text: "第一段？！」" }],
+          },
+        ],
+      },
+      ["seg-1"],
+    );
+
+    expect(extracted).toEqual([{ segmentId: "seg-1", text: "第一段？！」" }]);
+    expect(splitSegmentTerminalCapsule(extracted[0]?.text ?? "")).toEqual({
+      stem: "第一段",
+      terminal: "？！",
+      closerSuffix: "」",
+      capsule: "？！」",
     });
   });
 });

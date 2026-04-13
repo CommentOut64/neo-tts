@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSegmentDisplayText } from "../src/utils/segmentTextDisplay";
+import {
+  buildSegmentDisplayText,
+  splitSegmentTerminalCapsule,
+} from "../src/utils/segmentTextDisplay";
 
 describe("segmentTextDisplay", () => {
   it("raw_text 已包含句尾簇时不会重复拼接闭合引号", () => {
@@ -45,5 +48,32 @@ describe("segmentTextDisplay", () => {
         raw_text: "第一句。",
       }),
     ).toBe("第一句。");
+  });
+
+  it("能拆出原始句尾簇和尾随闭合符", () => {
+    expect(splitSegmentTerminalCapsule("真的吗？！」")).toEqual({
+      stem: "真的吗",
+      terminal: "？！",
+      closerSuffix: "」",
+      capsule: "？！」",
+    });
+  });
+
+  it("能识别英文句号作为句尾终止符", () => {
+    expect(splitSegmentTerminalCapsule("Hello world.")).toEqual({
+      stem: "Hello world",
+      terminal: ".",
+      closerSuffix: "",
+      capsule: ".",
+    });
+  });
+
+  it("没有句尾终止符时返回空 capsule", () => {
+    expect(splitSegmentTerminalCapsule("没有句号")).toEqual({
+      stem: "没有句号",
+      terminal: "",
+      closerSuffix: "",
+      capsule: "",
+    });
   });
 });

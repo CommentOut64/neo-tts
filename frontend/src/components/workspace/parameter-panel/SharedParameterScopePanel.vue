@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { uploadEditSessionReferenceAudio } from "@/api/editSession";
 import VoiceSelect from "@/components/VoiceSelect.vue";
-import type { VoiceProfile } from "@/types/tts";
 import { useParameterPanel } from "@/composables/useParameterPanel";
+import { DEFAULT_REFERENCE_BINDING_MODEL_KEY } from "@/features/reference-binding";
+import type { VoiceProfile } from "@/types/tts";
 
 import RuntimeInferenceSettingsPanel from "./RuntimeInferenceSettingsPanel.vue";
 import { MIXED_VALUE } from "./resolveEffectiveParameters";
@@ -18,7 +19,6 @@ const props = defineProps<{
 
 const panel = useParameterPanel();
 const isUploadingReferenceAudio = ref(false);
-const refSource = ref<"preset" | "custom">("preset");
 const inputsDisabled = computed(
   () => panel.isSubmitting.value || panel.resolvedStatus.value !== "ready",
 );
@@ -31,6 +31,14 @@ const scopeStatusMessage = computed(() => {
   }
   return null;
 });
+
+watch(
+  () => props.voices,
+  (nextVoices) => {
+    panel.setVoices(nextVoices);
+  },
+  { immediate: true, deep: true },
+);
 
 function isMixed(value: unknown): value is typeof MIXED_VALUE {
   return value === MIXED_VALUE;
@@ -55,11 +63,41 @@ const selectedVoice = computed(() => {
   );
 });
 
+const referenceState = computed(() => panel.displayValues.value.reference);
+const refSource = computed<"preset" | "custom">({
+  get() {
+    return referenceState.value.source === "custom" ? "custom" : "preset";
+  },
+  set(value) {
+    panel.updateReferenceSource(value);
+  },
+});
+
 function updateVoice(voiceId: string) {
+  const isOriginalVoice = voiceId === panel.resolvedValues.value.voiceBinding.voice_id;
   const voice = props.voices.find((item) => item.name === voiceId);
+
   panel.updateVoiceBindingField("voice_id", voiceId);
-  panel.updateVoiceBindingField("model_key", voiceId);
-  if (voice) {
+
+  if (isOriginalVoice) {
+    const originalModelKey = panel.resolvedValues.value.voiceBinding.model_key as string | null;
+    if (originalModelKey !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("model_key", originalModelKey);
+    }
+  } else {
+    panel.updateVoiceBindingField("model_key", DEFAULT_REFERENCE_BINDING_MODEL_KEY);
+  }
+
+  if (isOriginalVoice) {
+    const origGpt = panel.resolvedValues.value.voiceBinding.gpt_path as string | null;
+    if (origGpt !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("gpt_path", origGpt);
+    }
+    const origSovits = panel.resolvedValues.value.voiceBinding.sovits_path as string | null;
+    if (origSovits !== MIXED_VALUE) {
+      panel.updateVoiceBindingField("sovits_path", origSovits);
+    }
+  } else if (voice) {
     panel.updateVoiceBindingField("gpt_path", voice.gpt_path);
     panel.updateVoiceBindingField("sovits_path", voice.sovits_path);
   }
@@ -83,7 +121,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
   isUploadingReferenceAudio.value = true;
   try {
     const response = await uploadEditSessionReferenceAudio(file.raw);
-    panel.updateRenderProfileField(
+    panel.updateReferenceField(
       "reference_audio_path",
       response.reference_audio_path,
     );
@@ -136,7 +174,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
   <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
-      参考音频<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path') || panel.dirtyFields.value.has('renderProfile.reference_text') || panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
+      参考音频<span v-if="panel.dirtyFields.value.has('reference.source') || panel.dirtyFields.value.has('reference.reference_audio_path') || panel.dirtyFields.value.has('reference.reference_text') || panel.dirtyFields.value.has('reference.reference_language')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
     <el-radio-group v-model="refSource" class="mb-3" :disabled="inputsDisabled">
       <el-radio value="preset">模型预设</el-radio>
@@ -144,10 +182,10 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     </el-radio-group>
 
     <div
-      v-if="refSource === 'preset' && selectedVoice"
+      v-if="refSource === 'preset' && referenceState.preset_audio_path"
       class="text-xs text-muted-fg"
     >
-      {{ selectedVoice.ref_audio.split("/").pop() }}
+      {{ asString(referenceState.preset_audio_path).split("/").pop() }}
     </div>
 
     <div v-if="refSource === 'custom'" class="mb-3">
@@ -172,24 +210,18 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
       <div class="mt-3">
         <label class="text-[13px] font-semibold text-foreground block mb-1.5 flex items-center"
-          >参考音频路径<span v-if="panel.dirtyFields.value.has('renderProfile.reference_audio_path')" class="text-red-500 font-bold ml-0.5">*</span></label
+          >参考音频路径<span v-if="panel.dirtyFields.value.has('reference.reference_audio_path')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-input
-          :model-value="
-            asString(
-              panel.displayValues.value.renderProfile.reference_audio_path,
-            )
-          "
+          :model-value="asString(referenceState.reference_audio_path)"
           :disabled="inputsDisabled"
           :placeholder="
-            isMixed(
-              panel.displayValues.value.renderProfile.reference_audio_path,
-            )
+            isMixed(referenceState.reference_audio_path)
               ? '多个值'
               : '例如：voices/demo.wav'
           "
           @update:model-value="
-            panel.updateRenderProfileField(
+            panel.updateReferenceField(
               'reference_audio_path',
               $event || null,
             )
@@ -201,46 +233,42 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
     <div class="mt-3 space-y-3">
       <div>
         <label class="text-[13px] font-semibold text-foreground block mb-1.5 flex items-center"
-          >参考文本<span v-if="panel.dirtyFields.value.has('renderProfile.reference_text')" class="text-red-500 font-bold ml-0.5">*</span></label
+          >参考文本<span v-if="panel.dirtyFields.value.has('reference.reference_text')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-input
-          :model-value="
-            asString(panel.displayValues.value.renderProfile.reference_text)
-          "
+          :model-value="asString(referenceState.reference_text)"
           type="textarea"
           :rows="2"
           :readonly="refSource === 'preset' || inputsDisabled"
           :disabled="inputsDisabled"
           :placeholder="
-            isMixed(panel.displayValues.value.renderProfile.reference_text)
+            isMixed(referenceState.reference_text)
               ? '多个值'
               : '参考音频对应的文本'
           "
           @update:model-value="
-            panel.updateRenderProfileField('reference_text', $event || null)
+            panel.updateReferenceField('reference_text', $event || null)
           "
         />
       </div>
 
       <div class="flex flex-col gap-1.5 self-start">
         <label class="text-[13px] font-semibold text-foreground flex items-center"
-          >参考语言<span v-if="panel.dirtyFields.value.has('renderProfile.reference_language')" class="text-red-500 font-bold ml-0.5">*</span></label
+          >参考语言<span v-if="panel.dirtyFields.value.has('reference.reference_language')" class="text-red-500 font-bold ml-0.5">*</span></label
         >
         <el-select
-          :model-value="
-            asString(panel.displayValues.value.renderProfile.reference_language)
-          "
+          :model-value="asString(referenceState.reference_language)"
           :disabled="inputsDisabled"
           size="small"
           class="!w-min"
           style="min-width: 90px"
           :placeholder="
-            isMixed(panel.displayValues.value.renderProfile.reference_language)
+            isMixed(referenceState.reference_language)
               ? '多个值'
               : '选择语言'
           "
           @update:model-value="
-            panel.updateRenderProfileField('reference_language', $event || null)
+            panel.updateReferenceField('reference_language', $event || null)
           "
         >
           <el-option value="auto" label="自动" />

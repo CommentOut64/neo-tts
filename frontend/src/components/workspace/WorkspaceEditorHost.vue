@@ -12,6 +12,7 @@ import { useSegmentSelection } from "@/composables/useSegmentSelection";
 import { useWorkspaceDraftPersistence } from "@/composables/useWorkspaceDraftPersistence";
 import { registerWorkspaceExitHandlers } from "@/composables/useWorkspaceExitBridge";
 import { useWorkspaceLightEdit } from "@/composables/useWorkspaceLightEdit";
+import { useWorkspaceAutoplay } from "@/composables/useWorkspaceAutoplay";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceListReorder } from "@/composables/useWorkspaceListReorder";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
@@ -56,6 +57,10 @@ import {
 } from "./workspace-editor/sourceDocNormalizer";
 import { segmentDecorationKey } from "./workspace-editor/segmentDecoration";
 import {
+  sanitizeWorkspaceViewDocTerminalCapsules,
+} from "./workspace-editor/terminalCapsuleProtection";
+import EditorSelectionHintBubble from "./workspace-editor/EditorSelectionHintBubble.vue";
+import {
   canStartListReorder,
   buildWorkspaceDraftPersistKey,
   buildWorkspaceViewRevisionKey,
@@ -75,6 +80,9 @@ const WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS = 200;
 const COMPOSITION_DISABLED_MESSAGE =
   "当前会话结构已脱离输入稿换行，暂不支持组合式";
 const REORDER_DRAFT_LOCK_MESSAGE = "请先应用或放弃当前顺序调整";
+const EDITOR_TERMINAL_HINT_MESSAGE = "句末标点不可修改";
+const EDITOR_TERMINAL_HINT_THROTTLE_MS = 900;
+const EDITOR_TERMINAL_HINT_HIDE_MS = 1400;
 
 const editSession = useEditSession();
 const lightEdit = useWorkspaceLightEdit();
@@ -83,6 +91,7 @@ const { currentCursor, isPlaying, play, pause, seekToSegment } = usePlayback();
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const segmentSelection = useSegmentSelection();
+const { isAutoPlayEnabled, toggleAutoPlay } = useWorkspaceAutoplay();
 const parameterPanel = useParameterPanel();
 const reorderDraft = useWorkspaceReorderDraft();
 
@@ -106,6 +115,12 @@ const editNormalizationError = ref<string | null>(null);
 const renderMap = ref<ReturnType<typeof extractRenderMapFromDoc> | null>(null);
 const editorRef = ref<{ editor: any } | null>(null);
 const canvasRef = ref<HTMLElement | null>(null);
+const editorSelectionHint = ref({
+  visible: false,
+  message: EDITOR_TERMINAL_HINT_MESSAGE,
+  x: 0,
+  y: 0,
+});
 const lastSessionSegments = ref<
   Array<
     Pick<
@@ -127,6 +142,8 @@ let lastPersistKey: string | null = null;
 let lastAppliedViewKey: string | null = null;
 let sourceDocSerialized = JSON.stringify(sourceDoc.value);
 let compositionLayoutHintsSerialized = JSON.stringify(compositionLayoutHints.value);
+let editorSelectionHintHideTimeoutId: number | null = null;
+let lastEditorSelectionHintAt = 0;
 
 const sessionSegments = computed<EditableSegment[]>(() =>
   resolveWorkspaceSessionItems({
@@ -357,16 +374,17 @@ const orderedSegmentIds = computed(
   () => renderPlan.value.renderMap.orderedSegmentIds,
 );
 const segmentCount = computed(() => orderedSegmentIds.value.length);
-const charCount = computed(() => {
-  const editor = editorRef.value?.editor;
-  return editor ? editor.state.doc.textContent.length : 0;
-});
 const modeLabel = computed(() => (isEditing.value ? "编辑态" : "展示态"));
 const compositionAvailable = computed(
   () => semanticDocument.value.compositionAvailability.ready,
 );
 const isInteractionLocked = computed(
   () => workspaceProcessing.isInteractionLocked.value,
+);
+const autoPlayButtonTitle = computed(() =>
+  isAutoPlayEnabled.value
+    ? "开启后，单击段时自动跳转并播放"
+    : "关闭后，单击段时只更新选择",
 );
 const activeViewKey = computed(() =>
   buildWorkspaceViewRevisionKey({
@@ -420,6 +438,9 @@ const customExtensions = buildEditorExtensions({
   onActivateEdge(edgeId) {
     activateEdgeSelection(edgeId);
   },
+  onProtectedTerminalCapsule() {
+    showEditorSelectionHint();
+  },
 });
 
 // ── 右键菜单状态 ──
@@ -464,6 +485,59 @@ function clearPendingDraftPersist() {
 
   window.clearTimeout(draftPersistTimeoutId);
   draftPersistTimeoutId = null;
+}
+
+function hideEditorSelectionHint() {
+  if (editorSelectionHintHideTimeoutId !== null) {
+    window.clearTimeout(editorSelectionHintHideTimeoutId);
+    editorSelectionHintHideTimeoutId = null;
+  }
+  editorSelectionHint.value.visible = false;
+}
+
+function resolveEditorSelectionHintAnchor() {
+  const editor = editorRef.value?.editor;
+  if (!editor) {
+    return null;
+  }
+
+  const { selection } = editor.state;
+  const anchorPos = Math.max(0, Math.min(selection.to, editor.state.doc.content.size));
+  const coords = editor.view.coordsAtPos(anchorPos);
+  return {
+    x: Math.round((coords.left + coords.right) / 2),
+    y: Math.round(coords.bottom + 10),
+  };
+}
+
+function showEditorSelectionHint(anchor = resolveEditorSelectionHintAnchor()) {
+  if (!anchor) {
+    return;
+  }
+
+  const now = Date.now();
+  if (
+    editorSelectionHint.value.visible &&
+    now - lastEditorSelectionHintAt < EDITOR_TERMINAL_HINT_THROTTLE_MS
+  ) {
+    return;
+  }
+
+  lastEditorSelectionHintAt = now;
+  editorSelectionHint.value = {
+    visible: true,
+    message: EDITOR_TERMINAL_HINT_MESSAGE,
+    x: anchor.x,
+    y: anchor.y,
+  };
+
+  if (editorSelectionHintHideTimeoutId !== null) {
+    window.clearTimeout(editorSelectionHintHideTimeoutId);
+  }
+  editorSelectionHintHideTimeoutId = window.setTimeout(() => {
+    editorSelectionHintHideTimeoutId = null;
+    editorSelectionHint.value.visible = false;
+  }, EDITOR_TERMINAL_HINT_HIDE_MS);
 }
 
 function ensureNoReorderDraft() {
@@ -560,6 +634,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleGlobalKeyDown);
   clearPendingDraftPersist();
+  hideEditorSelectionHint();
   unregisterWorkspaceExitHandlers();
   unregisterReorderDraftActions();
 });
@@ -1160,14 +1235,28 @@ function onDocUpdate(value: JSONContent) {
     return;
   }
 
-  currentViewDoc.value = value;
+  const sanitized = sanitizeWorkspaceViewDocTerminalCapsules({
+    previousDoc: currentViewDoc.value,
+    nextDoc: value,
+    orderedSegmentIds: currentSessionSegmentIds.value,
+  });
+  const nextDoc = sanitized.doc;
+
+  if (sanitized.touchedCapsule) {
+    showEditorSelectionHint();
+  }
+
+  currentViewDoc.value = nextDoc;
+  if (nextDoc !== value) {
+    pushContentToEditor(editorRef.value?.editor, nextDoc, displayViewKey.value, true);
+  }
   clearPendingDraftPersist();
-  if (!syncEditingSourceState(value)) {
+  if (!syncEditingSourceState(nextDoc)) {
     return;
   }
   draftPersistTimeoutId = window.setTimeout(() => {
     draftPersistTimeoutId = null;
-    persistWorkspaceDraftSnapshot("editing", value);
+    persistWorkspaceDraftSnapshot("editing", nextDoc);
   }, WORKSPACE_DRAFT_SAVE_DEBOUNCE_MS);
 }
 
@@ -1183,6 +1272,24 @@ function onCanvasPointerDown(event: PointerEvent) {
 }
 
 let clickPlayTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleSegmentAutoPlay(segmentId: string) {
+  if (!isAutoPlayEnabled.value) {
+    return;
+  }
+
+  if (clickPlayTimer !== null) {
+    clearTimeout(clickPlayTimer);
+    clickPlayTimer = null;
+  }
+
+  clickPlayTimer = setTimeout(() => {
+    clickPlayTimer = null;
+    if (isEditing.value || !isAutoPlayEnabled.value) return;
+    seekToSegment(segmentId);
+    play();
+  }, 250);
+}
 
 function onCanvasClick(event: MouseEvent) {
   if (listReorder.consumeClickSuppression()) {
@@ -1224,18 +1331,7 @@ function onCanvasClick(event: MouseEvent) {
   }
 
   const segmentId = target.segmentId;
-
-  if (clickPlayTimer !== null) {
-    clearTimeout(clickPlayTimer);
-    clickPlayTimer = null;
-  }
-
-  clickPlayTimer = setTimeout(() => {
-    clickPlayTimer = null;
-    if (isEditing.value) return;
-    seekToSegment(segmentId);
-    play();
-  }, 250);
+  scheduleSegmentAutoPlay(segmentId);
 }
 
 function onCanvasDblClick(event: MouseEvent) {
@@ -1646,7 +1742,23 @@ watch(isEditing, (editing) => {
       </div>
 
       <div class="flex min-w-[240px] items-center justify-end gap-2">
-        <span class="mr-1 text-xs text-muted-fg">{{ charCount }} 字</span>
+        <el-tooltip
+          :content="autoPlayButtonTitle"
+          placement="bottom"
+        >
+          <button
+            type="button"
+            class="rounded border px-2.5 py-1 text-xs font-medium transition-colors"
+            :class="isAutoPlayEnabled
+              ? 'border-blue-400/30 bg-blue-50 text-blue-600 hover:bg-blue-100/80 dark:border-blue-400/30 dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/30'
+              : 'border-border text-muted-fg hover:bg-secondary/50'"
+            :aria-pressed="isAutoPlayEnabled"
+            :disabled="isInteractionLocked"
+            @click="toggleAutoPlay()"
+          >
+            自动播放
+          </button>
+        </el-tooltip>
 
         <button
           v-if="!isEditing && segmentCount > 0"
@@ -1688,6 +1800,7 @@ watch(isEditing, (editing) => {
       ref="canvasRef"
       class="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
       :class="effectiveLayoutMode === 'list' ? 'editor-layout-list overflow-x-auto' : 'editor-layout-composition overflow-x-hidden w-full'"
+      @scroll.passive="hideEditorSelectionHint"
       @pointerdown.capture="onCanvasPointerDown"
       @click="onCanvasClick"
       @dblclick="onCanvasDblClick"
@@ -1705,6 +1818,13 @@ watch(isEditing, (editing) => {
         @update:model-value="onDocUpdate"
       />
     </div>
+
+    <EditorSelectionHintBubble
+      :visible="editorSelectionHint.visible"
+      :message="editorSelectionHint.message"
+      :x="editorSelectionHint.x"
+      :y="editorSelectionHint.y"
+    />
 
     <div
       v-if="listReorder.mode === 'dragging' && listReorder.draggingSegmentId"
@@ -1753,6 +1873,7 @@ watch(isEditing, (editing) => {
 
 :deep(.ProseMirror[contenteditable="false"]) {
   cursor: default;
+  user-select: none;
 }
 
 :deep(.ProseMirror ::selection) {
