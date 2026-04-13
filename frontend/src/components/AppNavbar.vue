@@ -9,6 +9,7 @@ import { useEditSession } from '@/composables/useEditSession'
 import { useAppExit } from '@/composables/useAppExit'
 import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import { isExportBlockedByRenderJob } from './workspace/sessionHandoff'
+import AboutDialog from './AboutDialog.vue'
 
 defineProps<{
   status: ConnectionStatus
@@ -22,6 +23,8 @@ const { currentRenderJob } = useRuntimeState()
 const { snapshot } = useEditSession()
 const { isExiting, requestExit } = useAppExit()
 const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
+
+const aboutDialogVisible = ref(false)
 
 const navItems = [
   { path: '/text-input', label: '文本输入' },
@@ -93,7 +96,11 @@ watch(
 
 <template>
   <nav class="app-navbar fixed top-0 left-0 right-0 z-50 h-14 border-b flex items-center pl-6 pr-3">
-    <div class="flex items-center gap-2 mr-8">
+    <div 
+      class="flex items-center gap-2 mr-8 cursor-pointer hover:opacity-80 transition-opacity select-none"
+      @click="aboutDialogVisible = true"
+      title="关于"
+    >
       <div 
         class="w-8 h-8 transition-colors duration-300" 
         :class="{
@@ -192,6 +199,9 @@ watch(
         </el-button>
       </div>
     </div>
+
+    <!-- 关于与自更新窗口 -->
+    <AboutDialog v-model:visible="aboutDialogVisible" />
   </nav>
 </template>
 
