@@ -62,3 +62,86 @@ def test_ensure_on_gpu_restores_offloaded_runtime_modules(monkeypatch):
     assert runtime.t2s_model.moves == ["cpu", "cuda"]
     assert runtime.vq_model.moves == ["cpu", "cuda"]
     assert runtime.sv_model.embedding_model.moves == ["cpu", "cuda"]
+
+
+def test_warmup_logs_stage_when_t2s_infer_panel_returns_none(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+        def exception(self, message, *args):
+            logged.append(("exception", (message, *args)))
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return None, 0
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = lambda *args, **kwargs: ([1, 2, 3], None, "norm")
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = SimpleNamespace(decode=lambda *args, **kwargs: "unused")
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+
+    runtime.warmup()
+
+    exception_entries = [entry for entry in logged if entry[0] == "exception"]
+    assert len(exception_entries) == 1
+    message, stage, reason = exception_entries[0][1]
+    assert message == "Warmup failed at stage={} reason={}"
+    assert stage == "t2s_infer_panel"
+    assert "returned no semantic tokens" in reason
+
+
+def test_warmup_passes_dummy_speaker_embedding_for_v2pro_decode(monkeypatch):
+    decode_calls: list[dict] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            raise AssertionError(f"warmup should not fail: {message} {args}")
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return __import__("torch").ones((1, 4), dtype=__import__("torch").long), 0
+
+    class _FakeVQModel:
+        is_v2pro = True
+
+        def decode(self, codes, text, refer, noise_scale=0.5, speed=1, sv_emb=None):
+            decode_calls.append(
+                {
+                    "codes_shape": tuple(codes.shape),
+                    "sv_emb": sv_emb,
+                }
+            )
+            return "ok"
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = lambda *args, **kwargs: ([1, 2, 3], None, "norm")
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = _FakeVQModel()
+    runtime._build_dummy_warmup_speaker_embedding = lambda: "dummy-sv-emb"
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+
+    runtime.warmup()
+
+    assert len(decode_calls) == 1
+    assert decode_calls[0]["sv_emb"] == ["dummy-sv-emb"]
