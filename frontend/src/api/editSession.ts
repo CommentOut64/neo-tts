@@ -21,8 +21,7 @@ import type {
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
   ReorderSegmentsBody,
-  ExportSegmentsBody,
-  ExportCompositionBody,
+  ExportRequestBody,
   ExportJobResponse,
   ExportJobAcceptedResponse,
 } from "@/types/editSession";
@@ -374,24 +373,46 @@ export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse>
   return unwrapAcceptedRenderJob(data)
 }
 
-export async function exportSegments(
-  body: ExportSegmentsBody,
+export async function exportAudio(
+  body: ExportRequestBody,
 ): Promise<ExportJobResponse> {
   const { data } = await axios.post<ExportJobAcceptedResponse>(
-    "/v1/edit-session/exports/segments",
+    "/v1/edit-session/exports",
     body,
   );
   return unwrapAcceptedExportJob(data);
 }
 
-export async function exportComposition(
-  body: ExportCompositionBody,
+export async function exportSegments(
+  body: Omit<ExportRequestBody, "audio"> & {
+    overwrite_policy?: "fail" | "replace" | "new_folder";
+  },
 ): Promise<ExportJobResponse> {
-  const { data } = await axios.post<ExportJobAcceptedResponse>(
-    "/v1/edit-session/exports/composition",
-    body,
-  );
-  return unwrapAcceptedExportJob(data);
+  return exportAudio({
+    document_version: body.document_version,
+    target_dir: body.target_dir,
+    audio: {
+      kind: "segments",
+      overwrite_policy: body.overwrite_policy ?? "fail",
+    },
+    subtitle: body.subtitle,
+  });
+}
+
+export async function exportComposition(
+  body: Omit<ExportRequestBody, "audio"> & {
+    overwrite_policy?: "fail" | "replace" | "new_folder";
+  },
+): Promise<ExportJobResponse> {
+  return exportAudio({
+    document_version: body.document_version,
+    target_dir: body.target_dir,
+    audio: {
+      kind: "composition",
+      overwrite_policy: body.overwrite_policy ?? "fail",
+    },
+    subtitle: body.subtitle,
+  });
 }
 
 export async function getExportJob(jobId: string): Promise<ExportJobResponse> {

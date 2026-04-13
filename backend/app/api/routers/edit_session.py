@@ -29,6 +29,7 @@ from backend.app.schemas.edit_session import (
     CurrentCheckpointResponse,
     EdgeListResponse,
     EditSessionSnapshotResponse,
+    ExportRequest,
     ExportJobAcceptedResponse,
     ExportJobResponse,
     GroupListResponse,
@@ -804,6 +805,21 @@ def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest)
 )
 def rerender_segment(request: Request, segment_id: str) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_rerender_segment_job(segment_id)
+
+
+@router.post(
+    "/exports",
+    response_model=ExportJobAcceptedResponse,
+    status_code=202,
+    summary="创建统一导出作业",
+    description=(
+        "统一导出指定 `document_version` 的正式音频与可选字幕。"
+        "前端应优先调用该接口，而不是分别调用分段导出和整条导出接口。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
+def create_export(request: Request, body: ExportRequest) -> ExportJobAcceptedResponse:
+    return _build_export_service(request).create_export_job(body)
 
 
 @router.post(

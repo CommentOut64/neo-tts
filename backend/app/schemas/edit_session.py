@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
@@ -607,6 +608,55 @@ class CompositionExportRequest(ExportRequestBase):
     pass
 
 
+class ExportAudioRequest(BaseModel):
+    kind: Literal["segments", "composition"] = Field(description="要导出的音频类型。")
+    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(
+        default="fail",
+        description="自动命名后的最终导出产物发生重名时的处理策略。",
+    )
+
+
+class ExportSubtitleRequest(BaseModel):
+    enabled: bool = Field(default=False, description="是否同时导出字幕文件。")
+    format: Literal["srt"] = Field(default="srt", description="当前字幕导出格式；v1 仅支持 `srt`。")
+    offset_seconds: float = Field(default=0.0, description="作用于全部字幕段的全局时间偏移。")
+    strip_trailing_punctuation: bool = Field(
+        default=False,
+        description="是否在字幕文本中去除每段段末标点与尾随闭合符。",
+    )
+
+    @field_validator("offset_seconds", mode="before")
+    @classmethod
+    def _validate_offset_precision(cls, value: object) -> object:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise ValueError("offset_seconds must be a valid decimal number.") from exc
+        normalized = decimal_value.quantize(Decimal("0.1"))
+        if normalized != decimal_value:
+            raise ValueError("offset_seconds must use 0.1 precision.")
+        return float(decimal_value)
+
+
+class ExportRequest(BaseModel):
+    document_version: int = Field(ge=1, description="要导出的已提交 document_version。")
+    target_dir: str = Field(description="导出根目录，强制要求绝对路径。")
+    audio: ExportAudioRequest = Field(description="音频导出选项。")
+    subtitle: ExportSubtitleRequest = Field(
+        default_factory=ExportSubtitleRequest,
+        description="字幕导出选项；未启用时保持兼容现状。",
+    )
+
+
+class ExportSubtitleManifest(BaseModel):
+    format: Literal["srt"] = Field(description="本次导出的字幕格式。")
+    offset_seconds: float = Field(description="本次字幕导出的全局时间偏移。")
+    strip_trailing_punctuation: bool = Field(
+        default=False,
+        description="本次字幕导出是否去除了段末标点与尾随闭合符。",
+    )
+
+
 class SegmentBatchRenderProfilePatchRequest(BaseModel):
     segment_ids: list[str] = Field(min_length=1, description="要批量绑定 render profile 的段 ID 列表。")
     patch: RenderProfilePatchRequest = Field(description="要应用到这批段的新 profile patch。")
@@ -633,9 +683,12 @@ class ExportOutputManifest(BaseModel):
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
     target_dir: str = Field(description="最终导出落点所在目录；分段导出为自动创建的导出目录，整条导出为用户选择的导出根目录。")
     files: list[str] = Field(default_factory=list, description="本次导出的全部文件路径。")
+    audio_files: list[str] = Field(default_factory=list, description="本次导出的全部音频文件路径。")
+    subtitle_files: list[str] = Field(default_factory=list, description="本次导出的全部字幕文件路径。")
     segment_files: list[str] = Field(default_factory=list, description="分段导出的 wav 文件列表。")
     composition_file: str | None = Field(default=None, description="整条音频导出的 wav 文件路径。")
     composition_manifest_id: str | None = Field(default=None, description="若导出类型为 composition，则为对应正式资产 ID。")
+    subtitle_manifest: ExportSubtitleManifest | None = Field(default=None, description="若导出了字幕，则为对应字幕元信息。")
     manifest_file: str = Field(description="导出 manifest 文件路径。")
     exported_at: datetime = Field(default_factory=_now_utc, description="导出完成时间。")
 
@@ -646,6 +699,10 @@ class ExportJobResponse(BaseModel):
     document_version: int = Field(description="导出的文档版本。")
     timeline_manifest_id: str = Field(description="导出使用的 timeline manifest ID。")
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
+    subtitle: ExportSubtitleRequest = Field(
+        default_factory=ExportSubtitleRequest,
+        description="本次导出作业使用的字幕选项；未启用时保持默认值。",
+    )
     status: Literal["queued", "exporting", "completed", "failed"] = Field(description="导出作业当前状态。")
     target_dir: str = Field(description="解析后的导出根目录。")
     overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="自动命名后的最终导出产物发生重名时的处理策略。")

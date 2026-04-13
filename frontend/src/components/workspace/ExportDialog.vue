@@ -2,8 +2,7 @@
 import { ref, computed, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import {
-  exportSegments,
-  exportComposition,
+  exportAudio,
   subscribeExportJobEvents,
   getExportJob,
 } from "@/api/editSession";
@@ -28,6 +27,9 @@ const { currentRenderJob, trackExportJob } = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 
 const exportType = ref<"composition" | "segments">("composition");
+const includeSrt = ref(false);
+const subtitleOffsetSeconds = ref(0);
+const stripTrailingPunctuation = ref(false);
 const targetDir = ref("");
 const isExporting = ref(false);
 const progress = ref(0);
@@ -80,13 +82,19 @@ async function startExport() {
     const payload = {
       document_version: documentVersion.value,
       target_dir: targetDir.value.trim(),
+      audio: {
+        kind: exportType.value,
+        overwrite_policy: "fail" as const,
+      },
+      subtitle: {
+        enabled: includeSrt.value,
+        format: "srt" as const,
+        offset_seconds: subtitleOffsetSeconds.value,
+        strip_trailing_punctuation: stripTrailingPunctuation.value,
+      },
     };
 
-    const jobResp =
-      exportType.value === "composition"
-        ? await exportComposition(payload)
-        : await exportSegments(payload);
-
+    const jobResp = await exportAudio(payload);
     trackExportJob(jobResp);
     trackJob(jobResp.export_job_id);
   } catch (err: any) {
@@ -128,11 +136,7 @@ function applyJobState(job: ExportJobResponse) {
   statusMessage.value = "导出完成";
   progress.value = 100;
   if (job.output_manifest) {
-    if (job.output_manifest.composition_file) {
-      resultFiles.value = [job.output_manifest.composition_file];
-    } else {
-      resultFiles.value = job.output_manifest.segment_files || [];
-    }
+    resultFiles.value = job.output_manifest.files || [];
   }
   isExporting.value = false;
   ElMessage.success("导出成功");
@@ -247,11 +251,32 @@ onBeforeUnmount(() => {
             >选择目录</el-button
           >
         </div>
-        <p class="mt-2 text-xs leading-5 text-muted-fg">
-          整条导出会直接写入该目录，并命名为 `neo-tts-export-时间戳.wav`；
-          分段导出会自动创建 `neo-tts-export-时间戳` 文件夹，内部文件命名为
-          `segments-N.wav`。
-        </p>
+      </div>
+
+      <div class="rounded-lg border border-border/70 bg-muted/20 p-3">
+        <label class="mb-3 block text-sm font-medium text-foreground/90">
+          字幕导出
+        </label>
+        <div class="flex flex-col gap-3">
+          <el-checkbox v-model="includeSrt" :disabled="isExporting">
+            导出 SRT 字幕
+          </el-checkbox>
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm text-muted-fg">全局偏移(秒)</span>
+            <el-input-number
+              v-model="subtitleOffsetSeconds"
+              :disabled="isExporting || !includeSrt"
+              :step="0.1"
+              :precision="1"
+            />
+          </div>
+          <el-checkbox
+            v-model="stripTrailingPunctuation"
+            :disabled="isExporting || !includeSrt"
+          >
+            去除每段段末标点
+          </el-checkbox>
+        </div>
       </div>
 
       <div
@@ -270,7 +295,7 @@ onBeforeUnmount(() => {
         class="mt-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3"
       >
         <div class="text-sm font-medium text-green-600 text-center">
-          成功导出 {{ resultFiles.length }} 条音频
+          成功导出 {{ resultFiles.length }} 个文件
         </div>
       </div>
     </div>
