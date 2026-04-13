@@ -125,6 +125,16 @@ def _build_editable_gateway(
         return existing
 
     settings = request.app.state.settings
+    model_cache = getattr(request.app.state, "model_cache", None)
+    if model_cache is None:
+        from backend.app.inference.model_cache import PyTorchModelCache
+
+        model_cache = PyTorchModelCache(
+            project_root=settings.project_root,
+            cnhubert_base_path=settings.cnhubert_base_path,
+            bert_path=settings.bert_path,
+        )
+        request.app.state.model_cache = model_cache
     voice_service = _build_voice_service(request)
     voice = voice_service.get_voice(voice_id)
     cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway] = getattr(
@@ -139,13 +149,9 @@ def _build_editable_gateway(
         resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
 
         def _build_backend():
-            from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
-
-            return GPTSoVITSOptimizedInference(
-                resolved_gpt_path,
-                resolved_sovits_path,
-                settings.cnhubert_base_path,
-                settings.bert_path,
+            return model_cache.get_engine(
+                gpt_path=resolved_gpt_path,
+                sovits_path=resolved_sovits_path,
             )
 
         return LazyEditableInferenceGateway(backend_factory=_build_backend)
