@@ -8,6 +8,7 @@ frontend/node_modules/.vite/
 .codex/
 .superpowers/
 .venv/
+.env
 .github
 
 /GEMINI.md
@@ -16,11 +17,19 @@ frontend/node_modules/.vite/
 *.onnx
 *.zip
 *.wav
+logs/
 /onnx
 /pretrained_models
 /onnx_export/
 /frontend/node_modules/
+desktop/node_modules/
+/desktop/dist/
+/desktop/main.js
+/desktop/.stage/
+/desktop/.cache/
+/desktop/release/
 /frontend/dist/
+/launcher/dist/
 /frontend/components.d.ts
 /frontend/auto-imports.d.ts
 /docs/superpowers/
@@ -34,5 +43,6 @@ frontend/node_modules/.vite/
 /docker/
 /llmdoc/
 legacy/
+config/voices.json
 
 
