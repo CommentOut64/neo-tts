@@ -24,6 +24,8 @@ logs/
 /frontend/node_modules/
 desktop/node_modules/
 /desktop/dist/
+/desktop/.stage/
+/desktop/.cache/
 /desktop/release/
 /frontend/dist/
 /launcher/dist/

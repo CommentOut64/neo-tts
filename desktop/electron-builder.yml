@@ -1,6 +1,19 @@
 appId: com.neo-tts.desktop
 productName: NeoTTS
 directories:
-  output: release
+  output: release/${version}
+asar: true
 files:
   - dist/**/*
+extraResources:
+  - from: .stage/app-runtime
+    to: app-runtime
+    filter:
+      - "**/*"
+  - from: .stage/manifest-lock.json
+    to: manifest-lock.json
+win:
+  target:
+    - target: dir
+      arch:
+        - x64
