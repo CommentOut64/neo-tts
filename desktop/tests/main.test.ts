@@ -1,8 +1,11 @@
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
 import { APP_REQUEST_EXIT_CHANNEL } from "../src/ipc/channels";
 import { runMain } from "../src/main";
+import type { ProductPaths } from "../src/runtime/paths";
 
 type AppStub = {
   requestSingleInstanceLock: () => boolean;
@@ -13,6 +16,7 @@ type AppStub = {
 
 type IpcMainStub = {
   handle: (channel: string, listener: () => Promise<void> | void) => void;
+  on: (channel: string, listener: (event: { returnValue?: unknown }) => void) => void;
 };
 
 type WindowStub = {
@@ -48,6 +52,56 @@ function createBackendOwnerStub(
   };
 }
 
+function createProductPaths(distributionKind: "installed" | "portable"): ProductPaths {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "neo-tts-main-"));
+  const runtimeRoot =
+    distributionKind === "installed"
+      ? path.join(workspace, "NeoTTS")
+      : path.join(workspace, "NeoTTS-Portable");
+  const resourcesDir = path.join(runtimeRoot, "resources", "app-runtime");
+  const userDataDir =
+    distributionKind === "installed"
+      ? path.join(workspace, "AppData", "Local", "NeoTTS")
+      : path.join(runtimeRoot, "data");
+  const exportsDir =
+    distributionKind === "installed"
+      ? path.join(workspace, "Documents", "NeoTTS", "Exports")
+      : path.join(runtimeRoot, "exports");
+
+  return {
+    distributionKind,
+    runtimeRoot,
+    resourcesDir,
+    backendDir: path.join(resourcesDir, "backend"),
+    frontendDir: path.join(resourcesDir, "frontend-dist"),
+    gptSovitsDir: path.join(resourcesDir, "GPT_SoVITS"),
+    runtimePython: path.join(resourcesDir, "runtime", "python", "python.exe"),
+    builtinModelDir: path.join(resourcesDir, "models", "builtin"),
+    configDir: path.join(resourcesDir, "config"),
+    userDataDir,
+    logsDir: path.join(userDataDir, "logs"),
+    exportsDir,
+    userModelsDir: path.join(userDataDir, "models"),
+  };
+}
+
+function materializeRuntime(paths: ProductPaths, options?: { includeFrontend?: boolean }) {
+  fs.mkdirSync(paths.backendDir, { recursive: true });
+  fs.mkdirSync(paths.gptSovitsDir, { recursive: true });
+  fs.mkdirSync(paths.builtinModelDir, { recursive: true });
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.mkdirSync(path.dirname(paths.runtimePython), { recursive: true });
+  fs.writeFileSync(paths.runtimePython, "", "utf-8");
+  if (paths.distributionKind === "portable") {
+    fs.mkdirSync(paths.runtimeRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.runtimeRoot, "portable.flag"), "", "utf-8");
+  }
+  if (options?.includeFrontend !== false) {
+    fs.mkdirSync(paths.frontendDir, { recursive: true });
+    fs.writeFileSync(path.join(paths.frontendDir, "index.html"), "<html></html>", "utf-8");
+  }
+}
+
 describe("desktop main", () => {
   it("product main requests single instance lock before creating the window", async () => {
     const order: string[] = [];
@@ -81,6 +135,7 @@ describe("desktop main", () => {
       app,
       ipcMain: {
         handle: () => {},
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
@@ -111,6 +166,7 @@ describe("desktop main", () => {
       app,
       ipcMain: {
         handle: () => {},
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
@@ -149,6 +205,7 @@ describe("desktop main", () => {
       app,
       ipcMain: {
         handle: () => {},
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
@@ -191,6 +248,7 @@ describe("desktop main", () => {
       app,
       ipcMain: {
         handle: () => {},
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => {
@@ -246,6 +304,7 @@ describe("desktop main", () => {
             requestExitHandler = listener;
           }
         },
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => ({
@@ -288,6 +347,7 @@ describe("desktop main", () => {
       app,
       ipcMain: {
         handle: () => {},
+        on: () => {},
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => ({
@@ -315,6 +375,129 @@ describe("desktop main", () => {
       expect.objectContaining({
         reason: "backend-exit",
         error: exitError,
+      }),
+    );
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("starts installed flavor backend with appdata paths", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths);
+    let receivedOptions: unknown;
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.runtimeRoot,
+      productPaths,
+      startBackend: async (options) => {
+        receivedOptions = options;
+        return createBackendOwnerStub(createDeferred<Error | null>().promise);
+      },
+      createMainWindow: () => ({
+        loadFile: async () => {},
+        focus: () => {},
+        isMinimized: () => false,
+        restore: () => {},
+      }),
+    });
+
+    expect(receivedOptions).toEqual(
+      expect.objectContaining({
+        pythonExecutable: productPaths.runtimePython,
+        workingDirectory: productPaths.resourcesDir,
+        environment: expect.objectContaining({
+          NEO_TTS_DISTRIBUTION_KIND: "installed",
+          NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
+          NEO_TTS_EXPORTS_ROOT: productPaths.exportsDir,
+        }),
+      }),
+    );
+  });
+
+  it("starts portable flavor backend with side-by-side data paths", async () => {
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+    let receivedOptions: unknown;
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.runtimeRoot,
+      productPaths,
+      startBackend: async (options) => {
+        receivedOptions = options;
+        return createBackendOwnerStub(createDeferred<Error | null>().promise);
+      },
+      createMainWindow: () => ({
+        loadFile: async () => {},
+        focus: () => {},
+        isMinimized: () => false,
+        restore: () => {},
+      }),
+    });
+
+    expect(receivedOptions).toEqual(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          NEO_TTS_DISTRIBUTION_KIND: "portable",
+          NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
+          NEO_TTS_EXPORTS_ROOT: productPaths.exportsDir,
+        }),
+      }),
+    );
+  });
+
+  it("reports fatal state when frontend dist is missing", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths, { includeFrontend: false });
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.runtimeRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => ({
+        loadFile: async () => {},
+        focus: () => {},
+        isMinimized: () => false,
+        restore: () => {},
+      }),
+      onFatalState,
+    });
+
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(onFatalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "invalid-runtime",
       }),
     );
     expect(quit).toHaveBeenCalledOnce();
