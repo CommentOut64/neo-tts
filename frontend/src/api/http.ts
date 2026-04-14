@@ -1,8 +1,9 @@
 import axios from 'axios'
+import { getRuntimeConfig } from '@/platform/runtimeConfig'
 import { toApiRequestError } from './requestSupport'
 
 const http = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '',
+  baseURL: getRuntimeConfig().backendOrigin,
   timeout: 30_000,
 })
 

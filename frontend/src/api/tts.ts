@@ -1,5 +1,5 @@
 import axios from './http'
-import { resolveApiUrl } from './requestSupport'
+import { resolveBackendUrl } from '@/platform/runtimeConfig'
 import type {
   CleanupResidualsResponse,
   DeleteSynthesisResultResponse,
@@ -117,7 +117,7 @@ export function subscribeInferenceProgress(
     onOpen?: () => void
   },
 ): () => void {
-  const source = new EventSource(resolveApiUrl('/v1/audio/inference/progress/stream', import.meta.env.VITE_API_BASE_URL || ''))
+  const source = new EventSource(resolveBackendUrl('/v1/audio/inference/progress/stream'))
 
   const handleProgress = (event: MessageEvent<string>) => {
     try {

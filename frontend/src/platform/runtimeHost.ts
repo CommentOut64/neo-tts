@@ -1,4 +1,5 @@
 import { prepareExit } from "@/api/system";
+import { getRuntimeConfig } from "./runtimeConfig";
 
 export interface RuntimeExitResult {
   launcherExitRequested: boolean;
@@ -11,6 +12,8 @@ export interface RuntimeHost {
 
 type ElectronRuntimeBridge = {
   runtime: "electron";
+  distributionKind: "installed" | "portable";
+  backendOrigin: string;
   requestAppExit(): Promise<void>;
 };
 
@@ -31,6 +34,7 @@ function getElectronRuntimeBridge(): ElectronRuntimeBridge | null {
 
 export function getRuntimeHost(): RuntimeHost {
   const electronBridge = getElectronRuntimeBridge();
+  const runtimeConfig = getRuntimeConfig();
   if (electronBridge) {
     return {
       kind: "electron",
@@ -44,7 +48,7 @@ export function getRuntimeHost(): RuntimeHost {
   }
 
   return {
-    kind: "web",
+    kind: runtimeConfig.runtime === "web" ? "web" : "electron",
     async requestExit(): Promise<RuntimeExitResult> {
       const result = await prepareExit();
       return {

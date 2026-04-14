@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,10 +27,21 @@ from backend.app.inference.editable_types import (
 from backend.app.schemas.edit_session import InitializeEditSessionRequest
 
 def _ensure_gpt_sovits_import_paths() -> None:
-    project_root = Path(__file__).resolve().parents[3]
+    resources_root_env = os.environ.get("NEO_TTS_RESOURCES_ROOT")
+    gpt_sovits_root_env = os.environ.get("NEO_TTS_GPT_SOVITS_ROOT")
+    project_root = (
+        Path(resources_root_env).resolve()
+        if resources_root_env
+        else Path(__file__).resolve().parents[3]
+    )
+    gpt_sovits_root = (
+        Path(gpt_sovits_root_env).resolve()
+        if gpt_sovits_root_env
+        else (project_root / "GPT_SoVITS").resolve()
+    )
     required_paths = (
         str(project_root),
-        str((project_root / "GPT_SoVITS").resolve()),
+        str(gpt_sovits_root),
     )
     for path in required_paths:
         if path not in sys.path:

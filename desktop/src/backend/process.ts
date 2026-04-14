@@ -3,6 +3,8 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { ProductPaths } from "../runtime/paths";
+
 export interface BackendOwner {
 	origin: string;
 	prepareForExit(): Promise<void>;
@@ -12,10 +14,12 @@ export interface BackendOwner {
 
 export interface StartBackendProcessOptions {
 	projectRoot: string;
+	workingDirectory?: string;
 	host?: string;
 	port?: number;
 	pythonExecutable?: string;
 	args?: string[];
+	environment?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 	healthIntervalMs?: number;
 	healthTimeoutMs?: number;
@@ -24,7 +28,9 @@ export interface StartBackendProcessOptions {
 const defaultBackendHost = "127.0.0.1";
 const defaultBackendPort = 18600;
 const defaultHealthIntervalMs = 200;
-const defaultHealthTimeoutMs = 15_000;
+// 打包后的 Python runtime 冷启动在首启场景下可能明显慢于热启动，
+// 这里给足预算，避免 Electron 在创建窗口前误判启动失败。
+const defaultHealthTimeoutMs = 30_000;
 
 export async function startBackendProcess(
 	options: StartBackendProcessOptions,
@@ -47,7 +53,8 @@ export async function startBackendProcess(
 	];
 
 	const child = spawn(pythonExecutable, args, {
-		cwd: options.projectRoot,
+		cwd: options.workingDirectory ?? options.projectRoot,
+		env: options.environment,
 		stdio: "ignore",
 		windowsHide: true,
 	});
@@ -140,13 +147,59 @@ async function waitForHealthy(options: WaitForHealthyOptions): Promise<void> {
 }
 
 export function buildDefaultBackendOptions(
-	projectRoot: string,
+	target: string | ProductPaths,
 ): StartBackendProcessOptions {
+	if (typeof target === "string") {
+		return {
+			projectRoot: target,
+			host: defaultBackendHost,
+			port: defaultBackendPort,
+			healthTimeoutMs: defaultHealthTimeoutMs,
+			pythonExecutable: path.join(target, "runtime", "python", "python.exe"),
+			args: [
+				"-m",
+				"backend.app.cli",
+				"--host",
+				defaultBackendHost,
+				"--port",
+				String(defaultBackendPort),
+			],
+			fetchImpl: globalThis.fetch.bind(globalThis),
+		};
+	}
+
+	const pythonPathEntries = [
+		target.resourcesDir,
+		target.gptSovitsDir,
+		process.env.PYTHONPATH,
+	].filter((value): value is string => typeof value === "string" && value.length > 0);
+
 	return {
-		projectRoot,
+		projectRoot: target.runtimeRoot,
+		workingDirectory: target.resourcesDir,
 		host: defaultBackendHost,
 		port: defaultBackendPort,
-		pythonExecutable: path.join(projectRoot, "runtime", "python", "python.exe"),
+		healthTimeoutMs: defaultHealthTimeoutMs,
+		pythonExecutable: target.runtimePython,
+		args: [
+			"-m",
+			"backend.app.cli",
+			"--host",
+			defaultBackendHost,
+			"--port",
+			String(defaultBackendPort),
+		],
+		environment: {
+			...process.env,
+			NEO_TTS_DISTRIBUTION_KIND: target.distributionKind,
+			NEO_TTS_PROJECT_ROOT: target.runtimeRoot,
+			NEO_TTS_RESOURCES_ROOT: target.resourcesDir,
+			NEO_TTS_GPT_SOVITS_ROOT: target.gptSovitsDir,
+			NEO_TTS_USER_DATA_ROOT: target.userDataDir,
+			NEO_TTS_EXPORTS_ROOT: target.exportsDir,
+			NEO_TTS_LOGS_ROOT: target.logsDir,
+			PYTHONPATH: pythonPathEntries.join(path.delimiter),
+		},
 		fetchImpl: globalThis.fetch.bind(globalThis),
 	};
 }

@@ -2,6 +2,7 @@ import { ref, computed, shallowRef, watch } from "vue";
 import { resolvePlaybackCursor, useTimeline } from "./useTimeline";
 import type { PlaybackCursor } from "@/types/editSession";
 import { useRuntimeState } from "./useRuntimeState";
+import { resolveBackendUrl } from "@/platform/runtimeConfig";
 
 type BlockCacheEntry = {
   buffer: AudioBuffer | null;
@@ -147,10 +148,7 @@ export function usePlayback() {
       return blockCache.get(audioUrl)!.promise;
     }
 
-    const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
-    const fullUrl = API_BASE
-      ? `${API_BASE.replace(/\/$/, "")}${audioUrl}`
-      : audioUrl;
+    const fullUrl = resolveBackendUrl(audioUrl);
 
     const promise = fetch(fullUrl)
       .then((res) => {
