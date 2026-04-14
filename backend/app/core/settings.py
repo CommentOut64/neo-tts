@@ -244,7 +244,10 @@ def get_settings() -> AppSettings:
         )
 
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
-    preload_on_start = _parse_bool_env(preload_on_start_env, default=True)
+    # 开发态默认预加载，打包态默认关闭（可通过环境变量显式开启），
+    # 避免桌面应用启动阶段被模型导入/预热阻塞。
+    preload_default = distribution_kind == "development"
+    preload_on_start = _parse_bool_env(preload_on_start_env, default=preload_default)
     preload_voice_ids = _parse_csv_env(preload_voices_env, default=("neuro2",))
     gpu_offload_enabled = _parse_bool_env(gpu_offload_enabled_env, default=True)
     gpu_min_free_mb = int(gpu_min_free_mb_env or 2048)

@@ -2,6 +2,7 @@
 import { computed, watch, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
+import projectIconUrl from '@/assets/carbon--ibm-watson-text-to-speech.svg'
 import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 import { useRuntimeState } from '@/composables/useRuntimeState'
@@ -25,6 +26,7 @@ const { isExiting, requestExit } = useAppExit()
 const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
 
 const aboutDialogVisible = ref(false)
+const projectIconMaskStyle = `mask: url('${projectIconUrl}') no-repeat center; mask-size: contain; -webkit-mask: url('${projectIconUrl}') no-repeat center; -webkit-mask-size: contain;`
 
 const navItems = [
   { path: '/text-input', label: '文本输入' },
@@ -108,7 +110,7 @@ watch(
           'bg-yellow-500': status === 'reconnecting',
           'bg-red-500': status === 'offline'
         }"
-        style="mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; mask-size: contain; -webkit-mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; -webkit-mask-size: contain;"
+        :style="projectIconMaskStyle"
       ></div>
       <span class="text-xl font-bold text-foreground">Neo TTS</span>
     </div>
