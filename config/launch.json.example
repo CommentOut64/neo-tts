@@ -1,4 +1,7 @@
 {
+  "_notes": {
+    "productPython": "仅保留给 launcher 的 product 兼容链路示例；正式桌面整合包会由 Electron main 按 installed/portable flavor 自行计算 bundled python 路径。"
+  },
   "profile": "dev-web",
   "backend": {
     "mode": "owned",
