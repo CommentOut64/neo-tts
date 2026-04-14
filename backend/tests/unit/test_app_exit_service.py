@@ -283,3 +283,39 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
     assert model_cache.clear_calls == 1
     assert first_gateway.clear_calls == 1
     assert second_gateway.clear_calls == 1
+
+
+def test_prepare_exit_still_returns_prepared_when_inference_cleanup_times_out(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    repository = _build_repository(settings)
+    edit_session_runtime = EditSessionRuntime()
+    inference_runtime = InferenceRuntimeController()
+    result_store = SynthesisResultStore(
+        project_root=settings.project_root,
+        results_dir=settings.synthesis_results_dir,
+    )
+    residual_service = InferenceResidualService(
+        settings=settings,
+        runtime=inference_runtime,
+        result_store=result_store,
+    )
+    owner_control_client = Mock()
+    owner_control_client.request_shutdown.return_value = False
+
+    inference_runtime.start_task(message="legacy inference is running")
+    inference_runtime.wait_for_terminal = Mock(side_effect=TimeoutError("timeout while shutting down"))
+
+    service = AppExitService(
+        settings=settings,
+        edit_session_repository=repository,
+        edit_session_runtime=edit_session_runtime,
+        inference_runtime=inference_runtime,
+        residual_service=residual_service,
+        owner_control_client=owner_control_client,
+    )
+
+    response = service.prepare_exit()
+
+    assert response.status == "prepared"
+    assert response.launcher_exit_requested is False
+    owner_control_client.request_shutdown.assert_called_once_with(source="backend_prepare_exit")

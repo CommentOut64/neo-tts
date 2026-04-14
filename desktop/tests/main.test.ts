@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
-import { APP_REQUEST_EXIT_CHANNEL } from "../src/ipc/channels";
+import { APP_OPEN_EXTERNAL_URL_CHANNEL, APP_REQUEST_EXIT_CHANNEL } from "../src/ipc/channels";
 import { runMain } from "../src/main";
 import type { ProductPaths } from "../src/runtime/paths";
 
@@ -12,6 +12,7 @@ type AppStub = {
   whenReady: () => Promise<void>;
   on: (event: string, listener: (...args: unknown[]) => void) => void;
   quit: () => void;
+  exit?: (exitCode?: number) => void;
 };
 
 type IpcMainStub = {
@@ -22,6 +23,10 @@ type IpcMainStub = {
 type WindowStub = {
   loadFile: (filePath: string) => Promise<void>;
   loadURL: (url: string) => Promise<void>;
+  show: () => void;
+  close: () => void;
+  destroy?: () => void;
+  isDestroyed?: () => boolean;
   focus: () => void;
   isMinimized: () => boolean;
   restore: () => void;
@@ -50,6 +55,21 @@ function createBackendOwnerStub(
     prepareForExit: async () => {},
     stop: async () => {},
     exited,
+  };
+}
+
+function createWindowStub(overrides: Partial<WindowStub> = {}): WindowStub {
+  return {
+    loadFile: async () => {},
+    loadURL: async () => {},
+    show: () => {},
+    close: () => {},
+    destroy: () => {},
+    isDestroyed: () => false,
+    focus: () => {},
+    isMinimized: () => false,
+    restore: () => {},
+    ...overrides,
   };
 }
 
@@ -126,6 +146,9 @@ describe("desktop main", () => {
       loadURL: async () => {
         order.push("loadURL");
       },
+      show: () => {
+        order.push("show");
+      },
       focus: () => {
         order.push("focus");
       },
@@ -153,6 +176,7 @@ describe("desktop main", () => {
       "requestSingleInstanceLock",
       "whenReady",
       "createMainWindow",
+      "show",
       "loadFile",
     ]);
   });
@@ -174,14 +198,10 @@ describe("desktop main", () => {
       },
       projectRoot: "F:/neo-tts",
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
-      createMainWindow: () => ({
+      createMainWindow: () => createWindowStub({
         loadFile: async (filePath: string) => {
           loadedPath = filePath;
         },
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
       }),
     });
 
@@ -216,13 +236,11 @@ describe("desktop main", () => {
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
       createMainWindow: () => {
         createCalls += 1;
-        return {
-          loadFile: async () => {},
-          loadURL: async () => {},
+        return createWindowStub({
           focus,
           isMinimized: () => true,
           restore,
-        };
+        });
       },
     });
 
@@ -230,6 +248,44 @@ describe("desktop main", () => {
 
     expect(createCalls).toBe(1);
     expect(restore).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenCalledOnce();
+  });
+
+  it("second instance shows an existing hidden window before focusing it", async () => {
+    let secondInstanceHandler: (() => void) | undefined;
+    const show = vi.fn();
+    const focus = vi.fn();
+    const app: AppStub = {
+      requestSingleInstanceLock: () => true,
+      whenReady: async () => {},
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        if (event === "second-instance") {
+          secondInstanceHandler = () => listener();
+        }
+      },
+      quit: () => {},
+    };
+
+    await runMain({
+      app,
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () =>
+        createWindowStub({
+          show,
+          focus,
+        }),
+    });
+
+    show.mockClear();
+    focus.mockClear();
+    secondInstanceHandler?.();
+
+    expect(show).toHaveBeenCalledOnce();
     expect(focus).toHaveBeenCalledOnce();
   });
 
@@ -268,17 +324,17 @@ describe("desktop main", () => {
       },
       createMainWindow: () => {
         order.push("createMainWindow");
-        return {
+        return createWindowStub({
           loadFile: async () => {
             order.push("loadFile");
           },
           loadURL: async () => {
             order.push("loadURL");
           },
-          focus: () => {},
-          isMinimized: () => false,
-          restore: () => {},
-        };
+          show: () => {
+            order.push("show");
+          },
+        });
       },
     });
 
@@ -287,6 +343,7 @@ describe("desktop main", () => {
       "whenReady",
       "startBackend",
       "createMainWindow",
+      "show",
       "loadFile",
     ]);
     backendExit.resolve(null);
@@ -326,20 +383,150 @@ describe("desktop main", () => {
         },
         exited: backendExit.promise,
       }),
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () =>
+        createWindowStub({
+          close: () => {
+            order.push("closeWindow");
+          },
+        }),
     });
 
     expect(requestExitHandler).toBeTypeOf("function");
     await requestExitHandler?.();
 
-    expect(order).toEqual(["prepareForExit", "stopBackend", "quit"]);
+    expect(order).toEqual(["prepareForExit", "stopBackend", "closeWindow", "quit"]);
     backendExit.resolve(null);
+  });
+
+  it("renderer exit still stops backend and quits when prepare-exit fails", async () => {
+    const order: string[] = [];
+    const backendExit = createDeferred<Error | null>();
+    let requestExitHandler: (() => Promise<void> | void) | undefined;
+    const app: AppStub = {
+      requestSingleInstanceLock: () => true,
+      whenReady: async () => {},
+      on: () => {},
+      quit: () => {
+        order.push("quit");
+      },
+    };
+
+    await runMain({
+      app,
+      ipcMain: {
+        handle: (channel: string, listener: () => Promise<void> | void) => {
+          if (channel === APP_REQUEST_EXIT_CHANNEL) {
+            requestExitHandler = listener;
+          }
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {
+          order.push("prepareForExit");
+          throw new Error("backend prepare-exit returned 500");
+        },
+        stop: async () => {
+          order.push("stopBackend");
+        },
+        exited: backendExit.promise,
+      }),
+      createMainWindow: () =>
+        createWindowStub({
+          close: () => {
+            order.push("closeWindow");
+          },
+        }),
+    });
+
+    await expect(requestExitHandler?.()).resolves.toBeUndefined();
+
+    expect(order).toEqual(["prepareForExit", "stopBackend", "closeWindow", "quit"]);
+    backendExit.resolve(null);
+  });
+
+  it("renderer exit force-closes the window when app.quit does not finish in time", async () => {
+    vi.useFakeTimers();
+    const backendExit = createDeferred<Error | null>();
+    let requestExitHandler: (() => Promise<void> | void) | undefined;
+    const quit = vi.fn();
+    const exit = vi.fn();
+    const destroy = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+        exit,
+      },
+      ipcMain: {
+        handle: (channel: string, listener: () => Promise<void> | void) => {
+          if (channel === APP_REQUEST_EXIT_CHANNEL) {
+            requestExitHandler = listener;
+          }
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {},
+        stop: async () => {},
+        exited: backendExit.promise,
+      }),
+      createMainWindow: () =>
+        createWindowStub({
+          destroy,
+          isDestroyed: () => false,
+        }),
+    });
+
+    await requestExitHandler?.();
+    expect(quit).toHaveBeenCalledOnce();
+    expect(exit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+    backendExit.resolve(null);
+  });
+
+  it("renderer can ask main process to open external links in the default browser", async () => {
+    let openExternalHandler:
+      | ((...args: unknown[]) => Promise<void> | void)
+      | undefined;
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: (channel: string, listener: (...args: unknown[]) => Promise<void> | void) => {
+          if (channel === APP_OPEN_EXTERNAL_URL_CHANNEL) {
+            openExternalHandler = listener;
+          }
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () => createWindowStub(),
+      openExternalUrl: openExternal,
+    });
+
+    await openExternalHandler?.({} as never, "https://github.com/CommentOut64/neo-tts");
+
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/CommentOut64/neo-tts");
   });
 
   it("backend exit moves the app into fatal state instead of silently hanging", async () => {
@@ -366,13 +553,7 @@ describe("desktop main", () => {
         stop: async () => {},
         exited: backendExit.promise,
       }),
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () => createWindowStub(),
       onFatalState,
     });
 
@@ -413,13 +594,7 @@ describe("desktop main", () => {
         receivedOptions = options;
         return createBackendOwnerStub(createDeferred<Error | null>().promise);
       },
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () => createWindowStub(),
     });
 
     expect(receivedOptions).toEqual(
@@ -458,13 +633,7 @@ describe("desktop main", () => {
         receivedOptions = options;
         return createBackendOwnerStub(createDeferred<Error | null>().promise);
       },
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () => createWindowStub(),
     });
 
     expect(receivedOptions).toEqual(
@@ -500,13 +669,7 @@ describe("desktop main", () => {
       projectRoot: productPaths.runtimeRoot,
       productPaths,
       startBackend,
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () => createWindowStub(),
       onFatalState,
     });
 
@@ -539,16 +702,13 @@ describe("desktop main", () => {
       projectRoot: productPaths.runtimeRoot,
       productPaths,
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
-      createMainWindow: () => ({
+      createMainWindow: () => createWindowStub({
         loadFile: async () => {
           loadFileCalled = true;
         },
         loadURL: async (url: string) => {
           loadedURL = url;
         },
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
       }),
     });
 
@@ -580,13 +740,7 @@ describe("desktop main", () => {
         options.onLogLine?.("stderr", "backend log line");
         return createBackendOwnerStub(createDeferred<Error | null>().promise);
       },
-      createMainWindow: () => ({
-        loadFile: async () => {},
-        loadURL: async () => {},
-        focus: () => {},
-        isMinimized: () => false,
-        restore: () => {},
-      }),
+      createMainWindow: () => createWindowStub(),
     });
 
     expect(logger.info).toHaveBeenCalledWith("[backend:stderr] backend log line");
