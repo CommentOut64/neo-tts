@@ -5,7 +5,6 @@ from contextlib import suppress
 import json
 from pathlib import Path
 import queue
-import shutil
 import time
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,6 +30,7 @@ from backend.app.schemas.inference import (
 )
 from backend.app.schemas.tts import SpeechRequest
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
+from backend.app.services.inference_residual_service import InferenceResidualService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
 from backend.app.services.tts_service import TtsService
@@ -92,7 +92,7 @@ def _build_voice_service(request: Request) -> VoiceService:
 
 def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
     from backend.app.inference.engine import PyTorchInferenceEngine
-    from backend.app.inference.model_cache import PyTorchModelCache
+    from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
 
     existing_engine = getattr(request.app.state, "inference_engine", None)
     if existing_engine is not None:
@@ -101,10 +101,9 @@ def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
     settings = request.app.state.settings
     model_cache = getattr(request.app.state, "model_cache", None)
     if model_cache is None:
-        model_cache = PyTorchModelCache(
-            project_root=settings.project_root,
-            cnhubert_base_path=settings.cnhubert_base_path,
-            bert_path=settings.bert_path,
+        model_cache = build_model_cache_from_settings(
+            settings=settings,
+            model_cache_cls=PyTorchModelCache,
         )
         request.app.state.model_cache = model_cache
 
@@ -149,6 +148,14 @@ def _build_params_cache_store(request: Request) -> InferenceParamsCacheStore:
     )
     request.app.state.inference_params_cache_store = store
     return store
+
+
+def _build_inference_residual_service(request: Request) -> InferenceResidualService:
+    return InferenceResidualService(
+        settings=request.app.state.settings,
+        runtime=_build_inference_runtime(request),
+        result_store=_build_result_store(request),
+    )
 
 
 @router.post(
@@ -424,17 +431,7 @@ def force_pause_inference(request: Request) -> ForcePauseResponse:
     description="取消当前任务、清理临时参考音频目录和历史结果缓存，并在空闲时重置推理运行态。",
 )
 def cleanup_inference_residuals(request: Request) -> CleanupResidualsResponse:
-    runtime = _build_inference_runtime(request)
-    cancelled = runtime.request_force_pause(message="收到残留清理请求，已触发强制暂停。")
-    removed_temp_ref_dirs = _cleanup_temporary_reference_dirs(request)
-    removed_result_files = _build_result_store(request).clear_all_results()
-    runtime.reset_if_idle(message="推理残留已清理。")
-    return CleanupResidualsResponse(
-        cancelled_active_task=cancelled,
-        removed_temp_ref_dirs=removed_temp_ref_dirs,
-        removed_result_files=removed_result_files,
-        state=runtime.snapshot(),
-    )
+    return _build_inference_residual_service(request).cleanup().to_response()
 
 
 @router.delete(
@@ -492,27 +489,6 @@ def put_inference_params_cache(
 def _encode_sse_event(event: str, payload: dict) -> str:
     encoded_payload = json.dumps(payload, ensure_ascii=False)
     return f"event: {event}\ndata: {encoded_payload}\n\n"
-
-
-def _cleanup_temporary_reference_dirs(request: Request) -> int:
-    settings = request.app.state.settings
-    temp_root = settings.managed_voices_dir
-    if not temp_root.is_absolute():
-        temp_root = settings.project_root / temp_root
-    temp_root = temp_root / "_temp_refs"
-
-    if not temp_root.exists():
-        return 0
-
-    removed = 0
-    for child in temp_root.iterdir():
-        if child.is_dir():
-            shutil.rmtree(child, ignore_errors=False)
-            removed += 1
-    with suppress(OSError):
-        if not any(temp_root.iterdir()):
-            temp_root.rmdir()
-    return removed
 
 
 async def _parse_speech_request(request: Request) -> tuple[SpeechRequest, list[Path], dict[str, float]]:

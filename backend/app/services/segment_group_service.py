@@ -6,6 +6,7 @@ from uuid import uuid4
 from backend.app.core.exceptions import EditSessionNotFoundError
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
+    ReferenceBindingOverride,
     RenderProfile,
     RenderProfilePatchRequest,
     SegmentGroup,
@@ -166,14 +167,29 @@ class SegmentGroupService:
                 "top_p": patch.top_p if patch.top_p is not None else base.top_p,
                 "temperature": patch.temperature if patch.temperature is not None else base.temperature,
                 "noise_scale": patch.noise_scale if patch.noise_scale is not None else base.noise_scale,
+                "reference_overrides_by_binding": SegmentGroupService._apply_reference_override_patch(
+                    base=base,
+                    patch=patch,
+                ),
                 "reference_audio_path": (
-                    patch.reference_audio_path if patch.reference_audio_path is not None else base.reference_audio_path
+                    None
+                    if patch.reference_override is not None
+                    else (patch.reference_audio_path if patch.reference_audio_path is not None else base.reference_audio_path)
                 ),
-                "reference_text": patch.reference_text if patch.reference_text is not None else base.reference_text,
+                "reference_text": (
+                    None
+                    if patch.reference_override is not None
+                    else (patch.reference_text if patch.reference_text is not None else base.reference_text)
+                ),
                 "reference_language": (
-                    patch.reference_language if patch.reference_language is not None else base.reference_language
+                    None
+                    if patch.reference_override is not None
+                    else (patch.reference_language if patch.reference_language is not None else base.reference_language)
                 ),
-                "extra_overrides": patch.extra_overrides if patch.extra_overrides is not None else dict(base.extra_overrides),
+                "extra_overrides": SegmentGroupService._build_extra_overrides(
+                    base=base,
+                    patch=patch,
+                ),
             }
         )
         return (
@@ -223,3 +239,49 @@ class SegmentGroupService:
         if binding is None:
             raise EditSessionNotFoundError(f"Voice binding '{voice_binding_id}' not found.")
         return binding
+
+    @staticmethod
+    def _apply_reference_override_patch(
+        *,
+        base: RenderProfile,
+        patch: RenderProfilePatchRequest,
+    ) -> dict[str, ReferenceBindingOverride]:
+        overrides_by_binding = {
+            binding_key: override.model_copy(deep=True)
+            for binding_key, override in base.reference_overrides_by_binding.items()
+        }
+        if patch.reference_override is None:
+            return overrides_by_binding
+        if patch.reference_override.operation == "clear":
+            overrides_by_binding.pop(patch.reference_override.binding_key, None)
+            return overrides_by_binding
+        overrides_by_binding[patch.reference_override.binding_key] = ReferenceBindingOverride(
+            reference_audio_path=patch.reference_override.reference_audio_path,
+            reference_text=patch.reference_override.reference_text,
+            reference_language=patch.reference_override.reference_language,
+        )
+        return overrides_by_binding
+
+    @staticmethod
+    def _build_extra_overrides(
+        *,
+        base: RenderProfile,
+        patch: RenderProfilePatchRequest,
+    ) -> dict[str, object]:
+        if patch.extra_overrides is not None:
+            next_extra_overrides = dict(patch.extra_overrides)
+        else:
+            next_extra_overrides = dict(base.extra_overrides)
+
+        if patch.reference_override is not None:
+            next_extra_overrides.pop("legacy_reference_binding_fallback", None)
+            return next_extra_overrides
+
+        if (
+            patch.reference_audio_path is not None
+            or patch.reference_text is not None
+            or patch.reference_language is not None
+        ):
+            next_extra_overrides["legacy_reference_binding_fallback"] = True
+
+        return next_extra_overrides

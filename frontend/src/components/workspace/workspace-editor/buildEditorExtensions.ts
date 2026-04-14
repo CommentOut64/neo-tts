@@ -6,6 +6,7 @@ import { SegmentEditingGuards } from "./segmentEditingGuards";
 
 export interface WorkspaceEditorExtensionOptions {
   onActivateEdge: (edgeId: string | null) => void;
+  onProtectedTerminalCapsule?: () => void;
 }
 
 export function buildEditorExtensions(
@@ -18,6 +19,8 @@ export function buildEditorExtensions(
       onActivateEdge: options.onActivateEdge,
     }),
     SegmentDecoration,
-    SegmentEditingGuards,
+    SegmentEditingGuards.configure({
+      onProtectedTerminalCapsule: options.onProtectedTerminalCapsule,
+    }),
   ];
 }

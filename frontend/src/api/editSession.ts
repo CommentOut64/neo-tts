@@ -12,6 +12,7 @@ import type {
   RenderJobAcceptedResponse,
   RenderJobResponse,
   RenderJob,
+  RenderJobStatus,
   TimelineManifest,
   RenderJobEventType,
   VoiceBindingListResponse,
@@ -20,8 +21,7 @@ import type {
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
   ReorderSegmentsBody,
-  ExportSegmentsBody,
-  ExportCompositionBody,
+  ExportRequestBody,
   ExportJobResponse,
   ExportJobAcceptedResponse,
 } from "@/types/editSession";
@@ -29,7 +29,7 @@ import {
   unwrapAcceptedRenderJob,
   unwrapAcceptedExportJob,
 } from "./editSessionContract";
-import { resolveApiUrl } from './requestSupport'
+import { resolveBackendUrl } from '@/platform/runtimeConfig'
 
 export async function getSnapshot(): Promise<EditSessionSnapshot> {
   const { data } = await axios.get<EditSessionSnapshot>('/v1/edit-session/snapshot')
@@ -51,6 +51,39 @@ export async function uploadEditSessionReferenceAudio(file: File): Promise<Refer
 export async function getRenderJob(jobId: string): Promise<RenderJob> {
   const { data } = await axios.get<RenderJob>('/v1/edit-session/render-jobs/' + jobId)
   return data
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms)
+  })
+}
+
+export async function waitForRenderJobTerminal(
+  jobId: string,
+  options: {
+    timeoutMs?: number
+    pollIntervalMs?: number
+    terminalStatuses?: RenderJobStatus[]
+  } = {},
+): Promise<RenderJobStatus> {
+  const timeoutMs = options.timeoutMs ?? 10000
+  const pollIntervalMs = options.pollIntervalMs ?? 200
+  const terminalStatuses = new Set<RenderJobStatus>(
+    options.terminalStatuses ?? ['paused', 'completed', 'failed', 'cancelled_partial'],
+  )
+  const deadline = Date.now() + timeoutMs
+
+  while (true) {
+    const job = await getRenderJob(jobId)
+    if (terminalStatuses.has(job.status)) {
+      return job.status
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`等待 render job 进入终态超时: ${jobId}`)
+    }
+    await sleep(pollIntervalMs)
+  }
 }
 
 export async function getTimeline(): Promise<TimelineManifest> {
@@ -280,10 +313,7 @@ export interface RenderJobEventHandlers {
 
 export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEventHandlers): () => void {
   const source = new EventSource(
-    resolveApiUrl(
-      `/v1/edit-session/render-jobs/${jobId}/events`,
-      import.meta.env.VITE_API_BASE_URL || '',
-    ),
+    resolveBackendUrl(`/v1/edit-session/render-jobs/${jobId}/events`),
   )
 
   const eventTypes: RenderJobEventType[] = [
@@ -340,24 +370,46 @@ export async function resumeRenderJob(jobId: string): Promise<RenderJobResponse>
   return unwrapAcceptedRenderJob(data)
 }
 
-export async function exportSegments(
-  body: ExportSegmentsBody,
+export async function exportAudio(
+  body: ExportRequestBody,
 ): Promise<ExportJobResponse> {
   const { data } = await axios.post<ExportJobAcceptedResponse>(
-    "/v1/edit-session/exports/segments",
+    "/v1/edit-session/exports",
     body,
   );
   return unwrapAcceptedExportJob(data);
 }
 
-export async function exportComposition(
-  body: ExportCompositionBody,
+export async function exportSegments(
+  body: Omit<ExportRequestBody, "audio"> & {
+    overwrite_policy?: "fail" | "replace" | "new_folder";
+  },
 ): Promise<ExportJobResponse> {
-  const { data } = await axios.post<ExportJobAcceptedResponse>(
-    "/v1/edit-session/exports/composition",
-    body,
-  );
-  return unwrapAcceptedExportJob(data);
+  return exportAudio({
+    document_version: body.document_version,
+    target_dir: body.target_dir,
+    audio: {
+      kind: "segments",
+      overwrite_policy: body.overwrite_policy ?? "fail",
+    },
+    subtitle: body.subtitle,
+  });
+}
+
+export async function exportComposition(
+  body: Omit<ExportRequestBody, "audio"> & {
+    overwrite_policy?: "fail" | "replace" | "new_folder";
+  },
+): Promise<ExportJobResponse> {
+  return exportAudio({
+    document_version: body.document_version,
+    target_dir: body.target_dir,
+    audio: {
+      kind: "composition",
+      overwrite_policy: body.overwrite_policy ?? "fail",
+    },
+    subtitle: body.subtitle,
+  });
 }
 
 export async function getExportJob(jobId: string): Promise<ExportJobResponse> {
@@ -385,10 +437,7 @@ export function subscribeExportJobEvents(
   handlers: ExportJobEventHandlers,
 ): () => void {
   const source = new EventSource(
-    resolveApiUrl(
-      "/v1/edit-session/exports/" + jobId + "/events",
-      import.meta.env.VITE_API_BASE_URL || "",
-    ),
+    resolveBackendUrl("/v1/edit-session/exports/" + jobId + "/events"),
   );
 
   const eventTypes: ExportJobEventType[] = [

@@ -53,7 +53,7 @@ function handleInput(val: string) {
 <template>
   <div class="flex flex-col h-full bg-card rounded-card shadow-card p-4 border border-border dark:border-transparent animate-fall">
     <div class="flex items-center justify-between mb-3 shrink-0">
-      <h3 class="text-[13px] font-semibold text-foreground">输入稿正文</h3>
+      <h3 class="text-[13px] font-semibold text-foreground">输入文本</h3>
       <div class="flex items-center gap-2">
         <el-button
           v-if="draft.lastSessionInitialText.value"
@@ -78,7 +78,7 @@ function handleInput(val: string) {
       type="textarea"
       class="flex-1 min-h-[220px] w-full text-input-textarea"
       :input-style="{ resize: 'vertical' }"
-      placeholder="从这里开始输入要合成的文本..."
+      placeholder="在此处输入要合成的文本..."
       @update:model-value="handleInput"
     />
     <div class="mt-2 flex items-center justify-between gap-3 shrink-0 text-xs text-muted-fg">

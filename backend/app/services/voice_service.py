@@ -45,5 +45,33 @@ class VoiceService:
         )
         return VoiceProfile.model_validate(created)
 
+    def update_managed_voice(
+        self,
+        *,
+        voice_name: str,
+        description: str | None = None,
+        ref_text: str | None = None,
+        ref_lang: str | None = None,
+        gpt_filename: str | None = None,
+        gpt_bytes: bytes | None = None,
+        sovits_filename: str | None = None,
+        sovits_bytes: bytes | None = None,
+        ref_audio_filename: str | None = None,
+        ref_audio_bytes: bytes | None = None,
+    ) -> VoiceProfile:
+        updated = self._repository.update_managed_voice(
+            voice_name=voice_name,
+            description=description,
+            ref_text=ref_text,
+            ref_lang=ref_lang,
+            gpt_filename=gpt_filename,
+            gpt_bytes=gpt_bytes,
+            sovits_filename=sovits_filename,
+            sovits_bytes=sovits_bytes,
+            ref_audio_filename=ref_audio_filename,
+            ref_audio_bytes=ref_audio_bytes,
+        )
+        return VoiceProfile.model_validate(updated)
+
     def delete_voice(self, voice_name: str) -> None:
         self._repository.delete_voice(voice_name)

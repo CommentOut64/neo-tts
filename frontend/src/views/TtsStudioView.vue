@@ -308,9 +308,9 @@ init()
             <el-select v-model="refLang" size="small" class="w-24">
               <el-option value="auto" label="自动" />
               <el-option value="zh" label="中文" />
-              <el-option value="en" label="English" />
-              <el-option value="ja" label="日本語" />
-              <el-option value="ko" label="한국어" />
+              <el-option value="en" label="英文" />
+              <el-option value="ja" label="日文" />
+              <el-option value="ko" label="韩文" />
             </el-select>
           </div>
         </section>

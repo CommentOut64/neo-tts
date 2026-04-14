@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import re
 
+_SEGMENT_CLOSER_CHARACTERS = frozenset(('”', "’", '"', ")", "）", "]", "】", ">", "》", "」", "』", "〉", "〕", "｝", "｠"))
+
 
 def normalize_whitespace(text: str) -> str:
     return re.sub(r" {2,}", " ", text).strip()
+
+
+def is_decimal_dot_at(text: str, index: int) -> bool:
+    return (
+        0 < index < len(text) - 1
+        and text[index] == "."
+        and text[index - 1].isdigit()
+        and text[index + 1].isdigit()
+    )
 
 
 def split_text_segments(text: str, min_segment_length: int = 10) -> list[str]:
@@ -67,6 +78,7 @@ def _official_split_sentence_units(text: str) -> list[str]:
     while head < len(text):
         if text[head] in OFFICIAL_SPLIT_PUNCTUATION:
             head += 1
+            head = _consume_following_closer_characters(text, head)
             units.append(text[tail:head])
             tail = head
             continue
@@ -142,13 +154,7 @@ def _official_cut5(text: str) -> str:
 
     for index, char in enumerate(text):
         if char in OFFICIAL_CUT5_PUNCTUATION:
-            is_decimal_dot = (
-                char == "."
-                and index > 0
-                and index < len(text) - 1
-                and text[index - 1].isdigit()
-                and text[index + 1].isdigit()
-            )
+            is_decimal_dot = is_decimal_dot_at(text, index)
             if is_decimal_dot:
                 chars.append(char)
             else:
@@ -178,7 +184,45 @@ OFFICIAL_SPLIT_METHODS = {
 def _official_process_text_lines(lines: list[str]) -> list[str]:
     if all(item in [None, " ", "\n", ""] for item in lines):
         raise ValueError("请输入有效文本")
-    return [item for item in lines if item not in [None, " ", ""]]
+    filtered = [item for item in lines if item not in [None, " ", ""]]
+    return _merge_leading_closer_segments(filtered)
+
+
+def _consume_following_closer_characters(text: str, start_index: int) -> int:
+    cursor = start_index
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace() and text[cursor] != "\n":
+            cursor += 1
+        if cursor < len(text) and text[cursor] in _SEGMENT_CLOSER_CHARACTERS:
+            cursor += 1
+            continue
+        break
+    return cursor
+
+
+def _split_leading_closer_prefix(text: str) -> tuple[str, str]:
+    cursor = 0
+    while cursor < len(text) and text[cursor] in _SEGMENT_CLOSER_CHARACTERS:
+        cursor += 1
+    return text[:cursor], text[cursor:]
+
+
+def _merge_leading_closer_segments(lines: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in lines:
+        text = item
+        if merged:
+            closer_prefix, remainder = _split_leading_closer_prefix(text)
+            if closer_prefix:
+                merged[-1] += closer_prefix
+                text = remainder
+                if not text:
+                    continue
+                if text.strip() == "":
+                    merged[-1] += text
+                    continue
+        merged.append(text)
+    return merged
 
 
 def _official_merge_short_text_in_array(lines: list[str], threshold: int) -> list[str]:
@@ -233,10 +277,13 @@ def split_text_segments_zh_period(text: str) -> list[str]:
     pieces: list[str] = []
     start = 0
     for index, char in enumerate(normalized):
-        if char != "。":
+        if char not in {"。", "."}:
             continue
-        pieces.append(normalized[start : index + 1])
-        start = index + 1
+        if is_decimal_dot_at(normalized, index):
+            continue
+        end = _consume_following_closer_characters(normalized, index + 1)
+        pieces.append(normalized[start:end])
+        start = end
 
     if start < len(normalized):
         pieces.append(normalized[start:])

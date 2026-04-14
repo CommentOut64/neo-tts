@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
+InferenceExclusionReason = Literal[
+    "none",
+    "other_language_segment",
+    "unsupported_language",
+    "language_unresolved",
+]
 
 
 def _now_utc() -> datetime:
@@ -15,6 +25,7 @@ class InitializeEditSessionRequest(BaseModel):
     text_language: str = Field(default="auto", description="全文文本语言，通常为 `auto` 或 `zh`。")
     voice_id: str = Field(description="初始化使用的音色 ID。")
     model_id: str = Field(default="gpt-sovits-v2", description="兼容字段，初始化时记录的模型标识。")
+    reference_source: Literal["preset", "custom"] = Field(default="preset", description="初始化参考来源。")
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径；未提供时使用 voice 配置默认值。")
     reference_text: str | None = Field(default=None, description="可选的参考文本；未提供时使用 voice 配置默认值。")
     reference_language: str | None = Field(default=None, description="可选的参考文本语言；未提供时使用 voice 配置默认值。")
@@ -22,7 +33,12 @@ class InitializeEditSessionRequest(BaseModel):
     top_k: int = Field(default=15, description="初始化默认采样 top_k。")
     top_p: float = Field(default=1.0, description="初始化默认采样 top_p。")
     temperature: float = Field(default=1.0, description="初始化默认采样温度。")
-    pause_duration_seconds: float = Field(default=0.3, description="默认段间停顿秒数。")
+    pause_duration_seconds: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=10.0,
+        description="默认段间停顿秒数。",
+    )
     noise_scale: float = Field(default=0.35, description="初始化默认 noise scale。")
     segment_boundary_mode: str = Field(
         default="raw_strong_punctuation",
@@ -61,10 +77,28 @@ class RenderProfile(BaseModel):
     top_p: float = Field(default=1.0, description="采样 top_p。")
     temperature: float = Field(default=1.0, description="采样温度。")
     noise_scale: float = Field(default=0.35, description="noise scale。")
+    reference_overrides_by_binding: dict[str, "ReferenceBindingOverride"] = Field(
+        default_factory=dict,
+        description="按 binding_key 组织的参考覆写映射。",
+    )
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径。")
     reference_text: str | None = Field(default=None, description="可选的参考文本。")
     reference_language: str | None = Field(default=None, description="可选的参考文本语言。")
     extra_overrides: dict[str, Any] = Field(default_factory=dict, description="额外透传给推理层的覆盖项。")
+
+
+class ReferenceBindingOverride(BaseModel):
+    reference_audio_path: str | None = Field(default=None, description="binding 维度的参考音频覆写。")
+    reference_text: str | None = Field(default=None, description="binding 维度的参考文本覆写。")
+    reference_language: str | None = Field(default=None, description="binding 维度的参考语言覆写。")
+
+
+class ReferenceBindingOverridePatchRequest(BaseModel):
+    binding_key: str = Field(description="目标 binding key。")
+    operation: Literal["upsert", "clear"] = Field(description="reference override 操作。")
+    reference_audio_path: str | None = Field(default=None, description="新的参考音频路径。")
+    reference_text: str | None = Field(default=None, description="新的参考文本。")
+    reference_language: str | None = Field(default=None, description="新的参考语言。")
 
 
 class VoiceBinding(BaseModel):
@@ -96,6 +130,17 @@ class EditableSegment(BaseModel):
     raw_text: str = Field(description="用户编辑的原始段文本。")
     normalized_text: str = Field(description="归一化后的段文本。")
     text_language: str = Field(description="该段文本语言。")
+    terminal_raw: str = Field(default="", description="句尾区域原始强标点簇；synthetic 时为空串。")
+    terminal_closer_suffix: str = Field(default="", description="句尾尾随闭合符串。")
+    terminal_source: Literal["original", "synthetic"] = Field(
+        default="synthetic",
+        description="句尾来源；original 表示源文本自带，synthetic 表示系统自动补齐。",
+    )
+    detected_language: ResolvedLanguage = Field(default="unknown", description="标准化阶段解析出的段级语言。")
+    inference_exclusion_reason: InferenceExclusionReason = Field(
+        default="language_unresolved",
+        description="当前段是否应进入推理主路径的排除原因。",
+    )
     render_version: int = Field(default=0, description="当前段正式渲染资产的版本号。")
     render_asset_id: str | None = Field(default=None, description="当前段正式渲染资产 ID；未生成时为 null。")
     group_id: str | None = Field(default=None, description="所属分组 ID；未分组时为 null。")
@@ -136,6 +181,10 @@ class RenderProfilePatchRequest(BaseModel):
     top_p: float | None = Field(default=None, description="新的 top_p。")
     temperature: float | None = Field(default=None, description="新的 temperature。")
     noise_scale: float | None = Field(default=None, description="新的 noise scale。")
+    reference_override: ReferenceBindingOverridePatchRequest | None = Field(
+        default=None,
+        description="按 binding 写入或清理 reference override。",
+    )
     reference_audio_path: str | None = Field(default=None, description="新的参考音频路径。")
     reference_text: str | None = Field(default=None, description="新的参考文本。")
     reference_language: str | None = Field(default=None, description="新的参考文本语言。")
@@ -152,6 +201,7 @@ class RenderProfilePatchRequest(BaseModel):
                 self.top_p,
                 self.temperature,
                 self.noise_scale,
+                self.reference_override,
                 self.reference_audio_path,
                 self.reference_text,
                 self.reference_language,
@@ -271,7 +321,12 @@ class EditableEdge(BaseModel):
     document_id: str = Field(description="所属文档 ID。")
     left_segment_id: str = Field(description="左侧相邻段 ID。")
     right_segment_id: str = Field(description="右侧相邻段 ID。")
-    pause_duration_seconds: float = Field(default=0.3, description="用户配置的段间停顿秒数。")
+    pause_duration_seconds: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=10.0,
+        description="用户配置的段间停顿秒数。",
+    )
     boundary_strategy: str = Field(
         default="latent_overlap_then_equal_power_crossfade",
         description="请求使用的边界拼接策略。",
@@ -295,7 +350,12 @@ class EditableEdgeResponse(EditableEdge):
 
 
 class UpdateEdgeRequest(BaseModel):
-    pause_duration_seconds: float | None = Field(default=None, description="新的段间停顿秒数。")
+    pause_duration_seconds: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=10.0,
+        description="新的段间停顿秒数。",
+    )
     boundary_strategy: str | None = Field(default=None, description="新的边界策略。")
 
     @model_validator(mode="after")
@@ -548,6 +608,55 @@ class CompositionExportRequest(ExportRequestBase):
     pass
 
 
+class ExportAudioRequest(BaseModel):
+    kind: Literal["segments", "composition"] = Field(description="要导出的音频类型。")
+    overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(
+        default="fail",
+        description="自动命名后的最终导出产物发生重名时的处理策略。",
+    )
+
+
+class ExportSubtitleRequest(BaseModel):
+    enabled: bool = Field(default=False, description="是否同时导出字幕文件。")
+    format: Literal["srt"] = Field(default="srt", description="当前字幕导出格式；v1 仅支持 `srt`。")
+    offset_seconds: float = Field(default=0.0, description="作用于全部字幕段的全局时间偏移。")
+    strip_trailing_punctuation: bool = Field(
+        default=False,
+        description="是否在字幕文本中去除每段段末标点与尾随闭合符。",
+    )
+
+    @field_validator("offset_seconds", mode="before")
+    @classmethod
+    def _validate_offset_precision(cls, value: object) -> object:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise ValueError("offset_seconds must be a valid decimal number.") from exc
+        normalized = decimal_value.quantize(Decimal("0.1"))
+        if normalized != decimal_value:
+            raise ValueError("offset_seconds must use 0.1 precision.")
+        return float(decimal_value)
+
+
+class ExportRequest(BaseModel):
+    document_version: int = Field(ge=1, description="要导出的已提交 document_version。")
+    target_dir: str = Field(description="导出根目录，强制要求绝对路径。")
+    audio: ExportAudioRequest = Field(description="音频导出选项。")
+    subtitle: ExportSubtitleRequest = Field(
+        default_factory=ExportSubtitleRequest,
+        description="字幕导出选项；未启用时保持兼容现状。",
+    )
+
+
+class ExportSubtitleManifest(BaseModel):
+    format: Literal["srt"] = Field(description="本次导出的字幕格式。")
+    offset_seconds: float = Field(description="本次字幕导出的全局时间偏移。")
+    strip_trailing_punctuation: bool = Field(
+        default=False,
+        description="本次字幕导出是否去除了段末标点与尾随闭合符。",
+    )
+
+
 class SegmentBatchRenderProfilePatchRequest(BaseModel):
     segment_ids: list[str] = Field(min_length=1, description="要批量绑定 render profile 的段 ID 列表。")
     patch: RenderProfilePatchRequest = Field(description="要应用到这批段的新 profile patch。")
@@ -574,9 +683,12 @@ class ExportOutputManifest(BaseModel):
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
     target_dir: str = Field(description="最终导出落点所在目录；分段导出为自动创建的导出目录，整条导出为用户选择的导出根目录。")
     files: list[str] = Field(default_factory=list, description="本次导出的全部文件路径。")
+    audio_files: list[str] = Field(default_factory=list, description="本次导出的全部音频文件路径。")
+    subtitle_files: list[str] = Field(default_factory=list, description="本次导出的全部字幕文件路径。")
     segment_files: list[str] = Field(default_factory=list, description="分段导出的 wav 文件列表。")
     composition_file: str | None = Field(default=None, description="整条音频导出的 wav 文件路径。")
     composition_manifest_id: str | None = Field(default=None, description="若导出类型为 composition，则为对应正式资产 ID。")
+    subtitle_manifest: ExportSubtitleManifest | None = Field(default=None, description="若导出了字幕，则为对应字幕元信息。")
     manifest_file: str = Field(description="导出 manifest 文件路径。")
     exported_at: datetime = Field(default_factory=_now_utc, description="导出完成时间。")
 
@@ -587,6 +699,10 @@ class ExportJobResponse(BaseModel):
     document_version: int = Field(description="导出的文档版本。")
     timeline_manifest_id: str = Field(description="导出使用的 timeline manifest ID。")
     export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
+    subtitle: ExportSubtitleRequest = Field(
+        default_factory=ExportSubtitleRequest,
+        description="本次导出作业使用的字幕选项；未启用时保持默认值。",
+    )
     status: Literal["queued", "exporting", "completed", "failed"] = Field(description="导出作业当前状态。")
     target_dir: str = Field(description="解析后的导出根目录。")
     overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(description="自动命名后的最终导出产物发生重名时的处理策略。")
@@ -629,6 +745,43 @@ class PreviewResponse(BaseModel):
         if self.audio_delivery.expires_at is None:
             raise ValueError("PreviewResponse.audio_delivery.expires_at is required.")
         return self
+
+
+class StandardizationPreviewRequest(BaseModel):
+    raw_text: str = Field(min_length=1, description="待标准化预览的原始全文文本。")
+    text_language: str = Field(default="auto", description="文本语言，支持 `auto`、`zh`、`ja`、`en`。")
+    request_id: str | None = Field(default=None, description="可选请求 ID，仅用于追踪。")
+    segment_limit: int = Field(default=80, ge=1, le=500, description="当前页最多返回的 preview 段数。")
+    cursor: int | None = Field(default=None, ge=0, description="下一页游标；null 表示从头开始。")
+    include_language_analysis: bool = Field(default=True, description="是否包含语言分析结果。")
+
+
+class StandardizationPreviewSegment(BaseModel):
+    order_key: int = Field(description="preview 段顺序。")
+    canonical_text: str = Field(description="canonical 段文本。")
+    terminal_raw: str = Field(description="原始强标点簇；synthetic 时为空串。")
+    terminal_closer_suffix: str = Field(description="尾随闭合符串。")
+    terminal_source: Literal["original", "synthetic"] = Field(description="句尾来源。")
+    detected_language: ResolvedLanguage | None = Field(default=None, description="段级语言；未分析时为 null。")
+    inference_exclusion_reason: InferenceExclusionReason | None = Field(
+        default=None,
+        description="段是否进入推理主路径的排除原因；未分析时为 null。",
+    )
+    warnings: list[str] = Field(default_factory=list, description="当前段的 warning 列表。")
+
+
+class StandardizationPreviewResponse(BaseModel):
+    analysis_stage: Literal["light", "complete"] = Field(description="本次 preview 的分析阶段。")
+    document_char_count: int = Field(ge=0, description="预览输入的字符数。")
+    total_segments: int = Field(ge=0, description="标准化后的总段数。")
+    next_cursor: int | None = Field(default=None, description="下一页游标；无下一页时为 null。")
+    resolved_document_language: ResolvedLanguage | None = Field(default=None, description="文档级解析语言。")
+    language_detection_source: Literal["explicit", "auto"] | None = Field(
+        default=None,
+        description="语言检测来源；未分析时为 null。",
+    )
+    warnings: list[str] = Field(default_factory=list, description="文档级 warning 列表。")
+    segments: list[StandardizationPreviewSegment] = Field(default_factory=list, description="当前页 preview 段列表。")
 
 
 class SegmentAssetResponse(BaseModel):

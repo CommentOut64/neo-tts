@@ -8,6 +8,7 @@ import sqlite3
 import threading
 
 from backend.app.inference.editable_types import build_boundary_asset_id
+from backend.app.services.reference_binding import build_binding_key, migrate_legacy_render_profile_payload
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     CheckpointState,
@@ -212,7 +213,7 @@ class EditSessionRepository:
             ).fetchone()
         if row is None:
             return None
-        return DocumentSnapshot.model_validate_json(row["payload"])
+        return self._load_snapshot_from_payload(row["payload"])
 
     def get_snapshot_by_document_version(self, document_id: str, document_version: int) -> DocumentSnapshot | None:
         with self._lock, self._connect() as connection:
@@ -227,7 +228,7 @@ class EditSessionRepository:
             ).fetchall()
         if not rows:
             return None
-        snapshots = [DocumentSnapshot.model_validate_json(row["payload"]) for row in rows]
+        snapshots = [self._load_snapshot_from_payload(row["payload"]) for row in rows]
         preferred = next((snapshot for snapshot in snapshots if snapshot.snapshot_kind == "head"), None)
         return preferred or snapshots[0]
 
@@ -674,6 +675,113 @@ class EditSessionRepository:
         if value.is_absolute():
             return value
         return (self._project_root / value).resolve()
+
+    def _load_snapshot_from_payload(self, payload: str) -> DocumentSnapshot:
+        raw_payload = json.loads(payload)
+        upgraded_payload = self._upgrade_snapshot_payload(raw_payload)
+        return DocumentSnapshot.model_validate(upgraded_payload)
+
+    def _upgrade_snapshot_payload(self, payload: object) -> object:
+        if not isinstance(payload, dict):
+            return payload
+
+        upgraded = dict(payload)
+        render_profiles = upgraded.get("render_profiles")
+        if not isinstance(render_profiles, list):
+            return upgraded
+
+        binding_by_id = self._build_binding_payload_map(upgraded.get("voice_bindings"))
+        group_by_id = self._build_group_payload_map(upgraded.get("groups"))
+        segments = upgraded.get("segments") if isinstance(upgraded.get("segments"), list) else []
+        default_binding_id = upgraded.get("default_voice_binding_id")
+
+        upgraded["render_profiles"] = [
+            self._upgrade_render_profile_payload(
+                profile,
+                binding_by_id=binding_by_id,
+                group_by_id=group_by_id,
+                segments=segments,
+                default_binding_id=default_binding_id,
+            )
+            for profile in render_profiles
+        ]
+        return upgraded
+
+    def _upgrade_render_profile_payload(
+        self,
+        profile: object,
+        *,
+        binding_by_id: dict[str, dict[str, object]],
+        group_by_id: dict[str, dict[str, object]],
+        segments: list[object],
+        default_binding_id: object,
+    ) -> object:
+        if not isinstance(profile, dict):
+            return profile
+
+        binding_id = None
+        scope = profile.get("scope")
+        profile_id = profile.get("render_profile_id")
+
+        if scope == "session":
+            binding_id = default_binding_id
+        elif scope == "group":
+            group = next(
+                (
+                    item
+                    for item in group_by_id.values()
+                    if item.get("render_profile_id") == profile_id
+                ),
+                None,
+            )
+            if group is not None:
+                binding_id = group.get("voice_binding_id") or default_binding_id
+        elif scope == "segment":
+            segment = next(
+                (
+                    item
+                    for item in segments
+                    if isinstance(item, dict) and item.get("render_profile_id") == profile_id
+                ),
+                None,
+            )
+            if isinstance(segment, dict):
+                group = group_by_id.get(str(segment.get("group_id"))) if segment.get("group_id") is not None else None
+                binding_id = segment.get("voice_binding_id") or (
+                    group.get("voice_binding_id") if group is not None else None
+                ) or default_binding_id
+
+        binding = binding_by_id.get(str(binding_id)) if binding_id is not None else None
+        if binding is None:
+            return profile
+
+        return migrate_legacy_render_profile_payload(
+            profile,
+            binding_key=build_binding_key(
+                voice_id=str(binding.get("voice_id", "")),
+                model_key=str(binding.get("model_key", "")),
+            ),
+        )
+
+    @staticmethod
+    def _build_binding_payload_map(payload: object) -> dict[str, dict[str, object]]:
+        if not isinstance(payload, list):
+            return {}
+        return {
+            str(item.get("voice_binding_id")): item
+            for item in payload
+            if isinstance(item, dict) and item.get("voice_binding_id") is not None
+        }
+
+    @staticmethod
+    def _build_group_payload_map(payload: object) -> dict[str, dict[str, object]]:
+        if not isinstance(payload, list):
+            return {}
+        return {
+            str(item.get("group_id")): item
+            for item in payload
+            if isinstance(item, dict) and item.get("group_id") is not None
+        }
 
     @staticmethod
     def _dump_model(

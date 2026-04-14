@@ -5,7 +5,6 @@ import type {
   ExportJobAcceptedResponse,
   ExportJobResponse,
 } from "../types/editSession";
-import { ensureTerminalStrongBoundary } from "../utils/textSegmenter.ts";
 
 export interface WorkspaceInitializeDraft {
   text: string;
@@ -16,7 +15,6 @@ export interface WorkspaceInitializeDraft {
   topP: number;
   topK: number;
   pauseLength: number;
-  textSplitMethod: string;
   refSource: "preset" | "custom";
   refText: string;
   refLang: string;
@@ -28,36 +26,23 @@ export interface VoiceReferenceSource {
   refAudio?: string | null;
 }
 
-const BOUNDARY_MODE_BY_TEXT_SPLIT_METHOD: Record<
-  string,
-  "raw_strong_punctuation" | "zh_period"
-> = {
-  cut3: "zh_period",
-  cut5: "zh_period",
-  raw_strong_punctuation: "raw_strong_punctuation",
-  zh_period: "zh_period",
-};
-
-export function normalizeSegmentBoundaryMode(
-  mode: string,
-): "raw_strong_punctuation" | "zh_period" {
-  return BOUNDARY_MODE_BY_TEXT_SPLIT_METHOD[mode] ?? "zh_period";
-}
+export const WORKSPACE_SEGMENT_BOUNDARY_MODE = "raw_strong_punctuation" as const;
 
 export function buildInitializeRequest(
   draft: WorkspaceInitializeDraft,
   voice?: VoiceReferenceSource,
 ): InitializeRequest {
   const payload: InitializeRequest = {
-    raw_text: ensureTerminalStrongBoundary(draft.text),
+    raw_text: draft.text,
     text_language: draft.textLang,
     voice_id: draft.voiceId,
+    reference_source: draft.refSource,
     speed: draft.speed,
     temperature: draft.temperature,
     top_p: draft.topP,
     top_k: draft.topK,
     pause_duration_seconds: draft.pauseLength,
-    segment_boundary_mode: normalizeSegmentBoundaryMode(draft.textSplitMethod),
+    segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
   };
 
   if (draft.refSource === "preset" && voice?.refAudio) {

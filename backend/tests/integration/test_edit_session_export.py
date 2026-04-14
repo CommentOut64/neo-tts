@@ -31,6 +31,115 @@ def _initialize_ready_document(client: TestClient) -> dict:
     return client.get("/v1/edit-session/snapshot").json()
 
 
+def test_unified_export_route_can_emit_composition_and_srt(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+    export_root = test_app_settings.edit_session_exports_dir / "unified_composition_exports"
+
+    with TestClient(app) as client:
+        gate.set()
+        snapshot = _initialize_ready_document(client)
+
+        create_export = client.post(
+            "/v1/edit-session/exports",
+            json={
+                "document_version": snapshot["document_version"],
+                "target_dir": str(export_root),
+                "audio": {"kind": "composition", "overwrite_policy": "fail"},
+                "subtitle": {
+                    "enabled": True,
+                    "format": "srt",
+                    "offset_seconds": 0.2,
+                    "strip_trailing_punctuation": True,
+                },
+            },
+        )
+        assert create_export.status_code == 202
+        export_job_id = create_export.json()["job"]["export_job_id"]
+
+        _wait_until(lambda: client.get(f"/v1/edit-session/exports/{export_job_id}").json()["status"] == "completed")
+
+        export_job = client.get(f"/v1/edit-session/exports/{export_job_id}")
+        assert export_job.status_code == 200
+        payload = export_job.json()
+        assert payload["export_kind"] == "composition"
+        assert payload["status"] == "completed"
+        assert payload["output_manifest"]["target_dir"] == str(export_root)
+        composition_file = Path(payload["output_manifest"]["composition_file"])
+        subtitle_files = [Path(path) for path in payload["output_manifest"]["subtitle_files"]]
+        assert composition_file.parent == export_root
+        assert composition_file.name.startswith("neo-tts-export-")
+        assert composition_file.suffix == ".wav"
+        assert subtitle_files == [export_root / f"{composition_file.stem}.srt"]
+        assert payload["output_manifest"]["audio_files"] == [str(composition_file)]
+        assert payload["output_manifest"]["subtitle_manifest"] == {
+            "format": "srt",
+            "offset_seconds": 0.2,
+            "strip_trailing_punctuation": True,
+        }
+
+    wav_files = list(export_root.glob("neo-tts-export-*.wav"))
+    srt_files = list(export_root.glob("neo-tts-export-*.srt"))
+    assert len(wav_files) == 1
+    assert len(srt_files) == 1
+    assert srt_files[0].stem == wav_files[0].stem
+
+
+def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+    export_root = test_app_settings.edit_session_exports_dir / "unified_segment_exports"
+
+    with TestClient(app) as client:
+        gate.set()
+        snapshot = _initialize_ready_document(client)
+
+        create_export = client.post(
+            "/v1/edit-session/exports",
+            json={
+                "document_version": snapshot["document_version"],
+                "target_dir": str(export_root),
+                "audio": {"kind": "segments", "overwrite_policy": "fail"},
+                "subtitle": {
+                    "enabled": True,
+                    "format": "srt",
+                    "offset_seconds": -0.1,
+                    "strip_trailing_punctuation": True,
+                },
+            },
+        )
+        assert create_export.status_code == 202
+        export_job_id = create_export.json()["job"]["export_job_id"]
+
+        _wait_until(lambda: client.get(f"/v1/edit-session/exports/{export_job_id}").json()["status"] == "completed")
+
+        export_job = client.get(f"/v1/edit-session/exports/{export_job_id}")
+        assert export_job.status_code == 200
+        payload = export_job.json()
+        assert payload["export_kind"] == "segments"
+        assert payload["status"] == "completed"
+        final_dir = Path(payload["output_manifest"]["target_dir"])
+        segment_files = [Path(path) for path in payload["output_manifest"]["segment_files"]]
+        subtitle_files = [Path(path) for path in payload["output_manifest"]["subtitle_files"]]
+        assert final_dir.parent == export_root
+        assert final_dir.name.startswith("neo-tts-export-")
+        assert [path.name for path in segment_files] == ["segments-1.wav", "segments-2.wav"]
+        assert subtitle_files == [final_dir / f"{final_dir.name}.srt"]
+        assert payload["output_manifest"]["subtitle_manifest"] == {
+            "format": "srt",
+            "offset_seconds": -0.1,
+            "strip_trailing_punctuation": True,
+        }
+
+    export_dirs = list(export_root.glob("neo-tts-export-*"))
+    assert len(export_dirs) == 1
+    assert (export_dirs[0] / "segments-1.wav").exists()
+    assert (export_dirs[0] / "segments-2.wav").exists()
+    assert (export_dirs[0] / f"{export_dirs[0].name}.srt").exists()
+
+
 def test_segment_export_route_creates_numbered_wavs_without_composition_file(test_app_settings):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)

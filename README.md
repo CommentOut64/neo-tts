@@ -61,7 +61,72 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 ### 整合包
 
-> 整合包正在准备中，发布后将提供一键启动的使用说明。
+当前整合包流水线以 Electron 为唯一正式产品入口，并统一先生成一套 staged runtime，再按 flavor 分发。
+
+当前产品态正式入口约束：
+
+- 开发态主入口是 `dev/web`
+- 打包后的唯一正式产品入口是 Electron 主程序
+- Go launcher 只作为开发态 owner，不再承担正式产品入口身份
+
+当前 Windows 产品态约束：
+
+- 安装版默认把只读程序资源放在 `<install-root>/resources/app-runtime`
+- 安装版可写目录默认落在 `%LOCALAPPDATA%/NeoTTS`，导出目录默认落在 `%USERPROFILE%/Documents/NeoTTS/Exports`
+- 便携版同样使用 `<portable-root>/resources/app-runtime` 承载只读资源
+- 便携版可写目录默认落在 `<portable-root>/data`，导出目录默认落在 `<portable-root>/exports`
+- `portable.flag` 必须与 `NeoTTS.exe` 同级，用于便携 flavor 识别
+
+当前 staging 入口：
+
+```powershell
+Set-Location desktop
+powershell -File .\scripts\stage-runtime.ps1 -Flavor portable
+```
+
+当前脚本会完成：
+
+- 复制 `frontend/dist` 到 `desktop/.stage/app-runtime/frontend-dist`
+- 按 `desktop/packaging/manifests/base.v1.json` 收集 backend、`GPT_SoVITS/` 与运行时必需模型
+- 按 `desktop/packaging/profiles/default.v1.json` 生成首发 builtin voice 和只读 `config/voices.json`
+- builtin voice 变化时只重建该 profile 负责的音色目录与只读 `config/voices.json`，不删除 manifest 已收包的 builtin support models
+- 使用 `uv.lock` + `pyproject.toml` 导出运行时依赖，并按 `desktop/packaging/python-runtime-prune.txt` 对桌面产品包做树级 prune 裁剪
+- 运行时依赖仍优先复用 `desktop/.cache/` 下的 wheelhouse、exported requirements 与 cached runtime
+- 仅在相关输入变化时重建对应 staged 分区，而不是每次删除整个 `desktop/.stage`
+- 生成 `desktop/.stage/manifest-lock.json`，作为本次收包的实际快照
+
+当前默认 profile 只内置一套示例音色 `neuro2`，并且默认 profile 已限制为仅允许该内置音色进入打包。
+
+当前默认打包命令：
+
+```powershell
+Set-Location desktop
+npm run package
+```
+
+- 默认生成便携包相关产物：
+  - `release/<version>/NeoTTS-Portable-<version>.zip`
+  - `release/<version>/win-unpacked/NeoTTS.exe`
+- 默认不调用 Inno Setup 安装器链。
+- 默认不执行 desktop tests 或 backend packaged settings test。
+- `build-integrated-package.ps1` 会按输入指纹复用 frontend 与 desktop 的已有 build 输出，未变化时跳过重复构建。
+- 当前安装包链为 `electron-builder dir + Inno Setup`，压缩策略显式使用 `Compression=lzma2/normal`、`CompressionThreads=auto`、`LZMANumBlockThreads=2`、`SolidCompression=no`，优先降低安装器编译耗时。
+- 长期缓存目录位于 `desktop/.cache/`，不再放在会被重建的 `desktop/.stage/` 下；其中包含 build 复用元数据。
+
+显式附加命令：
+
+```powershell
+Set-Location desktop
+
+# 显式生成便携包（与默认链一致）
+npm run package:portable
+
+# 仅在需要时生成安装包
+npm run package:installed
+
+# 显式执行打包相关验证
+npm run package:verify
+```
 
 ### 本地开发部署
 
@@ -107,18 +172,35 @@ Set-Location ..
 #### 3. 启动
 
 ```powershell
-# 一键启动（推荐）
+# launcher 主入口（推荐）
+Set-Location launcher
+go run ./cmd/launcher --runtime-mode dev --frontend-mode web
+
+# 兼容入口
+Set-Location ..
 .\start_dev.bat
 
 # 或分别启动
-uv run python -m backend.app.cli --port 8000   # 后端
-Set-Location frontend && npm run dev             # 前端
+uv run python -m backend.app.cli --port 18600
+Set-Location frontend
+$env:VITE_BACKEND_ORIGIN="http://127.0.0.1:18600"
+npm run dev
 ```
+
+补充说明：
+
+- 当前配置优先级是：CLI > 进程环境变量 > `config/launch.json` > 默认值
+- 推荐把项目级启动配置写到 `config/launch.json`
+- `start_dev.bat` 只保留为源码联调兼容入口，不包含单实例、旧进程清理与守护逻辑
+- Go launcher 现在只接受 `dev/web`；`product/electron` 必须由 `desktop` 下的 Electron main 作为正式入口
+- `backend.mode=external` 时，launcher 只探活外部后端，不接管也不清理它
+- `dev/web` 下由 Go launcher 持有 owner 生命周期；产品态由 Electron main 持有 owner 生命周期
+- `runtime-state.json` 与 `exit-request.json` 若存在，也只作为调试快照，不再作为关键控制真相
 
 #### 4. 打开页面
 
-- 前端开发地址：`http://127.0.0.1:5175`
-- 后端接口文档：`http://127.0.0.1:8000/docs`
+- 前端开发地址：`http://localhost:5175`
+- 后端接口文档：`http://127.0.0.1:18600/docs`
 
 ## 技术架构
 
@@ -153,9 +235,13 @@ Set-Location frontend && npm run dev             # 前端
 
 段文本在生命周期内维护三层口径：
 
-- **raw_text**：用户输入的原始文本（含原始标点）
-- **normalized_text**：标准化后的文本（统一句尾强标点）
+- **raw_text**：当前对前端仍保持 display 兼容的段文本；会保留原始句尾簇，缺失句尾时补默认句号
+- **normalized_text**：内部 canonical 文本，当前统一以中文句号 `。` 结尾
 - **render_text**：送入推理的最终文本（运行时按语言和句尾规则派生，不持久化）
+
+段实体还会持久化最小句尾胶囊：`terminal_raw`、`terminal_closer_suffix`、`terminal_source`，用于晚绑定 display / render 口径；同时持久化 `detected_language`、`inference_exclusion_reason`，用于记录段级语言解析结果与是否排除出主推理路径。`text_language=auto` 时，标准化器会复用 GPT-SoVITS 现有的 `LangSegmenter` / `fast_langdetect` 检测链。
+
+后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 canonical 文本、terminal capsule、文档级语言摘要与分页 preview 结果。前端输入页会基于 capsule 派生用户可见 display 文本；当输入达到 5000 字及以上时，preview 先走 `light` 快速分析并按 `next_cursor` 继续加载后续分段。
 
 切分策略支持 6 种模式（cut0 – cut5），覆盖按标点、按句号、按字符数等场景。
 
@@ -198,10 +284,12 @@ neo-tts/
 │  │  ├─ utils/             # 文本与编辑辅助
 │  │  └─ views/             # TextInput / Workspace / Studio / VoiceAdmin
 │  └─ tests/                # 前端行为测试
+├─ desktop/                 # Electron main / preload / 打包骨架（产品态入口）
 ├─ GPT_SoVITS/              # 上游模型与文本处理代码
+├─ launcher/                # Go launcher、构建脚本与 Windows 平台层
 ├─ config/                  # 音色配置（静态）
 ├─ storage/                 # 托管音色、会话资产与导出结果
-└─ start_dev.bat            # Windows 开发启动脚本
+└─ start_dev.bat            # Windows 开发兼容启动脚本
 ```
 
 ## 开源协议

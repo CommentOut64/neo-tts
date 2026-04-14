@@ -311,6 +311,42 @@ describe("useEditSession formal state bundle", () => {
     );
   });
 
+  it("appliedText 会基于 segment display_text 口径派生", async () => {
+    const { useEditSession } = await import("../src/composables/useEditSession");
+    const editSession = useEditSession();
+
+    editSession.snapshot.value = {
+      session_status: "ready",
+      document_id: "doc-1",
+      document_version: 1,
+      total_segment_count: 2,
+      active_job: null,
+      segments: [
+        {
+          ...createSegment(1, "seg-1"),
+          raw_text: "第一句。",
+          terminal_raw: "？！",
+          terminal_closer_suffix: "”",
+          terminal_source: "original",
+          detected_language: "zh",
+        },
+        {
+          ...createSegment(1, "seg-2"),
+          order_key: 2,
+          raw_text: "Hello world。",
+          terminal_raw: "",
+          terminal_closer_suffix: "",
+          terminal_source: "synthetic",
+          detected_language: "en",
+        },
+      ],
+      default_render_profile_id: "profile-1",
+      default_voice_binding_id: "binding-1",
+    };
+
+    expect(editSession.appliedText.value).toBe('第一句？！”Hello world.');
+  });
+
   it("旧的 formal refresh 晚到时不会覆盖更新的正式状态", async () => {
     const { useEditSession } = await import("../src/composables/useEditSession");
     const editSession = useEditSession();

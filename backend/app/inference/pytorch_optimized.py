@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,10 +27,21 @@ from backend.app.inference.editable_types import (
 from backend.app.schemas.edit_session import InitializeEditSessionRequest
 
 def _ensure_gpt_sovits_import_paths() -> None:
-    project_root = Path(__file__).resolve().parents[3]
+    resources_root_env = os.environ.get("NEO_TTS_RESOURCES_ROOT")
+    gpt_sovits_root_env = os.environ.get("NEO_TTS_GPT_SOVITS_ROOT")
+    project_root = (
+        Path(resources_root_env).resolve()
+        if resources_root_env
+        else Path(__file__).resolve().parents[3]
+    )
+    gpt_sovits_root = (
+        Path(gpt_sovits_root_env).resolve()
+        if gpt_sovits_root_env
+        else (project_root / "GPT_SoVITS").resolve()
+    )
     required_paths = (
         str(project_root),
-        str((project_root / "GPT_SoVITS").resolve()),
+        str(gpt_sovits_root),
     )
     for path in required_paths:
         if path not in sys.path:
@@ -54,11 +67,20 @@ from backend.app.inference.text_processing import (
     build_phones_and_bert_features,
     split_text_segments_official,
 )
+from backend.app.text.segment_standardizer import build_segment_render_text
 from backend.app.inference.types import InferenceCancelledError
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IS_HALF = DEVICE == "cuda"
 inference_logger = get_logger("pytorch_inference")
+
+
+def _resolve_segment_inference_language(segment) -> str:
+    declared_language = (getattr(segment, "text_language", "") or "auto").lower()
+    detected_language = (getattr(segment, "detected_language", "unknown") or "unknown").lower()
+    if declared_language in {"auto", "unknown", ""} and detected_language in {"zh", "ja", "en"}:
+        return detected_language
+    return declared_language or "auto"
 
 
 class DictToAttrRecursive(dict):
@@ -134,6 +156,7 @@ class GPTSoVITSOptimizedInference:
     def __init__(self, gpt_path, sovits_path, cnhubert_base_path, bert_path):
         self.device = DEVICE
         self.is_half = IS_HALF
+        self.resident_device = DEVICE
         init_started = time.perf_counter()
 
         inference_logger.info("Loading models on {} (half precision: {})", DEVICE, IS_HALF)
@@ -200,15 +223,47 @@ class GPTSoVITSOptimizedInference:
         self.warmup()
         inference_logger.info("模型初始化完成 total_ms={:.2f}", (time.perf_counter() - init_started) * 1000)
 
+    def offload_from_gpu(self) -> None:
+        if self.resident_device != "cuda":
+            return
+        self._move_runtime_to_device("cpu")
+        self.resident_device = "cpu"
+
+    def ensure_on_gpu(self) -> None:
+        if self.resident_device == "cuda":
+            return
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available, cannot restore model to GPU.")
+        self._move_runtime_to_device("cuda")
+        self.resident_device = "cuda"
+
+    def _move_runtime_to_device(self, target_device: str) -> None:
+        inference_logger.info("迁移推理模型 device={} -> {}", self.resident_device, target_device)
+        self.ssl_model = self.ssl_model.to(target_device)
+        self.bert_model = self.bert_model.to(target_device)
+        self.t2s_model = self.t2s_model.to(target_device)
+        self.vq_model = self.vq_model.to(target_device)
+        self.sv_model.embedding_model = self.sv_model.embedding_model.to(target_device)
+        if target_device == "cpu":
+            gc.collect()
+        if hasattr(torch.cuda, "empty_cache"):
+            torch.cuda.empty_cache()
+        if self.device != target_device:
+            self.device = target_device
+
     def warmup(self):
         warmup_started = time.perf_counter()
+        stage = "bootstrap"
         inference_logger.info("Warming up models (GPT, SoVITS, BERT, etc.)...")
         try:
+            stage = "phones_and_bert_en"
             phones, _, _ = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
+            stage = "phones_and_bert_zh"
             _ = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
 
             inference_logger.info("Warming up GPU kernels...")
             with torch.no_grad():
+                stage = "prepare_dummy_inputs"
                 dummy_prompt = torch.zeros((1, 1), dtype=torch.long, device=self.device)
                 dummy_bert = torch.zeros(
                     (1, 1024, len(phones) + 1),
@@ -218,6 +273,7 @@ class GPTSoVITSOptimizedInference:
                 dummy_phones = torch.LongTensor(phones + [0]).unsqueeze(0).to(self.device)
                 dummy_phones_len = torch.tensor([dummy_phones.shape[-1]]).to(self.device)
 
+                stage = "t2s_infer_panel"
                 pred_semantic, _ = self.t2s_model.model.infer_panel(
                     dummy_phones,
                     dummy_phones_len,
@@ -228,23 +284,31 @@ class GPTSoVITSOptimizedInference:
                     temperature=1,
                     early_stop_num=50,
                 )
+                if pred_semantic is None:
+                    raise RuntimeError("warmup infer_panel returned no semantic tokens")
 
+                stage = "prepare_dummy_semantic"
                 dummy_spec = torch.zeros((1, self.hps.data.filter_length // 2 + 1, 10), device=self.device)
                 if self.is_half:
                     dummy_spec = dummy_spec.half()
                 dummy_prefix_len = dummy_prompt.shape[1]
                 dummy_semantic = pred_semantic[:, dummy_prefix_len:].unsqueeze(0)
+                dummy_sv_emb = None
+                if getattr(self.vq_model, "is_v2pro", False):
+                    dummy_sv_emb = [self._build_dummy_warmup_speaker_embedding()]
 
+                stage = "vq_decode"
                 _ = self.vq_model.decode(
                     dummy_semantic,
                     torch.LongTensor(phones).unsqueeze(0).to(self.device),
                     [dummy_spec],
+                    sv_emb=dummy_sv_emb,
                 )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             inference_logger.info("Warmup completed elapsed_ms={:.2f}", (time.perf_counter() - warmup_started) * 1000)
         except Exception as exc:
-            inference_logger.warning("Warmup failed (non-critical): {}", exc)
+            inference_logger.exception("Warmup failed at stage={} reason={}", stage, str(exc))
 
     def get_bert_feature(self, text, word2ph):
         with torch.no_grad():
@@ -326,6 +390,14 @@ class GPTSoVITSOptimizedInference:
         else:
             audio_16k = refer_audio
         return self.sv_model.compute_embedding3(audio_16k)
+
+    def _build_dummy_warmup_speaker_embedding(self) -> torch.Tensor:
+        dummy_audio_16k = torch.zeros(
+            (1, int(16000 * 0.3)),
+            dtype=torch.float16 if self.is_half else torch.float32,
+            device=self.device,
+        )
+        return self.sv_model.compute_embedding3(dummy_audio_16k)
 
     @staticmethod
     def _coerce_resolved_context(
@@ -431,10 +503,26 @@ class GPTSoVITSOptimizedInference:
             context.reference_language,
             self.hps.model.version,
         )
-        segment_text = ensure_sentence_end(segment.normalized_text or segment.raw_text, segment.text_language)
+        segment_inference_language = _resolve_segment_inference_language(segment)
+        if segment_inference_language != segment.text_language:
+            inference_logger.info(
+                "segment inference language resolved segment_id={} declared_language={} detected_language={} resolved_language={}",
+                segment.segment_id,
+                segment.text_language,
+                getattr(segment, "detected_language", "unknown"),
+                segment_inference_language,
+            )
+        segment_text = build_segment_render_text(
+            raw_text=segment.raw_text,
+            normalized_text=segment.normalized_text,
+            text_language=segment_inference_language,
+            terminal_raw=getattr(segment, "terminal_raw", ""),
+            terminal_closer_suffix=getattr(segment, "terminal_closer_suffix", ""),
+            terminal_source=getattr(segment, "terminal_source", "synthetic"),
+        )
         segment_phones, segment_bert, _ = self.get_phones_and_bert(
             segment_text,
-            segment.text_language,
+            segment_inference_language,
             self.hps.model.version,
             default_lang=context.reference_language,
         )

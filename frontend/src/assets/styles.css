@@ -247,6 +247,120 @@ html.dark .el-slider__button:hover, html.dark .el-slider__button.hover { box-sha
   --el-drawer-bg-color: var(--color-window-bg) !important;
 }
 
+/* =========================================
+   专门针对模态框（MessageBox, Dialog, Drawer）的按钮重置
+   避免污染其它非模态窗区域已经正常的按钮样式
+   ========================================= */
+
+  .el-message-box .el-button,
+  .el-dialog .el-button,
+  .el-drawer .el-button {
+    /* 修正默认按钮，避免变黑，与整体模态框做层级分离 */
+    --el-button-bg-color: var(--color-secondary);
+    --el-button-border-color: var(--color-border);
+    --el-button-text-color: var(--color-foreground);
+    
+    /* 强行抹平原生的背景色变更，交由统一遮罩接管 */
+    --el-button-hover-bg-color: var(--el-button-bg-color);
+    --el-button-hover-border-color: var(--el-button-border-color);
+    --el-button-hover-text-color: var(--el-button-text-color);
+    --el-button-active-bg-color: var(--el-button-bg-color);
+    --el-button-active-border-color: var(--el-button-border-color);
+    --el-button-active-text-color: var(--el-button-text-color);
+
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* 注入与项目一致的浅变深/深变浅交互层 */
+  .el-message-box .el-button::after,
+  .el-dialog .el-button::after,
+  .el-drawer .el-button::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-color: var(--color-state-layer);
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+  }
+  
+  .el-message-box .el-button:not(.is-disabled):hover::after,
+  .el-dialog .el-button:not(.is-disabled):hover::after,
+  .el-drawer .el-button:not(.is-disabled):hover::after {
+    opacity: 0.1;
+  }
+  
+  .el-message-box .el-button:not(.is-disabled):active::after,
+  .el-dialog .el-button:not(.is-disabled):active::after,
+  .el-drawer .el-button:not(.is-disabled):active::after {
+    opacity: 0.18;
+  }
+
+  /* --- 补充重写模态窗内各主色按钮的初始底色 --- */
+  .el-message-box .el-button--primary, .el-dialog .el-button--primary, .el-drawer .el-button--primary {
+    --el-button-bg-color: var(--color-cta);
+    --el-button-border-color: var(--color-cta);
+    --el-button-text-color: #FFFFFF;
+    --color-state-layer: #000000;
+  }
+  .el-message-box .el-button--danger, .el-dialog .el-button--danger, .el-drawer .el-button--danger {
+    --el-button-bg-color: var(--color-error);
+    --el-button-border-color: var(--color-error);
+    --el-button-text-color: #FFFFFF;
+    --color-state-layer: #000000;
+  }
+  .el-message-box .el-button--success, .el-dialog .el-button--success, .el-drawer .el-button--success {
+    --el-button-bg-color: var(--color-success);
+    --el-button-border-color: var(--color-success);
+    --el-button-text-color: #FFFFFF;
+    --color-state-layer: #000000;
+  }
+  .el-message-box .el-button--warning, .el-dialog .el-button--warning, .el-drawer .el-button--warning {
+    --el-button-bg-color: var(--color-warning);
+    --el-button-border-color: var(--color-warning);
+    --el-button-text-color: #FFFFFF;
+    --color-state-layer: #000000;
+  }
+
+
+/* =========================================
+   Tooltip & Popper 暗色/亮色自适应适配
+   统一所有 Tooltip 为本项目的卡片风格
+   ========================================= */
+
+body .el-popper.is-dark,
+body .el-popper.is-light {
+  background-color: var(--color-card) !important;
+  color: var(--color-foreground) !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+
+body .el-popper.is-dark > .el-popper__arrow::before,
+body .el-popper.is-light > .el-popper__arrow::before {
+  background-color: var(--color-card) !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+/* 恢复箭头透明边框裁剪 (提高优先级强制覆盖上方的 border !important) */
+body .el-popper[data-popper-placement^="top"] > .el-popper__arrow::before {
+  border-top-color: transparent !important;
+  border-left-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="bottom"] > .el-popper__arrow::before {
+  border-bottom-color: transparent !important;
+  border-right-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="left"] > .el-popper__arrow::before {
+  border-bottom-color: transparent !important;
+  border-left-color: transparent !important;
+}
+body .el-popper[data-popper-placement^="right"] > .el-popper__arrow::before {
+  border-top-color: transparent !important;
+  border-right-color: transparent !important;
+}
+
 /* Fall 动画：仅在页面进入时生效，避免局部重渲染导致抖动 */
 .animate-fall {
   backface-visibility: hidden;

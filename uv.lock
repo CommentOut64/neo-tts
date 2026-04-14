@@ -895,6 +895,7 @@ dependencies = [
     { name = "ko-pron" },
     { name = "librosa" },
     { name = "loguru" },
+    { name = "matplotlib" },
     { name = "modelscope" },
     { name = "numba" },
     { name = "numpy" },
@@ -957,6 +958,7 @@ requires-dist = [
     { name = "ko-pron" },
     { name = "librosa", specifier = "==0.10.2" },
     { name = "loguru", specifier = ">=0.7,<1" },
+    { name = "matplotlib" },
     { name = "modelscope", specifier = "==1.10.0" },
     { name = "numba" },
     { name = "numpy", specifier = "<2.0" },
@@ -2961,8 +2963,8 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-linux_x86_64.whl", hash = "sha256:d4c3e9a8d31a7c0fcbb9da17c31a1917e1fac26c566a4cfbd8c9568ad7cade79" },
-    { url = "https://download.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-win_amd64.whl", hash = "sha256:6a1fb2714e9323f11edb6e8abf7aad5f79e45ad25c081cde87681a18d99c29eb" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-linux_x86_64.whl", hash = "sha256:d4c3e9a8d31a7c0fcbb9da17c31a1917e1fac26c566a4cfbd8c9568ad7cade79" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-win_amd64.whl", hash = "sha256:6a1fb2714e9323f11edb6e8abf7aad5f79e45ad25c081cde87681a18d99c29eb" },
 ]
 
 [[package]]

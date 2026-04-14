@@ -4,7 +4,15 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import type { InferenceParams } from '@/types/tts'
 import ParameterSlider from './ParameterSlider.vue'
 
-const props = defineProps<{ params: InferenceParams }>()
+const props = withDefaults(
+  defineProps<{
+    params: InferenceParams
+    showTextSplitMethod?: boolean
+  }>(),
+  {
+    showTextSplitMethod: true,
+  },
+)
 
 const emit = defineEmits<{
   'update:params': [value: InferenceParams]
@@ -50,7 +58,7 @@ function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[
               <el-option value="ko" label="韩文" />
             </el-select>
           </div>
-          <div class="flex flex-col gap-3">
+          <div v-if="props.showTextSplitMethod" class="flex flex-col gap-3">
             <label class="text-[13px] font-semibold text-foreground">切分策略</label>
             <el-select :model-value="params.text_split_method" size="small" class="!w-min" style="min-width: 140px;" @update:model-value="update('text_split_method', $event)">
               <el-option value="cut0" label="不切分 (cut0)" />

@@ -50,9 +50,12 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
                 segment_id="seg-1",
                 document_id="doc-1",
                 order_key=1,
-                raw_text="甲。",
+                raw_text="甲？」",
                 normalized_text="甲。",
                 text_language="zh",
+                terminal_raw="？",
+                terminal_closer_suffix="」",
+                terminal_source="original",
             ),
             EditableSegment(
                 segment_id="seg-2",
@@ -100,6 +103,9 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
 
     assert loaded_snapshot is not None
     assert loaded_snapshot.snapshot_id == "snap-1"
+    assert loaded_snapshot.segments[0].terminal_raw == "？"
+    assert loaded_snapshot.segments[0].terminal_closer_suffix == "」"
+    assert loaded_snapshot.segments[0].terminal_source == "original"
     assert [segment.segment_id for segment in first_page_segments] == ["seg-1", "seg-2"]
     assert [segment.segment_id for segment in second_page_segments] == ["seg-3"]
     assert [edge.edge_id for edge in first_page_edges] == ["edge-1"]
@@ -502,3 +508,104 @@ def test_repository_migrates_legacy_snapshot_tables_to_composite_primary_keys(tm
         "seg-1",
         "seg-2",
     ]
+
+
+def test_repository_upgrades_legacy_render_profile_reference_fields_on_read(tmp_path: Path):
+    db_file = tmp_path / "edit_session.db"
+    repository = _build_repository(db_file)
+
+    legacy_snapshot = {
+        "snapshot_id": "snap-legacy",
+        "document_id": "doc-1",
+        "snapshot_kind": "head",
+        "document_version": 1,
+        "raw_text": "第一句。",
+        "normalized_text": "第一句。",
+        "segment_ids": ["seg-1"],
+        "edge_ids": [],
+        "block_ids": [],
+        "groups": [],
+        "render_profiles": [
+            {
+                "render_profile_id": "profile-session",
+                "scope": "session",
+                "name": "session",
+                "speed": 1.0,
+                "top_k": 15,
+                "top_p": 1.0,
+                "temperature": 1.0,
+                "noise_scale": 0.35,
+                "reference_audio_path": "legacy.wav",
+                "reference_text": "遗留参考文本",
+                "reference_language": "zh",
+                "extra_overrides": {},
+            }
+        ],
+        "voice_bindings": [
+            {
+                "voice_binding_id": "binding-session",
+                "scope": "session",
+                "voice_id": "voice-a",
+                "model_key": "model-a",
+                "sovits_path": None,
+                "gpt_path": None,
+                "speaker_meta": {},
+            }
+        ],
+        "default_render_profile_id": "profile-session",
+        "default_voice_binding_id": "binding-session",
+        "composition_manifest_id": None,
+        "playback_map_version": None,
+        "timeline_manifest_id": None,
+        "segments": [
+            {
+                "segment_id": "seg-1",
+                "document_id": "doc-1",
+                "order_key": 1,
+                "previous_segment_id": None,
+                "next_segment_id": None,
+                "segment_kind": "speech",
+                "raw_text": "第一句。",
+                "normalized_text": "第一句。",
+                "text_language": "zh",
+                "render_version": 0,
+                "render_asset_id": None,
+                "group_id": None,
+                "render_profile_id": None,
+                "voice_binding_id": None,
+                "render_status": "ready",
+                "segment_revision": 1,
+                "effective_duration_samples": None,
+                "inference_override": {},
+                "risk_flags": [],
+                "assembled_audio_span": None,
+            }
+        ],
+        "edges": [],
+    }
+
+    with sqlite3.connect(db_file) as connection:
+        connection.execute(
+            """
+            INSERT INTO snapshots(snapshot_id, document_id, document_version, created_at, payload)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "snap-legacy",
+                "doc-1",
+                1,
+                datetime(2026, 4, 12, tzinfo=timezone.utc).isoformat(),
+                json.dumps(legacy_snapshot, ensure_ascii=False),
+            ),
+        )
+
+    loaded = repository.get_snapshot("snap-legacy")
+
+    assert loaded is not None
+    assert loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"] == {
+        "voice-a:model-a": {
+            "reference_audio_path": "legacy.wav",
+            "reference_text": "遗留参考文本",
+            "reference_language": "zh",
+        }
+    }

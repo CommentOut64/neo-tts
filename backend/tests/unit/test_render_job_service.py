@@ -17,13 +17,18 @@ from backend.app.inference.editable_types import (
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
+    DocumentSnapshot,
     EditableEdge,
+    EditableSegment,
     InitializeEditSessionRequest,
     PreviewRequest,
+    RenderProfile,
     ReorderSegmentsRequest,
+    StandardizationPreviewRequest,
     SwapSegmentsRequest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
+    VoiceBinding,
 )
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
@@ -31,7 +36,8 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
-from backend.app.services.render_job_service import RenderJobService
+from backend.app.services.render_job_service import RenderJobService, RenderPlan
+from backend.app.services.reference_binding import build_binding_key
 
 
 class _FakeVoiceService:
@@ -208,6 +214,92 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     assert snapshot.composition_manifest_id is None
 
 
+def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
+    render_profile, voice_binding = RenderJobService._build_default_configuration(  # noqa: SLF001
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+            model_id="model-a",
+            reference_source="custom",
+            reference_audio_path="custom.wav",
+            reference_text="自定义参考",
+            reference_language="ja",
+        )
+    )
+
+    binding_key = build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+
+    assert render_profile.reference_overrides_by_binding[binding_key].reference_audio_path == "custom.wav"
+    assert render_profile.reference_audio_path is None
+    assert render_profile.reference_text is None
+    assert render_profile.reference_language is None
+
+
+def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallback(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        raw_text="第一句。",
+        normalized_text="第一句。",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                raw_text="第一句。",
+                normalized_text="第一句。",
+                text_language="zh",
+            )
+        ],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={},
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="demo",
+                model_key="gpt-sovits-v2",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+    plan = RenderPlan(
+        job_id="job-1",
+        job_kind="initialize",
+        document_id="doc-1",
+        request=InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+            reference_source="preset",
+            reference_audio_path="request.wav",
+            reference_text="请求参考",
+            reference_language="en",
+        ),
+    )
+
+    context = service._get_segment_context(  # noqa: SLF001
+        plan=plan,
+        snapshot=snapshot,
+        segment=snapshot.segments[0],
+    )
+
+    assert context.reference_audio_path == "fake.wav"
+    assert context.reference_text == "参考文本"
+    assert context.reference_language == "zh"
+
+
 def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
@@ -254,6 +346,94 @@ def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
     ]
     assert snapshot.total_segment_count == 5
     assert snapshot.total_edge_count == 4
+
+
+def test_run_initialize_job_supports_english_period_in_zh_period_segment_boundary_mode(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="Hello world.\nNext line.",
+            voice_id="demo",
+            text_language="en",
+            segment_boundary_mode="zh_period",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_snapshot()
+
+    assert snapshot.session_status == "ready"
+    assert [segment.raw_text for segment in snapshot.segments] == [
+        "Hello world.",
+        "Next line.",
+    ]
+    assert snapshot.total_segment_count == 2
+    assert snapshot.total_edge_count == 1
+
+
+def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule_fields(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text='第一句？！\n第二句”',
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    events = service._runtime._events[accepted.job.job_id]  # noqa: SLF001
+    payload = next(event["data"] for event in events if event["event"] == "segments_initialized")
+
+    assert payload["segments"] == [
+        {
+            "segment_id": payload["segments"][0]["segment_id"],
+            "order_key": 1,
+            "raw_text": "第一句？！",
+            "terminal_raw": "？！",
+            "terminal_closer_suffix": "",
+            "terminal_source": "original",
+            "detected_language": "zh",
+            "inference_exclusion_reason": "none",
+            "render_status": "pending",
+        },
+        {
+            "segment_id": payload["segments"][1]["segment_id"],
+            "order_key": 2,
+            "raw_text": '第二句。”',
+            "terminal_raw": "",
+            "terminal_closer_suffix": "”",
+            "terminal_source": "synthetic",
+            "detected_language": "zh",
+            "inference_exclusion_reason": "none",
+            "render_status": "pending",
+        },
+    ]
+
+
+def test_get_standardization_preview_response_paginates_and_marks_other_language_segments(tmp_path):
+    service = _build_service(tmp_path)
+
+    response = service.get_standardization_preview_response(
+        StandardizationPreviewRequest(
+            raw_text='第一句？！\nSecond sentence!\n第三句”',
+            text_language="auto",
+            segment_limit=2,
+        )
+    )
+
+    assert response.analysis_stage == "complete"
+    assert response.total_segments == 3
+    assert response.next_cursor == 2
+    assert response.resolved_document_language == "zh"
+    assert response.language_detection_source == "auto"
+    assert [segment.order_key for segment in response.segments] == [1, 2]
+    assert response.segments[0].canonical_text == "第一句。"
+    assert response.segments[0].terminal_raw == "？！"
+    assert response.segments[0].detected_language == "zh"
+    assert response.segments[0].inference_exclusion_reason == "none"
+    assert response.segments[1].canonical_text == "Second sentence。"
+    assert response.segments[1].detected_language == "en"
+    assert response.segments[1].inference_exclusion_reason == "other_language_segment"
 
 
 def test_run_initialize_job_marks_job_failed_when_render_raises(tmp_path):
@@ -666,6 +846,22 @@ def test_create_update_segment_job_preserves_planner_metadata_for_queued_edit_jo
     assert queued_job.earliest_changed_order_key == 1
     assert queued_job.timeline_reflow_required is True
     assert queued_job.change_reason == "segment_update"
+
+
+def test_run_initialize_job_persists_canonical_text_in_normalized_text_only(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text='第一句？！第二句”',
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    assert [segment.raw_text for segment in snapshot.segments] == ['第一句？！', '第二句。”']
+    assert [segment.normalized_text for segment in snapshot.segments] == ["第一句。", "第二句。"]
 
 
 def test_run_edit_job_restores_planner_metadata_into_render_plan(tmp_path, monkeypatch):

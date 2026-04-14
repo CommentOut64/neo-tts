@@ -1,6 +1,7 @@
 import pathlib
 import importlib
 import sys
+from types import SimpleNamespace
 
 from backend.app.inference.model_cache import PyTorchModelCache
 
@@ -127,3 +128,135 @@ def test_pytorch_runtime_bootstraps_gpt_sovits_import_paths():
 
     assert repo_root in sys.path
     assert gpt_sovits_root in sys.path
+
+
+def test_model_cache_clear_drops_cached_engines(tmp_path: pathlib.Path):
+    created = []
+
+    def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        engine = {"gpt": gpt_path, "sovits": sovits_path, "created_index": len(created)}
+        created.append((gpt_path, sovits_path, cnhubert_path, bert_path))
+        return engine
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+    )
+
+    first = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+    cache.clear()
+    second = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+
+    assert first is not second
+    assert len(created) == 2
+
+
+class _FakeCacheEngine:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.offload_calls = 0
+        self.ensure_calls = 0
+
+    def offload_from_gpu(self) -> None:
+        self.offload_calls += 1
+
+    def ensure_on_gpu(self) -> None:
+        self.ensure_calls += 1
+
+
+def test_model_cache_acquire_and_release_tracks_usage(tmp_path: pathlib.Path):
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=lambda *args: _FakeCacheEngine("demo"),
+    )
+
+    handle = cache.acquire_model_handle("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+
+    assert handle.active_count == 1
+    assert handle.last_used_at > 0
+
+    cache.release_model_handle(handle.cache_key)
+
+    assert handle.active_count == 0
+
+
+def test_model_cache_offloads_idle_cuda_handles_before_loading_new_model(tmp_path: pathlib.Path):
+    created: list[str] = []
+
+    def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        del sovits_path, cnhubert_path, bert_path
+        engine = _FakeCacheEngine(pathlib.Path(gpt_path).name)
+        created.append(engine.name)
+        return engine
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+        gpu_offload_enabled=True,
+        gpu_min_free_mb=2048,
+        gpu_reserve_mb_for_load=4096,
+        cuda_mem_get_info=lambda: (1024 * 1024 * 1024, 12 * 1024 * 1024 * 1024),
+    )
+
+    first = cache.get_model_handle("pretrained_models/a.ckpt", "pretrained_models/a.pth")
+    cache.acquire_model_handle("pretrained_models/a.ckpt", "pretrained_models/a.pth")
+    cache.release_model_handle(first.cache_key)
+
+    second = cache.acquire_model_handle("pretrained_models/b.ckpt", "pretrained_models/b.pth")
+
+    assert created == ["a.ckpt", "b.ckpt"]
+    assert first.engine.offload_calls == 1
+    assert first.resident_device == "cpu"
+    assert second.active_count == 1
+
+
+def test_model_cache_acquire_restores_offloaded_engine_to_gpu(tmp_path: pathlib.Path):
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=lambda *args: _FakeCacheEngine("demo"),
+    )
+
+    handle = cache.get_model_handle("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+    handle.resident_device = "cpu"
+
+    acquired = cache.acquire_model_handle("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+
+    assert acquired.engine.ensure_calls == 1
+    assert acquired.resident_device == "cuda"
+
+
+def test_model_cache_does_not_offload_pinned_or_active_handles(tmp_path: pathlib.Path):
+    created: list[_FakeCacheEngine] = []
+
+    def fake_factory(*args):
+        engine = _FakeCacheEngine(f"engine-{len(created)}")
+        created.append(engine)
+        return engine
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+        gpu_offload_enabled=True,
+        gpu_min_free_mb=2048,
+        gpu_reserve_mb_for_load=4096,
+        cuda_mem_get_info=lambda: (1024 * 1024 * 1024, 12 * 1024 * 1024 * 1024),
+    )
+
+    pinned = cache.get_model_handle("pretrained_models/pinned.ckpt", "pretrained_models/pinned.pth")
+    pinned.pinned = True
+    active = cache.acquire_model_handle("pretrained_models/active.ckpt", "pretrained_models/active.pth")
+
+    cache.acquire_model_handle("pretrained_models/new.ckpt", "pretrained_models/new.pth")
+
+    assert pinned.engine.offload_calls == 0
+    assert active.engine.offload_calls == 0

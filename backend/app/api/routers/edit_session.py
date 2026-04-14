@@ -12,7 +12,12 @@ from backend.app.api.reference_audio_upload import (
     validate_reference_audio_filename,
 )
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
-from backend.app.inference.editable_gateway import EditableInferenceGateway, LazyEditableInferenceGateway
+from backend.app.inference.editable_gateway import (
+    CacheBackedEditableInferenceBackend,
+    EditableInferenceGateway,
+    LazyEditableInferenceGateway,
+    RoutingEditableInferenceGateway,
+)
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -25,6 +30,7 @@ from backend.app.schemas.edit_session import (
     CurrentCheckpointResponse,
     EdgeListResponse,
     EditSessionSnapshotResponse,
+    ExportRequest,
     ExportJobAcceptedResponse,
     ExportJobResponse,
     GroupListResponse,
@@ -46,6 +52,8 @@ from backend.app.schemas.edit_session import (
     SegmentBatchVoiceBindingPatchRequest,
     SegmentListResponse,
     SplitSegmentRequest,
+    StandardizationPreviewRequest,
+    StandardizationPreviewResponse,
     SwapSegmentsRequest,
     TimelineManifest,
     UpdateEdgeRequest,
@@ -108,37 +116,55 @@ def _resolve_project_path(project_root: Path, raw_path: str) -> str:
     return str((project_root / path).resolve())
 
 
-def _build_editable_gateway(request: Request, *, voice_id: str) -> EditableInferenceGateway | LazyEditableInferenceGateway:
+def _build_editable_gateway(
+    request: Request,
+    *,
+    voice_id: str,
+) -> EditableInferenceGateway | LazyEditableInferenceGateway | RoutingEditableInferenceGateway:
     existing = getattr(request.app.state, "editable_inference_gateway", None)
     if existing is not None:
         return existing
 
     settings = request.app.state.settings
+    model_cache = getattr(request.app.state, "model_cache", None)
+    if model_cache is None:
+        from backend.app.inference.model_cache import PyTorchModelCache, build_model_cache_from_settings
+
+        model_cache = build_model_cache_from_settings(
+            settings=settings,
+            model_cache_cls=PyTorchModelCache,
+        )
+        request.app.state.model_cache = model_cache
     voice_service = _build_voice_service(request)
     voice = voice_service.get_voice(voice_id)
-    cache: dict[tuple[str, str], EditableInferenceGateway] = getattr(
+    cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway] = getattr(
         request.app.state,
         "editable_inference_gateway_cache",
         {},
     )
-    cache_key = (voice.gpt_path, voice.sovits_path)
-    if cache_key not in cache:
-        resolved_gpt_path = _resolve_project_path(settings.project_root, voice.gpt_path)
-        resolved_sovits_path = _resolve_project_path(settings.project_root, voice.sovits_path)
+    default_cache_key = (voice.gpt_path, voice.sovits_path)
+
+    def _build_cached_gateway(gpt_path: str, sovits_path: str) -> LazyEditableInferenceGateway:
+        resolved_gpt_path = _resolve_project_path(settings.project_root, gpt_path)
+        resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
 
         def _build_backend():
-            from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
-
-            return GPTSoVITSOptimizedInference(
-                resolved_gpt_path,
-                resolved_sovits_path,
-                settings.cnhubert_base_path,
-                settings.bert_path,
+            return CacheBackedEditableInferenceBackend(
+                model_cache=model_cache,
+                gpt_path=resolved_gpt_path,
+                sovits_path=resolved_sovits_path,
             )
 
-        cache[cache_key] = LazyEditableInferenceGateway(backend_factory=_build_backend)
+        return LazyEditableInferenceGateway(backend_factory=_build_backend)
+
+    if default_cache_key not in cache:
+        cache[default_cache_key] = _build_cached_gateway(*default_cache_key)
         request.app.state.editable_inference_gateway_cache = cache
-    return cache[cache_key]
+    return RoutingEditableInferenceGateway(
+        default_gateway=cache[default_cache_key],
+        gateway_cache=cache,
+        gateway_factory=_build_cached_gateway,
+    )
 
 
 def _build_edit_session_service(request: Request) -> EditSessionService:
@@ -789,6 +815,21 @@ def rerender_segment(request: Request, segment_id: str) -> RenderJobAcceptedResp
 
 
 @router.post(
+    "/exports",
+    response_model=ExportJobAcceptedResponse,
+    status_code=202,
+    summary="创建统一导出作业",
+    description=(
+        "统一导出指定 `document_version` 的正式音频与可选字幕。"
+        "前端应优先调用该接口，而不是分别调用分段导出和整条导出接口。"
+    ),
+    responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE},
+)
+def create_export(request: Request, body: ExportRequest) -> ExportJobAcceptedResponse:
+    return _build_export_service(request).create_export_job(body)
+
+
+@router.post(
     "/exports/segments",
     response_model=ExportJobAcceptedResponse,
     status_code=202,
@@ -895,6 +936,20 @@ def get_composition(request: Request) -> CompositionResponse:
 )
 def get_playback_map(request: Request) -> PlaybackMapResponse:
     return _build_readonly_render_job_service(request).get_playback_map_response()
+
+
+@router.post(
+    "/standardization-preview",
+    response_model=StandardizationPreviewResponse,
+    summary="预览文本标准化结果",
+    description="按后端权威标准化器切段并返回 canonical/capsule/语言元数据预览，不写入正式会话。",
+    responses=BAD_REQUEST_RESPONSE,
+)
+def get_standardization_preview(
+    request: Request,
+    body: StandardizationPreviewRequest,
+) -> StandardizationPreviewResponse:
+    return _build_readonly_render_job_service(request).get_standardization_preview_response(body)
 
 
 @router.get(

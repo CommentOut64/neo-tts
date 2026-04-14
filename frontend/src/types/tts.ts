@@ -114,6 +114,28 @@ export interface InferenceParamsCacheResponse {
   updated_at: string | null
 }
 
+export interface ReferenceSelectionByBindingEntry {
+  source: 'preset' | 'custom'
+  custom_ref_path: string | null
+  ref_text: string
+  ref_lang: string
+}
+
+export type ReferenceSelectionByBinding = Record<string, ReferenceSelectionByBindingEntry>
+
+export interface InferenceParamsCachePayloadV2 {
+  voice_id: string
+  speed: number
+  temperature: number
+  top_p: number
+  top_k: number
+  pause_length: number
+  chunk_length: number
+  text_lang: string
+  text_split_method: string
+  referenceSelectionsByBinding: ReferenceSelectionByBinding
+}
+
 export interface InferenceParamsCacheEnvelope {
   payload: Record<string, unknown>
   updatedAt: string | null

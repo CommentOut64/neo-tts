@@ -40,11 +40,11 @@ describe("render job controls", () => {
     });
 
     expect(resolved.percent).toBe(64);
-    expect(resolved.message).toBe("第 3/5 段处理完成。 (3/5 段)");
+    expect(resolved.message).toBe("正在生成语音 (3/5 段)");
     expect(resolved.source).toBe("tts");
   });
 
-  it("TTS 已结束时不再回退 render job，而是显示空闲态", () => {
+  it("TTS 已结束且 RenderJob 在提交阶段时显示 100% 同步中", () => {
     const resolved = resolveWorkspaceProgressState({
       inferenceProgress: {
         task_id: "tts-1",
@@ -66,8 +66,8 @@ describe("render job controls", () => {
       },
     });
 
-    expect(resolved.percent).toBe(0);
-    expect(resolved.message).toBe("等待中...");
-    expect(resolved.source).toBe("idle");
+    expect(resolved.percent).toBe(100);
+    expect(resolved.message).toBe("生成完成，正在同步...");
+    expect(resolved.source).toBe("tts");
   });
 });

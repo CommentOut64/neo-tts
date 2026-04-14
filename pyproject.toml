@@ -62,6 +62,7 @@ dependencies = [
     "numpy<2.0",
     "tensorboard",
     "tqdm",
+    "matplotlib",
     "chardet",
     "PyYAML",
     "psutil",

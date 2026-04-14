@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import {
+  resolveReferenceSelectionBySource,
+  resolveReferenceSelectionForBinding,
+} from "@/features/reference-binding";
 import type { VoiceProfile } from "@/types/tts";
 import VoiceSelect from "@/components/VoiceSelect.vue";
 import InferenceSettingsPanel from "@/components/InferenceSettingsPanel.vue";
+import type { InputTextLanguage } from "@/composables/useInputDraft";
 
 const props = defineProps<{
   modelValue: {
@@ -17,14 +22,25 @@ const props = defineProps<{
     text_split_method: string;
     ref_source: "preset" | "custom";
     custom_ref_file: File | null;
+    custom_ref_path: string | null;
     ref_text: string;
     ref_lang: string;
+    referenceSelectionsByBinding: Record<
+      string,
+      {
+        source: "preset" | "custom";
+        custom_ref_path: string | null;
+        ref_text: string;
+        ref_lang: string;
+      }
+    >;
   };
   voices: VoiceProfile[];
 }>();
 
 const emit = defineEmits<{
   "update:modelValue": [value: any];
+  "request-text-language-change": [value: InputTextLanguage];
   reset: [];
 }>();
 
@@ -45,12 +61,52 @@ function handleVoiceChange(val: string) {
     newParams.top_p = v.defaults.top_p;
     newParams.top_k = v.defaults.top_k;
     newParams.pause_length = v.defaults.pause_length;
-    newParams.ref_text = v.ref_text || "";
-    newParams.ref_lang = v.ref_lang || "auto";
-    newParams.ref_source = "preset";
-    newParams.custom_ref_file = null;
   }
+
+  const { selection } = resolveReferenceSelectionForBinding({
+    voiceId: val,
+    voices: props.voices,
+    selections: props.modelValue.referenceSelectionsByBinding,
+  });
+  newParams.ref_source = selection.source;
+  newParams.custom_ref_path = selection.custom_ref_path;
+  newParams.ref_text = selection.ref_text;
+  newParams.ref_lang = selection.ref_lang;
+  newParams.custom_ref_file = null;
+
   emit("update:modelValue", newParams);
+}
+
+function handleReferenceSourceChange(source: "preset" | "custom") {
+  if (!props.modelValue.voice_id) {
+    update("ref_source", source);
+    return;
+  }
+
+  const { selection } = resolveReferenceSelectionBySource({
+    voiceId: props.modelValue.voice_id,
+    source,
+    voices: props.voices,
+    selections: props.modelValue.referenceSelectionsByBinding,
+  });
+
+  emit("update:modelValue", {
+    ...props.modelValue,
+    ref_source: selection.source,
+    custom_ref_path: selection.custom_ref_path,
+    ref_text: selection.ref_text,
+    ref_lang: selection.ref_lang,
+    custom_ref_file: source === "custom" ? props.modelValue.custom_ref_file : null,
+  });
+}
+
+function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
+  if (nextParams.text_lang !== props.modelValue.text_lang) {
+    emit("request-text-language-change", nextParams.text_lang as InputTextLanguage);
+    return;
+  }
+
+  emit("update:modelValue", nextParams);
 }
 </script>
 
@@ -85,7 +141,7 @@ function handleVoiceChange(val: string) {
       <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
       <el-radio-group
         :model-value="modelValue.ref_source"
-        @update:model-value="update('ref_source', $event)"
+        @update:model-value="handleReferenceSourceChange"
         class="mb-3"
       >
         <el-radio value="preset">模型预设</el-radio>
@@ -154,7 +210,8 @@ function handleVoiceChange(val: string) {
     <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
       <InferenceSettingsPanel
         :params="modelValue"
-        @update:params="emit('update:modelValue', { ...modelValue, ...$event })"
+        :show-text-split-method="false"
+        @update:params="handleInferenceParamsUpdate"
         @reset="emit('reset')"
       />
     </section>

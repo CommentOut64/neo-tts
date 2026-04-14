@@ -49,7 +49,7 @@ const completedSegments = computed(() =>
           class="bg-muted/20 border border-border w-full rounded-card p-4"
         >
           <p class="text-[14px] leading-relaxed text-foreground select-text">
-            {{ seg.rawText }}
+            {{ seg.displayText }}
           </p>
         </div>
       </TransitionGroup>

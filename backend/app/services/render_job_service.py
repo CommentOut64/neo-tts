@@ -31,11 +31,7 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
-from backend.app.inference.text_processing import (
-    normalize_whitespace,
-    split_text_segments_raw_strong_punctuation,
-    split_text_segments_zh_period,
-)
+from backend.app.inference.text_processing import split_text_segments_zh_period
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
@@ -49,6 +45,7 @@ from backend.app.schemas.edit_session import (
     EditableSegment,
     GroupListResponse,
     InitializeEditSessionRequest,
+    ReferenceBindingOverride,
     MergeSegmentsRequest,
     MoveSegmentRangeRequest,
     PlaybackMapResponse,
@@ -59,6 +56,9 @@ from backend.app.schemas.edit_session import (
     RenderProfilePatchRequest,
     RenderProfileListResponse,
     SegmentAssetResponse,
+    StandardizationPreviewRequest,
+    StandardizationPreviewResponse,
+    StandardizationPreviewSegment,
     SegmentBatchRenderProfilePatchRequest,
     SegmentBatchVoiceBindingPatchRequest,
     SegmentGroup,
@@ -90,6 +90,13 @@ from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
+from backend.app.services.reference_binding import build_binding_key
+from backend.app.text.segment_standardizer import (
+    build_standardization_preview,
+    split_text_segments_with_terminal_capsules,
+    standardize_segment_text,
+    standardize_segment_texts,
+)
 
 render_job_logger = get_logger("render_job_service")
 
@@ -199,7 +206,7 @@ class RenderJobService:
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
-        self._render_config_resolver = RenderConfigResolver()
+        self._render_config_resolver = RenderConfigResolver(voice_service=session_service)
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._checkpoint_service = checkpoint_service or CheckpointService(
             repository=repository,
@@ -1209,6 +1216,40 @@ class RenderJobService:
             ),
         )
 
+    def get_standardization_preview_response(
+        self,
+        request: StandardizationPreviewRequest,
+    ) -> StandardizationPreviewResponse:
+        preview = build_standardization_preview(
+            raw_text=request.raw_text,
+            text_language=request.text_language,
+            segment_limit=request.segment_limit,
+            cursor=request.cursor,
+            include_language_analysis=request.include_language_analysis,
+        )
+        return StandardizationPreviewResponse(
+            analysis_stage=preview.analysis_stage,
+            document_char_count=preview.document_char_count,
+            total_segments=preview.total_segments,
+            next_cursor=preview.next_cursor,
+            resolved_document_language=preview.resolved_document_language,
+            language_detection_source=preview.language_detection_source,
+            warnings=preview.warnings,
+            segments=[
+                StandardizationPreviewSegment(
+                    order_key=segment.order_key,
+                    canonical_text=segment.canonical_text,
+                    terminal_raw=segment.terminal_raw,
+                    terminal_closer_suffix=segment.terminal_closer_suffix,
+                    terminal_source=segment.terminal_source,
+                    detected_language=segment.detected_language,
+                    inference_exclusion_reason=segment.inference_exclusion_reason,
+                    warnings=segment.warnings,
+                )
+                for segment in preview.segments
+            ],
+        )
+
     def get_segment_asset_response(self, render_asset_id: str) -> SegmentAssetResponse:
         asset = self._load_segment_asset_or_404(render_asset_id)
         sample_rate = self._load_sample_rate(self._asset_store.segment_asset_path(render_asset_id), asset_id=render_asset_id)
@@ -1284,15 +1325,63 @@ class RenderJobService:
         plan.voice_bindings = [default_voice_binding]
         plan.default_render_profile_id = default_render_profile.render_profile_id
         plan.default_voice_binding_id = default_voice_binding.voice_binding_id
+        split_started = time.perf_counter()
+        render_job_logger.info(
+            "initialize segment split start job_id={} segment_boundary_mode={} raw_text_length={}",
+            plan.job_id,
+            plan.request.segment_boundary_mode,
+            len(plan.request.raw_text),
+        )
         segments = self._split_raw_segments(
             plan.request.raw_text,
             segment_boundary_mode=plan.request.segment_boundary_mode,
         )
+        render_job_logger.info(
+            "initialize segment split completed job_id={} segment_count={} elapsed_ms={:.2f}",
+            plan.job_id,
+            len(segments),
+            (time.perf_counter() - split_started) * 1000,
+        )
         if not segments:
             raise ValueError("请输入有效文本")
-        normalized_text = normalize_whitespace(plan.request.raw_text)
+        build_segments_started = time.perf_counter()
+        render_job_logger.info(
+            "initialize build segments start job_id={} segment_count={} text_language={}",
+            plan.job_id,
+            len(segments),
+            plan.request.text_language,
+        )
         plan.segments = self._build_segments(plan.document_id, segments, plan.request.text_language)
+        detected_language_summary: dict[str, int] = {}
+        exclusion_reason_summary: dict[str, int] = {}
+        for segment in plan.segments:
+            detected_language_summary[segment.detected_language] = (
+                detected_language_summary.get(segment.detected_language, 0) + 1
+            )
+            exclusion_reason_summary[segment.inference_exclusion_reason] = (
+                exclusion_reason_summary.get(segment.inference_exclusion_reason, 0) + 1
+            )
+        render_job_logger.info(
+            "initialize build segments completed job_id={} segment_count={} elapsed_ms={:.2f} detected_language_summary={} exclusion_reason_summary={}",
+            plan.job_id,
+            len(plan.segments),
+            (time.perf_counter() - build_segments_started) * 1000,
+            detected_language_summary,
+            exclusion_reason_summary,
+        )
+        build_edges_started = time.perf_counter()
         plan.edges = self._build_edges(plan.document_id, plan.segments, plan.request.pause_duration_seconds)
+        render_job_logger.info(
+            "initialize build edges completed job_id={} edge_count={} elapsed_ms={:.2f}",
+            plan.job_id,
+            len(plan.edges),
+            (time.perf_counter() - build_edges_started) * 1000,
+        )
+        render_job_logger.info(
+            "initialize runtime sync start job_id={} total_segments={}",
+            plan.job_id,
+            len(plan.segments),
+        )
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.segments),
@@ -1309,14 +1398,25 @@ class RenderJobService:
                         "segment_id": segment.segment_id,
                         "order_key": segment.order_key,
                         "raw_text": segment.raw_text,
+                        "terminal_raw": segment.terminal_raw,
+                        "terminal_closer_suffix": segment.terminal_closer_suffix,
+                        "terminal_source": segment.terminal_source,
+                        "detected_language": segment.detected_language,
+                        "inference_exclusion_reason": segment.inference_exclusion_reason,
                         "render_status": segment.render_status,
                     }
                     for segment in plan.segments
                 ],
             },
         )
+        render_job_logger.info("initialize runtime sync completed job_id={}", plan.job_id)
+        persist_started = time.perf_counter()
         self._persist_runtime_job(plan.job_id)
-        self._ = normalized_text
+        render_job_logger.info(
+            "initialize prepare persisted job_id={} elapsed_ms={:.2f}",
+            plan.job_id,
+            (time.perf_counter() - persist_started) * 1000,
+        )
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
@@ -1341,7 +1441,7 @@ class RenderJobService:
     @staticmethod
     def _split_raw_segments(raw_text: str, *, segment_boundary_mode: str) -> list[str]:
         if segment_boundary_mode == "raw_strong_punctuation":
-            return split_text_segments_raw_strong_punctuation(raw_text)
+            return split_text_segments_with_terminal_capsules(raw_text)
         if segment_boundary_mode == "zh_period":
             return split_text_segments_zh_period(raw_text)
         raise ValueError(f"Unsupported segment_boundary_mode '{segment_boundary_mode}'.")
@@ -2093,20 +2193,61 @@ class RenderJobService:
         text_language: str,
     ) -> list[EditableSegment]:
         segments: list[EditableSegment] = []
-        for index, raw_text in enumerate(raw_segments, start=1):
+        normalized_text_language = text_language.lower()
+        if normalized_text_language == "auto":
+            batch_started = time.perf_counter()
+            render_job_logger.info(
+                "initialize build segments auto standardization start segment_count={} text_language={}",
+                len(raw_segments),
+                text_language,
+            )
+            standardized_segments = standardize_segment_texts(raw_segments, text_language).segments
+            render_job_logger.info(
+                "initialize build segments auto standardization completed segment_count={} elapsed_ms={:.2f}",
+                len(standardized_segments),
+                (time.perf_counter() - batch_started) * 1000,
+            )
+        else:
+            standardized_segments = []
+            for index, raw_text in enumerate(raw_segments, start=1):
+                item_started = time.perf_counter()
+                render_job_logger.info(
+                    "initialize build segment item start index={}/{} text_language={} raw_preview={}",
+                    index,
+                    len(raw_segments),
+                    text_language,
+                    raw_text[:80].replace("\r", "\\r").replace("\n", "\\n"),
+                )
+                standardized = standardize_segment_text(raw_text, text_language)
+                render_job_logger.info(
+                    "initialize build segment item completed index={}/{} elapsed_ms={:.2f} detected_language={} inference_exclusion_reason={} normalized_length={}",
+                    index,
+                    len(raw_segments),
+                    (time.perf_counter() - item_started) * 1000,
+                    standardized.detected_language,
+                    standardized.inference_exclusion_reason,
+                    len(standardized.normalized_text),
+                )
+                standardized_segments.append(standardized)
+        for index, standardized in enumerate(standardized_segments, start=1):
             previous_segment_id = segments[-1].segment_id if segments else None
             segment_id = f"segment-{uuid4().hex}"
-            normalized_text, risk_flags = self._segment_service.describe_segment_text(raw_text)
             segment = EditableSegment(
                 segment_id=segment_id,
                 document_id=document_id,
                 order_key=index,
                 previous_segment_id=previous_segment_id,
-                raw_text=normalized_text,
-                normalized_text=normalized_text,
+                raw_text=standardized.raw_text,
+                normalized_text=standardized.normalized_text,
                 text_language=text_language,
+                terminal_raw=standardized.terminal_raw,
+                terminal_closer_suffix=standardized.terminal_closer_suffix,
+                terminal_source=standardized.terminal_source,
+                detected_language=standardized.detected_language,
+                inference_exclusion_reason=standardized.inference_exclusion_reason,
                 render_version=1,
-                risk_flags=risk_flags,
+                risk_flags=standardized.risk_flags,
+                render_status="pending",
             )
             if segments:
                 segments[-1].next_segment_id = segment_id
@@ -2563,7 +2704,7 @@ class RenderJobService:
                 snapshot=after_snapshot,
                 segment_id=segment.segment_id,
             )
-            if before_resolved.render_profile_fingerprint != after_resolved.render_profile_fingerprint:
+            if before_resolved.render_context_fingerprint != after_resolved.render_context_fingerprint:
                 changed_segment_ids.add(segment.segment_id)
                 continue
             if before_resolved.model_cache_key != after_resolved.model_cache_key:
@@ -2607,6 +2748,21 @@ class RenderJobService:
 
     @staticmethod
     def _build_default_configuration(request: InitializeEditSessionRequest) -> tuple[RenderProfile, VoiceBinding]:
+        voice_binding = VoiceBinding(
+            voice_binding_id=f"binding-session-{uuid4().hex}",
+            scope="session",
+            voice_id=request.voice_id,
+            model_key=request.model_id,
+        )
+        reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
+        if request.reference_source == "custom":
+            reference_overrides_by_binding[
+                build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+            ] = ReferenceBindingOverride(
+                reference_audio_path=request.reference_audio_path,
+                reference_text=request.reference_text,
+                reference_language=request.reference_language,
+            )
         render_profile = RenderProfile(
             render_profile_id=f"profile-session-{uuid4().hex}",
             scope="session",
@@ -2616,15 +2772,7 @@ class RenderJobService:
             top_p=request.top_p,
             temperature=request.temperature,
             noise_scale=request.noise_scale,
-            reference_audio_path=request.reference_audio_path,
-            reference_text=request.reference_text,
-            reference_language=request.reference_language,
-        )
-        voice_binding = VoiceBinding(
-            voice_binding_id=f"binding-session-{uuid4().hex}",
-            scope="session",
-            voice_id=request.voice_id,
-            model_key=request.model_id,
+            reference_overrides_by_binding=reference_overrides_by_binding,
         )
         return render_profile, voice_binding
 
@@ -2636,16 +2784,29 @@ class RenderJobService:
         segment: EditableSegment,
     ) -> ReferenceContext:
         resolved = self._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)
-        cache_key = f"{resolved.model_cache_key}:{resolved.render_profile_fingerprint}"
+        cache_key = f"{resolved.model_cache_key}:{resolved.render_context_fingerprint}"
         context = plan.context_cache.get(cache_key)
         if context is not None:
             return context
+        resolved_reference = resolved.resolved_reference
         resolved_context = ResolvedRenderContext(
             voice_id=resolved.voice_binding.voice_id,
             model_key=resolved.voice_binding.model_key,
-            reference_audio_path=resolved.render_profile.reference_audio_path or plan.request.reference_audio_path or "",
-            reference_text=resolved.render_profile.reference_text or plan.request.reference_text or "",
-            reference_language=resolved.render_profile.reference_language or plan.request.reference_language or "",
+            reference_audio_path=(
+                resolved_reference.reference_audio_path
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_audio_path or "")
+            ),
+            reference_text=(
+                resolved_reference.reference_text
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_text or "")
+            ),
+            reference_language=(
+                resolved_reference.reference_language
+                if resolved_reference is not None
+                else (resolved.render_profile.reference_language or "")
+            ),
             speed=resolved.render_profile.speed,
             top_k=resolved.render_profile.top_k,
             top_p=resolved.render_profile.top_p,
@@ -2660,7 +2821,7 @@ class RenderJobService:
                 speaker_meta=dict(resolved.voice_binding.speaker_meta),
             ),
             render_profile_id=resolved.render_profile.render_profile_id,
-            render_profile_fingerprint=resolved.render_profile_fingerprint,
+            render_profile_fingerprint=resolved.render_context_fingerprint,
         )
         render_job_logger.info(
             "resolved segment context segment_id={} voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={} render_profile_id={} voice_binding_id={}",

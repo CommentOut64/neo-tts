@@ -27,7 +27,7 @@ const emit = defineEmits<{
       v-for="v in voices"
       :key="v.name"
       :value="v.name"
-      :label="`${v.name} — ${v.description}`"
+      :label="v.description ? `${v.name} — ${v.description}` : v.name"
     />
   </el-select>
 </template>

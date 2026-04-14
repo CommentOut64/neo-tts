@@ -6,8 +6,10 @@ import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { useEditSession } from '@/composables/useEditSession'
+import { useAppExit } from '@/composables/useAppExit'
 import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import { isExportBlockedByRenderJob } from './workspace/sessionHandoff'
+import AboutDialog from './AboutDialog.vue'
 
 defineProps<{
   status: ConnectionStatus
@@ -19,7 +21,10 @@ const router = useRouter()
 const { isDark, toggleThemeWithTransition } = useTheme()
 const { currentRenderJob } = useRuntimeState()
 const { snapshot } = useEditSession()
+const { isExiting, requestExit } = useAppExit()
 const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
+
+const aboutDialogVisible = ref(false)
 
 const navItems = [
   { path: '/text-input', label: '文本输入' },
@@ -91,16 +96,26 @@ watch(
 
 <template>
   <nav class="app-navbar fixed top-0 left-0 right-0 z-50 h-14 border-b flex items-center pl-6 pr-3">
-    <div class="flex items-center gap-2 mr-8">
-      <div 
-        class="w-8 h-8 transition-colors duration-300" 
+    <div 
+      class="flex items-center gap-2 mr-8 cursor-pointer hover:opacity-80 transition-opacity select-none"
+      @click="aboutDialogVisible = true"
+      title="关于"
+    >
+      <svg
+        viewBox="0 0 32 32"
+        aria-hidden="true"
+        class="w-8 h-8 transition-colors duration-300"
         :class="{
-          'bg-green-500': status === 'online',
-          'bg-yellow-500': status === 'reconnecting',
-          'bg-red-500': status === 'offline'
+          'text-green-500': status === 'online',
+          'text-yellow-500': status === 'reconnecting',
+          'text-red-500': status === 'offline'
         }"
-        style="mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; mask-size: contain; -webkit-mask: url('/carbon--ibm-watson-text-to-speech.svg') no-repeat center; -webkit-mask-size: contain;"
-      ></div>
+      >
+        <path
+          fill="currentColor"
+          d="M13 26h-2c-3.9 0-7-3.1-7-7v-2h2v2c0 2.8 2.2 5 5 5h2zm5-8h10c1.1 0 2 .9 2 2v6c0 1.1-.9 2-2 2h-2.4l-1.7 3l-1.7-1l2.3-4H28v-6H18v6h3v2h-3c-1.1 0-2-.9-2-2v-6c0-1.1.9-2 2-2m10-4h-2v-2c0-2.8-2.2-5-5-5h-4V5h4c3.9 0 7 3.1 7 7zM2 11h6v2H2zm0-4h12v2H2zm0-4h12v2H2z"
+        />
+      </svg>
       <span class="text-xl font-bold text-foreground">Neo TTS</span>
     </div>
     <div class="relative flex items-center gap-1">
@@ -179,11 +194,20 @@ watch(
         </el-button>
 
         <!-- 退出轮廓按钮 -->
-        <el-button plain class="!bg-transparent !transition-all !duration-300 !text-sm !font-medium !px-4 !ml-0 !rounded-md">
+        <el-button
+          plain
+          class="!bg-transparent !transition-all !duration-300 !text-sm !font-medium !px-4 !ml-0 !rounded-md"
+          :loading="isExiting"
+          :disabled="isExiting"
+          @click="requestExit"
+        >
           退出
         </el-button>
       </div>
     </div>
+
+    <!-- 关于与自更新窗口 -->
+    <AboutDialog v-model:visible="aboutDialogVisible" />
   </nav>
 </template>
 

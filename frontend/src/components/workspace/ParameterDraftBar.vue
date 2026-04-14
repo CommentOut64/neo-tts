@@ -35,7 +35,7 @@ const title = computed(() => {
 const hint = computed(() => {
   switch (props.scope) {
     case "session":
-      return "当前编辑会话的默认运行期参数。提交后会创建新的配置 patch job。";
+      return "当前编辑会话的默认运行期参数。提交后会创建新的配置。";
     case "segment":
       return "当前选中段的运行期参数。提交后仅持久化配置，后续推理会继承这些值。";
     case "batch":

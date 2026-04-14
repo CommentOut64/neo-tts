@@ -16,6 +16,9 @@ from backend.app.schemas.edit_session import (
     PreviewResponse,
     RenderJobResponse,
     SegmentAssetResponse,
+    StandardizationPreviewRequest,
+    StandardizationPreviewResponse,
+    UpdateEdgeRequest,
 )
 
 
@@ -37,6 +40,18 @@ def test_initialize_edit_session_request_exposes_frozen_defaults():
     assert request.pause_duration_seconds == 0.3
     assert request.noise_scale == 0.35
     assert request.segment_boundary_mode == "raw_strong_punctuation"
+
+
+def test_pause_duration_seconds_rejects_out_of_range_values():
+    with pytest.raises(ValidationError):
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+            pause_duration_seconds=10.01,
+        )
+
+    with pytest.raises(ValidationError):
+        UpdateEdgeRequest(pause_duration_seconds=-0.01)
 
 
 def test_render_job_response_exposes_frozen_progress_fields():
@@ -163,6 +178,29 @@ def test_preview_request_requires_exactly_one_target():
     assert request.segment_id == "seg-1"
 
 
+def test_standardization_preview_request_exposes_defaults():
+    request = StandardizationPreviewRequest(raw_text="第一句。")
+
+    assert request.text_language == "auto"
+    assert request.segment_limit == 80
+    assert request.cursor is None
+    assert request.include_language_analysis is True
+
+
+def test_standardization_preview_response_requires_known_stage():
+    with pytest.raises(ValidationError):
+        StandardizationPreviewResponse(
+            analysis_stage="invalid",
+            document_char_count=4,
+            total_segments=1,
+            next_cursor=None,
+            resolved_document_language=None,
+            language_detection_source=None,
+            warnings=[],
+            segments=[],
+        )
+
+
 def test_segment_and_edge_response_types_reuse_domain_fields():
     segment = EditableSegmentResponse(
         segment_id="seg-1",
@@ -180,6 +218,11 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     )
 
     assert segment.segment_kind == "speech"
+    assert segment.terminal_raw == ""
+    assert segment.terminal_closer_suffix == ""
+    assert segment.terminal_source == "synthetic"
+    assert segment.detected_language == "unknown"
+    assert segment.inference_exclusion_reason == "language_unresolved"
     assert edge.pause_duration_seconds == 0.3
     assert edge.boundary_strategy == "latent_overlap_then_equal_power_crossfade"
     assert edge.boundary_strategy_locked is False

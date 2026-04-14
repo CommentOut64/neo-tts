@@ -28,6 +28,7 @@ import { useTimeline } from "./useTimeline";
 import { useInputDraft, type InputDraftSource } from './useInputDraft'
 import { useWorkspaceDraftPersistence } from './useWorkspaceDraftPersistence'
 import { useWorkspaceLightEdit } from './useWorkspaceLightEdit'
+import { buildSessionHeadText } from '@/components/workspace/sessionHandoff'
 export type SessionStatus = 'empty' | 'initializing' | 'ready' | 'failed'
 export type EndSessionInputSource = InputDraftSource | 'manual'
 export type FormalStateStatus = 'idle' | 'refreshing' | 'ready' | 'error'
@@ -122,7 +123,7 @@ export function useEditSession() {
     if (!data || data.segments.length === 0) {
       return null
     }
-    return data.segments.map((segment) => segment.raw_text).join('')
+    return buildSessionHeadText(data.segments)
   }
 
   const sourceText = computed(() => {

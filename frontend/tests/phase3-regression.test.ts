@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildInitializeRequest, unwrapAcceptedExportJob, unwrapAcceptedRenderJob } from "../src/api/editSessionContract.ts";
+import {
+  buildInitializeRequest,
+  WORKSPACE_SEGMENT_BOUNDARY_MODE,
+  unwrapAcceptedExportJob,
+  unwrapAcceptedRenderJob,
+} from "../src/api/editSessionContract.ts";
 import { ApiRequestError, extractStatusCode, resolveApiUrl, toApiRequestError } from "../src/api/requestSupport.ts";
 
 describe("phase3 regression", () => {
@@ -19,7 +24,6 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
       topP: 0.9,
       topK: 12,
       pauseLength: 0.45,
-      textSplitMethod: "cut5",
       refSource: "preset",
       refText: "示例参考文本",
       refLang: "zh",
@@ -35,19 +39,40 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
     raw_text: "第一句。第二句。",
     text_language: "zh",
     voice_id: "demo-voice",
+    reference_source: "preset",
     speed: 1.1,
     temperature: 0.85,
     top_p: 0.9,
     top_k: 12,
     pause_duration_seconds: 0.45,
-    segment_boundary_mode: "zh_period",
+    segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
     reference_audio_path: "voices/demo/reference.wav",
     reference_text: "示例参考文本",
     reference_language: "zh",
   });
 });
 
-it("buildInitializeRequest preserves supported boundary modes", () => {
+it("buildInitializeRequest uses the fixed workspace strong-terminal segmentation standard", () => {
+  const payload = buildInitializeRequest({
+    text: "第一句！第二句？第三句。",
+    voiceId: "voice-a",
+    textLang: "zh",
+    speed: 1,
+    temperature: 1,
+    topP: 1,
+    topK: 15,
+    pauseLength: 0.3,
+    refSource: "custom",
+    refText: "",
+    refLang: "auto",
+    customRefFile: null,
+    customRefPath: null,
+  });
+
+  expect(payload.segment_boundary_mode).toBe(WORKSPACE_SEGMENT_BOUNDARY_MODE);
+});
+
+it("buildInitializeRequest no longer accepts a user-provided segmentation mode", () => {
   const payload = buildInitializeRequest({
     text: "test",
     voiceId: "voice-a",
@@ -57,7 +82,6 @@ it("buildInitializeRequest preserves supported boundary modes", () => {
     topP: 1,
     topK: 15,
     pauseLength: 0.3,
-    textSplitMethod: "zh_period",
     refSource: "custom",
     refText: "",
     refLang: "auto",
@@ -65,7 +89,7 @@ it("buildInitializeRequest preserves supported boundary modes", () => {
     customRefPath: null,
   });
 
-  expect(payload.segment_boundary_mode).toBe("zh_period");
+  expect(payload.segment_boundary_mode).toBe(WORKSPACE_SEGMENT_BOUNDARY_MODE);
   expect("reference_audio_path" in payload).toBe(false);
 });
 
@@ -79,7 +103,6 @@ it("buildInitializeRequest uses uploaded custom reference path", () => {
     topP: 1,
     topK: 15,
     pauseLength: 0.3,
-    textSplitMethod: "cut3",
     refSource: "custom",
     refText: "自定义参考文本",
     refLang: "zh",
@@ -133,6 +156,63 @@ it("unwrapAcceptedExportJob returns nested export job payload", () => {
 
   expect(job.export_job_id).toBe("export-123");
   expect(job.export_kind).toBe("composition");
+});
+
+it("exportAudio posts unified export payload", async () => {
+  const post = vi.fn().mockResolvedValue({
+    data: {
+      job: {
+        export_job_id: "export-123",
+        document_id: "doc-1",
+        document_version: 1,
+        timeline_manifest_id: "timeline-1",
+        export_kind: "segments",
+        status: "queued",
+        target_dir: "F:/exports",
+        overwrite_policy: "fail",
+        progress: 0,
+        message: "queued",
+        output_manifest: null,
+        staging_dir: null,
+        updated_at: "2026-04-13T00:00:00Z",
+      },
+    },
+  });
+
+  vi.doMock("../src/api/http.ts", () => ({
+    default: {
+      post,
+      get: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    },
+  }));
+
+  const { exportAudio } = await import("../src/api/editSession.ts");
+
+  await exportAudio({
+    document_version: 1,
+    target_dir: "F:/exports",
+    audio: { kind: "segments", overwrite_policy: "fail" },
+    subtitle: {
+      enabled: true,
+      format: "srt",
+      offset_seconds: -0.4,
+      strip_trailing_punctuation: true,
+    },
+  });
+
+  expect(post).toHaveBeenCalledWith(
+    "/v1/edit-session/exports",
+    expect.objectContaining({
+      audio: expect.objectContaining({ kind: "segments" }),
+      subtitle: expect.objectContaining({
+        format: "srt",
+        offset_seconds: -0.4,
+        strip_trailing_punctuation: true,
+      }),
+    }),
+  );
 });
 
 it("resumeRenderJob unwraps accepted response payload", async () => {

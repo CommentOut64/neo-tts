@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import os
 import time
 import sys
 from pathlib import Path
@@ -9,7 +10,13 @@ from pathlib import Path
 from loguru import logger
 
 _DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_LOG_FORMAT = "{time:HH:mm:ss.SSS} [{level}] [{extra[component]}] {message}"
+_CONSOLE_LOG_FORMAT = (
+    "<green>{time:HH:mm:ss.SSS}</green> "
+    "[<level>{level}</level>] "
+    "[<cyan>{extra[component]}</cyan>] "
+    "<level>{message}</level>"
+)
+_FILE_LOG_FORMAT = "{time:HH:mm:ss.SSS} [{level}] [{extra[component]}] {message}"
 _CRASH_LOOP_WINDOW_SECONDS = 30
 _configured_log_dir: Path | None = None
 _configured_log_file: Path | None = None
@@ -71,11 +78,23 @@ def _pick_log_file(log_dir: Path) -> tuple[Path, bool]:
     return log_dir / f"backend_{session_stamp}.log", False
 
 
+def _resolve_log_dir(project_root: Path | None) -> Path:
+    explicit_log_dir = os.environ.get("NEO_TTS_LOGS_ROOT")
+    if explicit_log_dir:
+        return Path(explicit_log_dir).resolve()
+
+    explicit_user_data_root = os.environ.get("NEO_TTS_USER_DATA_ROOT")
+    if explicit_user_data_root:
+        return (Path(explicit_user_data_root).resolve() / "logs").resolve()
+
+    root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
+    return root / "logs"
+
+
 def configure_logging(project_root: Path | None = None, *, force: bool = False) -> Path:
     global _configured_log_dir, _configured_log_file
 
-    root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
-    log_dir = root / "logs"
+    log_dir = _resolve_log_dir(project_root)
     should_reconfigure = force or _configured_log_dir != log_dir or _configured_log_file is None
     if not should_reconfigure:
         return log_dir
@@ -87,7 +106,7 @@ def configure_logging(project_root: Path | None = None, *, force: bool = False) 
     _base_logger.add(
         sys.stderr,
         level="INFO",
-        format=_LOG_FORMAT,
+        format=_CONSOLE_LOG_FORMAT,
         colorize=True,
         backtrace=False,
         diagnose=False,
@@ -95,7 +114,7 @@ def configure_logging(project_root: Path | None = None, *, force: bool = False) 
     _base_logger.add(
         str(log_file),
         level="DEBUG",
-        format=_LOG_FORMAT,
+        format=_FILE_LOG_FORMAT,
         colorize=False,
         retention="14 days",
         encoding="utf-8",

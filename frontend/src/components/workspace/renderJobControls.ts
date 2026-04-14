@@ -1,4 +1,4 @@
-import type { RenderJobStatus } from "@/types/editSession";
+import type { RenderJobStatus, RenderJobResponse } from "@/types/editSession";
 import type { InferenceProgressState } from "@/types/tts";
 
 export type PrimaryRenderActionKind = "pause" | "resume";
@@ -22,23 +22,32 @@ export function getPrimaryRenderActionLabel(
   return getPrimaryRenderActionKind(status) === "resume" ? "恢复" : "暂停";
 }
 
-function isActiveInferenceStatus(status: InferenceProgressState["status"] | undefined): boolean {
-  return status === "preparing" || status === "inferencing" || status === "cancelling";
+function isActiveInferenceStatus(
+  status: InferenceProgressState["status"] | undefined,
+): boolean {
+  return (
+    status === "preparing" ||
+    status === "inferencing" ||
+    status === "cancelling"
+  );
 }
 
 function formatInferenceMessage(progress: InferenceProgressState): string {
-  if (progress.current_segment != null && progress.total_segments != null) {
-    return `${progress.message} (${progress.current_segment}/${progress.total_segments} 段)`;
+  if (progress.status === "cancelling") {
+    return "正在取消...";
   }
-
-  return progress.message || progress.status;
+  if (progress.current_segment != null && progress.total_segments != null) {
+    return `正在生成语音 (${progress.current_segment}/${progress.total_segments} 段)`;
+  }
+  return "正在生成语音...";
 }
 
 export function resolveWorkspaceProgressState({
   inferenceProgress,
+  renderJob,
 }: {
   inferenceProgress?: InferenceProgressState | null;
-  renderJob?: RenderJob | null;
+  renderJob?: RenderJobResponse | null;
 }): WorkspaceProgressState {
   if (inferenceProgress && isActiveInferenceStatus(inferenceProgress.status)) {
     return {
@@ -48,9 +57,25 @@ export function resolveWorkspaceProgressState({
     };
   }
 
+  const inferenceActuallyFinished =
+    inferenceProgress?.status === "completed" &&
+    (!renderJob || !["queued", "preparing"].includes(renderJob.status));
+
+  if (
+    inferenceActuallyFinished ||
+    (renderJob &&
+      ["composing", "committing", "completed"].includes(renderJob.status))
+  ) {
+    return {
+      percent: 100,
+      message: "生成完成，正在同步...",
+      source: "tts",
+    };
+  }
+
   return {
     percent: 0,
-    message: "等待中...",
+    message: "加载中...",
     source: "idle",
   };
 }

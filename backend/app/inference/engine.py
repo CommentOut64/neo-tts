@@ -40,17 +40,28 @@ class PyTorchInferenceEngine:
             request.gpt_path,
             request.sovits_path,
         )
-        model = self._model_cache.get_engine(gpt_path=request.gpt_path, sovits_path=request.sovits_path)
-        sample_rate, stream = self._pipeline.synthesize_stream(
-            model,
-            request,
-            progress_callback=progress_callback,
-            should_cancel=should_cancel,
-        )
+        handle = self._model_cache.acquire_model_handle(gpt_path=request.gpt_path, sovits_path=request.sovits_path)
+        try:
+            sample_rate, stream = self._pipeline.synthesize_stream(
+                handle.engine,
+                request,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+            )
+        except Exception:
+            self._model_cache.release_model_handle(handle.cache_key)
+            raise
         inference_engine_logger.info(
             "推理流准备完成 voice_name={} sample_rate={} elapsed_ms={:.2f}",
             request.voice_name,
             sample_rate,
             (time.perf_counter() - started) * 1000,
         )
-        return sample_rate, stream
+        return sample_rate, self._wrap_stream(stream=stream, cache_key=handle.cache_key)
+
+    def _wrap_stream(self, *, stream: Iterator[np.ndarray], cache_key: str) -> Iterator[np.ndarray]:
+        try:
+            for chunk in stream:
+                yield chunk
+        finally:
+            self._model_cache.release_model_handle(cache_key)

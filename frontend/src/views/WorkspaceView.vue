@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick, h } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { useEditSession } from '@/composables/useEditSession'
-import { useInputDraft } from '@/composables/useInputDraft'
+import { useInputDraft, type InputTextLanguage } from '@/composables/useInputDraft'
 import { useInferenceParamsCache } from '@/composables/useInferenceParamsCache'
 import { buildInitializeRequest } from '@/api/editSessionContract'
 import { uploadEditSessionReferenceAudio } from '@/api/editSession'
@@ -17,7 +17,13 @@ import WaveformStrip from '@/components/workspace/WaveformStrip.vue'
 import TransportControlBar from '@/components/workspace/TransportControlBar.vue'
 import RenderJobProgressBar from '@/components/workspace/RenderJobProgressBar.vue'
 import { fetchVoices } from '@/api/voices'
-import type { VoiceProfile } from '@/types/tts'
+import {
+  buildReferenceSelectionEntry,
+  resolveReferenceSelectionBySource,
+  resolveReferenceSelectionForBinding,
+  upsertReferenceSelectionByBinding,
+} from '@/features/reference-binding'
+import type { ReferenceSelectionByBinding, VoiceProfile } from '@/types/tts'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { resolveInitializeReferenceAudioPath } from '@/utils/referenceAudioSelection'
 import { useParameterPanel } from '@/composables/useParameterPanel'
@@ -25,6 +31,7 @@ import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import ExportDialog from '@/components/workspace/ExportDialog.vue'
 import ParameterDraftConfirm from '@/components/workspace/ParameterDraftConfirm.vue'
 import { resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
+import { buildTextLanguageResolutionDialogModel } from '@/utils/textLanguageResolution'
 
 const route = useRoute()
 const {
@@ -38,9 +45,11 @@ const {
 } = useEditSession()
 const {
   text,
+  textLanguage,
   draftRevision,
   lastSentToSessionRevision,
   source,
+  setTextLanguage,
 } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const parameterPanel = useParameterPanel()
@@ -61,8 +70,25 @@ const handoffConfirmVisible = ref(false)
 const promptedRebuildRevision = ref<number | null>(null)
 let pendingGuardedAction: (() => Promise<void>) | null = null
 
-// Parameter structure updated with reference audio options and initialized to match old behavior
-const initParams = ref({
+interface WorkspaceInitParams {
+  voice_id: string
+  speed: number
+  temperature: number
+  top_p: number
+  top_k: number
+  pause_length: number
+  chunk_length: number
+  text_lang: string
+  text_split_method: string
+  ref_source: 'preset' | 'custom'
+  custom_ref_file: File | null
+  custom_ref_path: string | null
+  ref_text: string
+  ref_lang: string
+  referenceSelectionsByBinding: ReferenceSelectionByBinding
+}
+
+const initParams = ref<WorkspaceInitParams>({
   voice_id: '',
   speed: 1.0,
   temperature: 1.0,
@@ -71,25 +97,93 @@ const initParams = ref({
   pause_length: 0.3,
   chunk_length: 24,
   text_lang: 'auto',
-  text_split_method: 'cut3',
+  text_split_method: 'cut5',
   ref_source: 'preset' as 'preset' | 'custom',
   custom_ref_file: null as File | null,
   custom_ref_path: null as string | null,
   ref_text: '',
-  ref_lang: 'auto'
+  ref_lang: 'auto',
+  referenceSelectionsByBinding: {},
 })
 
 const { restoreCache, persistCacheWhenIdle } = useInferenceParamsCache()
 const isRestoring = ref(false)
 const isBootstrappingWorkspace = ref(true)
 
-function buildCachePayload(): Record<string, unknown> {
+function applyVoiceDefaults(params: WorkspaceInitParams, voice: VoiceProfile | null): WorkspaceInitParams {
+  if (!voice?.defaults) {
+    return params
+  }
+
   return {
+    ...params,
+    speed: voice.defaults.speed,
+    temperature: voice.defaults.temperature,
+    top_p: voice.defaults.top_p,
+    top_k: voice.defaults.top_k,
+    pause_length: voice.defaults.pause_length,
+  }
+}
+
+function applyReferenceSelectionForVoice(
+  params: WorkspaceInitParams,
+  voiceId: string,
+): WorkspaceInitParams {
+  const { selection } = resolveReferenceSelectionForBinding({
+    voiceId,
+    voices: voices.value,
+    selections: params.referenceSelectionsByBinding,
+  })
+
+  return {
+    ...params,
+    voice_id: voiceId,
+    ref_source: selection.source,
+    custom_ref_path: selection.custom_ref_path,
+    ref_text: selection.ref_text,
+    ref_lang: selection.ref_lang,
+  }
+}
+
+function syncReferenceSelectionForCurrentVoice(
+  params: WorkspaceInitParams,
+): WorkspaceInitParams {
+  if (!params.voice_id) {
+    return params
+  }
+
+  return {
+    ...params,
+    referenceSelectionsByBinding: upsertReferenceSelectionByBinding({
+      selections: params.referenceSelectionsByBinding,
+      voiceId: params.voice_id,
+      entry: buildReferenceSelectionEntry({
+        source: params.ref_source,
+        customRefPath: params.custom_ref_path,
+        refText: params.ref_text,
+        refLang: params.ref_lang,
+      }),
+    }),
+  }
+}
+
+function buildCachePayload(): Record<string, unknown> {
+  const syncedParams = syncReferenceSelectionForCurrentVoice({
     ...initParams.value,
     custom_ref_file: null,
-    voice: initParams.value.voice_id,
-    refText: initParams.value.ref_text,
-    refLang: initParams.value.ref_lang
+  })
+
+  return {
+    voice_id: syncedParams.voice_id,
+    speed: syncedParams.speed,
+    temperature: syncedParams.temperature,
+    top_p: syncedParams.top_p,
+    top_k: syncedParams.top_k,
+    pause_length: syncedParams.pause_length,
+    chunk_length: syncedParams.chunk_length,
+    text_lang: syncedParams.text_lang,
+    text_split_method: syncedParams.text_split_method,
+    referenceSelectionsByBinding: syncedParams.referenceSelectionsByBinding,
   }
 }
 
@@ -102,51 +196,62 @@ watch(
   { deep: true }
 )
 
+watch(
+  textLanguage,
+  (nextLanguage) => {
+    if (initParams.value.text_lang !== nextLanguage) {
+      initParams.value.text_lang = nextLanguage
+    }
+  },
+)
+
 async function hydrateWorkspaceRoute() {
   try {
     const [, loadedVoices] = await Promise.all([discoverSession(), fetchVoices()])
     voices.value = loadedVoices
+    parameterPanel.setVoices(loadedVoices)
     if (voices.value.length === 0) return
 
     isRestoring.value = true
     const cached = await restoreCache()
     const p = cached?.payload
 
-    if (p && typeof p.voice === 'string' && voices.value.some(v => v.name === p.voice)) {
-      initParams.value.voice_id = p.voice as string
-    } else {
-      initParams.value.voice_id = voices.value[0].name
+    const cachedVoiceId = p && typeof p.voice_id === 'string'
+      ? p.voice_id
+      : p && typeof p.voice === 'string'
+        ? p.voice
+        : null
+    const initialVoiceId = cachedVoiceId && voices.value.some(v => v.name === cachedVoiceId)
+      ? cachedVoiceId
+      : voices.value[0].name
+
+    let nextParams: WorkspaceInitParams = {
+      ...initParams.value,
+      voice_id: initialVoiceId,
+      referenceSelectionsByBinding:
+        p && typeof p.referenceSelectionsByBinding === 'object' && p.referenceSelectionsByBinding
+          ? (p.referenceSelectionsByBinding as ReferenceSelectionByBinding)
+          : {},
     }
 
-    // Assign defaults from selected voice before applying cache
-    const voiceInfo = voices.value.find(v => v.name === initParams.value.voice_id)
-    if (voiceInfo && voiceInfo.defaults) {
-      initParams.value.speed = voiceInfo.defaults.speed
-      initParams.value.temperature = voiceInfo.defaults.temperature
-      initParams.value.top_p = voiceInfo.defaults.top_p
-      initParams.value.top_k = voiceInfo.defaults.top_k
-      initParams.value.pause_length = voiceInfo.defaults.pause_length
-      initParams.value.ref_text = voiceInfo.ref_text || ''
-      initParams.value.ref_lang = voiceInfo.ref_lang || 'auto'
-    }
+    nextParams = applyVoiceDefaults(
+      nextParams,
+      voices.value.find(v => v.name === initialVoiceId) ?? null,
+    )
 
     if (p) {
-      if (typeof p.speed === 'number') initParams.value.speed = p.speed
-      if (typeof p.temperature === 'number') initParams.value.temperature = p.temperature
-      if (typeof p.top_p === 'number') initParams.value.top_p = p.top_p
-      if (typeof p.top_k === 'number') initParams.value.top_k = p.top_k
-      if (typeof p.pause_length === 'number') initParams.value.pause_length = p.pause_length
-      if (typeof p.text_lang === 'string') initParams.value.text_lang = p.text_lang
-      if (typeof p.text_split_method === 'string') initParams.value.text_split_method = p.text_split_method
-      if (typeof p.chunk_length === 'number') initParams.value.chunk_length = p.chunk_length
-      if (typeof p.refText === 'string') initParams.value.ref_text = p.refText
-      if (typeof p.refLang === 'string') initParams.value.ref_lang = p.refLang
-      if (typeof p.custom_ref_path === 'string') initParams.value.custom_ref_path = p.custom_ref_path
-      
-      if (typeof p.ref_source === 'string' && (p.ref_source === 'preset' || p.ref_source === 'custom')) {
-        initParams.value.ref_source = p.ref_source
-      }
+      if (typeof p.speed === 'number') nextParams.speed = p.speed
+      if (typeof p.temperature === 'number') nextParams.temperature = p.temperature
+      if (typeof p.top_p === 'number') nextParams.top_p = p.top_p
+      if (typeof p.top_k === 'number') nextParams.top_k = p.top_k
+      if (typeof p.pause_length === 'number') nextParams.pause_length = p.pause_length
+      if (typeof p.chunk_length === 'number') nextParams.chunk_length = p.chunk_length
+      if (typeof p.text_split_method === 'string') nextParams.text_split_method = p.text_split_method
+      if (typeof p.text_lang === 'string') nextParams.text_lang = p.text_lang
     }
+
+    nextParams.text_lang = textLanguage.value
+    initParams.value = applyReferenceSelectionForVoice(nextParams, initialVoiceId)
 
     await nextTick()
     isRestoring.value = false
@@ -157,6 +262,51 @@ async function hydrateWorkspaceRoute() {
     await nextTick()
     isBootstrappingWorkspace.value = false
   }
+}
+
+function handleInitParamsChange(nextParams: WorkspaceInitParams) {
+  initParams.value = syncReferenceSelectionForCurrentVoice({
+    ...nextParams,
+    text_lang: textLanguage.value,
+  })
+}
+
+async function handleRequestTextLanguageChange(nextLanguage: InputTextLanguage) {
+  const currentLanguage = textLanguage.value
+  if (nextLanguage === currentLanguage) {
+    return
+  }
+
+  const dialogModel = buildTextLanguageResolutionDialogModel(currentLanguage, nextLanguage)
+
+  try {
+    await ElMessageBox.confirm(
+      h('div', { class: 'space-y-3 leading-6' }, [
+        h('p', { class: 'text-sm text-foreground' }, dialogModel.intro),
+        h('div', { class: 'rounded-md border border-border bg-muted/30 p-3' }, [
+          h('p', { class: 'text-xs font-semibold text-foreground' }, dialogModel.currentOption.actionLabel),
+          h('p', { class: 'mt-1 text-xs text-muted-fg' }, dialogModel.currentOption.description),
+        ]),
+        h('div', { class: 'rounded-md border border-accent/30 bg-accent/5 p-3' }, [
+          h('p', { class: 'text-xs font-semibold text-foreground' }, dialogModel.nextOption.actionLabel),
+          h('p', { class: 'mt-1 text-xs text-muted-fg' }, dialogModel.nextOption.description),
+        ]),
+      ]),
+      dialogModel.title,
+      {
+        confirmButtonText: dialogModel.nextOption.actionLabel,
+        cancelButtonText: dialogModel.currentOption.actionLabel,
+        distinguishCancelAndClose: true,
+        closeOnClickModal: false,
+        closeOnPressEscape: false,
+        lockScroll: false,
+      },
+    )
+  } catch {
+    return
+  }
+
+  setTextLanguage(nextLanguage)
 }
 
 onMounted(() => {
@@ -221,11 +371,26 @@ const handleInit = async () => {
   }
 
   let customReferenceAudioPath: string | undefined
+  const effectiveReferenceSelection =
+    initParams.value.ref_source === 'preset'
+      ? resolveReferenceSelectionBySource({
+          voiceId: initParams.value.voice_id,
+          source: 'preset',
+          voices: voices.value,
+          selections: initParams.value.referenceSelectionsByBinding,
+        }).selection
+      : buildReferenceSelectionEntry({
+          source: 'custom',
+          customRefPath: initParams.value.custom_ref_path,
+          refText: initParams.value.ref_text,
+          refLang: initParams.value.ref_lang,
+        })
+
   try {
     customReferenceAudioPath = await resolveInitializeReferenceAudioPath({
-      refSource: initParams.value.ref_source,
+      refSource: effectiveReferenceSelection.source,
       presetReferenceAudioPath: selectedVoice.value?.ref_audio,
-      customReferenceAudioPath: initParams.value.custom_ref_path,
+      customReferenceAudioPath: effectiveReferenceSelection.custom_ref_path,
       customReferenceAudioFile: initParams.value.custom_ref_file,
       upload: uploadEditSessionReferenceAudio,
     })
@@ -234,8 +399,20 @@ const handleInit = async () => {
     return
   }
 
-  if (initParams.value.ref_source === 'custom') {
-    initParams.value.custom_ref_path = customReferenceAudioPath ?? null
+  if (effectiveReferenceSelection.source === 'custom') {
+    initParams.value = syncReferenceSelectionForCurrentVoice({
+      ...initParams.value,
+      custom_ref_path: customReferenceAudioPath ?? null,
+    })
+  } else {
+    initParams.value = syncReferenceSelectionForCurrentVoice({
+      ...initParams.value,
+      ref_source: effectiveReferenceSelection.source,
+      custom_ref_path: effectiveReferenceSelection.custom_ref_path,
+      ref_text: effectiveReferenceSelection.ref_text,
+      ref_lang: effectiveReferenceSelection.ref_lang,
+      custom_ref_file: null,
+    })
   }
 
   const accepted = await initialize(buildInitializeRequest({
@@ -247,10 +424,9 @@ const handleInit = async () => {
     topP: initParams.value.top_p,
     topK: initParams.value.top_k,
     pauseLength: initParams.value.pause_length,
-    textSplitMethod: initParams.value.text_split_method,
-    refSource: initParams.value.ref_source,
-    refText: initParams.value.ref_text,
-    refLang: initParams.value.ref_lang,
+    refSource: effectiveReferenceSelection.source,
+    refText: effectiveReferenceSelection.ref_text,
+    refLang: effectiveReferenceSelection.ref_lang,
     customRefFile: initParams.value.custom_ref_file,
     customRefPath: customReferenceAudioPath ?? null,
   }, selectedVoice.value ? { refAudio: selectedVoice.value.ref_audio } : undefined))
@@ -289,10 +465,16 @@ async function promptWorkspaceRebuild(currentRevision: number) {
 const handleUploadCustomRef = async (file: File) => {
   try {
     const response = await uploadEditSessionReferenceAudio(file)
-    initParams.value.custom_ref_path = response.reference_audio_path
+    initParams.value = syncReferenceSelectionForCurrentVoice({
+      ...initParams.value,
+      custom_ref_path: response.reference_audio_path,
+    })
     ElMessage.success(`参考音频已上传：${response.filename}`)
   } catch (err) {
-    initParams.value.custom_ref_path = null
+    initParams.value = syncReferenceSelectionForCurrentVoice({
+      ...initParams.value,
+      custom_ref_path: null,
+    })
     ElMessage.error(`参考音频上传失败: ${(err as Error).message}`)
   }
 }
@@ -300,16 +482,13 @@ const handleUploadCustomRef = async (file: File) => {
 const handleResetParams = () => {
   const v = voices.value.find((v) => v.name === initParams.value.voice_id)
   if (v && v.defaults) {
-    initParams.value.speed = v.defaults.speed
-    initParams.value.temperature = v.defaults.temperature
-    initParams.value.top_p = v.defaults.top_p
-    initParams.value.top_k = v.defaults.top_k
-    initParams.value.pause_length = v.defaults.pause_length
-    initParams.value.ref_text = v.ref_text || ''
-    initParams.value.ref_lang = v.ref_lang || 'auto'
-    initParams.value.ref_source = 'preset'
-    initParams.value.custom_ref_file = null
-    initParams.value.custom_ref_path = null
+    initParams.value = syncReferenceSelectionForCurrentVoice({
+      ...applyVoiceDefaults(initParams.value, v),
+      ref_source: 'preset',
+      custom_ref_path: null,
+      ref_text: v.ref_text || '',
+      ref_lang: v.ref_lang || 'auto',
+    })
   }
 }
 
@@ -341,19 +520,17 @@ watch(
   <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:flex-row gap-6">
     <!-- Left panel: parameters -->
     <aside class="w-full md:w-[35%] lg:w-[30%] md:max-h-[calc(100vh-8rem)] md:overflow-y-auto space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent pr-1">
-      <div v-if="isBootstrappingWorkspace" class="space-y-5 animate-pulse">
-        <div class="h-[72px] rounded-card border border-border bg-card/70 shadow-card"></div>
-        <div class="h-28 rounded-card border border-border bg-card/70 shadow-card"></div>
-        <div class="h-56 rounded-card border border-border bg-card/70 shadow-card"></div>
-      </div>
+      <div v-if="isBootstrappingWorkspace"></div>
       <ParameterPanelHost
         v-else-if="sessionStatus === 'ready'"
         :voices="voices"
       />
       <WorkspaceInitForm
         v-else
-        v-model="initParams"
+        :model-value="initParams"
         :voices="voices"
+        @update:model-value="handleInitParamsChange"
+        @request-text-language-change="handleRequestTextLanguageChange"
         @upload-custom-ref="handleUploadCustomRef"
         @reset="handleResetParams"
       />
@@ -361,16 +538,7 @@ watch(
     
     <!-- Right Panel: State Management -->
     <main class="w-full md:w-[65%] lg:w-[70%] flex flex-col min-w-0 min-h-0 overflow-hidden relative">
-      <div
-        v-if="isBootstrappingWorkspace"
-        class="h-full flex flex-col items-center justify-center gap-4 rounded-card border border-border bg-card/80 shadow-card"
-      >
-        <div class="h-11 w-11 rounded-full border-2 border-accent/30 border-t-accent animate-spin"></div>
-        <div class="text-center space-y-1">
-          <p class="text-sm font-semibold text-foreground">正在恢复语音合成工作区</p>
-          <p class="text-xs text-muted-fg">等待会话快照与参数缓存完成同步…</p>
-        </div>
-      </div>
+      <div v-if="isBootstrappingWorkspace" class="h-full"></div>
       <WorkspaceEmptyState 
         v-else-if="sessionStatus === 'empty'" 
         :text="text" 
