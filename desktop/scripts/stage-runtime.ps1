@@ -66,6 +66,7 @@ function Write-Utf8File {
         [string]$Path,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Content
     )
 
@@ -227,7 +228,8 @@ function Get-PathFingerprint {
 
     $item = Get-Item -LiteralPath $Path
     if (-not $item.PSIsContainer) {
-        return Get-TextSha256 -Text ("file|{0}|{1}|{2}" -f $item.Name, $item.Length, $item.LastWriteTimeUtc.Ticks)
+        $fileSha256 = Get-FileSha256 -Path $item.FullName
+        return Get-TextSha256 -Text ("file|{0}|{1}" -f $item.Name, $fileSha256)
     }
 
     $lines = New-Object System.Collections.Generic.List[string]
@@ -480,6 +482,7 @@ $manifestPath = Join-Path $desktopRoot "packaging\manifests\base.v1.json"
 $profilePath = Join-Path $desktopRoot ("packaging\profiles\{0}.v1.json" -f $Profile)
 $flavorPath = Join-Path $desktopRoot ("packaging\flavors\{0}.v1.json" -f $Flavor)
 $pythonBlacklistPath = Join-Path $desktopRoot "packaging\python-blacklist.txt"
+$pythonRuntimePrunePath = Join-Path $desktopRoot "packaging\python-runtime-prune.txt"
 $frontendDistPath = Join-Path $projectRoot "frontend\dist"
 $uvLockPath = Join-Path $projectRoot "uv.lock"
 $pyprojectPath = Join-Path $projectRoot "pyproject.toml"
@@ -497,6 +500,7 @@ $requiredInputs = @(
     @{ Path = $profilePath; Label = "profile" }
     @{ Path = $flavorPath; Label = "flavor" }
     @{ Path = $pythonBlacklistPath; Label = "python blacklist" }
+    @{ Path = $pythonRuntimePrunePath; Label = "python runtime prune list" }
     @{ Path = $frontendDistPath; Label = "frontend/dist" }
     @{ Path = $uvLockPath; Label = "uv.lock" }
     @{ Path = $pyprojectPath; Label = "pyproject.toml" }
@@ -514,6 +518,22 @@ $flavorConfig = Load-JsonFile -Path $flavorPath
 $desktopPackage = Load-JsonFile -Path $desktopPackageJsonPath
 $pythonBlacklistEntries = Get-Content -LiteralPath $pythonBlacklistPath | ForEach-Object { $_.Trim() } | Where-Object {
     $_ -and -not $_.StartsWith("#")
+}
+$pythonRuntimePruneEntries = Get-Content -LiteralPath $pythonRuntimePrunePath | ForEach-Object { $_.Trim() } | Where-Object {
+    $_ -and -not $_.StartsWith("#")
+}
+$pythonRuntimePruneFingerprint = if ($pythonRuntimePruneEntries.Count -gt 0) {
+    Get-FingerprintFromStrings -Values $pythonRuntimePruneEntries
+}
+else {
+    "none"
+}
+
+if ([string]$profileConfig.profileId -eq "default.v1") {
+    $defaultBuiltinVoiceIds = @($profileConfig.builtinVoices | ForEach-Object { [string]$_.voiceId })
+    if ($defaultBuiltinVoiceIds.Count -ne 1 -or $defaultBuiltinVoiceIds[0] -ne "neuro2") {
+        throw "Profile 'default.v1' must package exactly one builtin voice: neuro2."
+    }
 }
 
 if ($flavorConfig.distributionKind -ne $Flavor) {
@@ -646,28 +666,33 @@ if ([string]::IsNullOrWhiteSpace($pythonVersion)) {
     throw "Profile '$Profile' does not declare a Python version."
 }
 
-Write-Host "[stage-runtime] Resolving uv-managed Python $pythonVersion ..."
-$uvPythonInstallArgs = @("python", "install", $pythonVersion, "--managed-python")
-if ($Offline) {
-    $uvPythonInstallArgs += "--offline"
-}
-& uv @uvPythonInstallArgs | Out-Host
-if ($LASTEXITCODE -ne 0) {
-    throw "uv python install failed with exit code $LASTEXITCODE."
-}
-
 $managedPythonRoot = Join-Path $pythonInstallRoot ("cpython-{0}-windows-x86_64-none" -f $pythonVersion)
 $managedPythonExe = Join-Path $managedPythonRoot "python.exe"
 if (-not (Test-Path -LiteralPath $managedPythonExe)) {
-    throw "Failed to resolve uv-managed Python executable for version $pythonVersion at '$managedPythonExe'."
+    Write-Host "[stage-runtime] Installing uv-managed Python $pythonVersion ..."
+    $uvPythonInstallArgs = @("python", "install", $pythonVersion, "--managed-python")
+    if ($Offline) {
+        $uvPythonInstallArgs += "--offline"
+    }
+    & uv @uvPythonInstallArgs | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "uv python install failed with exit code $LASTEXITCODE."
+    }
+    if (-not (Test-Path -LiteralPath $managedPythonExe)) {
+        throw "Failed to resolve uv-managed Python executable for version $pythonVersion at '$managedPythonExe'."
+    }
+}
+else {
+    Write-Host "[stage-runtime] Reusing uv-managed Python $pythonVersion ..."
 }
 
 $uvLockHash = Get-FileSha256 -Path $uvLockPath
-$requirementsLockPath = Join-Path $requirementsCacheRoot ("python-requirements.{0}.{1}.txt" -f $Profile, $uvLockHash)
+$requirementsLockPath = Join-Path $requirementsCacheRoot ("python-requirements.{0}.{1}.{2}.txt" -f $Profile, $uvLockHash, $pythonRuntimePruneFingerprint)
 $pythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
     "runtime-python",
     $pythonVersion,
     $uvLockHash,
+    $pythonRuntimePruneFingerprint,
     (Get-PathFingerprint -Path $pyprojectPath),
     (Get-PathFingerprint -Path $pythonBlacklistPath)
 )
@@ -685,6 +710,9 @@ if (-not (Test-Path -LiteralPath $requirementsLockPath)) {
         "--no-hashes",
         "-o", $requirementsLockPath
     )
+    foreach ($packageName in $pythonRuntimePruneEntries) {
+        $uvExportArgs += @("--prune", $packageName)
+    }
     if ($Offline) {
         $uvExportArgs += "--offline"
     }

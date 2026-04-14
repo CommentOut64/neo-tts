@@ -6,7 +6,7 @@
   },
   "builtinVoices": [
     {
-      "voiceId": "neuro1",
+      "voiceId": "neuro2",
       "description": "首发整合包内置英文示例音色。",
       "refText": "Then tomorrow we can celebrate her birthday and maybe even get her a laval lamp.",
       "refLang": "en",
@@ -17,10 +17,10 @@
         "temperature": 1.0,
         "pause_length": 0.3
       },
-      "destinationDir": "models/builtin/neuro1",
-      "gptSource": "pretrained_models/GPT_weights_v2Pro/Neuro1-e5.ckpt",
-      "sovitsSource": "pretrained_models/SoVITS_weights_v2Pro/Neuro1_e8_s400.pth",
-      "refAudioSource": "pretrained_models/neuro1_ref.wav"
+      "destinationDir": "models/builtin/neuro2",
+      "gptSource": "storage/managed_voices/neuro2/neuro2-e4.ckpt",
+      "sovitsSource": "storage/managed_voices/neuro2/neuro2_e4_s424.pth",
+      "refAudioSource": "storage/managed_voices/neuro2/audio1.wav"
     }
   ]
 }

@@ -2,6 +2,11 @@ param(
     [ValidateSet("default")]
     [string]$Profile = "default",
 
+    [ValidateSet("portable", "installed")]
+    [string]$Distribution = "portable",
+
+    [switch]$SkipPortableZip,
+
     [string]$InnoSetupCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
 
     [switch]$Offline
@@ -322,20 +327,36 @@ if ([string]::IsNullOrWhiteSpace($packageVersion)) {
 $releaseRoot = Join-Path $desktopRoot "release"
 $releaseVersionRoot = Join-Path $releaseRoot $packageVersion
 $stageRuntimeScript = Join-Path $scriptDir "stage-runtime.ps1"
+$assemblePortableScript = Join-Path $scriptDir "assemble-portable.ps1"
 $innoSetupScript = Join-Path $desktopRoot "packaging\installers\windows-installer.iss"
 $setupIconPath = Join-Path $projectRoot "frontend\public\512.ico"
 $winUnpackedRoot = Join-Path $releaseVersionRoot "win-unpacked"
 $winUnpackedExe = Join-Path $winUnpackedRoot "NeoTTS.exe"
 $installerBaseName = "NeoTTS-Setup-$packageVersion"
+$portableZipDefaultPath = Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion.zip"
 $cacheRoot = Join-Path $desktopRoot ".cache"
 $buildMetadataRoot = Join-Path $cacheRoot "build-metadata"
 $frontendDistRoot = Join-Path $frontendRoot "dist"
 $desktopDistRoot = Join-Path $desktopRoot "dist"
 $desktopSourceRoot = Join-Path $desktopRoot "src"
 
-foreach ($requiredPath in @($frontendRoot, $stageRuntimeScript, $desktopPackageJsonPath, $innoSetupScript, $setupIconPath, $InnoSetupCompiler)) {
+foreach ($requiredPath in @($frontendRoot, $stageRuntimeScript, $desktopPackageJsonPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Build prerequisite missing: $requiredPath"
+    }
+}
+if ($Distribution -eq "portable") {
+    foreach ($requiredPath in @($assemblePortableScript)) {
+        if (-not (Test-Path -LiteralPath $requiredPath)) {
+            throw "Build prerequisite missing: $requiredPath"
+        }
+    }
+}
+else {
+    foreach ($requiredPath in @($innoSetupScript, $setupIconPath, $InnoSetupCompiler)) {
+        if (-not (Test-Path -LiteralPath $requiredPath)) {
+            throw "Build prerequisite missing: $requiredPath"
+        }
     }
 }
 
@@ -426,7 +447,7 @@ $stageRuntimeArgs = @(
     "-ExecutionPolicy", "Bypass",
     "-File", $stageRuntimeScript,
     "-Profile", $Profile,
-    "-Flavor", "installed"
+    "-Flavor", $Distribution
 )
 if ($Offline) {
     $stageRuntimeArgs += "-Offline"
@@ -459,31 +480,78 @@ foreach ($requiredPath in @($winUnpackedRoot, $winUnpackedExe)) {
     }
 }
 
-Invoke-NativeStep -Label "Build Windows installer with Inno Setup" `
-    -WorkingDirectory $desktopRoot `
-    -FilePath $InnoSetupCompiler `
-    -Arguments @(
-        "/Qp",
-        "/DAppId=com.neo-tts.desktop",
-        "/DAppName=NeoTTS",
-        "/DAppVersion=$packageVersion",
-        "/DAppExeName=NeoTTS.exe",
-        "/DSourceRoot=$winUnpackedRoot",
-        "/DOutputDir=$releaseVersionRoot",
-        "/DOutputBaseFilename=$installerBaseName",
-        "/DSetupIconFile=$setupIconPath",
-        $innoSetupScript
+if ($Distribution -eq "portable") {
+    $portableLabel = if ($SkipPortableZip) { "Assemble portable root (skip zip)" } else { "Assemble portable zip" }
+    $assemblePortableArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $assemblePortableScript,
+        "-ReleaseRoot", $releaseVersionRoot,
+        "-PortableZipPath", $portableZipDefaultPath
     )
+    if ($SkipPortableZip) {
+        $assemblePortableArgs += "-SkipZip"
+    }
+    Invoke-NativeStep -Label $portableLabel `
+        -WorkingDirectory $desktopRoot `
+        -FilePath "powershell.exe" `
+        -Arguments $assemblePortableArgs
 
-$installerPath = Find-SingleArtifact -ReleaseRoot $releaseVersionRoot -Filter "*Setup*.exe" -Label "Windows installer" -ExcludePattern "__uninstaller"
-foreach ($requiredPath in @($winUnpackedExe, $installerPath)) {
-    if (-not (Test-Path -LiteralPath $requiredPath)) {
-        throw "Integrated package validation failed after Inno Setup: missing $requiredPath"
+    $portableRootPath = Join-Path $releaseVersionRoot "NeoTTS-Portable"
+    if ($SkipPortableZip) {
+        foreach ($requiredPath in @($winUnpackedExe, $portableRootPath, (Join-Path $portableRootPath "NeoTTS.exe"), (Join-Path $portableRootPath "portable.flag"))) {
+            if (-not (Test-Path -LiteralPath $requiredPath)) {
+                throw "Portable package validation failed: missing $requiredPath"
+            }
+        }
+        Write-Host "[build-integrated-package] Artifacts ready:"
+        Write-Host "  - portable root: $portableRootPath"
+        Write-Host "  - win-unpacked:  $winUnpackedExe"
+        Write-Host "  - release root:  $releaseVersionRoot"
+        Write-Host "  - note:          zip packaging was skipped"
+    }
+    else {
+        $portableZipPath = Find-SingleArtifact -ReleaseRoot $releaseVersionRoot -Filter "*Portable*.zip" -Label "portable zip"
+        foreach ($requiredPath in @($winUnpackedExe, $portableZipPath)) {
+            if (-not (Test-Path -LiteralPath $requiredPath)) {
+                throw "Portable package validation failed: missing $requiredPath"
+            }
+        }
+
+        Write-Host "[build-integrated-package] Artifacts ready:"
+        Write-Host "  - portable zip: $portableZipPath"
+        Write-Host "  - win-unpacked: $winUnpackedExe"
+        Write-Host "  - release root: $releaseVersionRoot"
+        Write-Host "  - installer:    run 'npm run package:installed' when needed"
     }
 }
+else {
+    Invoke-NativeStep -Label "Build Windows installer with Inno Setup" `
+        -WorkingDirectory $desktopRoot `
+        -FilePath $InnoSetupCompiler `
+        -Arguments @(
+            "/Qp",
+            "/DAppId=com.neo-tts.desktop",
+            "/DAppName=NeoTTS",
+            "/DAppVersion=$packageVersion",
+            "/DAppExeName=NeoTTS.exe",
+            "/DSourceRoot=$winUnpackedRoot",
+            "/DOutputDir=$releaseVersionRoot",
+            "/DOutputBaseFilename=$installerBaseName",
+            "/DSetupIconFile=$setupIconPath",
+            $innoSetupScript
+        )
 
-Write-Host "[build-integrated-package] Artifacts ready:"
-Write-Host "  - installer:    $installerPath"
-Write-Host "  - win-unpacked: $winUnpackedExe"
-Write-Host "  - release root: $releaseVersionRoot"
-Write-Host "  - portable:     run 'npm run package:portable' when needed"
+    $installerPath = Find-SingleArtifact -ReleaseRoot $releaseVersionRoot -Filter "*Setup*.exe" -Label "Windows installer" -ExcludePattern "__uninstaller"
+    foreach ($requiredPath in @($winUnpackedExe, $installerPath)) {
+        if (-not (Test-Path -LiteralPath $requiredPath)) {
+            throw "Installed package validation failed after Inno Setup: missing $requiredPath"
+        }
+    }
+
+    Write-Host "[build-integrated-package] Artifacts ready:"
+    Write-Host "  - installer:    $installerPath"
+    Write-Host "  - win-unpacked: $winUnpackedExe"
+    Write-Host "  - release root: $releaseVersionRoot"
+    Write-Host "  - portable zip: run 'npm run package' when needed"
+}

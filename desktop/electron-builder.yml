@@ -13,6 +13,7 @@ extraResources:
   - from: .stage/manifest-lock.json
     to: manifest-lock.json
 win:
+  icon: ../frontend/public/512.ico
   target:
     - target: dir
       arch:

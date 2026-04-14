@@ -81,7 +81,7 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 ```powershell
 Set-Location desktop
-powershell -File .\scripts\stage-runtime.ps1 -Flavor installed
+powershell -File .\scripts\stage-runtime.ps1 -Flavor portable
 ```
 
 当前脚本会完成：
@@ -90,11 +90,12 @@ powershell -File .\scripts\stage-runtime.ps1 -Flavor installed
 - 按 `desktop/packaging/manifests/base.v1.json` 收集 backend、`GPT_SoVITS/` 与运行时必需模型
 - 按 `desktop/packaging/profiles/default.v1.json` 生成首发 builtin voice 和只读 `config/voices.json`
 - builtin voice 变化时只重建该 profile 负责的音色目录与只读 `config/voices.json`，不删除 manifest 已收包的 builtin support models
-- 使用 `uv.lock` + `pyproject.toml` 导出运行时依赖，并优先复用 `desktop/.cache/` 下的 wheelhouse 与 cached runtime
+- 使用 `uv.lock` + `pyproject.toml` 导出运行时依赖，并按 `desktop/packaging/python-runtime-prune.txt` 对桌面产品包做树级 prune 裁剪
+- 运行时依赖仍优先复用 `desktop/.cache/` 下的 wheelhouse、exported requirements 与 cached runtime
 - 仅在相关输入变化时重建对应 staged 分区，而不是每次删除整个 `desktop/.stage`
 - 生成 `desktop/.stage/manifest-lock.json`，作为本次收包的实际快照
 
-当前默认 profile 只内置一套示例音色 `neuro1`，不直接复用开发态 `/config/voices.json` 里指向 `storage/managed_voices/` 的托管音色。
+当前默认 profile 只内置一套示例音色 `neuro2`，并且默认 profile 已限制为仅允许该内置音色进入打包。
 
 当前默认打包命令：
 
@@ -103,10 +104,10 @@ Set-Location desktop
 npm run package
 ```
 
-- 默认只生成安装包相关产物：
-  - `release/<version>/*Setup*.exe`
+- 默认生成便携包相关产物：
+  - `release/<version>/NeoTTS-Portable-<version>.zip`
   - `release/<version>/win-unpacked/NeoTTS.exe`
-- 默认不生成便携包。
+- 默认不调用 Inno Setup 安装器链。
 - 默认不执行 desktop tests 或 backend packaged settings test。
 - `build-integrated-package.ps1` 会按输入指纹复用 frontend 与 desktop 的已有 build 输出，未变化时跳过重复构建。
 - 当前安装包链为 `electron-builder dir + Inno Setup`，压缩策略显式使用 `Compression=lzma2/normal`、`CompressionThreads=auto`、`LZMANumBlockThreads=2`、`SolidCompression=no`，优先降低安装器编译耗时。
@@ -117,8 +118,11 @@ npm run package
 ```powershell
 Set-Location desktop
 
-# 仅在需要时生成便携包
+# 显式生成便携包（与默认链一致）
 npm run package:portable
+
+# 仅在需要时生成安装包
+npm run package:installed
 
 # 显式执行打包相关验证
 npm run package:verify

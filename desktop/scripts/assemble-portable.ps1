@@ -1,7 +1,8 @@
 param(
     [string]$ReleaseRoot,
     [string]$PortableRoot,
-    [string]$PortableZipPath
+    [string]$PortableZipPath,
+    [switch]$SkipZip
 )
 
 Set-StrictMode -Version Latest
@@ -129,7 +130,9 @@ Assert-PathWithinRoot -Path $portableZipPathResolved -Root $releaseRootPath
 
 Write-Host "[assemble-portable] Preparing portable root..."
 Remove-PathIfExists -Path $portableRootPath -AllowedRoot $releaseRootPath
-Remove-PathIfExists -Path $portableZipPathResolved -AllowedRoot $releaseRootPath
+if (-not $SkipZip) {
+    Remove-PathIfExists -Path $portableZipPathResolved -AllowedRoot $releaseRootPath
+}
 Ensure-Directory -Path $portableRootPath
 
 Get-ChildItem -LiteralPath $winUnpackedRoot -Force | ForEach-Object {
@@ -151,19 +154,25 @@ foreach ($requiredPath in @($portableExePath, $portableMarkerPath, $portableData
     }
 }
 
-Write-Host "[assemble-portable] Creating portable zip..."
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $portableRootPath,
-    $portableZipPathResolved,
-    [System.IO.Compression.CompressionLevel]::Optimal,
-    $false
-)
-
-if (-not (Test-Path -LiteralPath $portableZipPathResolved)) {
-    throw "Portable zip was not created: $portableZipPathResolved"
+if ($SkipZip) {
+    Write-Host "[assemble-portable] Portable root artifact completed (zip skipped):"
+    Write-Host "  - root: $portableRootPath"
 }
+else {
+    Write-Host "[assemble-portable] Creating portable zip..."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $portableRootPath,
+        $portableZipPathResolved,
+        [System.IO.Compression.CompressionLevel]::Optimal,
+        $false
+    )
 
-Write-Host "[assemble-portable] Portable artifact completed:"
-Write-Host "  - root: $portableRootPath"
-Write-Host "  - zip:  $portableZipPathResolved"
+    if (-not (Test-Path -LiteralPath $portableZipPathResolved)) {
+        throw "Portable zip was not created: $portableZipPathResolved"
+    }
+
+    Write-Host "[assemble-portable] Portable artifact completed:"
+    Write-Host "  - root: $portableRootPath"
+    Write-Host "  - zip:  $portableZipPathResolved"
+}

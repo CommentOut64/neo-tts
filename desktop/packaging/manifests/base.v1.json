@@ -30,6 +30,15 @@
       "profileTags": []
     },
     {
+      "source": "tools",
+      "destination": "tools",
+      "category": "gpt-sovits",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
       "source": "pretrained_models/chinese-hubert-base",
       "destination": "models/builtin/chinese-hubert-base",
       "category": "builtin-support-model",
