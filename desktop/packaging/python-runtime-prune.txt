@@ -1,0 +1,13 @@
+# 仅供桌面产品包运行时导出使用的 uv prune 清单。
+# 这里裁的是“产品包不需要进入 runtime 的顶层依赖”，不修改开发环境依赖真相源。
+# 当前不要把 onnxruntime-gpu / pytorch-lightning / torchmetrics / x_transformers / requests 放进来，
+# 因为代码里仍有直接运行时引用。
+gradio
+funasr
+modelscope
+peft
+ctranslate2
+onnx
+onnxsim
+onnxconverter-common
+tensorboard

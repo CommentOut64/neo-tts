@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "manifestId": "base.v1",
+  "entries": [
+    {
+      "source": "backend/__init__.py",
+      "destination": "backend/__init__.py",
+      "category": "backend",
+      "kind": "file",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "backend/app",
+      "destination": "backend/app",
+      "category": "backend",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "GPT_SoVITS",
+      "destination": "GPT_SoVITS",
+      "category": "gpt-sovits",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "tools",
+      "destination": "tools",
+      "category": "gpt-sovits",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "pretrained_models/chinese-hubert-base",
+      "destination": "models/builtin/chinese-hubert-base",
+      "category": "builtin-support-model",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "pretrained_models/chinese-roberta-wwm-ext-large",
+      "destination": "models/builtin/chinese-roberta-wwm-ext-large",
+      "category": "builtin-support-model",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "pretrained_models/sv",
+      "destination": "pretrained_models/sv",
+      "category": "builtin-support-model",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    },
+    {
+      "source": "pretrained_models/fast_langdetect",
+      "destination": "pretrained_models/fast_langdetect",
+      "category": "builtin-support-model",
+      "kind": "directory",
+      "required": true,
+      "overwritePolicy": "replace",
+      "profileTags": []
+    }
+  ]
+}

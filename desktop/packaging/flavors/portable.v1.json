@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "flavorId": "portable.v1",
+  "distributionKind": "portable",
+  "builderTargets": [
+    "dir",
+    "zip"
+  ],
+  "resourcesRoot": "resources/app-runtime",
+  "portableMarker": "portable.flag",
+  "userDataPolicy": {
+    "userDataRoot": "./data",
+    "exportsRoot": "./exports"
+  }
+}

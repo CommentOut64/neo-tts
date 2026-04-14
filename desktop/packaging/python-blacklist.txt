@@ -1,0 +1,7 @@
+# uv-managed CPython 复制到产品包后需要裁掉的非运行时内容
+BUILD
+include
+libs
+Lib/idlelib
+Lib/test
+tcl/tk8.6/demos

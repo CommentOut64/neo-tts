@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import os
 import time
 import sys
 from pathlib import Path
@@ -77,11 +78,23 @@ def _pick_log_file(log_dir: Path) -> tuple[Path, bool]:
     return log_dir / f"backend_{session_stamp}.log", False
 
 
+def _resolve_log_dir(project_root: Path | None) -> Path:
+    explicit_log_dir = os.environ.get("NEO_TTS_LOGS_ROOT")
+    if explicit_log_dir:
+        return Path(explicit_log_dir).resolve()
+
+    explicit_user_data_root = os.environ.get("NEO_TTS_USER_DATA_ROOT")
+    if explicit_user_data_root:
+        return (Path(explicit_user_data_root).resolve() / "logs").resolve()
+
+    root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
+    return root / "logs"
+
+
 def configure_logging(project_root: Path | None = None, *, force: bool = False) -> Path:
     global _configured_log_dir, _configured_log_file
 
-    root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
-    log_dir = root / "logs"
+    log_dir = _resolve_log_dir(project_root)
     should_reconfigure = force or _configured_log_dir != log_dir or _configured_log_file is None
     if not should_reconfigure:
         return log_dir

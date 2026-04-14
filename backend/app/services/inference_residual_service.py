@@ -45,7 +45,20 @@ class InferenceResidualService:
         reset_message: str = "推理残留已清理。",
     ) -> CleanupResidualResult:
         cancelled = self._runtime.request_force_pause(message=force_pause_message)
-        self._runtime.wait_for_terminal()
+        terminal_reached = True
+        try:
+            self._runtime.wait_for_terminal()
+        except TimeoutError:
+            terminal_reached = False
+
+        if not terminal_reached:
+            return CleanupResidualResult(
+                cancelled_active_task=cancelled,
+                removed_temp_ref_dirs=0,
+                removed_result_files=0,
+                state=self._runtime.snapshot(),
+            )
+
         removed_temp_ref_dirs = self._cleanup_temporary_reference_dirs()
         removed_result_files = self._result_store.clear_all_results()
         self._runtime.reset_if_idle(message=reset_message)

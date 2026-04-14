@@ -29,7 +29,7 @@ import {
   unwrapAcceptedRenderJob,
   unwrapAcceptedExportJob,
 } from "./editSessionContract";
-import { resolveApiUrl } from './requestSupport'
+import { resolveBackendUrl } from '@/platform/runtimeConfig'
 
 export async function getSnapshot(): Promise<EditSessionSnapshot> {
   const { data } = await axios.get<EditSessionSnapshot>('/v1/edit-session/snapshot')
@@ -313,10 +313,7 @@ export interface RenderJobEventHandlers {
 
 export function subscribeRenderJobEvents(jobId: string, handlers: RenderJobEventHandlers): () => void {
   const source = new EventSource(
-    resolveApiUrl(
-      `/v1/edit-session/render-jobs/${jobId}/events`,
-      import.meta.env.VITE_API_BASE_URL || '',
-    ),
+    resolveBackendUrl(`/v1/edit-session/render-jobs/${jobId}/events`),
   )
 
   const eventTypes: RenderJobEventType[] = [
@@ -440,10 +437,7 @@ export function subscribeExportJobEvents(
   handlers: ExportJobEventHandlers,
 ): () => void {
   const source = new EventSource(
-    resolveApiUrl(
-      "/v1/edit-session/exports/" + jobId + "/events",
-      import.meta.env.VITE_API_BASE_URL || "",
-    ),
+    resolveBackendUrl("/v1/edit-session/exports/" + jobId + "/events"),
   );
 
   const eventTypes: ExportJobEventType[] = [

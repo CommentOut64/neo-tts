@@ -36,19 +36,6 @@ const ACTIVE_INFERENCE_STATUSES = new Set<InferenceProgressStatus>([
   "cancelling",
 ]);
 
-const TERMINAL_INFERENCE_STATUSES = new Set<InferenceProgressStatus>([
-  "idle",
-  "completed",
-  "cancelled",
-  "error",
-]);
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    globalThis.setTimeout(resolve, ms);
-  });
-}
-
 async function resolveExitChoice(hasPendingChanges: boolean): Promise<ExitChoice> {
   if (!hasPendingChanges) {
     try {
@@ -113,23 +100,13 @@ async function stopActiveRenderJob(): Promise<RenderJobStatus | null> {
 }
 
 async function stopActiveInferenceTask(): Promise<InferenceProgressStatus> {
-  const { progress, requestForcePause, refreshProgress } =
+  const { progress, requestForcePause } =
     useInferenceRuntime("app-exit");
   if (!ACTIVE_INFERENCE_STATUSES.has(progress.value.status)) {
     return progress.value.status;
   }
 
-  let nextState = (await requestForcePause()).state;
-  let attempts = 0;
-  while (!TERMINAL_INFERENCE_STATUSES.has(nextState.status)) {
-    attempts += 1;
-    if (attempts > 20) {
-      throw new Error("等待旧版推理任务停止超时");
-    }
-    await delay(200);
-    nextState = await refreshProgress("app-exit:wait-terminal");
-  }
-
+  const nextState = (await requestForcePause()).state;
   return nextState.status;
 }
 
@@ -182,8 +159,6 @@ export function useAppExit() {
 
       if (result.launcherExitRequested) {
         ElMessage.success("退出请求已提交，应用即将关闭");
-      } else {
-        ElMessage.info("退出准备已完成，请手动关闭页面或进程");
       }
     } catch (error) {
       ElMessage.error(

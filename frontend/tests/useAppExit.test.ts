@@ -149,7 +149,7 @@ describe("useAppExit", () => {
 
     await appExit.requestExit();
 
-    expect(elementPlusMock.confirm).not.toHaveBeenCalled();
+    expect(elementPlusMock.confirm).toHaveBeenCalledTimes(1);
     expect(systemApiMock.prepareExit).toHaveBeenCalledTimes(1);
   });
 
@@ -298,5 +298,21 @@ describe("useAppExit", () => {
     expect(elementPlusMock.success).not.toHaveBeenCalled();
     expect(elementPlusMock.info).not.toHaveBeenCalled();
     expect(appExit.isExiting.value).toBe(false);
+  });
+
+  it("后端未接管真正退出时不再提示用户手动关闭页面或进程", async () => {
+    systemApiMock.prepareExit.mockResolvedValue({
+      status: "prepared",
+      launcher_exit_requested: false,
+      active_render_job_status: null,
+      inference_status: "idle",
+    });
+
+    const { useAppExit } = await import("../src/composables/useAppExit");
+    const appExit = useAppExit();
+
+    await appExit.requestExit();
+
+    expect(elementPlusMock.info).not.toHaveBeenCalled();
   });
 });

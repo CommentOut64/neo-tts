@@ -10,8 +10,11 @@ dns.setDefaultResultOrder("verbatim");
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   const backendOrigin = env.VITE_BACKEND_ORIGIN || "http://127.0.0.1:18600";
+  const isProductionBuild = mode === "production";
 
   return {
+    // Electron 打包后通过 file:// 加载 index.html，生产产物必须使用相对资源路径。
+    base: isProductionBuild ? "./" : "/",
     plugins: [vue(), ui({ colorMode: false }), tailwindcss()],
     resolve: {
       alias: { "@": resolve(__dirname, "src") },

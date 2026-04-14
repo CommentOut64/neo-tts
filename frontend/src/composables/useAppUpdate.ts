@@ -2,6 +2,10 @@ import { ref } from 'vue'
 import { getVersion, checkUpdate, type UpdateCheckResult } from '@/api/system'
 import { ElMessage } from 'element-plus'
 
+export function formatVersionLabel(version: string): string {
+  return version.startsWith('v') ? version : `v${version}`
+}
+
 export function useAppUpdate() {
   const version = ref('获取中...')
   const isCheckingUpdate = ref(false)
@@ -10,7 +14,7 @@ export function useAppUpdate() {
   async function fetchVersion() {
     try {
       const res = await getVersion()
-      version.value = res.version
+      version.value = formatVersionLabel(res.version)
     } catch {
       version.value = '未知'
     }

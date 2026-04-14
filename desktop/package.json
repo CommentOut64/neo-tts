@@ -1,12 +1,21 @@
 {
   "name": "desktop",
-  "version": "0.0.1",
+  "version": "0.0.1-dev4",
   "private": true,
   "main": "dist/main.js",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run tests",
     "build": "tsc -p tsconfig.json",
-    "package": "npm run build && electron-builder --config electron-builder.yml --dir"
+    "package:builder": "electron-builder --config electron-builder.yml --win dir",
+    "package:assemble-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\assemble-portable.ps1",
+    "package:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable",
+    "package:portable:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -Offline",
+    "package:portable:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip",
+    "package:portable:dir:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip -Offline",
+    "package:installed": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed",
+    "package:installed:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed -Offline",
+    "package:verify": "npm run test && uv run pytest ../backend/tests/unit/test_packaged_runtime_settings.py -v",
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

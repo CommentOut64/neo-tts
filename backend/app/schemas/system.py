@@ -13,3 +13,8 @@ class PrepareExitResponse(BaseModel):
         description="若存在活动 edit-session render job，则返回其退出准备后的状态。",
     )
     inference_status: str = Field(description="旧版 TTS 推理运行态在退出准备后的最终状态。")
+
+
+class SystemVersionResponse(BaseModel):
+    version: str = Field(description="面向 About 展示的稳定版本号。")
+    build_version: str | None = Field(default=None, description="当前构建版本号，可包含 dev 后缀。")

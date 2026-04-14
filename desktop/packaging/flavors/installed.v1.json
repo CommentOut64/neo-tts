@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "flavorId": "installed.v1",
+  "distributionKind": "installed",
+  "builderTargets": [
+    "dir",
+    "inno-setup"
+  ],
+  "resourcesRoot": "resources/app-runtime",
+  "userDataPolicy": {
+    "userDataRoot": "%LOCALAPPDATA%/NeoTTS",
+    "exportsRoot": "%USERPROFILE%/Documents/NeoTTS/Exports"
+  }
+}

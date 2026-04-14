@@ -20,6 +20,10 @@ class VoiceRepository:
         self._settings = settings
         raw_path = Path(config_path) if config_path is not None else settings.voices_config_path
         self._config_path = raw_path if raw_path.is_absolute() else settings.project_root / raw_path
+        builtin_config_path = settings.builtin_voices_config_path or self._config_path
+        self._builtin_config_path = (
+            builtin_config_path if builtin_config_path.is_absolute() else settings.project_root / builtin_config_path
+        )
         raw_managed_dir = settings.managed_voices_dir
         self._managed_voices_dir = (
             raw_managed_dir if raw_managed_dir.is_absolute() else settings.project_root / raw_managed_dir
@@ -197,21 +201,34 @@ class VoiceRepository:
         return data
 
     def _load_config_only(self) -> dict[str, dict[str, Any]]:
-        if not self._config_path.exists():
-            return {}
-        with self._config_path.open("r", encoding="utf-8") as file:
-            return json.load(file)
+        data: dict[str, dict[str, Any]] = {}
+        builtin_data = self._read_config_file(self._builtin_config_path)
+        if builtin_data:
+            data.update(builtin_data)
+        user_data = self._read_config_file(self._config_path)
+        if user_data:
+            data.update(user_data)
+        return data
 
     def _write(self, data: dict[str, dict[str, Any]]) -> None:
+        payload = data
+        if self._config_path != self._builtin_config_path:
+            payload = {
+                name: config
+                for name, config in data.items()
+                if config.get("managed")
+            }
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._config_path.with_suffix(f"{self._config_path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(self._config_path)
 
     def _build_entry(self, *, name: str, config: dict[str, Any]) -> dict[str, Any]:
         entry = dict(config)
         entry["name"] = name
         entry.setdefault("managed", False)
+        if self._settings.distribution_kind != "development":
+            entry = self._normalize_product_entry(entry)
         return entry
 
     def _discover_managed_voice_configs(self, *, existing_names: set[str]) -> dict[str, dict[str, Any]]:
@@ -363,16 +380,45 @@ class VoiceRepository:
         return self._to_relative_path(written_path)
 
     def _to_relative_path(self, path: Path) -> str:
-        try:
-            return path.relative_to(self._settings.project_root).as_posix()
-        except ValueError:
-            return path.resolve().as_posix()
+        for base in (
+            self._settings.user_data_root,
+            self._settings.resources_root,
+            self._settings.project_root,
+        ):
+            if base is None:
+                continue
+            try:
+                return path.relative_to(base).as_posix()
+            except ValueError:
+                continue
+        return path.resolve().as_posix()
 
     def _resolve_project_path(self, raw_path: str | Path) -> Path:
         path = Path(raw_path)
         if not path.is_absolute():
             path = self._settings.project_root / path
         return path
+
+    def _read_config_file(self, config_path: Path) -> dict[str, dict[str, Any]]:
+        if not config_path.exists():
+            return {}
+        with config_path.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    def _normalize_product_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(entry)
+        is_managed = bool(normalized.get("managed"))
+        base_dir = self._settings.user_data_root if is_managed else self._settings.resources_root
+        for field_name in ("gpt_path", "sovits_path", "ref_audio"):
+            raw_value = normalized.get(field_name)
+            if not isinstance(raw_value, str):
+                continue
+            candidate = Path(raw_value)
+            if candidate.is_absolute() or base_dir is None:
+                normalized[field_name] = str(candidate)
+                continue
+            normalized[field_name] = str((base_dir / candidate).resolve())
+        return normalized
 
     def _is_managed_file(self, path: Path) -> bool:
         try:
