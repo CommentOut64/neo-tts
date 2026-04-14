@@ -7,6 +7,7 @@ declare global {
       distributionKind: "installed" | "portable";
       backendOrigin: string;
       requestAppExit(): Promise<void>;
+      openExternalUrl(url: string): Promise<void>;
     };
   }
 }

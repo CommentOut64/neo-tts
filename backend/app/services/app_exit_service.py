@@ -44,7 +44,8 @@ class AppExitService:
             force_pause_message="收到退出准备请求，已触发强制暂停。",
             reset_message="退出准备已完成，推理残留已清理。",
         )
-        self._release_inference_resources()
+        if cleanup_result.state.status in self._inference_runtime.TERMINAL_STATUSES:
+            self._release_inference_resources()
         launcher_exit_requested = self._request_owner_shutdown()
         return PrepareExitResponse(
             launcher_exit_requested=launcher_exit_requested,

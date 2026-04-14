@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import filedialog
 import threading
 
-from backend.app.schemas.system import PrepareExitResponse
+from backend.app.schemas.system import PrepareExitResponse, SystemVersionResponse
 from backend.app.services.app_exit_service import AppExitService
 from backend.app.services.inference_residual_service import InferenceResidualService
 from backend.app.services.synthesis_result_store import SynthesisResultStore
@@ -84,3 +84,12 @@ def open_folder_dialog(initial_dir: str | None = None):
 @router.post("/prepare-exit", response_model=PrepareExitResponse)
 def prepare_exit(request: Request) -> PrepareExitResponse:
     return _build_app_exit_service(request).prepare_exit()
+
+
+@router.get("/version", response_model=SystemVersionResponse)
+def get_version(request: Request) -> SystemVersionResponse:
+    settings = request.app.state.settings
+    return SystemVersionResponse(
+        version=settings.display_version,
+        build_version=settings.app_version,
+    )

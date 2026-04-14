@@ -32,7 +32,7 @@
       </h2>
 
       <!-- 版本号 -->
-      <div class="version">版本 {{ version }}</div>
+      <div class="version">版本 {{ displayVersion }}</div>
 
       <!-- 检查更新按钮 -->
       <el-button
@@ -49,7 +49,7 @@
       <div class="links">
         <a
           href="https://github.com/CommentOut64/neo-tts"
-          target="_blank"
+          @click.prevent="handleOpenExternal('https://github.com/CommentOut64/neo-tts')"
           class="link-item"
         >
           <svg viewBox="0 0 24 24" fill="currentColor">
@@ -62,7 +62,7 @@
 
         <a
           href="https://space.bilibili.com/515407408"
-          target="_blank"
+          @click.prevent="handleOpenExternal('https://space.bilibili.com/515407408')"
           class="link-item"
         >
           <svg viewBox="0 0 24 24" fill="currentColor">
@@ -100,6 +100,8 @@ const {
   ignoreUpdate,
 } = useAppUpdate();
 
+const displayVersion = computed(() => version.value);
+
 const showUpdateDialog = computed({
   get: () => pendingUpdateInfo.value !== null,
   set: (val) => {
@@ -115,6 +117,15 @@ function triggerCheckUpdate() {
 
 function handleUpdateIgnored() {
   ignoreUpdate();
+}
+
+async function handleOpenExternal(url: string) {
+  if (typeof window !== "undefined" && typeof window.neoTTS?.openExternalUrl === "function") {
+    await window.neoTTS.openExternalUrl(url);
+    return;
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 watch(visible, (newVal) => {

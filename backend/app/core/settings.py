@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from pathlib import Path
 class AppSettings:
     project_root: Path
     voices_config_path: Path
+    app_version: str = "0.0.1"
+    display_version: str = "0.0.1"
     owner_control_origin: str | None = None
     owner_control_token: str | None = None
     owner_session_id: str | None = None
@@ -65,6 +68,8 @@ class AppSettings:
 
         object.__setattr__(self, "project_root", resolved_project_root)
         object.__setattr__(self, "distribution_kind", distribution_kind)
+        object.__setattr__(self, "app_version", _normalize_app_version(self.app_version, project_root=resolved_project_root))
+        object.__setattr__(self, "display_version", _normalize_display_version(self.display_version, self.app_version))
         object.__setattr__(self, "resources_root", resources_root)
         object.__setattr__(self, "user_data_root", user_data_root)
         object.__setattr__(self, "logs_dir", logs_dir)
@@ -135,6 +140,38 @@ def _resolve_from_env(raw_value: str | None, *, default: Path) -> Path:
     return default.resolve()
 
 
+def _read_desktop_package_version(project_root: Path) -> str | None:
+    package_json_path = project_root / "desktop" / "package.json"
+    if not package_json_path.is_file():
+        return None
+    try:
+        payload = json.loads(package_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw_version = payload.get("version")
+    if isinstance(raw_version, str) and raw_version.strip():
+        return raw_version.strip()
+    return None
+
+
+def _normalize_app_version(raw_value: str | None, *, project_root: Path) -> str:
+    normalized = (raw_value or "").strip()
+    if normalized:
+        return normalized
+    discovered = _read_desktop_package_version(project_root)
+    if discovered:
+        return discovered
+    return "0.0.1"
+
+
+def _normalize_display_version(raw_value: str | None, app_version: str) -> str:
+    normalized = (raw_value or "").strip().replace("v", "", 1) if raw_value else ""
+    if normalized:
+        return normalized
+    base_version = app_version.strip().removeprefix("v").split("-", 1)[0].strip()
+    return base_version or "0.0.1"
+
+
 def get_settings() -> AppSettings:
     default_project_root = Path(__file__).resolve().parents[3]
     distribution_kind = _normalize_distribution_kind(os.environ.get("NEO_TTS_DISTRIBUTION_KIND"))
@@ -158,10 +195,14 @@ def get_settings() -> AppSettings:
     gpu_offload_enabled_env = os.environ.get("GPT_SOVITS_GPU_OFFLOAD_ENABLED")
     gpu_min_free_mb_env = os.environ.get("GPT_SOVITS_GPU_MIN_FREE_MB")
     gpu_reserve_mb_for_load_env = os.environ.get("GPT_SOVITS_GPU_RESERVE_MB_FOR_LOAD")
+    app_version_env = os.environ.get("NEO_TTS_APP_VERSION")
+    display_version_env = os.environ.get("NEO_TTS_DISPLAY_VERSION")
     owner_control_origin = os.environ.get("NEO_TTS_OWNER_CONTROL_ORIGIN")
     owner_control_token = os.environ.get("NEO_TTS_OWNER_CONTROL_TOKEN")
     owner_session_id = os.environ.get("NEO_TTS_OWNER_SESSION_ID")
     project_root = _resolve_from_env(project_root_env, default=default_project_root)
+    app_version = _normalize_app_version(app_version_env, project_root=project_root)
+    display_version = _normalize_display_version(display_version_env, app_version)
 
     if distribution_kind == "development":
         resources_root = _resolve_from_env(resources_root_env, default=project_root)
@@ -255,6 +296,8 @@ def get_settings() -> AppSettings:
     return AppSettings(
         project_root=project_root,
         voices_config_path=voices_config_path,
+        app_version=app_version,
+        display_version=display_version,
         owner_control_origin=owner_control_origin,
         owner_control_token=owner_control_token,
         owner_session_id=owner_session_id,

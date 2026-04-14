@@ -2,7 +2,6 @@
 import { computed, watch, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
-import projectIconUrl from '@/assets/carbon--ibm-watson-text-to-speech.svg'
 import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 import { useRuntimeState } from '@/composables/useRuntimeState'
@@ -26,7 +25,6 @@ const { isExiting, requestExit } = useAppExit()
 const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
 
 const aboutDialogVisible = ref(false)
-const projectIconMaskStyle = `mask: url('${projectIconUrl}') no-repeat center; mask-size: contain; -webkit-mask: url('${projectIconUrl}') no-repeat center; -webkit-mask-size: contain;`
 
 const navItems = [
   { path: '/text-input', label: '文本输入' },
@@ -103,15 +101,21 @@ watch(
       @click="aboutDialogVisible = true"
       title="关于"
     >
-      <div 
-        class="w-8 h-8 transition-colors duration-300" 
+      <svg
+        viewBox="0 0 32 32"
+        aria-hidden="true"
+        class="w-8 h-8 transition-colors duration-300"
         :class="{
-          'bg-green-500': status === 'online',
-          'bg-yellow-500': status === 'reconnecting',
-          'bg-red-500': status === 'offline'
+          'text-green-500': status === 'online',
+          'text-yellow-500': status === 'reconnecting',
+          'text-red-500': status === 'offline'
         }"
-        :style="projectIconMaskStyle"
-      ></div>
+      >
+        <path
+          fill="currentColor"
+          d="M13 26h-2c-3.9 0-7-3.1-7-7v-2h2v2c0 2.8 2.2 5 5 5h2zm5-8h10c1.1 0 2 .9 2 2v6c0 1.1-.9 2-2 2h-2.4l-1.7 3l-1.7-1l2.3-4H28v-6H18v6h3v2h-3c-1.1 0-2-.9-2-2v-6c0-1.1.9-2 2-2m10-4h-2v-2c0-2.8-2.2-5-5-5h-4V5h4c3.9 0 7 3.1 7 7zM2 11h6v2H2zm0-4h12v2H2zm0-4h12v2H2z"
+        />
+      </svg>
       <span class="text-xl font-bold text-foreground">Neo TTS</span>
     </div>
     <div class="relative flex items-center gap-1">

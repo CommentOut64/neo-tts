@@ -35,13 +35,8 @@ export interface UpdateCheckResult {
 }
 
 export async function getVersion(): Promise<SystemVersionInfo> {
-  try {
-    const { data } = await axios.get<SystemVersionInfo>("/v1/system/version");
-    return data;
-  } catch (e) {
-    // Stub implementation
-    return { version: "1.0.0-beta", build_date: "2026-04-12" };
-  }
+  const { data } = await axios.get<SystemVersionInfo>("/v1/system/version");
+  return data;
 }
 
 export async function checkUpdate(): Promise<UpdateCheckResult> {
