@@ -21,6 +21,7 @@ type IpcMainStub = {
 
 type WindowStub = {
   loadFile: (filePath: string) => Promise<void>;
+  loadURL: (url: string) => Promise<void>;
   focus: () => void;
   isMinimized: () => boolean;
   restore: () => void;
@@ -122,6 +123,9 @@ describe("desktop main", () => {
       loadFile: async () => {
         order.push("loadFile");
       },
+      loadURL: async () => {
+        order.push("loadURL");
+      },
       focus: () => {
         order.push("focus");
       },
@@ -153,7 +157,7 @@ describe("desktop main", () => {
     ]);
   });
 
-  it("main loads frontend/dist in production mode", async () => {
+  it("dev mode loads frontend/dist via loadFile", async () => {
     let loadedPath = "";
     const app: AppStub = {
       requestSingleInstanceLock: () => true,
@@ -174,6 +178,7 @@ describe("desktop main", () => {
         loadFile: async (filePath: string) => {
           loadedPath = filePath;
         },
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -213,6 +218,7 @@ describe("desktop main", () => {
         createCalls += 1;
         return {
           loadFile: async () => {},
+          loadURL: async () => {},
           focus,
           isMinimized: () => true,
           restore,
@@ -265,6 +271,9 @@ describe("desktop main", () => {
         return {
           loadFile: async () => {
             order.push("loadFile");
+          },
+          loadURL: async () => {
+            order.push("loadURL");
           },
           focus: () => {},
           isMinimized: () => false,
@@ -319,6 +328,7 @@ describe("desktop main", () => {
       }),
       createMainWindow: () => ({
         loadFile: async () => {},
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -358,6 +368,7 @@ describe("desktop main", () => {
       }),
       createMainWindow: () => ({
         loadFile: async () => {},
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -404,6 +415,7 @@ describe("desktop main", () => {
       },
       createMainWindow: () => ({
         loadFile: async () => {},
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -414,6 +426,7 @@ describe("desktop main", () => {
       expect.objectContaining({
         pythonExecutable: productPaths.runtimePython,
         workingDirectory: productPaths.resourcesDir,
+        onLogLine: expect.any(Function),
         environment: expect.objectContaining({
           NEO_TTS_DISTRIBUTION_KIND: "installed",
           NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
@@ -447,6 +460,7 @@ describe("desktop main", () => {
       },
       createMainWindow: () => ({
         loadFile: async () => {},
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -455,6 +469,7 @@ describe("desktop main", () => {
 
     expect(receivedOptions).toEqual(
       expect.objectContaining({
+        onLogLine: expect.any(Function),
         environment: expect.objectContaining({
           NEO_TTS_DISTRIBUTION_KIND: "portable",
           NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
@@ -487,6 +502,7 @@ describe("desktop main", () => {
       startBackend,
       createMainWindow: () => ({
         loadFile: async () => {},
+        loadURL: async () => {},
         focus: () => {},
         isMinimized: () => false,
         restore: () => {},
@@ -501,5 +517,78 @@ describe("desktop main", () => {
       }),
     );
     expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("production mode loads frontend via loadURL from backend origin", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths);
+    let loadedURL = "";
+    let loadFileCalled = false;
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.runtimeRoot,
+      productPaths,
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () => ({
+        loadFile: async () => {
+          loadFileCalled = true;
+        },
+        loadURL: async (url: string) => {
+          loadedURL = url;
+        },
+        focus: () => {},
+        isMinimized: () => false,
+        restore: () => {},
+      }),
+    });
+
+    expect(loadFileCalled).toBe(false);
+    expect(loadedURL).toBe("http://127.0.0.1:18600");
+  });
+
+  it("bridges backend stdout/stderr lines into runtime logger", async () => {
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      runtimeLogger: logger,
+      startBackend: async (options) => {
+        options.onLogLine?.("stderr", "backend log line");
+        return createBackendOwnerStub(createDeferred<Error | null>().promise);
+      },
+      createMainWindow: () => ({
+        loadFile: async () => {},
+        loadURL: async () => {},
+        focus: () => {},
+        isMinimized: () => false,
+        restore: () => {},
+      }),
+    });
+
+    expect(logger.info).toHaveBeenCalledWith("[backend:stderr] backend log line");
   });
 });
