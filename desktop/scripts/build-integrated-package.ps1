@@ -330,8 +330,10 @@ $stageRuntimeScript = Join-Path $scriptDir "stage-runtime.ps1"
 $assemblePortableScript = Join-Path $scriptDir "assemble-portable.ps1"
 $innoSetupScript = Join-Path $desktopRoot "packaging\installers\windows-installer.iss"
 $setupIconPath = Join-Path $projectRoot "frontend\public\512.ico"
+$tutorialSourcePath = Join-Path $projectRoot "使用教程.txt"
 $winUnpackedRoot = Join-Path $releaseVersionRoot "win-unpacked"
 $winUnpackedExe = Join-Path $winUnpackedRoot "NeoTTS.exe"
+$tutorialTargetPath = Join-Path $winUnpackedRoot "使用教程.txt"
 $installerBaseName = "NeoTTS-Setup-$packageVersion"
 $portableZipDefaultPath = Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion.zip"
 $cacheRoot = Join-Path $desktopRoot ".cache"
@@ -340,7 +342,7 @@ $frontendDistRoot = Join-Path $frontendRoot "dist"
 $desktopDistRoot = Join-Path $desktopRoot "dist"
 $desktopSourceRoot = Join-Path $desktopRoot "src"
 
-foreach ($requiredPath in @($frontendRoot, $stageRuntimeScript, $desktopPackageJsonPath)) {
+foreach ($requiredPath in @($frontendRoot, $stageRuntimeScript, $desktopPackageJsonPath, $tutorialSourcePath)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Build prerequisite missing: $requiredPath"
     }
@@ -480,6 +482,11 @@ foreach ($requiredPath in @($winUnpackedRoot, $winUnpackedExe)) {
     }
 }
 
+Copy-Item -LiteralPath $tutorialSourcePath -Destination $tutorialTargetPath -Force
+if (-not (Test-Path -LiteralPath $tutorialTargetPath)) {
+    throw "Integrated package validation failed after tutorial copy: missing $tutorialTargetPath"
+}
+
 if ($Distribution -eq "portable") {
     $portableLabel = if ($SkipPortableZip) { "Assemble portable root (skip zip)" } else { "Assemble portable zip" }
     $assemblePortableArgs = @(
@@ -499,7 +506,7 @@ if ($Distribution -eq "portable") {
 
     $portableRootPath = Join-Path $releaseVersionRoot "NeoTTS-Portable"
     if ($SkipPortableZip) {
-        foreach ($requiredPath in @($winUnpackedExe, $portableRootPath, (Join-Path $portableRootPath "NeoTTS.exe"), (Join-Path $portableRootPath "portable.flag"))) {
+        foreach ($requiredPath in @($winUnpackedExe, $portableRootPath, (Join-Path $portableRootPath "NeoTTS.exe"), (Join-Path $portableRootPath "portable.flag"), (Join-Path $portableRootPath "使用教程.txt"))) {
             if (-not (Test-Path -LiteralPath $requiredPath)) {
                 throw "Portable package validation failed: missing $requiredPath"
             }
@@ -512,7 +519,7 @@ if ($Distribution -eq "portable") {
     }
     else {
         $portableZipPath = Find-SingleArtifact -ReleaseRoot $releaseVersionRoot -Filter "*Portable*.zip" -Label "portable zip"
-        foreach ($requiredPath in @($winUnpackedExe, $portableZipPath)) {
+        foreach ($requiredPath in @($winUnpackedExe, $tutorialTargetPath, $portableZipPath)) {
             if (-not (Test-Path -LiteralPath $requiredPath)) {
                 throw "Portable package validation failed: missing $requiredPath"
             }
@@ -543,7 +550,7 @@ else {
         )
 
     $installerPath = Find-SingleArtifact -ReleaseRoot $releaseVersionRoot -Filter "*Setup*.exe" -Label "Windows installer" -ExcludePattern "__uninstaller"
-    foreach ($requiredPath in @($winUnpackedExe, $installerPath)) {
+    foreach ($requiredPath in @($winUnpackedExe, $tutorialTargetPath, $installerPath)) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Installed package validation failed after Inno Setup: missing $requiredPath"
         }
