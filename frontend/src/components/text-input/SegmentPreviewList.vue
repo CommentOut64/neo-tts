@@ -1,8 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-
 import type { StandardizationPreviewSegment } from '@/types/editSession'
-import { buildStandardizationPreviewDisplayText } from '@/utils/standardizationPreviewDisplay'
 
 const props = defineProps<{
   text: string
@@ -15,13 +12,6 @@ const props = defineProps<{
   hasMore: boolean
   loadMore: () => Promise<void> | void
 }>()
-
-const displaySegments = computed(() =>
-  (props.segments || []).map((segment) => ({
-    ...segment,
-    displayText: buildStandardizationPreviewDisplayText(segment),
-  })),
-)
 </script>
 
 <template>
@@ -45,7 +35,7 @@ const displaySegments = computed(() =>
       <div v-else-if="isLoading" class="text-sm text-muted-fg/60 flex items-center justify-center h-full">
         分析中
       </div>
-      <div v-else-if="errorMessage && displaySegments.length === 0" class="text-sm text-danger flex items-center justify-center h-full">
+      <div v-else-if="errorMessage && props.segments.length === 0" class="text-sm text-danger flex items-center justify-center h-full">
         {{ errorMessage }}
       </div>
       <div
@@ -55,14 +45,14 @@ const displaySegments = computed(() =>
         长文本预览已切到快速分析，只返回前几段供检查；可继续加载更多分段。
       </div>
       <div 
-        v-for="seg in displaySegments" 
+        v-for="seg in props.segments" 
         :key="seg.order_key"
         class="text-[13px] text-foreground bg-muted/30 px-3 py-2.5 rounded leading-relaxed whitespace-nowrap border border-border/30 hover:border-border/60 transition-colors w-max min-w-full"
       >
         <span class="inline-block text-[10px] text-muted-fg/50 mr-2 select-none">{{ seg.order_key }}.</span>
-        {{ seg.displayText }}
+        {{ seg.display_text }}
       </div>
-      <div v-if="errorMessage && displaySegments.length > 0" class="text-xs text-danger px-1">
+      <div v-if="errorMessage && props.segments.length > 0" class="text-xs text-danger px-1">
         {{ errorMessage }}
       </div>
       <div v-if="hasMore" class="flex items-center justify-center pt-2">

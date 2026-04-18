@@ -1,7 +1,9 @@
 import type { ResolvedLanguage } from "@/types/editSession";
 
 export interface SegmentDisplayLike {
-  raw_text: string;
+  stem?: string;
+  raw_text?: string;
+  text_language?: string | null;
   terminal_raw?: string;
   terminal_closer_suffix?: string;
   terminal_source?: "original" | "synthetic";
@@ -69,6 +71,21 @@ function resolveSyntheticTerminal(language: ResolvedLanguage | null | undefined)
   return language === "en" ? "." : "。";
 }
 
+function resolveDisplayLanguage(segment: SegmentDisplayLike): ResolvedLanguage | null | undefined {
+  if (segment.detected_language && segment.detected_language !== "unknown") {
+    return segment.detected_language;
+  }
+  if (
+    segment.text_language === "zh" ||
+    segment.text_language === "ja" ||
+    segment.text_language === "en" ||
+    segment.text_language === "unknown"
+  ) {
+    return segment.text_language;
+  }
+  return segment.detected_language;
+}
+
 export function splitSegmentTerminalCapsule(rawText: string): SegmentTerminalCapsuleParts {
   const trimmed = rawText.trimEnd();
   let cursor = trimmed.length - 1;
@@ -94,6 +111,21 @@ export function splitSegmentTerminalCapsule(rawText: string): SegmentTerminalCap
 }
 
 export function buildSegmentDisplayText(segment: SegmentDisplayLike): string {
+  if (segment.stem !== undefined) {
+    const stem = segment.stem.trimEnd();
+    if (!stem) {
+      return "";
+    }
+    const terminal = segment.terminal_raw && segment.terminal_raw.length > 0
+      ? segment.terminal_raw
+      : resolveSyntheticTerminal(resolveDisplayLanguage(segment));
+    return `${stem}${terminal}${segment.terminal_closer_suffix ?? ""}`;
+  }
+
+  if (segment.raw_text === undefined) {
+    return "";
+  }
+
   if (
     segment.terminal_source === undefined &&
     segment.terminal_raw === undefined &&
@@ -104,7 +136,7 @@ export function buildSegmentDisplayText(segment: SegmentDisplayLike): string {
 
   const terminal = segment.terminal_raw && segment.terminal_raw.length > 0
     ? segment.terminal_raw
-    : resolveSyntheticTerminal(segment.detected_language);
+    : resolveSyntheticTerminal(resolveDisplayLanguage(segment));
   const closerSuffix = segment.terminal_closer_suffix ?? "";
   const { stem } = splitSegmentTerminalCapsule(
     stripTerminalCluster(segment.raw_text, terminal, closerSuffix),

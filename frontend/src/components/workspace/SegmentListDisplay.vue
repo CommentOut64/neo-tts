@@ -22,8 +22,9 @@ const editingSegmentId = ref<string | null>(null);
 const segmentTexts = computed(() => {
   const map = new Map<string, string>();
   for (const segment of segments.value) {
-    if (segment.raw_text) {
-      map.set(segment.segment_id, buildSegmentDisplayText(segment));
+    const displayText = buildSegmentDisplayText(segment);
+    if (displayText) {
+      map.set(segment.segment_id, displayText);
     }
   }
   return map;
@@ -31,7 +32,7 @@ const segmentTexts = computed(() => {
 
 const displaySegments = computed(() => {
   return segmentEntries.value.map((segment) => {
-    // Show draft if dirty, else original raw_text
+    // Show draft if dirty, else current display text
     const isDirty = lightEdit.isDirty(segment.segment_id);
     const draftText = lightEdit.getDraft(segment.segment_id);
     

@@ -398,20 +398,25 @@ export function useRuntimeState() {
         } else if (type === "segments_initialized") {
           const initPayload = payload as SegmentsInitializedPayload;
           progressiveSegments.value = initPayload.segments
-            .map((seg: any) => ({
-              segmentId: seg.segment_id,
-              orderKey: seg.order_key,
-              rawText: seg.raw_text,
-              displayText: buildSegmentDisplayText({
+            .map((seg: any) => {
+              const displayText = seg.display_text ?? buildSegmentDisplayText({
+                stem: seg.stem,
                 raw_text: seg.raw_text,
+                text_language: seg.text_language,
                 terminal_raw: seg.terminal_raw,
                 terminal_closer_suffix: seg.terminal_closer_suffix,
                 terminal_source: seg.terminal_source,
                 detected_language: seg.detected_language,
-              }),
+              });
+              return {
+              segmentId: seg.segment_id,
+              orderKey: seg.order_key,
+              rawText: seg.raw_text ?? displayText,
+              displayText,
               renderStatus: seg.render_status,
               renderAssetId: null,
-            }))
+              };
+            })
             .sort((a: any, b: any) => a.orderKey - b.orderKey);
           console.warn("[useRuntimeState] received segments_initialized", {
             jobId,

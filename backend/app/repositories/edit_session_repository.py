@@ -686,6 +686,8 @@ class EditSessionRepository:
             return payload
 
         upgraded = dict(payload)
+        upgraded.pop("raw_text", None)
+        upgraded.pop("normalized_text", None)
         render_profiles = upgraded.get("render_profiles")
         if not isinstance(render_profiles, list):
             return upgraded

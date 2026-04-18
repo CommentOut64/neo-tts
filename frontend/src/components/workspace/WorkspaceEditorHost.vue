@@ -127,12 +127,11 @@ const lastSessionSegments = ref<
       EditableSegment,
       | "segment_id"
       | "order_key"
-      | "raw_text"
       | "terminal_raw"
       | "terminal_closer_suffix"
       | "terminal_source"
       | "detected_language"
-    >
+    > & { display_text: string }
   >
 >([]);
 const lastSessionEdges = ref<EditableEdge[]>([]);
@@ -1529,7 +1528,7 @@ watch(
           nextSegments: sortedReadySegments.value.map((segment) => ({
             segment_id: segment.segment_id,
             order_key: segment.order_key,
-            raw_text: buildSegmentDisplayText(segment),
+            display_text: buildSegmentDisplayText(segment),
           })),
           previousEdges: lastSessionEdges.value,
           nextEdges: sessionEdges.value,
@@ -1564,7 +1563,7 @@ watch(
     lastSessionSegments.value = sortedReadySegments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,
-      raw_text: buildSegmentDisplayText(segment),
+      display_text: buildSegmentDisplayText(segment),
       terminal_raw: segment.terminal_raw,
       terminal_closer_suffix: segment.terminal_closer_suffix,
       terminal_source: segment.terminal_source,

@@ -513,8 +513,7 @@ class GPTSoVITSOptimizedInference:
                 segment_inference_language,
             )
         segment_text = build_segment_render_text(
-            raw_text=segment.raw_text,
-            normalized_text=segment.normalized_text,
+            stem=segment.stem,
             text_language=segment_inference_language,
             terminal_raw=getattr(segment, "terminal_raw", ""),
             terminal_closer_suffix=getattr(segment, "terminal_closer_suffix", ""),

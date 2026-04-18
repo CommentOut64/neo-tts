@@ -79,27 +79,14 @@ class SegmentService:
                 raise EditSessionNotFoundError(f"Segment '{after_segment_id}' not found.")
 
         standardized = standardize_segment_text(raw_text, text_language)
-        inserted_segment = EditableSegment(
-            segment_id=f"segment-{uuid4().hex}",
+        inserted_segment = self._build_editable_segment(
             document_id=head_snapshot.document_id,
-            order_key=0,
-            raw_text=standardized.raw_text,
-            normalized_text=standardized.normalized_text,
             text_language=text_language,
-            terminal_raw=standardized.terminal_raw,
-            terminal_closer_suffix=standardized.terminal_closer_suffix,
-            terminal_source=standardized.terminal_source,
-            detected_language=standardized.detected_language,
-            inference_exclusion_reason=standardized.inference_exclusion_reason,
-            render_version=1,
-            render_asset_id=None,
+            standardized=standardized,
             group_id=group_id,
             render_profile_id=render_profile_id,
             voice_binding_id=voice_binding_id,
             inference_override=dict(inference_override),
-            risk_flags=standardized.risk_flags,
-            assembled_audio_span=None,
-            render_status="pending",
         )
         segments.insert(insert_index, inserted_segment)
         normalized_segments = self._normalize_segment_order(segments)
@@ -135,25 +122,12 @@ class SegmentService:
         standardized_batch = standardize_segment_texts(raw_segments, text_language)
         for standardized in standardized_batch.segments:
             inserted_segments.append(
-                EditableSegment(
-                    segment_id=f"segment-{uuid4().hex}",
+                self._build_editable_segment(
                     document_id=head_snapshot.document_id,
-                    order_key=0,
-                    raw_text=standardized.raw_text,
-                    normalized_text=standardized.normalized_text,
                     text_language=text_language,
-                    terminal_raw=standardized.terminal_raw,
-                    terminal_closer_suffix=standardized.terminal_closer_suffix,
-                    terminal_source=standardized.terminal_source,
-                    detected_language=standardized.detected_language,
-                    inference_exclusion_reason=standardized.inference_exclusion_reason,
-                    render_version=1,
-                    render_asset_id=None,
+                    standardized=standardized,
                     group_id=group_id,
                     inference_override={},
-                    risk_flags=standardized.risk_flags,
-                    assembled_audio_span=None,
-                    render_status="pending",
                 )
             )
         segments[insert_index:insert_index] = inserted_segments
@@ -189,9 +163,19 @@ class SegmentService:
 
         if patch.raw_text is not None:
             standardized = standardize_segment_text(patch.raw_text, patch.text_language or current_segment.text_language)
-            if standardized.raw_text != current_segment.raw_text or standardized.normalized_text != current_segment.normalized_text:
-                updated_segment.raw_text = standardized.raw_text
-                updated_segment.normalized_text = standardized.normalized_text
+            text_changed = any(
+                (
+                    standardized.stem != current_segment.stem,
+                    standardized.terminal_raw != current_segment.terminal_raw,
+                    standardized.terminal_closer_suffix != current_segment.terminal_closer_suffix,
+                    standardized.terminal_source != current_segment.terminal_source,
+                    standardized.detected_language != current_segment.detected_language,
+                    standardized.inference_exclusion_reason != current_segment.inference_exclusion_reason,
+                    standardized.risk_flags != current_segment.risk_flags,
+                )
+            )
+            if text_changed:
+                updated_segment.stem = standardized.stem
                 updated_segment.terminal_raw = standardized.terminal_raw
                 updated_segment.terminal_closer_suffix = standardized.terminal_closer_suffix
                 updated_segment.terminal_source = standardized.terminal_source
@@ -404,49 +388,23 @@ class SegmentService:
         next_language = text_language or original.text_language
         standardized_batch = standardize_segment_texts([left_text, right_text], next_language)
         left_standardized, right_standardized = standardized_batch.segments
-        left_segment = EditableSegment(
-            segment_id=f"segment-{uuid4().hex}",
+        left_segment = self._build_editable_segment(
             document_id=original.document_id,
-            order_key=0,
-            raw_text=left_standardized.raw_text,
-            normalized_text=left_standardized.normalized_text,
             text_language=next_language,
-            terminal_raw=left_standardized.terminal_raw,
-            terminal_closer_suffix=left_standardized.terminal_closer_suffix,
-            terminal_source=left_standardized.terminal_source,
-            detected_language=left_standardized.detected_language,
-            inference_exclusion_reason=left_standardized.inference_exclusion_reason,
-            render_version=1,
-            render_asset_id=None,
+            standardized=left_standardized,
             group_id=original.group_id,
             render_profile_id=original.render_profile_id,
             voice_binding_id=original.voice_binding_id,
             inference_override=dict(original.inference_override),
-            risk_flags=left_standardized.risk_flags,
-            assembled_audio_span=None,
-            render_status="pending",
         )
-        right_segment = EditableSegment(
-            segment_id=f"segment-{uuid4().hex}",
+        right_segment = self._build_editable_segment(
             document_id=original.document_id,
-            order_key=0,
-            raw_text=right_standardized.raw_text,
-            normalized_text=right_standardized.normalized_text,
             text_language=next_language,
-            terminal_raw=right_standardized.terminal_raw,
-            terminal_closer_suffix=right_standardized.terminal_closer_suffix,
-            terminal_source=right_standardized.terminal_source,
-            detected_language=right_standardized.detected_language,
-            inference_exclusion_reason=right_standardized.inference_exclusion_reason,
-            render_version=1,
-            render_asset_id=None,
+            standardized=right_standardized,
             group_id=original.group_id,
             render_profile_id=original.render_profile_id,
             voice_binding_id=original.voice_binding_id,
             inference_override=dict(original.inference_override),
-            risk_flags=right_standardized.risk_flags,
-            assembled_audio_span=None,
-            render_status="pending",
         )
         segments[target_index:target_index + 1] = [left_segment, right_segment]
         normalized_segments = self._normalize_segment_order(segments)
@@ -483,39 +441,27 @@ class SegmentService:
         left_segment = segments[left_index]
         right_segment = segments[right_index]
         left_stem = extract_segment_stem(
-            raw_text=left_segment.raw_text,
-            normalized_text=left_segment.normalized_text,
+            stem=left_segment.stem,
+            terminal_raw=left_segment.terminal_raw,
+            terminal_closer_suffix=left_segment.terminal_closer_suffix,
+            terminal_source=left_segment.terminal_source,
         )
         right_display_text = build_segment_display_text(
-            raw_text=right_segment.raw_text,
-            normalized_text=right_segment.normalized_text,
+            stem=right_segment.stem,
             text_language=right_segment.text_language,
             terminal_raw=right_segment.terminal_raw,
             terminal_closer_suffix=right_segment.terminal_closer_suffix,
             terminal_source=right_segment.terminal_source,
         )
         merged_standardized = standardize_segment_text(f"{left_stem}{right_display_text}", left_segment.text_language)
-        merged_segment = EditableSegment(
-            segment_id=f"segment-{uuid4().hex}",
+        merged_segment = self._build_editable_segment(
             document_id=left_segment.document_id,
-            order_key=0,
-            raw_text=merged_standardized.raw_text,
-            normalized_text=merged_standardized.normalized_text,
             text_language=left_segment.text_language,
-            terminal_raw=merged_standardized.terminal_raw,
-            terminal_closer_suffix=merged_standardized.terminal_closer_suffix,
-            terminal_source=merged_standardized.terminal_source,
-            detected_language=merged_standardized.detected_language,
-            inference_exclusion_reason=merged_standardized.inference_exclusion_reason,
-            render_version=1,
-            render_asset_id=None,
+            standardized=merged_standardized,
             group_id=left_segment.group_id,
             render_profile_id=left_segment.render_profile_id,
             voice_binding_id=left_segment.voice_binding_id,
             inference_override=dict(left_segment.inference_override),
-            risk_flags=merged_standardized.risk_flags,
-            assembled_audio_span=None,
-            render_status="pending",
         )
         segments[left_index:right_index + 1] = [merged_segment]
         normalized_segments = self._normalize_segment_order(segments)
@@ -660,6 +606,39 @@ class SegmentService:
         return normalized
 
     @staticmethod
+    def _build_editable_segment(
+        *,
+        document_id: str,
+        text_language: str,
+        standardized,
+        group_id: str | None = None,
+        render_profile_id: str | None = None,
+        voice_binding_id: str | None = None,
+        inference_override: dict[str, object] | None = None,
+    ) -> EditableSegment:
+        return EditableSegment(
+            segment_id=f"segment-{uuid4().hex}",
+            document_id=document_id,
+            order_key=0,
+            stem=standardized.stem,
+            text_language=text_language,
+            terminal_raw=standardized.terminal_raw,
+            terminal_closer_suffix=standardized.terminal_closer_suffix,
+            terminal_source=standardized.terminal_source,
+            detected_language=standardized.detected_language,
+            inference_exclusion_reason=standardized.inference_exclusion_reason,
+            render_version=1,
+            render_asset_id=None,
+            group_id=group_id,
+            render_profile_id=render_profile_id,
+            voice_binding_id=voice_binding_id,
+            inference_override=dict(inference_override or {}),
+            risk_flags=standardized.risk_flags,
+            assembled_audio_span=None,
+            render_status="pending",
+        )
+
+    @staticmethod
     def _clone_snapshot(
         base_snapshot: DocumentSnapshot,
         *,
@@ -670,8 +649,6 @@ class SegmentService:
             deep=True,
             update={
                 "document_version": base_snapshot.document_version + 1,
-                "raw_text": "".join(segment.raw_text for segment in segments),
-                "normalized_text": "".join(segment.normalized_text for segment in segments),
                 "segments": segments,
                 "edges": edges,
                 "block_ids": [],

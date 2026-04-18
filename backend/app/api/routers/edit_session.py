@@ -942,7 +942,7 @@ def get_playback_map(request: Request) -> PlaybackMapResponse:
     "/standardization-preview",
     response_model=StandardizationPreviewResponse,
     summary="预览文本标准化结果",
-    description="按后端权威标准化器切段并返回 canonical/capsule/语言元数据预览，不写入正式会话。",
+    description="按后端权威标准化器切段并返回 stem/display_text/terminal capsule/语言元数据预览，不写入正式会话。",
     responses=BAD_REQUEST_RESPONSE,
 )
 def get_standardization_preview(

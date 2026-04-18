@@ -6,6 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.text.segment_standardizer import build_segment_display_text
+from backend.app.text.terminal_capsule import parse_terminal_capsule
+
 
 ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
 InferenceExclusionReason = Literal[
@@ -120,6 +123,22 @@ class SegmentGroup(BaseModel):
     created_by: Literal["append", "batch_patch", "manual"] = Field(default="manual", description="分组来源。")
 
 
+def _upgrade_legacy_segment_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return payload
+
+    upgraded = dict(payload)
+    raw_text = upgraded.pop("raw_text", None)
+    upgraded.pop("normalized_text", None)
+    if upgraded.get("stem") is None and isinstance(raw_text, str):
+        state = parse_terminal_capsule(raw_text)
+        upgraded["stem"] = state.stem
+        upgraded.setdefault("terminal_raw", state.terminal_raw)
+        upgraded.setdefault("terminal_closer_suffix", state.terminal_closer_suffix)
+        upgraded.setdefault("terminal_source", state.terminal_source)
+    return upgraded
+
+
 class EditableSegment(BaseModel):
     segment_id: str = Field(description="段 ID。")
     document_id: str = Field(description="所属文档 ID。")
@@ -127,8 +146,7 @@ class EditableSegment(BaseModel):
     previous_segment_id: str | None = Field(default=None, description="前一个相邻段 ID；若不存在则为 null。")
     next_segment_id: str | None = Field(default=None, description="后一个相邻段 ID；若不存在则为 null。")
     segment_kind: Literal["speech"] = Field(default="speech", description="段类型；当前仅支持 `speech`。")
-    raw_text: str = Field(description="用户编辑的原始段文本。")
-    normalized_text: str = Field(description="归一化后的段文本。")
+    stem: str = Field(description="段的可编辑正文，不包含句尾 terminal capsule。")
     text_language: str = Field(description="该段文本语言。")
     terminal_raw: str = Field(default="", description="句尾区域原始强标点簇；synthetic 时为空串。")
     terminal_closer_suffix: str = Field(default="", description="句尾尾随闭合符串。")
@@ -158,6 +176,29 @@ class EditableSegment(BaseModel):
         default=None,
         description="该段在当前已装配时间线中的 sample 区间；不可用时为 null。",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_text_fields(cls, value: object) -> object:
+        return _upgrade_legacy_segment_payload(value)
+
+    @field_validator("stem")
+    @classmethod
+    def _validate_stem(cls, value: str) -> str:
+        normalized = value.rstrip()
+        if not normalized:
+            raise ValueError("stem must contain readable speech content.")
+        return normalized
+
+    @property
+    def display_text(self) -> str:
+        return build_segment_display_text(
+            stem=self.stem,
+            text_language=self.text_language,
+            terminal_raw=self.terminal_raw,
+            terminal_closer_suffix=self.terminal_closer_suffix,
+            terminal_source=self.terminal_source,
+        )
 
 
 class EditableSegmentResponse(EditableSegment):
@@ -382,8 +423,6 @@ class DocumentSnapshot(BaseModel):
     document_id: str = Field(description="文档 ID。")
     snapshot_kind: Literal["baseline", "head", "staging"] = Field(description="快照类型。")
     document_version: int = Field(description="该快照对应的文档版本号。")
-    raw_text: str = Field(description="当前快照的全文原始文本。")
-    normalized_text: str = Field(description="当前快照的归一化全文文本。")
     segment_ids: list[str] = Field(default_factory=list, description="当前快照内全部段 ID，按顺序排列。")
     edge_ids: list[str] = Field(default_factory=list, description="当前快照内全部边 ID。")
     block_ids: list[str] = Field(default_factory=list, description="当前时间线 block ID 列表；兼容旧视图。")
@@ -398,6 +437,16 @@ class DocumentSnapshot(BaseModel):
     created_at: datetime = Field(default_factory=_now_utc, description="快照创建时间。")
     segments: list[EditableSegment] = Field(default_factory=list, description="内联返回的段详情列表。")
     edges: list[EditableEdge] = Field(default_factory=list, description="内联返回的边详情列表。")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_top_level_text_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        upgraded = dict(value)
+        upgraded.pop("raw_text", None)
+        upgraded.pop("normalized_text", None)
+        return upgraded
 
     @model_validator(mode="after")
     def _sync_entity_ids(self) -> "DocumentSnapshot":
@@ -758,7 +807,8 @@ class StandardizationPreviewRequest(BaseModel):
 
 class StandardizationPreviewSegment(BaseModel):
     order_key: int = Field(description="preview 段顺序。")
-    canonical_text: str = Field(description="canonical 段文本。")
+    stem: str = Field(description="段正文 stem。")
+    display_text: str = Field(description="按后端统一规则派生的 preview 展示文本。")
     terminal_raw: str = Field(description="原始强标点簇；synthetic 时为空串。")
     terminal_closer_suffix: str = Field(description="尾随闭合符串。")
     terminal_source: Literal["original", "synthetic"] = Field(description="句尾来源。")

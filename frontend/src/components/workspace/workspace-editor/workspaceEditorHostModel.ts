@@ -193,9 +193,9 @@ export function shouldPreserveLocalTextDraftsOnVersionChange(input: {
   isEditing: boolean;
   dirtySegmentIds: Iterable<string>;
   previousSegments: Array<
-    Pick<EditableSegment, "segment_id" | "order_key" | "raw_text">
+    Pick<EditableSegment, "segment_id" | "order_key"> & { display_text: string }
   >;
-  nextSegments: Array<Pick<EditableSegment, "segment_id" | "order_key" | "raw_text">>;
+  nextSegments: Array<Pick<EditableSegment, "segment_id" | "order_key"> & { display_text: string }>;
   previousEdges: EditableEdge[] | undefined;
   nextEdges: EditableEdge[] | undefined;
 }): boolean {
@@ -224,7 +224,7 @@ export function shouldPreserveLocalTextDraftsOnVersionChange(input: {
     return (
       previousSegment.segment_id === nextSegment?.segment_id &&
       previousSegment.order_key === nextSegment?.order_key &&
-      previousSegment.raw_text === nextSegment?.raw_text
+      previousSegment.display_text === nextSegment?.display_text
     );
   });
 }

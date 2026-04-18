@@ -53,8 +53,7 @@ export interface EditableSegment {
   previous_segment_id: string | null
   next_segment_id: string | null
   segment_kind: 'speech'
-  raw_text: string
-  normalized_text: string
+  stem: string
   text_language: string
   terminal_raw?: string
   terminal_closer_suffix?: string
@@ -205,7 +204,8 @@ export interface StandardizationPreviewRequest {
 
 export interface StandardizationPreviewSegment {
   order_key: number
-  canonical_text: string
+  stem: string
+  display_text: string
   terminal_raw: string
   terminal_closer_suffix: string
   terminal_source: 'original' | 'synthetic'
@@ -406,7 +406,10 @@ export interface SegmentsInitializedPayload {
   segments: Array<{
     segment_id: string
     order_key: number
-    raw_text: string
+    raw_text?: string
+    stem?: string
+    display_text?: string
+    text_language?: string
     terminal_raw?: string
     terminal_closer_suffix?: string
     terminal_source?: 'original' | 'synthetic'
