@@ -413,7 +413,6 @@ export interface SegmentsInitializedPayload {
   segments: Array<{
     segment_id: string
     order_key: number
-    raw_text?: string
     stem?: string
     display_text?: string
     text_language?: string

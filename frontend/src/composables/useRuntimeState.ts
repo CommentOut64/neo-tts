@@ -401,7 +401,6 @@ export function useRuntimeState() {
             .map((seg: any) => {
               const displayText = seg.display_text ?? buildSegmentDisplayText({
                 stem: seg.stem,
-                raw_text: seg.raw_text,
                 text_language: seg.text_language,
                 terminal_raw: seg.terminal_raw,
                 terminal_closer_suffix: seg.terminal_closer_suffix,
@@ -411,7 +410,7 @@ export function useRuntimeState() {
               return {
               segmentId: seg.segment_id,
               orderKey: seg.order_key,
-              rawText: seg.raw_text ?? displayText,
+              rawText: displayText,
               displayText,
               renderStatus: seg.render_status,
               renderAssetId: null,
