@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -72,6 +73,7 @@ from backend.app.inference.types import InferenceCancelledError
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IS_HALF = DEVICE == "cuda"
+_WARMUP_HEARTBEAT_INTERVAL_SECONDS = 10.0
 inference_logger = get_logger("pytorch_inference")
 
 
@@ -251,19 +253,126 @@ class GPTSoVITSOptimizedInference:
         if self.device != target_device:
             self.device = target_device
 
+    def _describe_cuda_memory(self) -> str:
+        if not torch.cuda.is_available() or not hasattr(torch.cuda, "mem_get_info"):
+            return "unavailable"
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            allocated_bytes = torch.cuda.memory_allocated() if hasattr(torch.cuda, "memory_allocated") else 0
+            reserved_bytes = torch.cuda.memory_reserved() if hasattr(torch.cuda, "memory_reserved") else 0
+        except Exception as exc:
+            return f"error:{exc}"
+        mib = 1024 * 1024
+        return (
+            f"free_mb={free_bytes / mib:.0f} "
+            f"total_mb={total_bytes / mib:.0f} "
+            f"allocated_mb={allocated_bytes / mib:.0f} "
+            f"reserved_mb={reserved_bytes / mib:.0f}"
+        )
+
+    def _log_warmup_context(self) -> None:
+        resident_device = getattr(self, "resident_device", self.device)
+        inference_logger.info(
+            "Warmup context device={} resident_device={} half={} pid={} thread_id={} cuda_mem={}",
+            self.device,
+            resident_device,
+            self.is_half,
+            os.getpid(),
+            threading.get_ident(),
+            self._describe_cuda_memory(),
+        )
+
+    def _log_warmup_stage_begin(
+        self,
+        stage_state: dict[str, str | float],
+        stage: str,
+        detail: str,
+    ) -> float:
+        stage_started = time.perf_counter()
+        stage_state["stage"] = stage
+        stage_state["detail"] = detail
+        stage_state["stage_started"] = stage_started
+        inference_logger.info("Warmup stage begin stage={} detail={}", stage, detail)
+        return stage_started
+
+    def _log_warmup_stage_end(self, stage: str, stage_started: float, detail: str) -> None:
+        inference_logger.info(
+            "Warmup stage end stage={} stage_elapsed_ms={:.2f} detail={}",
+            stage,
+            (time.perf_counter() - stage_started) * 1000,
+            detail,
+        )
+
+    def _run_warmup_watchdog(
+        self,
+        stop_event: threading.Event,
+        stage_state: dict[str, str | float],
+        warmup_started: float,
+    ) -> None:
+        while not stop_event.wait(_WARMUP_HEARTBEAT_INTERVAL_SECONDS):
+            stage_started = float(stage_state.get("stage_started", warmup_started))
+            resident_device = getattr(self, "resident_device", self.device)
+            inference_logger.warning(
+                "Warmup still running stage={} stage_elapsed_ms={:.2f} total_elapsed_ms={:.2f} device={} resident_device={} half={} pid={} thread_id={} cuda_mem={} detail={}",
+                str(stage_state.get("stage", "unknown")),
+                (time.perf_counter() - stage_started) * 1000,
+                (time.perf_counter() - warmup_started) * 1000,
+                self.device,
+                resident_device,
+                self.is_half,
+                os.getpid(),
+                threading.get_ident(),
+                self._describe_cuda_memory(),
+                str(stage_state.get("detail", "-")),
+            )
+
+    @staticmethod
+    def _describe_value_shape(value) -> str:
+        shape = getattr(value, "shape", None)
+        if shape is None:
+            return type(value).__name__
+        try:
+            return str(tuple(shape))
+        except TypeError:
+            return str(shape)
+
     def warmup(self):
         warmup_started = time.perf_counter()
         stage = "bootstrap"
+        stage_state: dict[str, str | float] = {
+            "stage": stage,
+            "detail": "bootstrap",
+            "stage_started": warmup_started,
+        }
         inference_logger.info("Warming up models (GPT, SoVITS, BERT, etc.)...")
+        self._log_warmup_context()
+        watchdog_stop_event = threading.Event()
+        watchdog_thread = threading.Thread(
+            target=self._run_warmup_watchdog,
+            args=(watchdog_stop_event, stage_state, warmup_started),
+            name="warmup-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
         try:
             stage = "phones_and_bert_en"
-            phones, _, _ = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
+            stage_started = self._log_warmup_stage_begin(stage_state, stage, "text='Warmup text.' lang=en")
+            phones, _, norm_text_en = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
+            self._log_warmup_stage_end(
+                stage,
+                stage_started,
+                f"phones={len(phones)} norm_text_len={len(norm_text_en)}",
+            )
+
             stage = "phones_and_bert_zh"
-            _ = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
+            stage_started = self._log_warmup_stage_begin(stage_state, stage, "text='你好，预热文本。' lang=zh")
+            _, _, norm_text_zh = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
+            self._log_warmup_stage_end(stage, stage_started, f"norm_text_len={len(norm_text_zh)}")
 
             inference_logger.info("Warming up GPU kernels...")
             with torch.no_grad():
                 stage = "prepare_dummy_inputs"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, f"phone_count={len(phones)}")
                 dummy_prompt = torch.zeros((1, 1), dtype=torch.long, device=self.device)
                 dummy_bert = torch.zeros(
                     (1, 1024, len(phones) + 1),
@@ -272,8 +381,26 @@ class GPTSoVITSOptimizedInference:
                 )
                 dummy_phones = torch.LongTensor(phones + [0]).unsqueeze(0).to(self.device)
                 dummy_phones_len = torch.tensor([dummy_phones.shape[-1]]).to(self.device)
+                self._log_warmup_stage_end(
+                    stage,
+                    stage_started,
+                    "dummy_prompt_shape={} dummy_bert_shape={} dummy_phones_shape={} dummy_phones_len_shape={}".format(
+                        self._describe_value_shape(dummy_prompt),
+                        self._describe_value_shape(dummy_bert),
+                        self._describe_value_shape(dummy_phones),
+                        self._describe_value_shape(dummy_phones_len),
+                    ),
+                )
 
                 stage = "t2s_infer_panel"
+                stage_started = self._log_warmup_stage_begin(
+                    stage_state,
+                    stage,
+                    "dummy_phones_shape={} dummy_bert_shape={}".format(
+                        self._describe_value_shape(dummy_phones),
+                        self._describe_value_shape(dummy_bert),
+                    ),
+                )
                 pred_semantic, _ = self.t2s_model.model.infer_panel(
                     dummy_phones,
                     dummy_phones_len,
@@ -286,8 +413,18 @@ class GPTSoVITSOptimizedInference:
                 )
                 if pred_semantic is None:
                     raise RuntimeError("warmup infer_panel returned no semantic tokens")
+                self._log_warmup_stage_end(
+                    stage,
+                    stage_started,
+                    "pred_semantic_shape={} dummy_prefix_len={}".format(
+                        self._describe_value_shape(pred_semantic),
+                        dummy_prompt.shape[1],
+                    ),
+                )
 
                 stage = "prepare_dummy_semantic"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, "building decode inputs")
+                prepare_dummy_semantic_started = stage_started
                 dummy_spec = torch.zeros((1, self.hps.data.filter_length // 2 + 1, 10), device=self.device)
                 if self.is_half:
                     dummy_spec = dummy_spec.half()
@@ -295,20 +432,55 @@ class GPTSoVITSOptimizedInference:
                 dummy_semantic = pred_semantic[:, dummy_prefix_len:].unsqueeze(0)
                 dummy_sv_emb = None
                 if getattr(self.vq_model, "is_v2pro", False):
+                    sv_stage = "build_dummy_sv_embedding"
+                    sv_stage_started = self._log_warmup_stage_begin(stage_state, sv_stage, "vq_model.is_v2pro=True")
                     dummy_sv_emb = [self._build_dummy_warmup_speaker_embedding()]
+                    self._log_warmup_stage_end(
+                        sv_stage,
+                        sv_stage_started,
+                        f"sv_emb_shape={self._describe_value_shape(dummy_sv_emb[0])}",
+                    )
+                    stage_state["stage"] = stage
+                    stage_state["detail"] = "building decode inputs"
+                    stage_state["stage_started"] = prepare_dummy_semantic_started
+                self._log_warmup_stage_end(
+                    stage,
+                    prepare_dummy_semantic_started,
+                    "dummy_semantic_shape={} dummy_spec_shape={} has_sv_emb={}".format(
+                        self._describe_value_shape(dummy_semantic),
+                        self._describe_value_shape(dummy_spec),
+                        dummy_sv_emb is not None,
+                    ),
+                )
 
                 stage = "vq_decode"
+                stage_started = self._log_warmup_stage_begin(
+                    stage_state,
+                    stage,
+                    "dummy_semantic_shape={} phone_count={} has_sv_emb={}".format(
+                        self._describe_value_shape(dummy_semantic),
+                        len(phones),
+                        dummy_sv_emb is not None,
+                    ),
+                )
                 _ = self.vq_model.decode(
                     dummy_semantic,
                     torch.LongTensor(phones).unsqueeze(0).to(self.device),
                     [dummy_spec],
                     sv_emb=dummy_sv_emb,
                 )
+                self._log_warmup_stage_end(stage, stage_started, "decode_call_completed")
             if torch.cuda.is_available():
+                stage = "cuda_synchronize"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, "torch.cuda.synchronize")
                 torch.cuda.synchronize()
+                self._log_warmup_stage_end(stage, stage_started, "cuda_sync_completed")
             inference_logger.info("Warmup completed elapsed_ms={:.2f}", (time.perf_counter() - warmup_started) * 1000)
         except Exception as exc:
             inference_logger.exception("Warmup failed at stage={} reason={}", stage, str(exc))
+        finally:
+            watchdog_stop_event.set()
+            watchdog_thread.join(timeout=1.0)
 
     def get_bert_feature(self, text, word2ph):
         with torch.no_grad():
