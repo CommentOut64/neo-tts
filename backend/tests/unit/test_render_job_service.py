@@ -616,7 +616,14 @@ def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
 
     edit_job = service.create_update_segment_job(
         target_segment_id,
-        UpdateSegmentRequest(raw_text="第一句已修改。"),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
     )
     service.run_edit_job(edit_job.job.job_id)
 
@@ -870,7 +877,14 @@ def test_create_update_segment_job_preserves_planner_metadata_for_queued_edit_jo
 
     edit_job = service.create_update_segment_job(
         snapshot.segments[0].segment_id,
-        UpdateSegmentRequest(raw_text="第一句已修改。"),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
     )
     queued_job = service._queued_edit_jobs[edit_job.job.job_id]  # noqa: SLF001
 
@@ -918,7 +932,14 @@ def test_run_edit_job_restores_planner_metadata_into_render_plan(tmp_path, monke
 
     edit_job = service.create_update_segment_job(
         snapshot.segments[0].segment_id,
-        UpdateSegmentRequest(raw_text="第一句已修改。"),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
     )
     service.run_edit_job(edit_job.job.job_id)
 

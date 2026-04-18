@@ -707,7 +707,14 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
 
         patch_segment = client.patch(
             f"/v1/edit-session/segments/{segment_id}",
-            json={"raw_text": "第一句已修改。"},
+            json={
+                "text_patch": {
+                    "stem": "第一句已修改",
+                    "terminal_raw": "。",
+                    "terminal_closer_suffix": "",
+                    "terminal_source": "original",
+                }
+            },
         )
         assert patch_segment.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)

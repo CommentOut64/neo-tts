@@ -101,7 +101,14 @@ def test_update_segment_marks_long_segment_risk(tmp_path):
 
     mutation = service.update_segment(
         "seg-1",
-        UpdateSegmentRequest(raw_text=long_text),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": long_text[:-1],
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
         snapshot=snapshot,
     )
 
@@ -115,7 +122,14 @@ def test_update_segment_auto_appends_synthetic_period_without_restoring_question
 
     mutation = service.update_segment(
         "seg-1",
-        UpdateSegmentRequest(raw_text="真的吗"),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "真的吗",
+                "terminal_raw": "",
+                "terminal_closer_suffix": "",
+                "terminal_source": "synthetic",
+            }
+        ),
         snapshot=snapshot,
     )
 
@@ -133,7 +147,14 @@ def test_update_segment_refreshes_snapshot_display_text_from_structured_segment(
 
     mutation = service.update_segment(
         "seg-1",
-        UpdateSegmentRequest(raw_text='真的么？！」'),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "真的么",
+                "terminal_raw": "？！",
+                "terminal_closer_suffix": "」",
+                "terminal_source": "original",
+            }
+        ),
         snapshot=snapshot,
     )
 
