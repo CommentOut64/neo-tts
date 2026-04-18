@@ -62,6 +62,7 @@ describe("backend process options", () => {
     const paths = createProductPaths("installed");
 
     const options = buildDefaultBackendOptions(paths);
+    const runtimePythonDir = path.dirname(paths.runtimePython);
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -97,6 +98,7 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);
     expect(options.healthTimeoutMs).toBe(40_000);
@@ -106,6 +108,7 @@ describe("backend process options", () => {
     const paths = createProductPaths("portable");
 
     const options = buildDefaultBackendOptions(paths);
+    const runtimePythonDir = path.dirname(paths.runtimePython);
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -130,6 +133,7 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);
     expect(options.healthTimeoutMs).toBe(40_000);
