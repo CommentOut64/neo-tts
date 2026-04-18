@@ -24,6 +24,10 @@ _APPROX_CHARS_PER_SECOND = 5.0
 _SHORT_SEGMENT_SECONDS = 3.0
 _LONG_SEGMENT_SECONDS = 30.0
 _SUPPORTED_LANGUAGES = {"zh", "ja", "en"}
+_FORCED_NEWLINE_TRAILING_PUNCTUATION = frozenset("，,、；;：:。．.!！？?…—")
+_FORCED_NEWLINE_LEADING_PUNCTUATION = (
+    _FORCED_NEWLINE_TRAILING_PUNCTUATION | CLOSER_CHARACTERS
+)
 LanguageDetectionSource = Literal["explicit", "auto"]
 
 
@@ -303,9 +307,9 @@ def split_text_segments_with_terminal_capsules(raw_text: str) -> list[str]:
     while index < len(normalized):
         current_char = normalized[index]
         if current_char == "\n":
-            _append_segment_slice(segments, normalized[start:index])
-            start = index + 1
-            index += 1
+            _append_forced_newline_segment(segments, normalized[start:index])
+            start = _consume_forced_newline_leading_punctuation(normalized, index + 1)
+            index = start
             continue
 
         terminal = _match_terminal_at(normalized, index)
@@ -332,8 +336,35 @@ def split_text_segments_with_terminal_capsules(raw_text: str) -> list[str]:
     return segments
 
 
+def _append_forced_newline_segment(segments: list[str], text: str) -> None:
+    normalized = normalize_whitespace(text.replace("\n", " "))
+    if not normalized:
+        return
+
+    state = parse_terminal_capsule(normalized)
+    stem = state.stem.rstrip("".join(_FORCED_NEWLINE_TRAILING_PUNCTUATION)).rstrip()
+    if not stem:
+        return
+
+    segments.append(f"{stem}{state.terminal_closer_suffix}")
+
+
+def _consume_forced_newline_leading_punctuation(text: str, start_index: int) -> int:
+    cursor = start_index
+    while cursor < len(text):
+        current_char = text[cursor]
+        if current_char.isspace() and current_char != "\n":
+            cursor += 1
+            continue
+        if current_char in _FORCED_NEWLINE_LEADING_PUNCTUATION:
+            cursor += 1
+            continue
+        break
+    return cursor
+
+
 def _append_segment_slice(segments: list[str], text: str) -> None:
-    normalized = normalize_whitespace(text)
+    normalized = normalize_whitespace(text.replace("\n", " "))
     if normalized:
         segments.append(normalized)
 

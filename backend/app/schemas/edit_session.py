@@ -7,7 +7,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.text.segment_standardizer import build_segment_display_text
-from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
@@ -122,23 +121,6 @@ class SegmentGroup(BaseModel):
     voice_binding_id: str | None = Field(default=None, description="该组绑定的 voice/model binding ID。")
     created_by: Literal["append", "batch_patch", "manual"] = Field(default="manual", description="分组来源。")
 
-
-def _upgrade_legacy_segment_payload(payload: object) -> object:
-    if not isinstance(payload, dict):
-        return payload
-
-    upgraded = dict(payload)
-    raw_text = upgraded.pop("raw_text", None)
-    upgraded.pop("normalized_text", None)
-    if upgraded.get("stem") is None and isinstance(raw_text, str):
-        state = parse_terminal_capsule(raw_text)
-        upgraded["stem"] = state.stem
-        upgraded.setdefault("terminal_raw", state.terminal_raw)
-        upgraded.setdefault("terminal_closer_suffix", state.terminal_closer_suffix)
-        upgraded.setdefault("terminal_source", state.terminal_source)
-    return upgraded
-
-
 class EditableSegment(BaseModel):
     segment_id: str = Field(description="段 ID。")
     document_id: str = Field(description="所属文档 ID。")
@@ -176,11 +158,6 @@ class EditableSegment(BaseModel):
         default=None,
         description="该段在当前已装配时间线中的 sample 区间；不可用时为 null。",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _upgrade_legacy_text_fields(cls, value: object) -> object:
-        return _upgrade_legacy_segment_payload(value)
 
     @field_validator("stem")
     @classmethod
@@ -314,23 +291,6 @@ class UpdateSegmentRequest(BaseModel):
     text_patch: SegmentTextPatch | None = Field(default=None, description="结构化段文本 patch。")
     text_language: str | None = Field(default=None, description="更新后的文本语言。")
     inference_override: dict[str, Any] | None = Field(default=None, description="兼容旧入口的推理覆盖项。")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _upgrade_legacy_raw_text_patch(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        upgraded = dict(value)
-        raw_text = upgraded.pop("raw_text", None)
-        if upgraded.get("text_patch") is None and isinstance(raw_text, str):
-            state = parse_terminal_capsule(raw_text)
-            upgraded["text_patch"] = {
-                "stem": state.stem,
-                "terminal_raw": state.terminal_raw,
-                "terminal_closer_suffix": state.terminal_closer_suffix,
-                "terminal_source": state.terminal_source,
-            }
-        return upgraded
 
     @model_validator(mode="after")
     def _validate_has_patch_fields(self) -> "UpdateSegmentRequest":
@@ -472,16 +432,6 @@ class DocumentSnapshot(BaseModel):
     created_at: datetime = Field(default_factory=_now_utc, description="快照创建时间。")
     segments: list[EditableSegment] = Field(default_factory=list, description="内联返回的段详情列表。")
     edges: list[EditableEdge] = Field(default_factory=list, description="内联返回的边详情列表。")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_legacy_top_level_text_fields(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        upgraded = dict(value)
-        upgraded.pop("raw_text", None)
-        upgraded.pop("normalized_text", None)
-        return upgraded
 
     @model_validator(mode="after")
     def _sync_entity_ids(self) -> "DocumentSnapshot":

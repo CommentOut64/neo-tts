@@ -1398,7 +1398,6 @@ class RenderJobService:
                     {
                         "segment_id": segment.segment_id,
                         "order_key": segment.order_key,
-                        "raw_text": segment.display_text,
                         "stem": segment.stem,
                         "display_text": segment.display_text,
                         "text_language": segment.text_language,
