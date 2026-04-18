@@ -109,7 +109,7 @@ describe("useRuntimeState", () => {
         {
           segment_id: "seg-1",
           order_key: 1,
-          raw_text: "第一段",
+          display_text: "第一段",
           render_status: "completed",
         },
       ],
@@ -241,13 +241,13 @@ describe("useRuntimeState", () => {
         {
           segment_id: "seg-1",
           order_key: 1,
-          raw_text: "第一句",
+          display_text: "第一句",
           render_status: "completed",
         },
         {
           segment_id: "seg-2",
           order_key: 2,
-          raw_text: "第二句",
+          display_text: "第二句",
           render_status: "pending",
         },
       ],
@@ -362,7 +362,8 @@ describe("useRuntimeState", () => {
         {
           segment_id: "seg-1",
           order_key: 1,
-          raw_text: "Hello world。",
+          stem: "Hello world",
+          display_text: "Hello world.",
           terminal_raw: "",
           terminal_closer_suffix: "",
           terminal_source: "synthetic",
@@ -373,7 +374,7 @@ describe("useRuntimeState", () => {
     });
 
     expect(runtimeState.progressiveSegments.value[0]).toMatchObject({
-      rawText: "Hello world。",
+      rawText: "Hello world.",
       displayText: "Hello world.",
     });
   });

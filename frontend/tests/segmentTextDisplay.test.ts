@@ -6,10 +6,10 @@ import {
 } from "../src/utils/segmentTextDisplay";
 
 describe("segmentTextDisplay", () => {
-  it("raw_text 已包含句尾簇时不会重复拼接闭合引号", () => {
+  it("结构化段文本会直接保留原始句尾簇与尾随闭合符", () => {
     expect(
       buildSegmentDisplayText({
-        raw_text: "“等那边准备好了，我就过来接你们。”",
+        stem: "“等那边准备好了，我就过来接你们",
         terminal_raw: "。",
         terminal_closer_suffix: "”",
         terminal_source: "original",
@@ -18,10 +18,10 @@ describe("segmentTextDisplay", () => {
     ).toBe("“等那边准备好了，我就过来接你们。”");
   });
 
-  it("保留原始句尾簇与尾随闭合符", () => {
+  it("结构化段文本能直接输出复合终止符", () => {
     expect(
       buildSegmentDisplayText({
-        raw_text: "真的吗。",
+        stem: "真的吗",
         terminal_raw: "？！",
         terminal_closer_suffix: "”",
         terminal_source: "original",
@@ -33,7 +33,7 @@ describe("segmentTextDisplay", () => {
   it("英文 synthetic period 显示为 ASCII 句号", () => {
     expect(
       buildSegmentDisplayText({
-        raw_text: "Hello world。",
+        stem: "Hello world",
         terminal_raw: "",
         terminal_closer_suffix: "",
         terminal_source: "synthetic",
@@ -42,10 +42,10 @@ describe("segmentTextDisplay", () => {
     ).toBe("Hello world.");
   });
 
-  it("synthetic closer suffix 场景仍会从 raw_text 回推 stem", () => {
+  it("synthetic closer suffix 场景会保留结构化 closer suffix", () => {
     expect(
       buildSegmentDisplayText({
-        raw_text: "你好。”",
+        stem: "你好",
         terminal_raw: "",
         terminal_closer_suffix: "”",
         terminal_source: "synthetic",
@@ -54,12 +54,12 @@ describe("segmentTextDisplay", () => {
     ).toBe("你好。”");
   });
 
-  it("缺少句尾胶囊字段时回退到 raw_text", () => {
+  it("缺少 stem 时返回空串，而不是回退到旧 raw_text", () => {
     expect(
       buildSegmentDisplayText({
-        raw_text: "第一句。",
+        terminal_raw: "。",
       }),
-    ).toBe("第一句。");
+    ).toBe("");
   });
 
   it("能拆出原始句尾簇和尾随闭合符", () => {
