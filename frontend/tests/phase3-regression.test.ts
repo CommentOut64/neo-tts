@@ -215,6 +215,49 @@ it("exportAudio posts unified export payload", async () => {
   );
 });
 
+it("updateSegment posts structured text_patch payload", async () => {
+  const patch = vi.fn().mockResolvedValue({
+    data: {
+      job: {
+        job_id: "job-123",
+        document_id: "doc-1",
+        status: "queued",
+        progress: 0,
+        message: "queued",
+      },
+    },
+  });
+
+  vi.doMock("../src/api/http.ts", () => ({
+    default: {
+      post: vi.fn(),
+      get: vi.fn(),
+      patch,
+      delete: vi.fn(),
+    },
+  }));
+
+  const { updateSegment } = await import("../src/api/editSession.ts");
+
+  await updateSegment("seg-1", {
+    text_patch: {
+      stem: "Hello",
+      terminal_raw: "?",
+      terminal_closer_suffix: "",
+      terminal_source: "original",
+    },
+  });
+
+  expect(patch).toHaveBeenCalledWith("/v1/edit-session/segments/seg-1", {
+    text_patch: {
+      stem: "Hello",
+      terminal_raw: "?",
+      terminal_closer_suffix: "",
+      terminal_source: "original",
+    },
+  });
+});
+
 it("resumeRenderJob unwraps accepted response payload", async () => {
   const post = vi.fn().mockResolvedValue({
     data: {

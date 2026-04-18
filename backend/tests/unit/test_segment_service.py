@@ -4,6 +4,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import DocumentSnapshot, EditableSegment, UpdateSegmentRequest
 from backend.app.services.edge_service import EdgeService
 from backend.app.services.segment_service import SegmentService
+from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 def _build_service(tmp_path) -> SegmentService:
@@ -21,23 +22,24 @@ def _snapshot(*segments: EditableSegment) -> DocumentSnapshot:
         document_id="doc-1",
         snapshot_kind="head",
         document_version=1,
-        raw_text="".join(segment.raw_text for segment in segments),
-        normalized_text="".join(segment.normalized_text for segment in segments),
         segments=list(segments),
         edges=[],
     )
 
 
 def _segment(segment_id: str, order_key: int, raw_text: str) -> EditableSegment:
+    state = parse_terminal_capsule(raw_text)
     return EditableSegment(
         segment_id=segment_id,
         document_id="doc-1",
         order_key=order_key,
         previous_segment_id=None if order_key == 1 else f"seg-{order_key - 1}",
         next_segment_id=None,
-        raw_text=raw_text,
-        normalized_text=raw_text,
+        stem=state.stem,
         text_language="zh",
+        terminal_raw=state.terminal_raw,
+        terminal_closer_suffix=state.terminal_closer_suffix,
+        terminal_source=state.terminal_source,
     )
 
 
@@ -54,8 +56,8 @@ def test_insert_segment_auto_appends_synthetic_period_when_boundary_is_missing(t
     )
 
     assert mutation.segment is not None
-    assert mutation.segment.raw_text == "没有句末标点。"
-    assert mutation.segment.normalized_text == "没有句末标点。"
+    assert mutation.segment.stem == "没有句末标点"
+    assert mutation.segment.display_text == "没有句末标点。"
     assert mutation.segment.terminal_raw == ""
     assert mutation.segment.terminal_source == "synthetic"
 
@@ -76,7 +78,7 @@ def test_insert_segment_marks_short_segment_risk(tmp_path):
     assert "short_naturalness_risk" in mutation.segment.risk_flags
 
 
-def test_insert_segment_preserves_terminal_capsule_but_keeps_display_text_in_raw_text(tmp_path):
+def test_insert_segment_preserves_terminal_capsule_and_structured_stem(tmp_path):
     service = _build_service(tmp_path)
     snapshot = _snapshot(_segment("seg-1", 1, "原句。"))
 
@@ -89,8 +91,8 @@ def test_insert_segment_preserves_terminal_capsule_but_keeps_display_text_in_raw
     )
 
     assert mutation.segment is not None
-    assert mutation.segment.raw_text == '真的么？！」'
-    assert mutation.segment.normalized_text == "真的么。"
+    assert mutation.segment.stem == "真的么"
+    assert mutation.segment.display_text == '真的么？！」'
     assert mutation.segment.terminal_raw == "？！"
     assert mutation.segment.terminal_closer_suffix == "」"
     assert mutation.segment.terminal_source == "original"
@@ -103,7 +105,14 @@ def test_update_segment_marks_long_segment_risk(tmp_path):
 
     mutation = service.update_segment(
         "seg-1",
-        UpdateSegmentRequest(raw_text=long_text),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": long_text[:-1],
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
         snapshot=snapshot,
     )
 
@@ -117,16 +126,48 @@ def test_update_segment_auto_appends_synthetic_period_without_restoring_question
 
     mutation = service.update_segment(
         "seg-1",
-        UpdateSegmentRequest(raw_text="真的吗"),
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "真的吗",
+                "terminal_raw": "",
+                "terminal_closer_suffix": "",
+                "terminal_source": "synthetic",
+            }
+        ),
         snapshot=snapshot,
     )
 
     assert mutation.segment is not None
-    assert mutation.segment.raw_text == "真的吗。"
-    assert mutation.segment.normalized_text == "真的吗。"
+    assert mutation.segment.stem == "真的吗"
+    assert mutation.segment.display_text == "真的吗。"
     assert mutation.segment.terminal_raw == ""
     assert mutation.segment.terminal_closer_suffix == ""
     assert mutation.segment.terminal_source == "synthetic"
+
+
+def test_update_segment_refreshes_snapshot_display_text_from_structured_segment(tmp_path):
+    service = _build_service(tmp_path)
+    snapshot = _snapshot(_segment("seg-1", 1, "原句。"))
+
+    mutation = service.update_segment(
+        "seg-1",
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "真的么",
+                "terminal_raw": "？！",
+                "terminal_closer_suffix": "」",
+                "terminal_source": "original",
+            }
+        ),
+        snapshot=snapshot,
+    )
+
+    assert mutation.segment is not None
+    assert mutation.segment.stem == "真的么"
+    assert mutation.segment.display_text == '真的么？！」'
+    assert mutation.segment.terminal_raw == "？！"
+    assert mutation.segment.terminal_closer_suffix == "」"
+    assert "".join(segment.display_text for segment in mutation.snapshot.segments) == '真的么？！」'
 
 
 def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
@@ -138,8 +179,7 @@ def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
             order_key=1,
             previous_segment_id=None,
             next_segment_id="seg-2",
-            raw_text="你好？",
-            normalized_text="你好。",
+            stem="你好",
             text_language="zh",
             terminal_raw="？",
             terminal_closer_suffix="",
@@ -151,8 +191,7 @@ def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
             order_key=2,
             previous_segment_id="seg-1",
             next_segment_id=None,
-            raw_text='世界！”',
-            normalized_text="世界。",
+            stem="世界",
             text_language="zh",
             terminal_raw="！",
             terminal_closer_suffix="”",
@@ -163,8 +202,8 @@ def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
     mutation = service.merge_segments("seg-1", "seg-2", snapshot=snapshot)
 
     assert mutation.segment is not None
-    assert mutation.segment.raw_text == '你好世界！”'
-    assert mutation.segment.normalized_text == "你好世界。"
+    assert mutation.segment.stem == "你好世界"
+    assert mutation.segment.display_text == '你好世界！”'
     assert mutation.segment.terminal_raw == "！"
     assert mutation.segment.terminal_closer_suffix == "”"
     assert mutation.segment.terminal_source == "original"
@@ -191,7 +230,7 @@ def test_reorder_segments_reorders_snapshot_and_rebuilds_neighbors(tmp_path):
     assert mutation.snapshot.segments[1].next_segment_id == "seg-2"
     assert mutation.snapshot.segments[2].previous_segment_id == "seg-1"
     assert mutation.snapshot.segments[2].next_segment_id is None
-    assert mutation.snapshot.raw_text == "第三句。第一句。第二句。"
+    assert "".join(segment.display_text for segment in mutation.snapshot.segments) == "第三句。第一句。第二句。"
     assert [(edge.left_segment_id, edge.right_segment_id) for edge in mutation.snapshot.edges] == [
         ("seg-3", "seg-1"),
         ("seg-1", "seg-2"),
@@ -231,7 +270,7 @@ def test_swap_segments_reorders_snapshot_and_rebuilds_neighbors(tmp_path):
     assert mutation.snapshot.segments[1].next_segment_id == "seg-2"
     assert mutation.snapshot.segments[2].previous_segment_id == "seg-3"
     assert mutation.snapshot.segments[2].next_segment_id is None
-    assert mutation.snapshot.raw_text == "第一句。第三句。第二句。"
+    assert "".join(segment.display_text for segment in mutation.snapshot.segments) == "第一句。第三句。第二句。"
     assert [(edge.left_segment_id, edge.right_segment_id) for edge in mutation.snapshot.edges] == [
         ("seg-1", "seg-3"),
         ("seg-3", "seg-2"),
@@ -256,7 +295,7 @@ def test_move_range_reorders_snapshot_and_rebuilds_neighbors(tmp_path):
     assert mutation.snapshot.segments[1].next_segment_id == "seg-2"
     assert mutation.snapshot.segments[2].previous_segment_id == "seg-3"
     assert mutation.snapshot.segments[2].next_segment_id is None
-    assert mutation.snapshot.raw_text == "第一句。第三句。第二句。"
+    assert "".join(segment.display_text for segment in mutation.snapshot.segments) == "第一句。第三句。第二句。"
     assert [(edge.left_segment_id, edge.right_segment_id) for edge in mutation.snapshot.edges] == [
         ("seg-1", "seg-3"),
         ("seg-3", "seg-2"),

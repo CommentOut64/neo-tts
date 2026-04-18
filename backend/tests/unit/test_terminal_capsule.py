@@ -1,9 +1,11 @@
 from backend.app.text.language_profiles import get_language_profile
 from backend.app.text.terminal_capsule import (
+    SegmentTextState,
     TerminalCapsule,
-    build_canonical_text,
     build_display_text,
+    build_display_text_from_state,
     build_render_text,
+    build_render_text_from_state,
     derive_terminal_kind,
     parse_terminal_capsule,
 )
@@ -12,9 +14,8 @@ from backend.app.text.terminal_capsule import (
 def test_parse_terminal_capsule_preserves_original_combo_terminal_and_closer():
     parsed = parse_terminal_capsule('真的么？！ 」')
 
-    assert parsed.stem == "真的么"
-    assert parsed.canonical_text == "真的么。"
-    assert parsed.capsule == TerminalCapsule(
+    assert parsed == SegmentTextState(
+        stem="真的么",
         terminal_raw="？！",
         terminal_closer_suffix="」",
         terminal_source="original",
@@ -24,20 +25,27 @@ def test_parse_terminal_capsule_preserves_original_combo_terminal_and_closer():
 def test_parse_terminal_capsule_marks_missing_terminal_as_synthetic():
     parsed = parse_terminal_capsule("Hello")
 
-    assert parsed.stem == "Hello"
-    assert parsed.canonical_text == "Hello。"
-    assert parsed.capsule == TerminalCapsule(
+    assert parsed == SegmentTextState(
+        stem="Hello",
         terminal_raw="",
         terminal_closer_suffix="",
         terminal_source="synthetic",
     )
 
 
+def test_parse_terminal_capsule_returns_state_without_canonical_text():
+    parsed = parse_terminal_capsule('真的么？！」')
+
+    assert parsed.stem == "真的么"
+    assert not hasattr(parsed, "canonical_text")
+    assert build_display_text_from_state(parsed, get_language_profile("zh")) == '真的么？！」'
+
+
 def test_parse_terminal_capsule_inserts_synthetic_period_before_closer():
     parsed = parse_terminal_capsule('你好”')
 
     assert parsed.stem == "你好"
-    assert build_display_text(parsed.stem, parsed.capsule, get_language_profile("zh")) == '你好。”'
+    assert build_display_text_from_state(parsed, get_language_profile("zh")) == '你好。”'
 
 
 def test_parse_terminal_capsule_recognizes_ascii_and_unicode_ellipsis_clusters():
@@ -80,9 +88,16 @@ def test_build_render_text_drops_closer_suffix():
     assert text == "你好？"
 
 
-def test_build_canonical_text_always_appends_chinese_period():
-    assert build_canonical_text("Hello") == "Hello。"
-    assert build_canonical_text("你好") == "你好。"
+def test_build_display_and_render_text_from_state_use_same_structured_source():
+    state = SegmentTextState(
+        stem="Hello",
+        terminal_raw="",
+        terminal_closer_suffix="",
+        terminal_source="synthetic",
+    )
+
+    assert build_display_text_from_state(state, get_language_profile("en")) == "Hello."
+    assert build_render_text_from_state(state, get_language_profile("en")) == "Hello."
 
 
 def test_derive_terminal_kind_groups_supported_terminals():

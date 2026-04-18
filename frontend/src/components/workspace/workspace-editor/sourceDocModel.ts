@@ -1,14 +1,21 @@
 import type { JSONContent } from "@tiptap/vue-3";
+import type { ResolvedLanguage } from "@/types/editSession";
 
 import { buildListLayoutDocument } from "./buildListLayoutDocument";
 import type { WorkspaceSemanticEdge, WorkspaceSemanticDocument } from "./layoutTypes";
+import { buildWorkspaceSegmentDisplayTextFromDraft } from "./terminalRegionModel";
 
 export type WorkspaceSourceDoc = JSONContent;
 
 export interface WorkspaceSourceDocSegmentInput {
   segmentId: string;
   orderKey: number;
-  text: string;
+  stem: string;
+  terminal_raw: string;
+  terminal_closer_suffix: string;
+  terminal_source: "original" | "synthetic";
+  detectedLanguage?: ResolvedLanguage | null;
+  textLanguage?: string | null;
 }
 
 export interface BuildWorkspaceSourceDocInput {
@@ -34,7 +41,17 @@ export function buildWorkspaceSourceDoc(
         {
           segmentId: segment.segmentId,
           orderKey: segment.orderKey,
-          text: segment.text,
+          text: buildWorkspaceSegmentDisplayTextFromDraft({
+            draft: {
+              segmentId: segment.segmentId,
+              stem: segment.stem,
+              terminal_raw: segment.terminal_raw,
+              terminal_closer_suffix: segment.terminal_closer_suffix,
+              terminal_source: segment.terminal_source,
+            },
+            detectedLanguage: segment.detectedLanguage,
+            textLanguage: segment.textLanguage,
+          }),
           renderStatus: "completed" as const,
           isDirty: false,
         },
@@ -54,7 +71,17 @@ export function buildWorkspaceSourceDoc(
     ),
     sourceBlocks: input.segments.map((segment, index) => ({
       blockId: `canonical-block-${index + 1}`,
-      rawLineText: segment.text,
+      rawLineText: buildWorkspaceSegmentDisplayTextFromDraft({
+        draft: {
+          segmentId: segment.segmentId,
+          stem: segment.stem,
+          terminal_raw: segment.terminal_raw,
+          terminal_closer_suffix: segment.terminal_closer_suffix,
+          terminal_source: segment.terminal_source,
+        },
+        detectedLanguage: segment.detectedLanguage,
+        textLanguage: segment.textLanguage,
+      }),
       segmentIds: [segment.segmentId],
     })),
     compositionAvailability: {

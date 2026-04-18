@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.core.exceptions import EditSessionNotFoundError
 from backend.app.schemas.edit_session import DocumentSnapshot, ExportSubtitleRequest, TimelineManifest
-from backend.app.text.segment_standardizer import build_segment_display_text, extract_segment_stem
+from backend.app.text.segment_standardizer import build_segment_display_text
 
 
 @dataclass(frozen=True)
@@ -77,8 +77,7 @@ class SubtitleExportService:
                     start_seconds=shifted_start,
                     end_seconds=shifted_end,
                     text=self._resolve_subtitle_text(
-                        raw_text=segment.raw_text,
-                        normalized_text=segment.normalized_text,
+                        stem=segment.stem,
                         text_language=segment.text_language,
                         terminal_raw=segment.terminal_raw,
                         terminal_closer_suffix=segment.terminal_closer_suffix,
@@ -106,8 +105,7 @@ class SubtitleExportService:
     @staticmethod
     def _resolve_subtitle_text(
         *,
-        raw_text: str,
-        normalized_text: str | None,
+        stem: str,
         text_language: str,
         terminal_raw: str,
         terminal_closer_suffix: str,
@@ -115,10 +113,9 @@ class SubtitleExportService:
         strip_trailing_punctuation: bool,
     ) -> str:
         if strip_trailing_punctuation:
-            return extract_segment_stem(raw_text=raw_text, normalized_text=normalized_text)
+            return stem
         return build_segment_display_text(
-            raw_text=raw_text,
-            normalized_text=normalized_text,
+            stem=stem,
             text_language=text_language,
             terminal_raw=terminal_raw,
             terminal_closer_suffix=terminal_closer_suffix,

@@ -5,12 +5,66 @@ from pathlib import Path
 
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import ActiveDocumentState, DocumentSnapshot, EditableEdge, EditableSegment, RenderJobRecord
+from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 def _build_repository(db_file: Path) -> EditSessionRepository:
     repository = EditSessionRepository(db_file=db_file)
     repository.initialize_schema()
     return repository
+
+
+def _segment(
+    *,
+    segment_id: str,
+    order_key: int,
+    raw_text: str,
+    previous_segment_id: str | None = None,
+    next_segment_id: str | None = None,
+    render_asset_id: str | None = None,
+    render_version: int = 0,
+) -> EditableSegment:
+    state = parse_terminal_capsule(raw_text)
+    return EditableSegment(
+        segment_id=segment_id,
+        document_id="doc-1",
+        order_key=order_key,
+        previous_segment_id=previous_segment_id,
+        next_segment_id=next_segment_id,
+        stem=state.stem,
+        text_language="zh",
+        terminal_raw=state.terminal_raw,
+        terminal_closer_suffix=state.terminal_closer_suffix,
+        terminal_source=state.terminal_source,
+        render_asset_id=render_asset_id,
+        render_version=render_version,
+    )
+
+
+def _snapshot(
+    *,
+    snapshot_id: str,
+    document_version: int,
+    snapshot_kind: str,
+    segments: list[EditableSegment],
+    edges: list[EditableEdge],
+    block_ids: list[str] | None = None,
+    composition_manifest_id: str | None = None,
+    playback_map_version: int | None = None,
+) -> DocumentSnapshot:
+    return DocumentSnapshot(
+        snapshot_id=snapshot_id,
+        document_id="doc-1",
+        snapshot_kind=snapshot_kind,
+        document_version=document_version,
+        segment_ids=[segment.segment_id for segment in segments],
+        edge_ids=[edge.edge_id for edge in edges],
+        block_ids=block_ids or [],
+        composition_manifest_id=composition_manifest_id,
+        playback_map_version=playback_map_version,
+        segments=segments,
+        edges=edges,
+    )
 
 
 def test_repository_initializes_schema_and_round_trips_active_session(tmp_path: Path):
@@ -33,47 +87,26 @@ def test_repository_initializes_schema_and_round_trips_active_session(tmp_path: 
 
 def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_path: Path):
     repository = _build_repository(tmp_path / "edit_session.db")
-    snapshot = DocumentSnapshot(
+    snapshot = _snapshot(
         snapshot_id="snap-1",
-        document_id="doc-1",
         snapshot_kind="head",
         document_version=3,
-        raw_text="甲。乙。丙。",
-        normalized_text="甲。乙。丙。",
-        segment_ids=["seg-1", "seg-2", "seg-3"],
-        edge_ids=["edge-1", "edge-2"],
         block_ids=[],
         composition_manifest_id="comp-1",
         playback_map_version=3,
         segments=[
-            EditableSegment(
-                segment_id="seg-1",
-                document_id="doc-1",
-                order_key=1,
-                raw_text="甲？」",
-                normalized_text="甲。",
-                text_language="zh",
-                terminal_raw="？",
-                terminal_closer_suffix="」",
-                terminal_source="original",
-            ),
-            EditableSegment(
+            _segment(segment_id="seg-1", order_key=1, raw_text="甲？」"),
+            _segment(
                 segment_id="seg-2",
-                document_id="doc-1",
                 order_key=2,
                 raw_text="乙。",
-                normalized_text="乙。",
-                text_language="zh",
                 previous_segment_id="seg-1",
                 next_segment_id="seg-3",
             ),
-            EditableSegment(
+            _segment(
                 segment_id="seg-3",
-                document_id="doc-1",
                 order_key=3,
                 raw_text="丙。",
-                normalized_text="丙。",
-                text_language="zh",
                 previous_segment_id="seg-2",
             ),
         ],
@@ -103,9 +136,13 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
 
     assert loaded_snapshot is not None
     assert loaded_snapshot.snapshot_id == "snap-1"
+    assert loaded_snapshot.segments[0].stem == "甲"
+    assert loaded_snapshot.segments[0].display_text == "甲？」"
     assert loaded_snapshot.segments[0].terminal_raw == "？"
     assert loaded_snapshot.segments[0].terminal_closer_suffix == "」"
     assert loaded_snapshot.segments[0].terminal_source == "original"
+    assert not hasattr(loaded_snapshot, "raw_text")
+    assert not hasattr(loaded_snapshot, "normalized_text")
     assert [segment.segment_id for segment in first_page_segments] == ["seg-1", "seg-2"]
     assert [segment.segment_id for segment in second_page_segments] == ["seg-3"]
     assert [edge.edge_id for edge in first_page_edges] == ["edge-1"]
@@ -144,29 +181,16 @@ def test_repository_saves_and_loads_render_job(tmp_path: Path):
 
 def test_repository_preserves_snapshot_specific_segment_and_edge_indexes(tmp_path: Path):
     repository = _build_repository(tmp_path / "edit_session.db")
-    baseline_snapshot = DocumentSnapshot(
+    baseline_snapshot = _snapshot(
         snapshot_id="snap-base",
-        document_id="doc-1",
         snapshot_kind="baseline",
         document_version=1,
-        raw_text="甲。乙。",
-        normalized_text="甲。乙。",
         segments=[
-            EditableSegment(
-                segment_id="seg-1",
-                document_id="doc-1",
-                order_key=1,
-                raw_text="甲。",
-                normalized_text="甲。",
-                text_language="zh",
-            ),
-            EditableSegment(
+            _segment(segment_id="seg-1", order_key=1, raw_text="甲。"),
+            _segment(
                 segment_id="seg-2",
-                document_id="doc-1",
                 order_key=2,
                 raw_text="乙。",
-                normalized_text="乙。",
-                text_language="zh",
                 previous_segment_id="seg-1",
             ),
         ],
@@ -179,39 +203,23 @@ def test_repository_preserves_snapshot_specific_segment_and_edge_indexes(tmp_pat
             )
         ],
     )
-    head_snapshot = DocumentSnapshot(
+    head_snapshot = _snapshot(
         snapshot_id="snap-head",
-        document_id="doc-1",
         snapshot_kind="head",
         document_version=2,
-        raw_text="甲。乙。丙。",
-        normalized_text="甲。乙。丙。",
         segments=[
-            EditableSegment(
-                segment_id="seg-1-v2",
-                document_id="doc-1",
-                order_key=1,
-                raw_text="甲。",
-                normalized_text="甲。",
-                text_language="zh",
-            ),
-            EditableSegment(
+            _segment(segment_id="seg-1-v2", order_key=1, raw_text="甲。"),
+            _segment(
                 segment_id="seg-2-v2",
-                document_id="doc-1",
                 order_key=2,
                 raw_text="乙。",
-                normalized_text="乙。",
-                text_language="zh",
                 previous_segment_id="seg-1-v2",
                 next_segment_id="seg-3-v2",
             ),
-            EditableSegment(
+            _segment(
                 segment_id="seg-3-v2",
-                document_id="doc-1",
                 order_key=3,
                 raw_text="丙。",
-                normalized_text="丙。",
-                text_language="zh",
                 previous_segment_id="seg-2-v2",
             ),
         ],
@@ -247,33 +255,24 @@ def test_repository_preserves_snapshot_specific_segment_and_edge_indexes(tmp_pat
 
 def test_repository_loads_recoverable_state_and_collects_referenced_assets(tmp_path: Path):
     repository = _build_repository(tmp_path / "edit_session.db")
-    baseline_snapshot = DocumentSnapshot(
+    baseline_snapshot = _snapshot(
         snapshot_id="snap-base",
-        document_id="doc-1",
         snapshot_kind="baseline",
         document_version=1,
-        raw_text="甲。乙。",
-        normalized_text="甲。乙。",
         block_ids=["block-1"],
         composition_manifest_id="comp-1",
         segments=[
-            EditableSegment(
+            _segment(
                 segment_id="seg-1",
-                document_id="doc-1",
                 order_key=1,
                 raw_text="甲。",
-                normalized_text="甲。",
-                text_language="zh",
                 render_asset_id="render-1",
                 render_version=1,
             ),
-            EditableSegment(
+            _segment(
                 segment_id="seg-2",
-                document_id="doc-1",
                 order_key=2,
                 raw_text="乙。",
-                normalized_text="乙。",
-                text_language="zh",
                 previous_segment_id="seg-1",
                 render_asset_id="render-2",
                 render_version=2,
@@ -403,14 +402,14 @@ def test_repository_migrates_legacy_snapshot_tables_to_composite_primary_keys(tm
                 "snap-legacy",
                 1,
                 json.dumps(
-                    EditableSegment(
-                        segment_id="seg-legacy",
-                        document_id="doc-legacy",
-                        order_key=1,
-                        raw_text="旧段。",
-                        normalized_text="旧段。",
-                        text_language="zh",
-                    ).model_dump(mode="json"),
+                    {
+                        "segment_id": "seg-legacy",
+                        "document_id": "doc-legacy",
+                        "order_key": 1,
+                        "raw_text": "旧段。",
+                        "normalized_text": "旧段。",
+                        "text_language": "zh",
+                    },
                     ensure_ascii=False,
                 ),
             ),
@@ -441,29 +440,16 @@ def test_repository_migrates_legacy_snapshot_tables_to_composite_primary_keys(tm
 
     repository = _build_repository(db_file)
 
-    baseline_snapshot = DocumentSnapshot(
+    baseline_snapshot = _snapshot(
         snapshot_id="snap-base",
-        document_id="doc-1",
         snapshot_kind="baseline",
         document_version=1,
-        raw_text="甲。乙。",
-        normalized_text="甲。乙。",
         segments=[
-            EditableSegment(
-                segment_id="seg-1",
-                document_id="doc-1",
-                order_key=1,
-                raw_text="甲。",
-                normalized_text="甲。",
-                text_language="zh",
-            ),
-            EditableSegment(
+            _segment(segment_id="seg-1", order_key=1, raw_text="甲。"),
+            _segment(
                 segment_id="seg-2",
-                document_id="doc-1",
                 order_key=2,
                 raw_text="乙。",
-                normalized_text="乙。",
-                text_language="zh",
                 previous_segment_id="seg-1",
             ),
         ],
@@ -602,6 +588,10 @@ def test_repository_upgrades_legacy_render_profile_reference_fields_on_read(tmp_
     loaded = repository.get_snapshot("snap-legacy")
 
     assert loaded is not None
+    assert loaded.segments[0].stem == "第一句"
+    assert loaded.segments[0].display_text == "第一句。"
+    assert not hasattr(loaded, "raw_text")
+    assert not hasattr(loaded, "normalized_text")
     assert loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"] == {
         "voice-a:model-a": {
             "reference_audio_path": "legacy.wav",

@@ -2,11 +2,14 @@ import { h, ref } from "vue";
 import { ElMessageBox, ElCheckbox } from "element-plus";
 import type { JSONContent } from "@tiptap/vue-3";
 
-import { extractOrderedSegmentTextsFromWorkspaceViewDoc } from "./workspace-editor/sourceDocNormalizer";
-
-// ── 编辑态空段检测 ──
-
-const SENTENCE_ENDING_PUNCT_ONLY = /^[。！？.!?\s]*$/;
+import {
+  buildWorkspaceSegmentTextNodes,
+  projectWorkspaceSegmentDraftToRegions,
+  type WorkspaceSegmentTextDraft,
+} from "./workspace-editor/terminalRegionModel";
+import { extractOrderedSegmentDraftsFromWorkspaceViewDoc } from "./workspace-editor/sourceDocNormalizer";
+import type { ResolvedLanguage } from "@/types/editSession";
+import type { WorkspaceSemanticEdge } from "./workspace-editor/layoutTypes";
 
 function isMessageBoxCancel(error: unknown): boolean {
   return error === "cancel" || error === "close";
@@ -16,28 +19,22 @@ function isListViewDoc(doc: JSONContent): boolean {
   return (doc.content ?? []).some((node) => node.type === "segmentBlock");
 }
 
-/**
- * 扫描编辑器文档，找出文本仅含句末标点或完全为空的段。
- * list mode 下每个段对应一个 paragraph。
- */
 export function detectDeletionCandidates(
   editorDoc: JSONContent,
   orderedSegmentIds: string[],
 ): string[] {
-  const segmentTexts = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+  const segmentDrafts = extractOrderedSegmentDraftsFromWorkspaceViewDoc(
     editorDoc,
     orderedSegmentIds,
   );
-  if (segmentTexts.length !== orderedSegmentIds.length) {
+  if (segmentDrafts.length !== orderedSegmentIds.length) {
     return [];
   }
 
-  return segmentTexts
-    .filter(({ text }) => SENTENCE_ENDING_PUNCT_ONLY.test(text))
+  return segmentDrafts
+    .filter(({ stem }) => stem.length === 0)
     .map(({ segmentId }) => segmentId);
 }
-
-// ── 不再提醒偏好持久化 ──
 
 const STORAGE_KEY = "workspace.autoDeleteEmptySegments";
 
@@ -52,8 +49,6 @@ export function setAutoDeleteSuppressed(value: boolean): void {
     localStorage.removeItem(STORAGE_KEY);
   }
 }
-
-// ── 编辑态删段确认弹窗（含不再提醒勾选） ──
 
 export async function confirmSegmentDeletion(
   candidateCount: number,
@@ -118,53 +113,112 @@ export async function confirmSegmentDeletion(
   }
 }
 
+function buildRestoredContent(
+  segmentId: string,
+  draft: WorkspaceSegmentTextDraft,
+  options: {
+    detectedLanguage?: ResolvedLanguage | null;
+    textLanguage?: string | null;
+  } = {},
+): JSONContent[] {
+  const regions = projectWorkspaceSegmentDraftToRegions({
+    draft,
+    detectedLanguage: options.detectedLanguage,
+    textLanguage: options.textLanguage,
+  });
+  return buildWorkspaceSegmentTextNodes({
+    segmentId,
+    stemText: draft.stem,
+    terminalText: regions.terminalText,
+    terminalSource: draft.terminal_source,
+  });
+}
+
+function buildPauseBoundaryNode(edge: WorkspaceSemanticEdge): JSONContent {
+  return {
+    type: "pauseBoundary",
+    attrs: {
+      edgeId: edge.edgeId,
+      leftSegmentId: edge.leftSegmentId,
+      rightSegmentId: edge.rightSegmentId,
+      pauseDurationSeconds: edge.pauseDurationSeconds,
+      boundaryStrategy: edge.boundaryStrategy,
+      layoutMode: "list",
+      crossBlock: false,
+    },
+  };
+}
+
 function patchListViewDocForRestoredSegments(
   editorDoc: JSONContent,
-  restorations: Array<{ segmentId: string; originalText: string }>,
+  orderedSegmentIds: string[],
+  restorations: Array<{
+    segmentId: string;
+    originalDraft: WorkspaceSegmentTextDraft;
+    detectedLanguage?: ResolvedLanguage | null;
+    textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
+  }>,
 ): JSONContent {
   const doc: JSONContent = JSON.parse(JSON.stringify(editorDoc));
   const restorationMap = new Map(
-    restorations.map(({ segmentId, originalText }) => [segmentId, originalText]),
+    restorations.map((restoration) => [restoration.segmentId, restoration]),
   );
+  const existingSegmentBlocks = new Map(
+    (doc.content ?? [])
+      .filter((node) => node.type === "segmentBlock")
+      .map((node) => [node.attrs?.segmentId, node] as const),
+  );
+  const nextContent: JSONContent[] = [];
 
-  for (const node of doc.content ?? []) {
-    if (node.type !== "segmentBlock") {
+  for (const segmentId of orderedSegmentIds) {
+    const existingNode = existingSegmentBlocks.get(segmentId);
+    const restoration = restorationMap.get(segmentId);
+    if (!existingNode && !restoration) {
       continue;
     }
-
-    const segmentId = node.attrs?.segmentId;
-    if (typeof segmentId !== "string") {
+    if (!restoration) {
+      if (existingNode) {
+        nextContent.push(existingNode);
+      }
       continue;
     }
-
-    const originalText = restorationMap.get(segmentId);
-    if (originalText === undefined) {
-      continue;
-    }
-
-    const keepNodes = (node.content ?? []).filter(
+    const keepNodes = (existingNode?.content ?? []).filter(
       (child: JSONContent) => child.type === "pauseBoundary",
     );
-    node.content = [
-      ...(originalText
-        ? [
-            {
-              type: "text" as const,
-              text: originalText,
-            },
-          ]
-        : []),
-      ...keepNodes,
-    ];
+    const boundaryNodes = keepNodes.length > 0
+      ? keepNodes
+      : restoration.trailingEdge
+        ? [buildPauseBoundaryNode(restoration.trailingEdge)]
+        : [];
+    nextContent.push({
+      type: "segmentBlock",
+      attrs: { segmentId },
+      content: [
+      ...buildRestoredContent(
+        segmentId,
+        restoration.originalDraft,
+        restoration,
+      ),
+      ...boundaryNodes,
+      ],
+    });
   }
 
+  doc.content = nextContent;
   return doc;
 }
 
 function patchLegacyParagraphDocForRestoredSegments(
   editorDoc: JSONContent,
   orderedSegmentIds: string[],
-  restorations: Array<{ segmentId: string; originalText: string }>,
+  restorations: Array<{
+    segmentId: string;
+    originalDraft: WorkspaceSegmentTextDraft;
+    detectedLanguage?: ResolvedLanguage | null;
+    textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
+  }>,
 ): JSONContent {
   const doc: JSONContent = JSON.parse(JSON.stringify(editorDoc));
   const paragraphs = (doc.content ?? []).filter(
@@ -172,7 +226,8 @@ function patchLegacyParagraphDocForRestoredSegments(
   );
   const idToIndex = new Map(orderedSegmentIds.map((id, i) => [id, i]));
 
-  for (const { segmentId, originalText } of restorations) {
+  for (const restoration of restorations) {
+    const { segmentId, originalDraft } = restoration;
     const idx = idToIndex.get(segmentId);
     if (idx === undefined || !paragraphs[idx]) {
       continue;
@@ -183,15 +238,7 @@ function patchLegacyParagraphDocForRestoredSegments(
       (n: JSONContent) => n.type === "pauseBoundary",
     );
     para.content = [
-      ...(originalText
-        ? [
-            {
-              type: "text" as const,
-              text: originalText,
-              marks: [{ type: "segmentAnchor", attrs: { segmentId } }],
-            },
-          ]
-        : []),
+      ...buildRestoredContent(segmentId, originalDraft, restoration),
       ...keepNodes,
     ];
   }
@@ -231,15 +278,23 @@ export async function runDeletionJobs(input: {
   };
 }
 
-// ── 编辑器文档修补：将被清空段的文本还原为后端原始值 ──
-
 export function patchEditorDocForRestoredSegments(
   editorDoc: JSONContent,
   orderedSegmentIds: string[],
-  restorations: Array<{ segmentId: string; originalText: string }>,
+  restorations: Array<{
+    segmentId: string;
+    originalDraft: WorkspaceSegmentTextDraft;
+    detectedLanguage?: ResolvedLanguage | null;
+    textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
+  }>,
 ): JSONContent {
   if (isListViewDoc(editorDoc)) {
-    return patchListViewDocForRestoredSegments(editorDoc, restorations);
+    return patchListViewDocForRestoredSegments(
+      editorDoc,
+      orderedSegmentIds,
+      restorations,
+    );
   }
 
   return patchLegacyParagraphDocForRestoredSegments(

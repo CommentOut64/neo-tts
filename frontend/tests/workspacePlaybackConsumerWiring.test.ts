@@ -29,6 +29,16 @@ describe("workspace playback consumer wiring", () => {
     expect(source).toContain("if (!workspaceAutoplay.isAutoPlayEnabled.value)");
   });
 
+  it("SegmentListDisplay 渲染 dirty draft 时必须把语言元数据传给 structured terminal helper", () => {
+    const source = readWorkspaceComponentSource(
+      "../src/components/workspace/SegmentListDisplay.vue",
+    );
+
+    expect(source).toContain("buildWorkspaceSegmentDisplayTextFromDraft({");
+    expect(source).toContain("detectedLanguage: sessionSegment?.detected_language ?? null");
+    expect(source).toContain("textLanguage: sessionSegment?.text_language ?? null");
+  });
+
   it("TransportControlBar 应接入 playbackCursorError 以禁用错误态播放", () => {
     const source = readWorkspaceComponentSource(
       "../src/components/workspace/TransportControlBar.vue",

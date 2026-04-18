@@ -117,7 +117,7 @@ class EditSessionService:
         if active_session.initialize_request is not None:
             source_text = active_session.initialize_request.raw_text
         elif current_snapshot is not None:
-            source_text = current_snapshot.raw_text
+            source_text = self._build_snapshot_source_text(current_snapshot)
         total_segment_count = len(current_snapshot.segments) if current_snapshot is not None else 0
         inline_entities = should_inline_segment_summary(total_segment_count)
         segments = (
@@ -394,3 +394,7 @@ class EditSessionService:
         if snapshot is None or snapshot.timeline_manifest_id is None:
             return None
         return self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
+
+    @staticmethod
+    def _build_snapshot_source_text(snapshot: DocumentSnapshot) -> str:
+        return "".join(segment.display_text for segment in snapshot.segments)

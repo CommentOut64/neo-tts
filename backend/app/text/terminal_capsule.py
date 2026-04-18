@@ -93,13 +93,33 @@ class TerminalCapsule:
 
 
 @dataclass(frozen=True)
-class ParsedTerminal:
+class SegmentTextState:
     stem: str
-    capsule: TerminalCapsule
-    canonical_text: str
+    terminal_raw: str
+    terminal_closer_suffix: str
+    terminal_source: TerminalSource
+
+    def __post_init__(self) -> None:
+        normalized_stem = self.stem.rstrip()
+        if not normalized_stem:
+            raise ValueError("Segment text must contain readable speech content.")
+        object.__setattr__(self, "stem", normalized_stem)
+        TerminalCapsule(
+            terminal_raw=self.terminal_raw,
+            terminal_closer_suffix=self.terminal_closer_suffix,
+            terminal_source=self.terminal_source,
+        )
+
+    @property
+    def capsule(self) -> TerminalCapsule:
+        return TerminalCapsule(
+            terminal_raw=self.terminal_raw,
+            terminal_closer_suffix=self.terminal_closer_suffix,
+            terminal_source=self.terminal_source,
+        )
 
 
-def parse_terminal_capsule(text: str) -> ParsedTerminal:
+def parse_terminal_capsule(text: str) -> SegmentTextState:
     normalized = normalize_whitespace(text)
     if not normalized:
         raise ValueError("Segment text must not be empty.")
@@ -121,20 +141,12 @@ def parse_terminal_capsule(text: str) -> ParsedTerminal:
             terminal_closer_suffix=closer_suffix,
             terminal_source="original",
         )
-    if not stem:
-        raise ValueError("Segment text must contain readable speech content.")
-    return ParsedTerminal(
+    return SegmentTextState(
         stem=stem,
-        capsule=capsule,
-        canonical_text=build_canonical_text(stem),
+        terminal_raw=capsule.terminal_raw,
+        terminal_closer_suffix=capsule.terminal_closer_suffix,
+        terminal_source=capsule.terminal_source,
     )
-
-
-def build_canonical_text(stem: str) -> str:
-    content = stem.rstrip()
-    if not content:
-        raise ValueError("Stem must not be empty.")
-    return f"{content}。"
 
 
 def build_display_text(stem: str, capsule: TerminalCapsule, profile: LanguageProfile) -> str:
@@ -143,6 +155,14 @@ def build_display_text(stem: str, capsule: TerminalCapsule, profile: LanguagePro
 
 def build_render_text(stem: str, capsule: TerminalCapsule, profile: LanguageProfile) -> str:
     return f"{stem}{_resolve_render_terminal(capsule, profile)}"
+
+
+def build_display_text_from_state(state: SegmentTextState, profile: LanguageProfile) -> str:
+    return build_display_text(state.stem, state.capsule, profile)
+
+
+def build_render_text_from_state(state: SegmentTextState, profile: LanguageProfile) -> str:
+    return build_render_text(state.stem, state.capsule, profile)
 
 
 def derive_terminal_kind(terminal_raw: str) -> str:

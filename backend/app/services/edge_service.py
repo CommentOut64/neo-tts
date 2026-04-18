@@ -146,8 +146,6 @@ class EdgeService:
             deep=True,
             update={
                 "document_version": base_snapshot.document_version + 1,
-                "raw_text": "".join(segment.raw_text for segment in segments),
-                "normalized_text": "".join(segment.normalized_text for segment in segments),
                 "segments": segments,
                 "edges": edges,
                 "block_ids": [],

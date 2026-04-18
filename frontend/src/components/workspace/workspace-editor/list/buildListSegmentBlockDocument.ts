@@ -2,13 +2,7 @@ import type {
   WorkspaceRenderPlan,
   WorkspaceSemanticDocument,
 } from "../layoutTypes";
-
-function buildSegmentTextNode(text: string) {
-  return {
-    type: "text",
-    text,
-  };
-}
+import { buildWorkspaceSegmentTextNodesFromDisplayText } from "../terminalRegionModel";
 
 function buildPauseBoundaryNode(
   semanticDocument: WorkspaceSemanticDocument,
@@ -45,7 +39,12 @@ export function buildListSegmentBlockDocument(
             segment?.renderStatus === "completed" ? segment.text : "";
 
           if (renderedText) {
-            segmentContent.push(buildSegmentTextNode(renderedText));
+            segmentContent.push(
+              ...buildWorkspaceSegmentTextNodesFromDisplayText({
+                segmentId,
+                text: renderedText,
+              }),
+            );
           }
 
           const pauseBoundaryNode = buildPauseBoundaryNode(
