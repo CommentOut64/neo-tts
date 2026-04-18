@@ -486,6 +486,10 @@ $pythonRuntimePrunePath = Join-Path $desktopRoot "packaging\python-runtime-prune
 $frontendDistPath = Join-Path $projectRoot "frontend\dist"
 $uvLockPath = Join-Path $projectRoot "uv.lock"
 $pyprojectPath = Join-Path $projectRoot "pyproject.toml"
+$nltkPayloadRoot = Join-Path $projectRoot "launcher\internal\nltkpatcher\payload\nltk_data"
+$cmudictPayloadPath = Join-Path $nltkPayloadRoot "corpora\cmudict.zip"
+$averagedPerceptronTaggerPayloadPath = Join-Path $nltkPayloadRoot "taggers\averaged_perceptron_tagger.zip"
+$averagedPerceptronTaggerEngPayloadPath = Join-Path $nltkPayloadRoot "taggers\averaged_perceptron_tagger_eng.zip"
 
 if ([string]::IsNullOrWhiteSpace($StageRoot)) {
     $StageRoot = Join-Path $desktopRoot ".stage"
@@ -504,6 +508,9 @@ $requiredInputs = @(
     @{ Path = $frontendDistPath; Label = "frontend/dist" }
     @{ Path = $uvLockPath; Label = "uv.lock" }
     @{ Path = $pyprojectPath; Label = "pyproject.toml" }
+    @{ Path = $cmudictPayloadPath; Label = "nltk cmudict payload" }
+    @{ Path = $averagedPerceptronTaggerPayloadPath; Label = "nltk averaged_perceptron_tagger payload" }
+    @{ Path = $averagedPerceptronTaggerEngPayloadPath; Label = "nltk averaged_perceptron_tagger_eng payload" }
 )
 
 $missingInputs = @($requiredInputs | Where-Object { -not (Test-Path -LiteralPath $_.Path) })
@@ -696,6 +703,12 @@ $pythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
     (Get-PathFingerprint -Path $pyprojectPath),
     (Get-PathFingerprint -Path $pythonBlacklistPath)
 )
+$nltkPayloadFingerprint = Get-FingerprintFromStrings -Values @(
+    "nltk-payload",
+    (Get-PathFingerprint -Path $cmudictPayloadPath),
+    (Get-PathFingerprint -Path $averagedPerceptronTaggerPayloadPath),
+    (Get-PathFingerprint -Path $averagedPerceptronTaggerEngPayloadPath)
+)
 $runtimePythonCacheDir = Join-Path (Join-Path $runtimePythonCacheRoot $pythonVersion) $uvLockHash
 $runtimePythonCacheExe = Join-Path $runtimePythonCacheDir "python.exe"
 
@@ -807,10 +820,14 @@ Write-Utf8File -Path $wheelhouseMetadataPath -Content ($wheelhouseMetadata | Con
 
 $stagePythonPartitionName = "runtime-python-stage"
 $stagedPythonExe = Join-Path $runtimePythonDir "python.exe"
+$stagePythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
+    $pythonPartitionFingerprint,
+    $nltkPayloadFingerprint
+)
 $reuseStagePythonPartition = Test-PartitionReusable `
     -MetadataRoot $stagingMetadataRoot `
     -PartitionName $stagePythonPartitionName `
-    -InputFingerprint $pythonPartitionFingerprint `
+    -InputFingerprint $stagePythonPartitionFingerprint `
     -RequiredPaths @($runtimePythonDir, $stagedPythonExe)
 Write-Host ("[stage-runtime] {0} staged runtime Python payload..." -f $(if ($reuseStagePythonPartition) { "Reusing" } else { "Rebuilding" }))
 if (-not $reuseStagePythonPartition) {
@@ -837,10 +854,21 @@ if (-not $reuseStagePythonPartition) {
         -Entries $lockEntries `
         -SkipLockEntries
 
+    $runtimeNltkDataDir = Join-Path $runtimePythonDir "nltk_data"
+    $runtimeNltkCorporaDir = Join-Path $runtimeNltkDataDir "corpora"
+    $runtimeNltkTaggersDir = Join-Path $runtimeNltkDataDir "taggers"
+    Ensure-Directory -Path $runtimeNltkCorporaDir
+    Ensure-Directory -Path $runtimeNltkTaggersDir
+
+    Write-Host "[stage-runtime] Extracting bundled NLTK payload into staged runtime ..."
+    Expand-Archive -LiteralPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -Force
+    Expand-Archive -LiteralPath $averagedPerceptronTaggerPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
+    Expand-Archive -LiteralPath $averagedPerceptronTaggerEngPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
+
     Write-PartitionMetadata `
         -MetadataRoot $stagingMetadataRoot `
         -PartitionName $stagePythonPartitionName `
-        -InputFingerprint $pythonPartitionFingerprint `
+        -InputFingerprint $stagePythonPartitionFingerprint `
         -OutputPaths @($runtimePythonDir)
 }
 

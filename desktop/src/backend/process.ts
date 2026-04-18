@@ -299,6 +299,10 @@ export function buildDefaultBackendOptions(
 		target.gptSovitsDir,
 		process.env.PYTHONPATH,
 	].filter((value): value is string => typeof value === "string" && value.length > 0);
+	const runtimePythonDir = path.dirname(target.runtimePython);
+	const packagedPathEntries = [runtimePythonDir, process.env.PATH].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
 	const cnhubertPath = path.join(target.builtinModelDir, "chinese-hubert-base");
 	const bertPath = path.join(target.builtinModelDir, "chinese-roberta-wwm-ext-large");
 
@@ -332,6 +336,7 @@ export function buildDefaultBackendOptions(
 			BERT_PATH: bertPath,
 			GPT_SOVITS_BERT_PATH: bertPath,
 			bert_path: bertPath,
+			PATH: packagedPathEntries.join(path.delimiter),
 			PYTHONPATH: pythonPathEntries.join(path.delimiter),
 		},
 		fetchImpl: globalThis.fetch.bind(globalThis),
