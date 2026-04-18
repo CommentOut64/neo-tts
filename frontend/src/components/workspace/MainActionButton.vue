@@ -29,7 +29,7 @@ const workspaceProcessing = useWorkspaceProcessing();
 const reorderDraft = useWorkspaceReorderDraft();
 const rerenderTargets = computed(() =>
   resolveRerenderTargets({
-    dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
+    dirtyTextSegmentIds: lightEdit.rerenderSegmentIds.value,
     segments: editSession.segments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,

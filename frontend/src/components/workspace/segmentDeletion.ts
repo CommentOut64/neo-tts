@@ -9,6 +9,7 @@ import {
 } from "./workspace-editor/terminalRegionModel";
 import { extractOrderedSegmentDraftsFromWorkspaceViewDoc } from "./workspace-editor/sourceDocNormalizer";
 import type { ResolvedLanguage } from "@/types/editSession";
+import type { WorkspaceSemanticEdge } from "./workspace-editor/layoutTypes";
 
 function isMessageBoxCancel(error: unknown): boolean {
   return error === "cancel" || error === "close";
@@ -133,48 +134,78 @@ function buildRestoredContent(
   });
 }
 
+function buildPauseBoundaryNode(edge: WorkspaceSemanticEdge): JSONContent {
+  return {
+    type: "pauseBoundary",
+    attrs: {
+      edgeId: edge.edgeId,
+      leftSegmentId: edge.leftSegmentId,
+      rightSegmentId: edge.rightSegmentId,
+      pauseDurationSeconds: edge.pauseDurationSeconds,
+      boundaryStrategy: edge.boundaryStrategy,
+      layoutMode: "list",
+      crossBlock: false,
+    },
+  };
+}
+
 function patchListViewDocForRestoredSegments(
   editorDoc: JSONContent,
+  orderedSegmentIds: string[],
   restorations: Array<{
     segmentId: string;
     originalDraft: WorkspaceSegmentTextDraft;
     detectedLanguage?: ResolvedLanguage | null;
     textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
   }>,
 ): JSONContent {
   const doc: JSONContent = JSON.parse(JSON.stringify(editorDoc));
   const restorationMap = new Map(
     restorations.map((restoration) => [restoration.segmentId, restoration]),
   );
+  const existingSegmentBlocks = new Map(
+    (doc.content ?? [])
+      .filter((node) => node.type === "segmentBlock")
+      .map((node) => [node.attrs?.segmentId, node] as const),
+  );
+  const nextContent: JSONContent[] = [];
 
-  for (const node of doc.content ?? []) {
-    if (node.type !== "segmentBlock") {
-      continue;
-    }
-
-    const segmentId = node.attrs?.segmentId;
-    if (typeof segmentId !== "string") {
-      continue;
-    }
-
+  for (const segmentId of orderedSegmentIds) {
+    const existingNode = existingSegmentBlocks.get(segmentId);
     const restoration = restorationMap.get(segmentId);
-    if (!restoration) {
+    if (!existingNode && !restoration) {
       continue;
     }
-
-    const keepNodes = (node.content ?? []).filter(
+    if (!restoration) {
+      if (existingNode) {
+        nextContent.push(existingNode);
+      }
+      continue;
+    }
+    const keepNodes = (existingNode?.content ?? []).filter(
       (child: JSONContent) => child.type === "pauseBoundary",
     );
-    node.content = [
+    const boundaryNodes = keepNodes.length > 0
+      ? keepNodes
+      : restoration.trailingEdge
+        ? [buildPauseBoundaryNode(restoration.trailingEdge)]
+        : [];
+    nextContent.push({
+      type: "segmentBlock",
+      attrs: { segmentId },
+      content: [
       ...buildRestoredContent(
         segmentId,
         restoration.originalDraft,
         restoration,
       ),
-      ...keepNodes,
-    ];
+      ...boundaryNodes,
+      ],
+    });
   }
 
+  doc.content = nextContent;
   return doc;
 }
 
@@ -186,6 +217,7 @@ function patchLegacyParagraphDocForRestoredSegments(
     originalDraft: WorkspaceSegmentTextDraft;
     detectedLanguage?: ResolvedLanguage | null;
     textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
   }>,
 ): JSONContent {
   const doc: JSONContent = JSON.parse(JSON.stringify(editorDoc));
@@ -254,10 +286,15 @@ export function patchEditorDocForRestoredSegments(
     originalDraft: WorkspaceSegmentTextDraft;
     detectedLanguage?: ResolvedLanguage | null;
     textLanguage?: string | null;
+    trailingEdge?: WorkspaceSemanticEdge | null;
   }>,
 ): JSONContent {
   if (isListViewDoc(editorDoc)) {
-    return patchListViewDocForRestoredSegments(editorDoc, restorations);
+    return patchListViewDocForRestoredSegments(
+      editorDoc,
+      orderedSegmentIds,
+      restorations,
+    );
   }
 
   return patchLegacyParagraphDocForRestoredSegments(

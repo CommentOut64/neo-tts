@@ -67,13 +67,11 @@ export function extractOrderedSegmentDraftsFromListViewDoc(
   const segmentBlocks = (doc.content ?? []).filter(
     (node) => node.type === "segmentBlock",
   );
-  if (segmentBlocks.length !== orderedSegmentIds.length) {
-    throw new Error("编辑器段落结构已变化，请放弃当前编辑后重试");
-  }
-
+  const orderedSegmentIdSet = new Set(orderedSegmentIds);
   const seenSegmentIds = new Set<string>();
+  const segmentBlockById = new Map<string, JSONContent>();
 
-  return segmentBlocks.map((node, index) => {
+  segmentBlocks.forEach((node) => {
     const segmentId = readSegmentBlockId(node);
     if (!segmentId) {
       throw new Error("编辑器 segmentId 已变化，请放弃当前编辑后重试");
@@ -81,11 +79,16 @@ export function extractOrderedSegmentDraftsFromListViewDoc(
     if (seenSegmentIds.has(segmentId)) {
       throw new Error("编辑器 segmentId 已变化，请放弃当前编辑后重试");
     }
-    if (orderedSegmentIds[index] !== segmentId) {
+    if (!orderedSegmentIdSet.has(segmentId)) {
       throw new Error("编辑器 segmentId 已变化，请放弃当前编辑后重试");
     }
 
     seenSegmentIds.add(segmentId);
+    segmentBlockById.set(segmentId, node);
+  });
+
+  return orderedSegmentIds.map((segmentId) => {
+    const node = segmentBlockById.get(segmentId);
     const regions = collectSegmentRegions(node);
     return resolveWorkspaceSegmentDraftFromRegions({
       previousDraft:

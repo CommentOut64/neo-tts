@@ -40,6 +40,14 @@ export function useWorkspaceLightEdit() {
   return {
     draftTextBySegmentId: computed(() => new Map(draftTextBySegmentId.value)),
     dirtySegmentIds: computed(() => new Set(dirtySegmentIds.value)),
+    rerenderSegmentIds: computed(
+      () =>
+        new Set(
+          Array.from(draftTextBySegmentId.value.entries())
+            .filter(([, draft]) => draft.stem.length > 0)
+            .map(([segmentId]) => segmentId),
+        ),
+    ),
     dirtyCount: computed(() => dirtySegmentIds.value.size),
     setDraft,
     clearDraft,

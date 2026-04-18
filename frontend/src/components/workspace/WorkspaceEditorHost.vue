@@ -219,7 +219,7 @@ const backendSegmentDraftById = computed<Record<string, WorkspaceSegmentTextDraf
 );
 const pendingRerenderTargets = computed(() =>
   resolveRerenderTargets({
-    dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
+    dirtyTextSegmentIds: lightEdit.rerenderSegmentIds.value,
     segments: editSession.segments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,
@@ -1149,7 +1149,22 @@ async function commitAndExitEdit() {
     ? detectDeletionCandidates(editorDoc, currentSessionSegmentIds.value)
     : [];
   if (candidates.length > 0) {
+    const restorations = candidates.map((id) => ({
+      segmentId: id,
+      originalDraft: getBackendSegmentDraft(id),
+      detectedLanguage: getSessionSegmentById(id)?.detected_language ?? null,
+      textLanguage: getSessionSegmentById(id)?.text_language ?? null,
+      trailingEdge: workspaceEdges.value.find((edge) => edge.leftSegmentId === id) ?? null,
+    }));
+    const patchedDoc = patchEditorDocForRestoredSegments(
+      editorDoc,
+      currentSessionSegmentIds.value,
+      restorations,
+    );
+    editor.commands.setContent(patchedDoc);
+
     if (candidates.length >= currentSessionSegmentIds.value.length) {
+      syncEditingSourceState(patchedDoc);
       ElMessage.warning("至少保留一段");
       return;
     }
@@ -1163,17 +1178,6 @@ async function commitAndExitEdit() {
       );
       return;
     }
-
-    const restorations = candidates.map((id) => ({
-      segmentId: id,
-      originalDraft: getBackendSegmentDraft(id),
-      detectedLanguage: getSessionSegmentById(id)?.detected_language ?? null,
-      textLanguage: getSessionSegmentById(id)?.text_language ?? null,
-    }));
-    const patchedDoc = patchEditorDocForRestoredSegments(
-      editorDoc, currentSessionSegmentIds.value, restorations,
-    );
-    editor.commands.setContent(patchedDoc);
 
     if (!confirmed) {
       // 用户选择不删除 — 段文字已回退，留在编辑态
