@@ -6,7 +6,6 @@ import { useTheme } from '@/composables/useTheme'
 import type { ConnectionStatus } from '@/composables/useHealthCheck'
 import { useRuntimeState } from '@/composables/useRuntimeState'
 import { useEditSession } from '@/composables/useEditSession'
-import { useAppExit } from '@/composables/useAppExit'
 import { useWorkspaceDialogState } from '@/composables/useWorkspaceDialogState'
 import { isExportBlockedByRenderJob } from './workspace/sessionHandoff'
 import AboutDialog from './AboutDialog.vue'
@@ -21,7 +20,6 @@ const router = useRouter()
 const { isDark, toggleThemeWithTransition } = useTheme()
 const { currentRenderJob } = useRuntimeState()
 const { snapshot } = useEditSession()
-const { isExiting, requestExit } = useAppExit()
 const { exportDialogVisible, openExportDialog, closeExportDialog } = useWorkspaceDialogState()
 
 const aboutDialogVisible = ref(false)
@@ -191,17 +189,6 @@ watch(
           @click="openExportDialog"
         >
           导出
-        </el-button>
-
-        <!-- 退出轮廓按钮 -->
-        <el-button
-          plain
-          class="!bg-transparent !transition-all !duration-300 !text-sm !font-medium !px-4 !ml-0 !rounded-md"
-          :loading="isExiting"
-          :disabled="isExiting"
-          @click="requestExit"
-        >
-          退出
         </el-button>
       </div>
     </div>
