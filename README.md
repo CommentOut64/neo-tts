@@ -235,13 +235,13 @@ npm run dev
 
 段文本在生命周期内维护三层口径：
 
-- **raw_text**：当前对前端仍保持 display 兼容的段文本；会保留原始句尾簇，缺失句尾时补默认句号
-- **normalized_text**：内部 canonical 文本，当前统一以中文句号 `。` 结尾
+- **stem**：段级持久化真相，只保存可编辑正文，不包含句尾 terminal capsule
+- **display_text**：面向前端显示的派生文本，运行时按 `stem + terminal capsule + 语言规则` 组装，不作为独立持久化字段
 - **render_text**：送入推理的最终文本（运行时按语言和句尾规则派生，不持久化）
 
-段实体还会持久化最小句尾胶囊：`terminal_raw`、`terminal_closer_suffix`、`terminal_source`，用于晚绑定 display / render 口径；同时持久化 `detected_language`、`inference_exclusion_reason`，用于记录段级语言解析结果与是否排除出主推理路径。`text_language=auto` 时，标准化器会复用 GPT-SoVITS 现有的 `LangSegmenter` / `fast_langdetect` 检测链。
+段实体会持久化最小句尾胶囊：`terminal_raw`、`terminal_closer_suffix`、`terminal_source`，用于晚绑定 display / render 口径；同时持久化 `detected_language`、`inference_exclusion_reason`，用于记录段级语言解析结果与是否排除出主推理路径。`DocumentSnapshot` 不再保存顶层全文 `raw_text / normalized_text`；需要全文时由 service 层按段 `display_text` 拼接。`source_text` 继续保留，但只用于全文布局对齐与输入回带，不再承担段级文本真相。`text_language=auto` 时，标准化器会复用 GPT-SoVITS 现有的 `LangSegmenter` / `fast_langdetect` 检测链。
 
-后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 canonical 文本、terminal capsule、文档级语言摘要与分页 preview 结果。前端输入页会基于 capsule 派生用户可见 display 文本；当输入达到 5000 字及以上时，preview 先走 `light` 快速分析并按 `next_cursor` 继续加载后续分段。
+后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 `stem`、`display_text`、terminal capsule、文档级语言摘要与分页 preview 结果。前端输入页直接消费后端返回的 `display_text`；当输入达到 5000 字及以上时，preview 先走 `light` 快速分析并按 `next_cursor` 继续加载后续分段。
 
 切分策略支持 6 种模式（cut0 – cut5），覆盖按标点、按句号、按字符数等场景。
 
