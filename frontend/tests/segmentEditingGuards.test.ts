@@ -92,6 +92,35 @@ function resolveDropHandler(onProtectedTerminalCapsule = () => {}) {
   return plugins[0]?.props.handleDrop;
 }
 
+function resolvePasteHandler() {
+  const extension = SegmentEditingGuards.configure({
+    onProtectedTerminalCapsule: () => {},
+  }) as typeof SegmentEditingGuards & {
+    options: {
+      onProtectedTerminalCapsule: () => void;
+    };
+    config: {
+      addProseMirrorPlugins: (this: { options: { onProtectedTerminalCapsule: () => void } }) => Array<{
+        props: {
+          handlePaste?: (
+            view: {
+              state: EditorState;
+              dispatch: (transaction: unknown) => void;
+            },
+            event: ClipboardEvent,
+          ) => boolean;
+        };
+      }>;
+    };
+  };
+
+  const plugins = extension.config.addProseMirrorPlugins.call({
+    options: extension.options,
+  });
+
+  return plugins[0]?.props.handlePaste;
+}
+
 describe("segmentEditingGuards", () => {
   it("Backspace 删除句尾标点时不应误判为命中 pauseBoundary", () => {
     const doc = buildDoc();
@@ -183,5 +212,26 @@ describe("segmentEditingGuards", () => {
     ).toBe(false);
     expect(preventDefault).not.toHaveBeenCalled();
     expect(onProtectedTerminalCapsule).not.toHaveBeenCalled();
+  });
+
+  it("粘贴多行文本时会走当前的换行标准化路径", () => {
+    const handlePaste = resolvePasteHandler();
+    const dispatch = vi.fn();
+    const state = EditorState.create({ doc: buildDoc() });
+    const preventDefault = vi.fn();
+
+    expect(
+      handlePaste?.(
+        { state, dispatch } as never,
+        {
+          preventDefault,
+          clipboardData: {
+            getData: () => "第一行\r\n第二行",
+          },
+        } as unknown as ClipboardEvent,
+      ),
+    ).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });

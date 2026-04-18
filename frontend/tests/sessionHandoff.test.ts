@@ -79,21 +79,23 @@ describe("sessionHandoff", () => {
       buildSessionHeadText([
         {
           segment_id: "seg-2",
-          raw_text: "Hello world。",
+          stem: "Hello world",
           order_key: 2,
           terminal_raw: "",
           terminal_closer_suffix: "",
           terminal_source: "synthetic",
           detected_language: "en",
+          text_language: "en",
         },
         {
           segment_id: "seg-1",
-          raw_text: "第一句。",
+          stem: "第一句",
           order_key: 1,
           terminal_raw: "？！",
           terminal_closer_suffix: "”",
           terminal_source: "original",
           detected_language: "zh",
+          text_language: "zh",
         },
       ]),
     ).toBe('第一句？！”Hello world.');

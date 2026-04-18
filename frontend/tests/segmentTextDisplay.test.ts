@@ -42,6 +42,18 @@ describe("segmentTextDisplay", () => {
     ).toBe("Hello world.");
   });
 
+  it("synthetic closer suffix 场景仍会从 raw_text 回推 stem", () => {
+    expect(
+      buildSegmentDisplayText({
+        raw_text: "你好。”",
+        terminal_raw: "",
+        terminal_closer_suffix: "”",
+        terminal_source: "synthetic",
+        detected_language: "zh",
+      }),
+    ).toBe("你好。”");
+  });
+
   it("缺少句尾胶囊字段时回退到 raw_text", () => {
     expect(
       buildSegmentDisplayText({

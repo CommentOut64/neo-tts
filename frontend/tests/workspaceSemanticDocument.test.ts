@@ -139,6 +139,39 @@ describe("workspace semantic document", () => {
     });
   });
 
+  it("source_text 少掉 display 标点时也会被视为 mismatch", () => {
+    const semanticDocument = buildWorkspaceSemanticDocument({
+      sourceText: "第一句\n第二句。",
+      segments: [
+        {
+          segmentId: "seg-1",
+          orderKey: 1,
+          text: "第一句。",
+          renderStatus: "completed",
+        },
+        {
+          segmentId: "seg-2",
+          orderKey: 2,
+          text: "第二句。",
+          renderStatus: "completed",
+        },
+      ],
+      edges: [],
+    });
+
+    expect(semanticDocument.sourceBlocks).toEqual([
+      {
+        blockId: "working-copy-block-1",
+        rawLineText: "第一句。第二句。",
+        segmentIds: ["seg-1", "seg-2"],
+      },
+    ]);
+    expect(semanticDocument.compositionAvailability).toEqual({
+      ready: true,
+      reason: "source_text_mismatch",
+    });
+  });
+
   it("存在 compositionLayoutHints 时优先复用 block 分组", () => {
     const semanticDocument = buildWorkspaceSemanticDocument({
       sourceText: "第一句。\n第三句。",

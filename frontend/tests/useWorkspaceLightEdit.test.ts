@@ -44,4 +44,24 @@ describe("useWorkspaceLightEdit", () => {
     expect(lightEdit.getDraft("seg-2")).toBe("新的第二段");
     expect(lightEdit.getDraft("seg-3")).toBe("新的第三段");
   });
+
+  it("setDraft 当前会把整段字符串直接记为脏草稿", async () => {
+    lightEdit.setDraft("seg-1", "整段 display text");
+    await nextTick();
+
+    expect(lightEdit.dirtyCount.value).toBe(1);
+    expect(lightEdit.isDirty("seg-1")).toBe(true);
+    expect(lightEdit.getDraft("seg-1")).toBe("整段 display text");
+  });
+
+  it("replaceAllDrafts 接受 Map<string, string> 作为当前字符串草稿模型", async () => {
+    lightEdit.replaceAllDrafts(new Map([
+      ["seg-9", "来自 Map 的草稿"],
+    ]));
+    await nextTick();
+
+    expect(lightEdit.dirtyCount.value).toBe(1);
+    expect(Array.from(lightEdit.dirtySegmentIds.value)).toEqual(["seg-9"]);
+    expect(lightEdit.getDraft("seg-9")).toBe("来自 Map 的草稿");
+  });
 });

@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import queue
 import time
 import threading
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from backend.app.schemas.edit_session import (
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services import render_job_service as render_job_service_module
+from backend.app.text.segment_standardizer import build_segment_display_text
 
 
 class FakeEditableInferenceBackend:
@@ -63,7 +65,7 @@ class FakeEditableInferenceBackend:
                 self.gate.wait()
             else:
                 self.gate.wait(timeout=self.wait_timeout)
-        self.segment_calls.append((segment.segment_id, segment.raw_text))
+        self.segment_calls.append((segment.segment_id, segment.display_text))
         sample_count = 2 if context.inference_config.get("speed", 1.0) < 1.0 else 1
         audio = np.asarray([segment.order_key / 10] * sample_count, dtype=np.float32)
         return SegmentRenderAssetPayload(
@@ -134,6 +136,16 @@ def _export_composition_for_current_snapshot(client: TestClient, *, target_dir: 
     return composition.json()
 
 
+def _segment_display_text(segment_payload: dict) -> str:
+    return build_segment_display_text(
+        stem=segment_payload["stem"],
+        text_language=segment_payload["text_language"],
+        terminal_raw=segment_payload.get("terminal_raw", ""),
+        terminal_closer_suffix=segment_payload.get("terminal_closer_suffix", ""),
+        terminal_source=segment_payload.get("terminal_source", "synthetic"),
+    )
+
+
 def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
     repository = app.state.edit_session_repository
     document_id = "doc-seeded"
@@ -147,8 +159,7 @@ def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
             order_key=index + 1,
             previous_segment_id=previous_segment_id,
             next_segment_id=f"segment-{index + 2}" if index + 1 < segment_count else None,
-            raw_text=f"第{index + 1}句。",
-            normalized_text=f"第{index + 1}句。",
+            stem=f"第{index + 1}句",
             text_language="zh",
             render_version=1,
             render_asset_id=f"render-{segment_id}",
@@ -169,8 +180,6 @@ def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
         document_id=document_id,
         snapshot_kind="head",
         document_version=1,
-        raw_text="".join(segment.raw_text for segment in segments),
-        normalized_text="".join(segment.normalized_text for segment in segments),
         segment_ids=[segment.segment_id for segment in segments],
         edge_ids=[edge.edge_id for edge in edges],
         composition_manifest_id="composition-seeded",
@@ -187,7 +196,10 @@ def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
             head_snapshot_id=snapshot.snapshot_id,
             active_job_id=None,
             editable_mode="segment",
-            initialize_request=InitializeEditSessionRequest(raw_text=snapshot.raw_text, voice_id="demo"),
+            initialize_request=InitializeEditSessionRequest(
+                raw_text="".join(segment.display_text for segment in segments),
+                voice_id="demo",
+            ),
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
@@ -264,6 +276,8 @@ def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_
             },
         )
         assert initialize.status_code == 202
+        job_id = initialize.json()["job"]["job_id"]
+        subscriber = app.state.edit_session_runtime.subscribe(job_id)
 
         delete_result: dict[str, object] = {}
 
@@ -273,12 +287,24 @@ def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_
         delete_thread = threading.Thread(target=_delete_session, daemon=True)
         delete_thread.start()
 
-        def _delete_has_requested_cancel() -> bool:
-            payload = client.get("/v1/edit-session/snapshot").json()
-            active_job = payload.get("active_job")
-            return bool(active_job and active_job.get("status") == "cancel_requested")
+        cancel_requested_seen = False
+        deadline = time.time() + 8.0
+        try:
+            while time.time() < deadline:
+                try:
+                    event = subscriber.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if event.get("event") != "job_state_changed":
+                    continue
+                payload = event.get("data") or {}
+                if payload.get("status") == "cancel_requested":
+                    cancel_requested_seen = True
+                    break
+        finally:
+            app.state.edit_session_runtime.unsubscribe(job_id, subscriber)
 
-        _wait_until(_delete_has_requested_cancel)
+        assert cancel_requested_seen
         assert delete_thread.is_alive()
 
         gate.set()
@@ -461,7 +487,7 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
 
         list_segments = client.get("/v1/edit-session/segments")
         assert list_segments.status_code == 200
-        assert [item["raw_text"] for item in list_segments.json()["items"]] == ["第一句。", "第三句。"]
+        assert [_segment_display_text(item) for item in list_segments.json()["items"]] == ["第一句。", "第三句。"]
 
         insert_response = client.post(
             "/v1/edit-session/segments",
@@ -476,7 +502,11 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
 
         inserted_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert [item["raw_text"] for item in inserted_snapshot["segments"]] == ["第一句。", "第二句。", "第三句。"]
+        assert [_segment_display_text(item) for item in inserted_snapshot["segments"]] == [
+            "第一句。",
+            "第二句。",
+            "第三句。",
+        ]
         inserted_segment_id = inserted_snapshot["segments"][1]["segment_id"]
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 3
@@ -486,7 +516,7 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 3)
 
         deleted_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert [item["raw_text"] for item in deleted_snapshot["segments"]] == ["第一句。", "第三句。"]
+        assert [_segment_display_text(item) for item in deleted_snapshot["segments"]] == ["第一句。", "第三句。"]
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 4
 
@@ -532,7 +562,11 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
 
         swapped_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert [item["raw_text"] for item in swapped_snapshot["segments"]] == ["第一句。", "第三句。", "第二句。"]
+        assert [_segment_display_text(item) for item in swapped_snapshot["segments"]] == [
+            "第一句。",
+            "第三句。",
+            "第二句。",
+        ]
         assert [(edge["left_segment_id"], edge["right_segment_id"]) for edge in swapped_snapshot["edges"]] == [
             (swapped_snapshot["segments"][0]["segment_id"], swapped_snapshot["segments"][1]["segment_id"]),
             (swapped_snapshot["segments"][1]["segment_id"], swapped_snapshot["segments"][2]["segment_id"]),
@@ -587,7 +621,11 @@ def test_edit_session_reorder_segments_reorders_without_rerendering_segments(tes
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
 
         reordered_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert [item["raw_text"] for item in reordered_snapshot["segments"]] == ["第三句。", "第一句。", "第二句。"]
+        assert [_segment_display_text(item) for item in reordered_snapshot["segments"]] == [
+            "第三句。",
+            "第一句。",
+            "第二句。",
+        ]
         assert [(edge["left_segment_id"], edge["right_segment_id"]) for edge in reordered_snapshot["edges"]] == [
             (reordered_snapshot["segments"][0]["segment_id"], reordered_snapshot["segments"][1]["segment_id"]),
             (reordered_snapshot["segments"][1]["segment_id"], reordered_snapshot["segments"][2]["segment_id"]),
@@ -675,7 +713,7 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
 
         updated_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert updated_snapshot["segments"][0]["raw_text"] == "第一句已修改。"
+        assert _segment_display_text(updated_snapshot["segments"][0]) == "第一句已修改。"
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 2
         timeline_before_pause = client.get("/v1/edit-session/timeline").json()
@@ -722,7 +760,7 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 5)
 
         restored_snapshot = client.get("/v1/edit-session/snapshot").json()
-        assert restored_snapshot["segments"][0]["raw_text"] == "第一句。"
+        assert _segment_display_text(restored_snapshot["segments"][0]) == "第一句。"
         assert restored_snapshot["edges"][0]["pause_duration_seconds"] == 0.3
 
 
@@ -746,10 +784,15 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
         assert payload["next_cursor"] == 2
         assert payload["resolved_document_language"] == "zh"
         assert payload["language_detection_source"] == "auto"
+        assert payload["segments"][0]["stem"] == "第一句"
+        assert payload["segments"][0]["display_text"] == "第一句？！"
         assert payload["segments"][0]["terminal_raw"] == "？！"
         assert payload["segments"][0]["detected_language"] == "zh"
+        assert payload["segments"][1]["stem"] == "Second sentence"
+        assert payload["segments"][1]["display_text"] == "Second sentence!"
         assert payload["segments"][1]["detected_language"] == "en"
         assert payload["segments"][1]["inference_exclusion_reason"] == "other_language_segment"
+        assert "canonical_text" not in payload["segments"][0]
 
 
 def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings):

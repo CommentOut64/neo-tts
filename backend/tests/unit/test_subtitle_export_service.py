@@ -34,7 +34,6 @@ def _build_snapshot(*segments: tuple[str, str]) -> DocumentSnapshot:
             document_id="doc-1",
             order_key=index,
             raw_text=raw_text,
-            normalized_text=f"{raw_text.rstrip('。？！!?…」』”')}。" if not raw_text.endswith("。") else raw_text,
             text_language="zh",
             render_asset_id=f"render-{segment_id}",
         )
@@ -45,8 +44,6 @@ def _build_snapshot(*segments: tuple[str, str]) -> DocumentSnapshot:
         document_id="doc-1",
         snapshot_kind="head",
         document_version=1,
-        raw_text="".join(segment.raw_text for segment in items),
-        normalized_text="".join(segment.normalized_text for segment in items),
         timeline_manifest_id="timeline-1",
         segments=items,
         created_at=datetime(2026, 4, 12, tzinfo=timezone.utc),
@@ -144,6 +141,43 @@ def test_export_srt_can_strip_segment_terminal_punctuation():
     )
 
     assert "1\n00:00:00,000 --> 00:00:01,000\n真的吗\n" in result.payload
+
+
+def test_export_srt_uses_structured_stem_and_capsule_without_legacy_raw_text_fields():
+    timeline = _build_timeline(sample_rate=10, entries=[("seg-1", 0, 10)])
+    snapshot = DocumentSnapshot(
+        snapshot_id="snapshot-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        timeline_manifest_id="timeline-1",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                stem="Hello world",
+                text_language="en",
+                terminal_raw="",
+                terminal_closer_suffix="",
+                terminal_source="synthetic",
+                render_asset_id="render-seg-1",
+            )
+        ],
+        created_at=datetime(2026, 4, 12, tzinfo=timezone.utc),
+    )
+
+    result = SubtitleExportService().export(
+        request=_build_subtitle_request(
+            format="srt",
+            offset_seconds=0.0,
+            strip_trailing_punctuation=False,
+        ),
+        snapshot=snapshot,
+        timeline=timeline,
+    )
+
+    assert "1\n00:00:00,000 --> 00:00:01,000\nHello world.\n" in result.payload
 
 
 def test_export_raises_for_unsupported_format():

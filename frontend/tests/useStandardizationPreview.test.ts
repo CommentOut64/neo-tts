@@ -18,7 +18,8 @@ describe("useStandardizationPreview", () => {
       segments: [
         {
           order_key: 1,
-          canonical_text: "第一句。",
+          stem: "第一句",
+          display_text: "第一句。",
           terminal_raw: "。",
           terminal_closer_suffix: "",
           terminal_source: "original",
@@ -50,7 +51,9 @@ describe("useStandardizationPreview", () => {
     expect(requestStandardizationPreview).toHaveBeenCalledTimes(1);
     expect(requestStandardizationPreview.mock.calls[0]?.[0]?.text_language).toBe("auto");
     expect(preview.totalSegments.value).toBe(1);
-    expect(preview.segments.value[0]?.canonical_text).toBe("第一句。");
+    expect(preview.segments.value[0]?.stem).toBe("第一句");
+    expect(preview.segments.value[0]?.display_text).toBe("第一句。");
+    expect(preview.segments.value[0]).not.toHaveProperty("canonical_text");
   });
 
   it("uses longer debounce for long text and ignores stale responses", async () => {
@@ -71,7 +74,8 @@ describe("useStandardizationPreview", () => {
               segments: [
                 {
                   order_key: 1,
-                  canonical_text: "旧结果。",
+                  stem: "旧结果",
+                  display_text: "旧结果。",
                   terminal_raw: "",
                   terminal_closer_suffix: "",
                   terminal_source: "synthetic",
@@ -95,7 +99,8 @@ describe("useStandardizationPreview", () => {
         segments: [
           {
             order_key: 1,
-            canonical_text: "新结果。",
+            stem: "新结果",
+            display_text: "新结果。",
             terminal_raw: "",
             terminal_closer_suffix: "",
             terminal_source: "synthetic",
@@ -133,7 +138,7 @@ describe("useStandardizationPreview", () => {
     await Promise.resolve();
 
     expect(requestStandardizationPreview).toHaveBeenCalledTimes(2);
-    expect(preview.segments.value[0]?.canonical_text).toBe("新结果。");
+    expect(preview.segments.value[0]?.display_text).toBe("新结果。");
   });
 
   it("uses light preview first and appends later pages for very large text", async () => {
@@ -150,7 +155,8 @@ describe("useStandardizationPreview", () => {
         segments: [
           {
             order_key: 1,
-            canonical_text: "首段。",
+            stem: "首段",
+            display_text: "首段。",
             terminal_raw: "",
             terminal_closer_suffix: "",
             terminal_source: "synthetic",
@@ -171,7 +177,8 @@ describe("useStandardizationPreview", () => {
         segments: [
           {
             order_key: 81,
-            canonical_text: "末段。",
+            stem: "末段",
+            display_text: "末段。",
             terminal_raw: "",
             terminal_closer_suffix: "",
             terminal_source: "synthetic",

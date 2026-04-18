@@ -66,6 +66,24 @@ describe("segment deletion helpers", () => {
     ).toEqual(["seg-2", "seg-3"]);
   });
 
+  it("ASCII 句末标点当前也会被当作删段候选", () => {
+    expect(
+      segmentDeletion.detectDeletionCandidates(
+        {
+          type: "doc",
+          content: [
+            {
+              type: "segmentBlock",
+              attrs: { segmentId: "seg-1" },
+              content: [{ type: "text", text: "!?" }],
+            },
+          ],
+        },
+        ["seg-1"],
+      ),
+    ).toEqual(["seg-1"]);
+  });
+
   it("取消删段后会把文本回填到 segmentBlock，并保留 pauseBoundary", () => {
     expect(
       segmentDeletion.patchEditorDocForRestoredSegments(

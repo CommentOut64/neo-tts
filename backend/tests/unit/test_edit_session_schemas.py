@@ -9,6 +9,7 @@ from backend.app.schemas.edit_session import (
     BoundaryAssetResponse,
     CheckpointState,
     CompositionResponse,
+    DocumentSnapshot,
     EditableEdgeResponse,
     EditableSegmentResponse,
     InitializeEditSessionRequest,
@@ -206,8 +207,7 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
         segment_id="seg-1",
         document_id="doc-1",
         order_key=1,
-        raw_text="你好。",
-        normalized_text="你好。",
+        stem="你好",
         text_language="zh",
     )
     edge = EditableEdgeResponse(
@@ -218,6 +218,7 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     )
 
     assert segment.segment_kind == "speech"
+    assert segment.display_text == "你好。"
     assert segment.terminal_raw == ""
     assert segment.terminal_closer_suffix == ""
     assert segment.terminal_source == "synthetic"
@@ -226,6 +227,37 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     assert edge.pause_duration_seconds == 0.3
     assert edge.boundary_strategy == "latent_overlap_then_equal_power_crossfade"
     assert edge.boundary_strategy_locked is False
+
+
+def test_segment_and_snapshot_schema_drop_legacy_raw_and_normalized_text_fields():
+    segment = EditableSegmentResponse(
+        segment_id="seg-1",
+        document_id="doc-1",
+        order_key=1,
+        raw_text='你好？！」',
+        normalized_text="你好。",
+        text_language="zh",
+        terminal_raw="？！",
+        terminal_closer_suffix="」",
+        terminal_source="original",
+    )
+    snapshot = DocumentSnapshot(
+        snapshot_id="snap-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        raw_text='你好？！」',
+        normalized_text="你好。",
+        segments=[segment],
+        edges=[],
+    )
+
+    assert segment.stem == "你好"
+    assert segment.display_text == '你好？！」'
+    assert not hasattr(segment, "raw_text")
+    assert not hasattr(segment, "normalized_text")
+    assert not hasattr(snapshot, "raw_text")
+    assert not hasattr(snapshot, "normalized_text")
 
 
 def test_checkpoint_state_rejects_running_partial_status():

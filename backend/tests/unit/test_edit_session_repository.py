@@ -38,8 +38,6 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
         document_id="doc-1",
         snapshot_kind="head",
         document_version=3,
-        raw_text="甲。乙。丙。",
-        normalized_text="甲。乙。丙。",
         segment_ids=["seg-1", "seg-2", "seg-3"],
         edge_ids=["edge-1", "edge-2"],
         block_ids=[],
@@ -103,9 +101,13 @@ def test_repository_saves_snapshot_and_lists_segments_and_edges_with_cursor(tmp_
 
     assert loaded_snapshot is not None
     assert loaded_snapshot.snapshot_id == "snap-1"
+    assert loaded_snapshot.segments[0].stem == "甲"
+    assert loaded_snapshot.segments[0].display_text == "甲？」"
     assert loaded_snapshot.segments[0].terminal_raw == "？"
     assert loaded_snapshot.segments[0].terminal_closer_suffix == "」"
     assert loaded_snapshot.segments[0].terminal_source == "original"
+    assert not hasattr(loaded_snapshot, "raw_text")
+    assert not hasattr(loaded_snapshot, "normalized_text")
     assert [segment.segment_id for segment in first_page_segments] == ["seg-1", "seg-2"]
     assert [segment.segment_id for segment in second_page_segments] == ["seg-3"]
     assert [edge.edge_id for edge in first_page_edges] == ["edge-1"]
@@ -602,6 +604,10 @@ def test_repository_upgrades_legacy_render_profile_reference_fields_on_read(tmp_
     loaded = repository.get_snapshot("snap-legacy")
 
     assert loaded is not None
+    assert loaded.segments[0].stem == "第一句"
+    assert loaded.segments[0].display_text == "第一句。"
+    assert not hasattr(loaded, "raw_text")
+    assert not hasattr(loaded, "normalized_text")
     assert loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"] == {
         "voice-a:model-a": {
             "reference_audio_path": "legacy.wav",
