@@ -48,8 +48,17 @@ const queue = createSegmentRerenderQueue({
       return null;
     }
 
+    const textPatch = draftText !== undefined
+      ? {
+          stem: draftText.stem,
+          terminal_raw: draftText.terminal_raw,
+          terminal_closer_suffix: draftText.terminal_closer_suffix,
+          terminal_source: draftText.terminal_source,
+        }
+      : null;
+
     const jobResponse = draftText !== undefined
-      ? await updateSegment(segmentId, { raw_text: draftText })
+      ? await updateSegment(segmentId, { text_patch: textPatch ?? undefined })
       : await rerenderSegment(segmentId);
 
     runtimeState.trackJob(jobResponse, {

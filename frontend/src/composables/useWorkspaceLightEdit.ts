@@ -1,20 +1,21 @@
 import { ref, computed } from "vue";
+import type { WorkspaceSegmentTextDraft } from "@/components/workspace/workspace-editor/terminalRegionModel";
 
-const draftTextBySegmentId = ref<Map<string, string>>(new Map());
+const draftTextBySegmentId = ref<Map<string, WorkspaceSegmentTextDraft>>(new Map());
 const dirtySegmentIds = ref<Set<string>>(new Set());
 
 export function useWorkspaceLightEdit() {
   const replaceAllDrafts = (
-    drafts: Record<string, string> | Map<string, string>,
+    drafts: Record<string, WorkspaceSegmentTextDraft> | Map<string, WorkspaceSegmentTextDraft>,
   ) => {
     const nextDrafts = drafts instanceof Map ? new Map(drafts) : new Map(Object.entries(drafts));
     draftTextBySegmentId.value = nextDrafts;
     dirtySegmentIds.value = new Set(nextDrafts.keys());
   };
 
-  const setDraft = (segId: string, text: string) => {
+  const setDraft = (segId: string, draft: WorkspaceSegmentTextDraft) => {
     const nextDrafts = new Map(draftTextBySegmentId.value);
-    nextDrafts.set(segId, text);
+    nextDrafts.set(segId, draft);
     replaceAllDrafts(nextDrafts);
   };
 
@@ -28,7 +29,7 @@ export function useWorkspaceLightEdit() {
     replaceAllDrafts({});
   };
 
-  const getDraft = (segId: string): string | undefined => {
+  const getDraft = (segId: string): WorkspaceSegmentTextDraft | undefined => {
     return draftTextBySegmentId.value.get(segId);
   };
 

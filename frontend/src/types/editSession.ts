@@ -73,6 +73,13 @@ export interface EditableSegment {
   assembled_audio_span: [number, number] | null
 }
 
+export interface SegmentTextPatch {
+  stem?: string | null
+  terminal_raw?: string | null
+  terminal_closer_suffix?: string | null
+  terminal_source?: 'original' | 'synthetic' | null
+}
+
 export interface EditableEdge {
   edge_id: string
   document_id: string

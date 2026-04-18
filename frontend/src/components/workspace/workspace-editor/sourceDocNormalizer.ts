@@ -1,21 +1,22 @@
 import type { JSONContent } from "@tiptap/vue-3";
 
 import {
-  extractOrderedSegmentTextsFromListViewDoc,
+  extractOrderedSegmentDraftsFromListViewDoc,
   normalizeListViewDocToSourceDoc,
 } from "./list/normalizeListViewDocToSourceDoc";
 import type { WorkspaceSemanticEdge } from "./layoutTypes";
 import { buildWorkspaceSourceDoc } from "./sourceDocModel";
-
-export interface WorkspaceSourceDocTextEntry {
-  segmentId: string;
-  text: string;
-}
+import {
+  createEmptyWorkspaceSegmentTextDraft,
+  resolveWorkspaceSegmentDraftFromRegions,
+  type WorkspaceSegmentTextDraft,
+} from "./terminalRegionModel";
 
 export interface NormalizeWorkspaceViewDocInput {
   viewDoc: JSONContent;
   orderedSegmentIds: string[];
   edges: WorkspaceSemanticEdge[];
+  previousDraftsBySegmentId?: Record<string, WorkspaceSegmentTextDraft>;
 }
 
 function walkDocument(
@@ -43,28 +44,40 @@ function readSegmentAnchorId(node: JSONContent): string | null {
     : null;
 }
 
+function hasTerminalCapsuleMark(node: JSONContent): boolean {
+  return (node.marks ?? []).some((mark) => mark.type === "terminalCapsule");
+}
+
 function isListViewDoc(doc: JSONContent): boolean {
   return (doc.content ?? []).some((node) => node.type === "segmentBlock");
 }
 
-export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
+export function extractOrderedSegmentDraftsFromWorkspaceViewDoc(
   doc: JSONContent,
   orderedSegmentIds: string[],
-): WorkspaceSourceDocTextEntry[] {
+  previousDraftsBySegmentId: Record<string, WorkspaceSegmentTextDraft> = {},
+): WorkspaceSegmentTextDraft[] {
   if (isListViewDoc(doc)) {
-    return extractOrderedSegmentTextsFromListViewDoc(doc, orderedSegmentIds);
+    return extractOrderedSegmentDraftsFromListViewDoc(
+      doc,
+      orderedSegmentIds,
+      previousDraftsBySegmentId,
+    );
   }
 
   if (orderedSegmentIds.length === 0) {
     return [];
   }
 
-  const textBySegmentId = new Map<string, string>();
+  const textBySegmentId = new Map<
+    string,
+    { stemText: string; terminalText: string }
+  >();
   const seenSegmentIds: string[] = [];
   let currentSegmentId: string | null = null;
   let sawPauseBoundarySinceLastSegment = true;
   let encounteredSegmentAnchor = false;
-  let pendingTextForNextSegment = "";
+  let pendingStemTextForNextSegment = "";
 
   walkDocument(doc, (node) => {
     if (node.type === "pauseBoundary") {
@@ -79,16 +92,25 @@ export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
     }
 
     const segmentId = readSegmentAnchorId(node);
+    const isTerminalText = hasTerminalCapsuleMark(node);
     if (!segmentId) {
       if (currentSegmentId !== null && !sawPauseBoundarySinceLastSegment) {
-        textBySegmentId.set(
-          currentSegmentId,
-          `${textBySegmentId.get(currentSegmentId) ?? ""}${node.text}`,
-        );
+        const currentText = textBySegmentId.get(currentSegmentId) ?? {
+          stemText: "",
+          terminalText: "",
+        };
+        textBySegmentId.set(currentSegmentId, {
+          stemText: isTerminalText
+            ? currentText.stemText
+            : `${currentText.stemText}${node.text}`,
+          terminalText: isTerminalText
+            ? `${currentText.terminalText}${node.text}`
+            : currentText.terminalText,
+        });
         return;
       }
 
-      pendingTextForNextSegment += node.text;
+      pendingStemTextForNextSegment += node.text;
       return;
     }
 
@@ -105,25 +127,25 @@ export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
       sawPauseBoundarySinceLastSegment = false;
     }
 
-    if (pendingTextForNextSegment.length > 0) {
-      textBySegmentId.set(
-        segmentId,
-        `${textBySegmentId.get(segmentId) ?? ""}${pendingTextForNextSegment}`,
-      );
-      pendingTextForNextSegment = "";
-    }
-
-    textBySegmentId.set(
-      segmentId,
-      `${textBySegmentId.get(segmentId) ?? ""}${node.text}`,
-    );
+    const currentText = textBySegmentId.get(segmentId) ?? {
+      stemText: "",
+      terminalText: "",
+    };
+    const nextStemText = `${currentText.stemText}${pendingStemTextForNextSegment}${isTerminalText ? "" : node.text}`;
+    textBySegmentId.set(segmentId, {
+      stemText: nextStemText,
+      terminalText: isTerminalText
+        ? `${currentText.terminalText}${node.text}`
+        : currentText.terminalText,
+    });
+    pendingStemTextForNextSegment = "";
   });
 
   if (!encounteredSegmentAnchor) {
     throw new Error("编辑器 segmentAnchor 已变化，请放弃当前编辑后重试");
   }
 
-  if (pendingTextForNextSegment.length > 0) {
+  if (pendingStemTextForNextSegment.length > 0) {
     throw new Error("编辑器 segmentAnchor 已变化，请放弃当前编辑后重试");
   }
 
@@ -137,10 +159,19 @@ export function extractOrderedSegmentTextsFromWorkspaceViewDoc(
     }
   });
 
-  return orderedSegmentIds.map((segmentId) => ({
-    segmentId,
-    text: textBySegmentId.get(segmentId) ?? "",
-  }));
+  return orderedSegmentIds.map((segmentId) => {
+    const regions = textBySegmentId.get(segmentId) ?? {
+      stemText: "",
+      terminalText: "",
+    };
+    return resolveWorkspaceSegmentDraftFromRegions({
+      previousDraft:
+        previousDraftsBySegmentId[segmentId] ??
+        createEmptyWorkspaceSegmentTextDraft(segmentId),
+      stemText: regions.stemText,
+      terminalRegionText: regions.terminalText,
+    });
+  });
 }
 
 export function normalizeWorkspaceViewDocToSourceDoc(
@@ -150,16 +181,20 @@ export function normalizeWorkspaceViewDocToSourceDoc(
     return normalizeListViewDocToSourceDoc(input);
   }
 
-  const segmentTexts = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+  const segmentDrafts = extractOrderedSegmentDraftsFromWorkspaceViewDoc(
     input.viewDoc,
     input.orderedSegmentIds,
+    input.previousDraftsBySegmentId,
   );
 
   return buildWorkspaceSourceDoc({
-    segments: segmentTexts.map((segment, index) => ({
+    segments: segmentDrafts.map((segment, index) => ({
       segmentId: segment.segmentId,
       orderKey: index + 1,
-      text: segment.text,
+      stem: segment.stem,
+      terminal_raw: segment.terminal_raw,
+      terminal_closer_suffix: segment.terminal_closer_suffix,
+      terminal_source: segment.terminal_source,
     })),
     edges: input.edges,
   });

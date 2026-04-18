@@ -4,8 +4,9 @@ import {
   normalizeCompositionLayoutHints,
   type WorkspaceCompositionLayoutHints,
 } from "@/components/workspace/workspace-editor/compositionLayoutHints";
+import type { WorkspaceSegmentTextDraft } from "@/components/workspace/workspace-editor/terminalRegionModel";
 
-export const WORKSPACE_DRAFT_SCHEMA_VERSION = 2 as const;
+export const WORKSPACE_DRAFT_SCHEMA_VERSION = 3 as const;
 export const WORKSPACE_DRAFT_STORAGE_PREFIX = "neo-tts-workspace-local-draft::";
 export const WORKSPACE_DRAFT_INDEX_KEY = "neo-tts-workspace-local-draft-index";
 
@@ -19,7 +20,7 @@ export interface WorkspaceDraftSnapshot {
   mode: WorkspaceDraftMode;
   editorDoc: JSONContent;
   sourceDoc: JSONContent;
-  segmentDrafts: Record<string, string>;
+  segmentDrafts: Record<string, WorkspaceSegmentTextDraft>;
   effectiveText: string;
   compositionLayoutHints: WorkspaceCompositionLayoutHints | null;
   updatedAt: string;
@@ -35,17 +36,51 @@ function isRecord(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw);
 }
 
-function normalizeSegmentDrafts(raw: unknown): Record<string, string> | null {
+function normalizeSegmentDraftValue(
+  segmentId: string,
+  raw: unknown,
+): WorkspaceSegmentTextDraft | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  if (
+    typeof raw.stem !== "string" ||
+    typeof raw.terminal_raw !== "string" ||
+    typeof raw.terminal_closer_suffix !== "string" ||
+    (raw.terminal_source !== "original" && raw.terminal_source !== "synthetic")
+  ) {
+    return null;
+  }
+
+  return {
+    segmentId,
+    stem: raw.stem,
+    terminal_raw: raw.terminal_raw,
+    terminal_closer_suffix: raw.terminal_closer_suffix,
+    terminal_source: raw.terminal_source,
+  };
+}
+
+function normalizeSegmentDrafts(
+  raw: unknown,
+): Record<string, WorkspaceSegmentTextDraft> | null {
   if (!isRecord(raw)) {
     return null;
   }
 
   const entries = Object.entries(raw);
-  if (!entries.every(([, value]) => typeof value === "string")) {
+  const normalizedEntries = entries.map(([segmentId, value]) => [
+    segmentId,
+    normalizeSegmentDraftValue(segmentId, value),
+  ] as const);
+  if (normalizedEntries.some(([, value]) => value === null)) {
     return null;
   }
 
-  return Object.fromEntries(entries) as Record<string, string>;
+  return Object.fromEntries(
+    normalizedEntries as Array<[string, WorkspaceSegmentTextDraft]>,
+  );
 }
 
 function normalizeEditorDoc(raw: unknown): JSONContent | null {
