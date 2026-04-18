@@ -784,7 +784,13 @@ describe("useParameterPanel", () => {
     const lightEdit = useWorkspaceLightEdit();
 
     lightEdit.replaceAllDrafts({
-      "seg-2": "第二句（未重推理）",
+      "seg-2": {
+        segmentId: "seg-2",
+        stem: "第二句（未重推理）",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "synthetic",
+      },
     });
     selection.selectEdge("edge-1");
     await nextTick();

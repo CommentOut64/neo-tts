@@ -9,10 +9,10 @@ import {
 } from "../src/components/workspace/workspace-editor/documentModel";
 import { SegmentAnchorMark } from "../src/components/workspace/workspace-editor/segmentAnchorMark";
 import {
-  extractOrderedSegmentTextsFromWorkspaceViewDoc,
+  extractOrderedSegmentDraftsFromWorkspaceViewDoc,
   normalizeWorkspaceViewDocToSourceDoc,
 } from "../src/components/workspace/workspace-editor/sourceDocNormalizer";
-import { splitSegmentTerminalCapsule } from "../src/utils/segmentTextDisplay";
+import { TerminalCapsuleMark } from "../src/components/workspace/workspace-editor/terminalCapsuleMark";
 
 function createSemanticDocument(): WorkspaceSemanticDocument {
   return {
@@ -80,6 +80,10 @@ describe("workspace editor document model", () => {
     expect((SegmentAnchorMark as any).config.inclusive).toBe(true);
   });
 
+  it("terminalCapsuleMark 在编辑态必须保持 inclusive，避免句尾 region 丢失结构边界", () => {
+    expect((TerminalCapsuleMark as any).config.inclusive).toBe(true);
+  });
+
   it("列表式 builder 会输出 segmentBlock，并用节点 attrs 承担段级映射", () => {
     const semanticDocument = createSemanticDocument();
     const plan = buildListLayoutDocument(semanticDocument);
@@ -121,8 +125,16 @@ describe("workspace editor document model", () => {
           content: [
             {
               type: "text",
-              text: "第一段。",
+              text: "第一段",
               marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-1" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-1" } },
+              ],
             },
             {
               type: "pauseBoundary",
@@ -138,8 +150,16 @@ describe("workspace editor document model", () => {
             },
             {
               type: "text",
-              text: "第二段。",
+              text: "第二段",
               marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-2" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-2" } },
+              ],
             },
             {
               type: "pauseBoundary",
@@ -160,8 +180,16 @@ describe("workspace editor document model", () => {
           content: [
             {
               type: "text",
-              text: "第三段。",
+              text: "第三段",
               marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-3" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-3" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-3" } },
+              ],
             },
           ],
         },
@@ -219,8 +247,16 @@ describe("workspace editor document model", () => {
           content: [
             {
               type: "text",
-              text: "第一段。",
+              text: "第一段",
               marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-1" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-1" } },
+              ],
             },
             {
               type: "pauseBoundary",
@@ -236,8 +272,16 @@ describe("workspace editor document model", () => {
             },
             {
               type: "text",
-              text: "第二段。",
+              text: "第二段",
               marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-2" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-2" } },
+              ],
             },
           ],
         },
@@ -269,7 +313,7 @@ describe("workspace editor document model", () => {
 
   it("编辑中出现临时未带 segmentAnchor 的文本节点时，仍能归并回相邻 segment", () => {
     expect(
-      extractOrderedSegmentTextsFromWorkspaceViewDoc(
+      extractOrderedSegmentDraftsFromWorkspaceViewDoc(
         {
           type: "doc",
           content: [
@@ -303,13 +347,25 @@ describe("workspace editor document model", () => {
         ["seg-1", "seg-2"],
       ),
     ).toEqual([
-      { segmentId: "seg-1", text: "新第一段" },
-      { segmentId: "seg-2", text: "更第二段" },
+      {
+        segmentId: "seg-1",
+        stem: "新第一段",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
+      {
+        segmentId: "seg-2",
+        stem: "更第二段",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
     ]);
   });
 
-  it("组合式提取的段文本会保留完整句尾胶囊", () => {
-    const extracted = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+  it("组合式提取的段文本会拆出 stem 与 terminal region", () => {
+    const extracted = extractOrderedSegmentDraftsFromWorkspaceViewDoc(
       {
         type: "doc",
         content: [
@@ -318,8 +374,16 @@ describe("workspace editor document model", () => {
             content: [
               {
                 type: "text",
-                text: "第一段？！」",
+                text: "第一段",
                 marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+              },
+              {
+                type: "text",
+                text: "？！」",
+                marks: [
+                  { type: "segmentAnchor", attrs: { segmentId: "seg-1" } },
+                  { type: "terminalCapsule", attrs: { segmentId: "seg-1" } },
+                ],
               },
             ],
           },
@@ -328,16 +392,18 @@ describe("workspace editor document model", () => {
       ["seg-1"],
     );
 
-    expect(extracted).toEqual([{ segmentId: "seg-1", text: "第一段？！」" }]);
-    expect(splitSegmentTerminalCapsule(extracted[0]?.text ?? "")).toEqual({
-      stem: "第一段",
-      terminal: "？！",
-      closerSuffix: "」",
-      capsule: "？！」",
-    });
+    expect(extracted).toEqual([
+      {
+        segmentId: "seg-1",
+        stem: "第一段",
+        terminal_raw: "？！",
+        terminal_closer_suffix: "」",
+        terminal_source: "original",
+      },
+    ]);
   });
 
-  it("提交编辑时会按 segmentAnchor 聚合文本，并对比后端文本收集变更", () => {
+  it("提交编辑时会按结构化 terminal region 聚合 patch，并对比后端 draft 收集变更", () => {
     const changes = collectSegmentDraftChanges(
       {
         type: "doc",
@@ -356,6 +422,14 @@ describe("workspace editor document model", () => {
                 marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
               },
               {
+                type: "text",
+                text: "？！",
+                marks: [
+                  { type: "segmentAnchor", attrs: { segmentId: "seg-1" } },
+                  { type: "terminalCapsule", attrs: { segmentId: "seg-1" } },
+                ],
+              },
+              {
                 type: "pauseBoundary",
                 attrs: {
                   edgeId: "edge-1",
@@ -368,6 +442,14 @@ describe("workspace editor document model", () => {
                 text: "第二段",
                 marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
               },
+              {
+                type: "text",
+                text: "。",
+                marks: [
+                  { type: "segmentAnchor", attrs: { segmentId: "seg-2" } },
+                  { type: "terminalCapsule", attrs: { segmentId: "seg-2" } },
+                ],
+              },
             ],
           },
         ],
@@ -375,12 +457,32 @@ describe("workspace editor document model", () => {
       ["seg-1", "seg-2"],
       (segmentId) =>
         ({
-          "seg-1": "第一段",
-          "seg-2": "第二段",
+          "seg-1": {
+            segmentId: "seg-1",
+            stem: "第一段",
+            terminal_raw: "",
+            terminal_closer_suffix: "",
+            terminal_source: "synthetic",
+          },
+          "seg-2": {
+            segmentId: "seg-2",
+            stem: "第二段",
+            terminal_raw: "",
+            terminal_closer_suffix: "",
+            terminal_source: "synthetic",
+          },
         })[segmentId] ?? "",
     );
 
-    expect(changes.changedDrafts).toEqual([["seg-1", "新的第一段"]]);
+    expect(changes.changedDrafts).toEqual([[
+      "seg-1",
+      {
+        stem: "新的第一段",
+        terminal_raw: "？！",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
+    ]]);
     expect(changes.clearedSegmentIds).toEqual(["seg-2"]);
   });
 
