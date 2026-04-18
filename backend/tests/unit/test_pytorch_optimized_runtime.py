@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import time
 
 from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
 
@@ -81,6 +82,7 @@ def test_warmup_logs_stage_when_t2s_infer_panel_returns_none(monkeypatch):
     runtime = object.__new__(GPTSoVITSOptimizedInference)
     runtime.device = "cpu"
     runtime.is_half = False
+    runtime.resident_device = "cpu"
     runtime.hps = SimpleNamespace(
         model=SimpleNamespace(version="v2"),
         data=SimpleNamespace(filter_length=1024),
@@ -130,6 +132,7 @@ def test_warmup_passes_dummy_speaker_embedding_for_v2pro_decode(monkeypatch):
     runtime = object.__new__(GPTSoVITSOptimizedInference)
     runtime.device = "cpu"
     runtime.is_half = False
+    runtime.resident_device = "cpu"
     runtime.hps = SimpleNamespace(
         model=SimpleNamespace(version="v2"),
         data=SimpleNamespace(filter_length=1024),
@@ -145,3 +148,118 @@ def test_warmup_passes_dummy_speaker_embedding_for_v2pro_decode(monkeypatch):
 
     assert len(decode_calls) == 1
     assert decode_calls[0]["sv_emb"] == ["dummy-sv-emb"]
+
+
+def test_warmup_logs_stage_boundaries_and_runtime_snapshot(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+        def warning(self, message, *args):
+            logged.append(("warning", (message, *args)))
+
+        def exception(self, message, *args):
+            raise AssertionError(f"warmup should not fail: {message} {args}")
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return __import__("torch").ones((1, 4), dtype=__import__("torch").long), 0
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.resident_device = "cpu"
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = lambda *args, **kwargs: ([1, 2, 3], None, "norm")
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = SimpleNamespace(decode=lambda *args, **kwargs: "ok")
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.os.getpid", lambda: 4321)
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.torch.cuda.is_available", lambda: False)
+
+    runtime.warmup()
+
+    info_entries = [entry[1] for entry in logged if entry[0] == "info"]
+    assert ("Warmup stage begin stage={} detail={}", "phones_and_bert_en", "text='Warmup text.' lang=en") in info_entries
+    assert ("Warmup stage end stage={} stage_elapsed_ms={:.2f} detail={}", "phones_and_bert_en", 0.0, "phones=3 norm_text_len=4") not in info_entries
+    assert any(
+        len(entry) == 4
+        and entry[0] == "Warmup stage end stage={} stage_elapsed_ms={:.2f} detail={}"
+        and entry[1] == "phones_and_bert_en"
+        and "phones=3" in entry[3]
+        and "norm_text_len=4" in entry[3]
+        for entry in info_entries
+    )
+    assert any(
+        len(entry) == 7
+        and entry[0] == "Warmup context device={} resident_device={} half={} pid={} thread_id={} cuda_mem={}"
+        and entry[1] == "cpu"
+        and entry[2] == "cpu"
+        and entry[3] is False
+        and entry[4] == 4321
+        and isinstance(entry[5], int)
+        and entry[6] == "unavailable"
+        for entry in info_entries
+    )
+
+
+def test_warmup_watchdog_logs_when_stage_runs_too_long(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+        def warning(self, message, *args):
+            logged.append(("warning", (message, *args)))
+
+        def exception(self, message, *args):
+            raise AssertionError(f"warmup should not fail: {message} {args}")
+
+    class _FakeT2SModel:
+        def infer_panel(self, *args, **kwargs):
+            return __import__("torch").ones((1, 4), dtype=__import__("torch").long), 0
+
+    call_count = {"value": 0}
+
+    def _slow_get_phones_and_bert(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            time.sleep(0.05)
+        return [1, 2, 3], None, "norm"
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.resident_device = "cpu"
+    runtime.hps = SimpleNamespace(
+        model=SimpleNamespace(version="v2"),
+        data=SimpleNamespace(filter_length=1024),
+    )
+    runtime.get_phones_and_bert = _slow_get_phones_and_bert
+    runtime.t2s_model = SimpleNamespace(model=_FakeT2SModel())
+    runtime.vq_model = SimpleNamespace(decode=lambda *args, **kwargs: "ok")
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized._WARMUP_HEARTBEAT_INTERVAL_SECONDS", 0.01, raising=False)
+
+    runtime.warmup()
+
+    warning_entries = [entry[1] for entry in logged if entry[0] == "warning"]
+    assert any(
+        message == "Warmup still running stage={} stage_elapsed_ms={:.2f} total_elapsed_ms={:.2f} device={} resident_device={} half={} pid={} thread_id={} cuda_mem={} detail={}"
+        and stage == "phones_and_bert_en"
+        and device == "cpu"
+        and resident_device == "cpu"
+        and half is False
+        and cuda_mem == "unavailable"
+        and "text='Warmup text.'" in detail
+        for message, stage, _, _, device, resident_device, half, _, _, cuda_mem, detail in warning_entries
+    )
