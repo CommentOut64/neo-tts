@@ -229,13 +229,12 @@ def test_segment_and_edge_response_types_reuse_domain_fields():
     assert edge.boundary_strategy_locked is False
 
 
-def test_segment_and_snapshot_schema_drop_legacy_raw_and_normalized_text_fields():
+def test_segment_and_snapshot_schema_only_accept_structured_text_fields():
     segment = EditableSegmentResponse(
         segment_id="seg-1",
         document_id="doc-1",
         order_key=1,
-        raw_text='你好？！」',
-        normalized_text="你好。",
+        stem="你好",
         text_language="zh",
         terminal_raw="？！",
         terminal_closer_suffix="」",
@@ -246,18 +245,16 @@ def test_segment_and_snapshot_schema_drop_legacy_raw_and_normalized_text_fields(
         document_id="doc-1",
         snapshot_kind="head",
         document_version=1,
-        raw_text='你好？！」',
-        normalized_text="你好。",
         segments=[segment],
         edges=[],
     )
 
     assert segment.stem == "你好"
     assert segment.display_text == '你好？！」'
-    assert not hasattr(segment, "raw_text")
-    assert not hasattr(segment, "normalized_text")
-    assert not hasattr(snapshot, "raw_text")
-    assert not hasattr(snapshot, "normalized_text")
+    assert "raw_text" not in segment.model_dump()
+    assert "normalized_text" not in segment.model_dump()
+    assert "raw_text" not in snapshot.model_dump()
+    assert "normalized_text" not in snapshot.model_dump()
 
 
 def test_checkpoint_state_rejects_running_partial_status():

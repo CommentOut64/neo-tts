@@ -11,6 +11,7 @@ from backend.app.schemas.edit_session import (
     TimelineSegmentEntry,
 )
 from backend.app.services.subtitle_export_service import SubtitleExportService
+from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 def _build_subtitle_request(
@@ -33,8 +34,11 @@ def _build_snapshot(*segments: tuple[str, str]) -> DocumentSnapshot:
             segment_id=segment_id,
             document_id="doc-1",
             order_key=index,
-            raw_text=raw_text,
+            stem=parse_terminal_capsule(raw_text).stem,
             text_language="zh",
+            terminal_raw=parse_terminal_capsule(raw_text).terminal_raw,
+            terminal_closer_suffix=parse_terminal_capsule(raw_text).terminal_closer_suffix,
+            terminal_source=parse_terminal_capsule(raw_text).terminal_source,
             render_asset_id=f"render-{segment_id}",
         )
         for index, (segment_id, raw_text) in enumerate(segments, start=1)

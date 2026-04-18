@@ -242,16 +242,16 @@ def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallba
         document_id="doc-1",
         snapshot_kind="head",
         document_version=1,
-        raw_text="第一句。",
-        normalized_text="第一句。",
         segments=[
             EditableSegment(
                 segment_id="seg-1",
                 document_id="doc-1",
                 order_key=1,
-                raw_text="第一句。",
-                normalized_text="第一句。",
+                stem="第一句",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_closer_suffix="",
+                terminal_source="original",
             )
         ],
         edges=[],
@@ -388,7 +388,6 @@ def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule
         {
             "segment_id": payload["segments"][0]["segment_id"],
             "order_key": 1,
-            "raw_text": "第一句？！",
             "stem": "第一句",
             "display_text": "第一句？！",
             "text_language": "auto",
@@ -402,7 +401,6 @@ def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule
         {
             "segment_id": payload["segments"][1]["segment_id"],
             "order_key": 2,
-            "raw_text": '第二句。”',
             "stem": "第二句",
             "display_text": '第二句。”',
             "text_language": "auto",

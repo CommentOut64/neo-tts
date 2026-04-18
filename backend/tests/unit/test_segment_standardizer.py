@@ -107,6 +107,42 @@ def test_split_text_segments_with_terminal_capsules_skips_decimal_dot_and_keeps_
     ]
 
 
+def test_split_text_segments_with_terminal_capsules_forces_split_on_newline_and_drops_trailing_weak_punctuation():
+    segments = split_text_segments_with_terminal_capsules(
+        "厉声吩咐秘书不要来打扰他，\n然后抓起话筒",
+    )
+
+    assert segments == [
+        "厉声吩咐秘书不要来打扰他",
+        "然后抓起话筒",
+    ]
+
+
+def test_standardize_segment_text_forces_newline_segments_to_end_with_period():
+    batch = standardize_segment_texts(
+        split_text_segments_with_terminal_capsules(
+            "厉声吩咐秘书不要来打扰他，\n然后抓起话筒“",
+        ),
+        "zh",
+    )
+
+    assert [segment.display_text for segment in batch.segments] == [
+        "厉声吩咐秘书不要来打扰他。",
+        "然后抓起话筒“。",
+    ]
+
+
+def test_split_text_segments_with_terminal_capsules_cleans_leading_punctuation_after_newline():
+    segments = split_text_segments_with_terminal_capsules(
+        "厉声吩咐秘书不要来打扰他，\n，。？！然后抓起话筒",
+    )
+
+    assert segments == [
+        "厉声吩咐秘书不要来打扰他",
+        "然后抓起话筒",
+    ]
+
+
 def test_segment_standardizer_helpers_currently_mix_raw_text_normalized_text_and_capsule():
     assert extract_segment_stem(
         stem="真的么",

@@ -4,6 +4,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import DocumentSnapshot, EditableSegment, UpdateSegmentRequest
 from backend.app.services.edge_service import EdgeService
 from backend.app.services.segment_service import SegmentService
+from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 def _build_service(tmp_path) -> SegmentService:
@@ -27,15 +28,18 @@ def _snapshot(*segments: EditableSegment) -> DocumentSnapshot:
 
 
 def _segment(segment_id: str, order_key: int, raw_text: str) -> EditableSegment:
+    state = parse_terminal_capsule(raw_text)
     return EditableSegment(
         segment_id=segment_id,
         document_id="doc-1",
         order_key=order_key,
         previous_segment_id=None if order_key == 1 else f"seg-{order_key - 1}",
         next_segment_id=None,
-        raw_text=raw_text,
-        normalized_text=raw_text,
+        stem=state.stem,
         text_language="zh",
+        terminal_raw=state.terminal_raw,
+        terminal_closer_suffix=state.terminal_closer_suffix,
+        terminal_source=state.terminal_source,
     )
 
 
@@ -175,8 +179,7 @@ def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
             order_key=1,
             previous_segment_id=None,
             next_segment_id="seg-2",
-            raw_text="你好？",
-            normalized_text="你好。",
+            stem="你好",
             text_language="zh",
             terminal_raw="？",
             terminal_closer_suffix="",
@@ -188,8 +191,7 @@ def test_merge_segments_uses_left_stem_plus_right_display_text(tmp_path):
             order_key=2,
             previous_segment_id="seg-1",
             next_segment_id=None,
-            raw_text='世界！”',
-            normalized_text="世界。",
+            stem="世界",
             text_language="zh",
             terminal_raw="！",
             terminal_closer_suffix="”",
