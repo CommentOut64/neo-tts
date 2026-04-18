@@ -794,8 +794,8 @@ def patch_segments_voice_binding_batch(
     "/segments/{segment_id}",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="更新段文本或推理覆盖项",
-    description="修改单个段的文本、语言或旧版 inference_override，并触发新的编辑作业。",
+    summary="更新段文本 patch 或推理覆盖项",
+    description="修改单个段的结构化文本 patch、语言或旧版 inference_override，并触发新的编辑作业。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:

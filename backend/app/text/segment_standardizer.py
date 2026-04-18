@@ -112,6 +112,21 @@ def standardize_segment_text(
 ) -> SegmentStandardizationResult:
     normalized_input = normalize_whitespace(raw_text)
     state = parse_terminal_capsule(normalized_input)
+    return standardize_segment_text_state(
+        state,
+        text_language,
+        detected_language=detected_language,
+        inference_exclusion_reason=inference_exclusion_reason,
+    )
+
+
+def standardize_segment_text_state(
+    state: SegmentTextState,
+    text_language: str,
+    *,
+    detected_language: ResolvedLanguage | None = None,
+    inference_exclusion_reason: str | None = None,
+) -> SegmentStandardizationResult:
     if detected_language is None or inference_exclusion_reason is None:
         language_meta = _resolve_single_segment_language_meta(state.stem, text_language)
         detected_language = language_meta.detected_language

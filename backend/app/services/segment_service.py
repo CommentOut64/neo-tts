@@ -17,8 +17,10 @@ from backend.app.text.segment_standardizer import (
     build_segment_display_text,
     extract_segment_stem,
     standardize_segment_text,
+    standardize_segment_text_state,
     standardize_segment_texts,
 )
+from backend.app.text.terminal_capsule import SegmentTextState
 
 
 @dataclass(frozen=True)
@@ -161,14 +163,37 @@ class SegmentService:
         updated_segment = current_segment.model_copy(deep=True)
         rerender_required = False
 
-        if patch.raw_text is not None:
-            standardized = standardize_segment_text(patch.raw_text, patch.text_language or current_segment.text_language)
+        if patch.text_patch is not None or patch.text_language is not None:
+            next_text_language = patch.text_language or current_segment.text_language
+            text_patch = patch.text_patch
+            standardized = standardize_segment_text_state(
+                SegmentTextState(
+                    stem=text_patch.stem if text_patch and text_patch.stem is not None else current_segment.stem,
+                    terminal_raw=(
+                        text_patch.terminal_raw
+                        if text_patch and text_patch.terminal_raw is not None
+                        else current_segment.terminal_raw
+                    ),
+                    terminal_closer_suffix=(
+                        text_patch.terminal_closer_suffix
+                        if text_patch and text_patch.terminal_closer_suffix is not None
+                        else current_segment.terminal_closer_suffix
+                    ),
+                    terminal_source=(
+                        text_patch.terminal_source
+                        if text_patch and text_patch.terminal_source is not None
+                        else current_segment.terminal_source
+                    ),
+                ),
+                next_text_language,
+            )
             text_changed = any(
                 (
                     standardized.stem != current_segment.stem,
                     standardized.terminal_raw != current_segment.terminal_raw,
                     standardized.terminal_closer_suffix != current_segment.terminal_closer_suffix,
                     standardized.terminal_source != current_segment.terminal_source,
+                    next_text_language != current_segment.text_language,
                     standardized.detected_language != current_segment.detected_language,
                     standardized.inference_exclusion_reason != current_segment.inference_exclusion_reason,
                     standardized.risk_flags != current_segment.risk_flags,
@@ -176,6 +201,7 @@ class SegmentService:
             )
             if text_changed:
                 updated_segment.stem = standardized.stem
+                updated_segment.text_language = next_text_language
                 updated_segment.terminal_raw = standardized.terminal_raw
                 updated_segment.terminal_closer_suffix = standardized.terminal_closer_suffix
                 updated_segment.terminal_source = standardized.terminal_source
@@ -183,9 +209,6 @@ class SegmentService:
                 updated_segment.inference_exclusion_reason = standardized.inference_exclusion_reason
                 updated_segment.risk_flags = standardized.risk_flags
                 rerender_required = True
-        if patch.text_language is not None and patch.text_language != current_segment.text_language:
-            updated_segment.text_language = patch.text_language
-            rerender_required = True
         if patch.inference_override is not None and patch.inference_override != current_segment.inference_override:
             updated_segment.inference_override = dict(patch.inference_override)
             rerender_required = True

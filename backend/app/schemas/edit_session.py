@@ -292,14 +292,49 @@ class AppendSegmentsRequest(BaseModel):
     )
 
 
+class SegmentTextPatch(BaseModel):
+    stem: str | None = Field(default=None, description="新的段正文 stem。")
+    terminal_raw: str | None = Field(default=None, description="新的原始强标点簇。")
+    terminal_closer_suffix: str | None = Field(default=None, description="新的尾随闭合符串。")
+    terminal_source: Literal["original", "synthetic"] | None = Field(default=None, description="新的句尾来源。")
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "SegmentTextPatch":
+        if (
+            self.stem is None
+            and self.terminal_raw is None
+            and self.terminal_closer_suffix is None
+            and self.terminal_source is None
+        ):
+            raise ValueError("At least one text patch field must be provided.")
+        return self
+
+
 class UpdateSegmentRequest(BaseModel):
-    raw_text: str | None = Field(default=None, description="更新后的段文本。")
+    text_patch: SegmentTextPatch | None = Field(default=None, description="结构化段文本 patch。")
     text_language: str | None = Field(default=None, description="更新后的文本语言。")
     inference_override: dict[str, Any] | None = Field(default=None, description="兼容旧入口的推理覆盖项。")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_raw_text_patch(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        upgraded = dict(value)
+        raw_text = upgraded.pop("raw_text", None)
+        if upgraded.get("text_patch") is None and isinstance(raw_text, str):
+            state = parse_terminal_capsule(raw_text)
+            upgraded["text_patch"] = {
+                "stem": state.stem,
+                "terminal_raw": state.terminal_raw,
+                "terminal_closer_suffix": state.terminal_closer_suffix,
+                "terminal_source": state.terminal_source,
+            }
+        return upgraded
+
     @model_validator(mode="after")
     def _validate_has_patch_fields(self) -> "UpdateSegmentRequest":
-        if self.raw_text is None and self.text_language is None and self.inference_override is None:
+        if self.text_patch is None and self.text_language is None and self.inference_override is None:
             raise ValueError("At least one segment field must be provided.")
         return self
 
