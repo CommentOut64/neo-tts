@@ -119,6 +119,63 @@ describe("workspace list view normalizer", () => {
     ).toThrow(/segmentId/i);
   });
 
+  it("列表式缺失某个 segmentBlock 时，会把该段识别为空 draft 而不是直接报结构错", () => {
+    expect(
+      extractOrderedSegmentDraftsFromWorkspaceViewDoc(
+        {
+          type: "doc",
+          content: [
+            {
+              type: "segmentBlock",
+              attrs: { segmentId: "seg-1" },
+              content: [
+                { type: "text", text: "第一段" },
+                {
+                  type: "pauseBoundary",
+                  attrs: {
+                    edgeId: "edge-1",
+                    leftSegmentId: "seg-1",
+                    rightSegmentId: "seg-2",
+                    layoutMode: "list",
+                    crossBlock: false,
+                  },
+                },
+              ],
+            },
+            {
+              type: "segmentBlock",
+              attrs: { segmentId: "seg-3" },
+              content: [{ type: "text", text: "第三段" }],
+            },
+          ],
+        },
+        ["seg-1", "seg-2", "seg-3"],
+      ),
+    ).toEqual([
+      {
+        segmentId: "seg-1",
+        stem: "第一段",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
+      {
+        segmentId: "seg-2",
+        stem: "",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
+      {
+        segmentId: "seg-3",
+        stem: "第三段",
+        terminal_raw: "",
+        terminal_closer_suffix: "",
+        terminal_source: "original",
+      },
+    ]);
+  });
+
   it("组合视图仍按 segmentAnchor 聚合，并能规范化回 canonical sourceDoc", () => {
     expect(
       normalizeWorkspaceViewDocToSourceDoc({

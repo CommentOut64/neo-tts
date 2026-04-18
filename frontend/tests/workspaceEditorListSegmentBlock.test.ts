@@ -123,4 +123,15 @@ describe("workspace editor list segmentBlock refactor boundary", () => {
     expect(extensionSource).not.toContain("ListReorderHandleDecoration");
     expect(normalizerSource).toContain("normalizeListViewDocToSourceDoc");
   });
+
+  it("segmentBlock 必须是 isolating block，避免删空段时被相邻行合并", () => {
+    const segmentBlockSource = readFileSync(
+      resolveFromTests(
+        "../src/components/workspace/workspace-editor/list/segmentBlock.ts",
+      ),
+      "utf8",
+    );
+
+    expect(segmentBlockSource).toContain("isolating: true");
+  });
 });

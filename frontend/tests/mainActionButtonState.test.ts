@@ -1,6 +1,17 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { resolveMainActionButtonState } from "../src/components/workspace/mainActionButtonState";
+
+const mainActionButtonSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/MainActionButton.vue",
+  ),
+  "utf8",
+);
 
 describe("resolveMainActionButtonState", () => {
   it("空会话且初始化参数齐全时应显示开始生成", () => {
@@ -97,5 +108,10 @@ describe("resolveMainActionButtonState", () => {
       label: "应用重排",
       disabled: false,
     });
+  });
+
+  it("主按钮的待重推理统计应排除删空段草稿", () => {
+    expect(mainActionButtonSource).toContain("lightEdit.rerenderSegmentIds.value");
+    expect(mainActionButtonSource).not.toContain("dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value");
   });
 });

@@ -102,4 +102,15 @@ describe("useWorkspaceLightEdit", () => {
       createDraft({ segmentId: "seg-9", stem: "来自 Map 的草稿" }),
     );
   });
+
+  it("删空段仍保留为 dirty draft，但不应计入待重推理集合", async () => {
+    lightEdit.replaceAllDrafts({
+      "seg-1": createDraft({ segmentId: "seg-1", stem: "" }),
+      "seg-2": createDraft({ segmentId: "seg-2", stem: "仍需重推理的正文改动" }),
+    });
+    await nextTick();
+
+    expect(Array.from(lightEdit.dirtySegmentIds.value)).toEqual(["seg-1", "seg-2"]);
+    expect(Array.from(lightEdit.rerenderSegmentIds.value)).toEqual(["seg-2"]);
+  });
 });
