@@ -263,3 +263,135 @@ def test_warmup_watchdog_logs_when_stage_runs_too_long(monkeypatch):
         and "text='Warmup text.'" in detail
         for message, stage, _, _, device, resident_device, half, _, _, cuda_mem, detail in warning_entries
     )
+
+
+def test_extract_prompt_semantic_logs_stage_breakdown(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.ssl_model = SimpleNamespace(
+        model=lambda value: {
+            "last_hidden_state": __import__("torch").ones((1, value.shape[-1], 3), dtype=__import__("torch").float32)
+        }
+    )
+    runtime.vq_model = SimpleNamespace(
+        extract_latent=lambda ssl_content: __import__("torch").tensor([[[5, 6, 7]]], dtype=__import__("torch").long)
+    )
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.librosa.load",
+        lambda reference_audio_path, sr: (__import__("numpy").asarray([0.1, 0.2], dtype=__import__("numpy").float32), sr),
+    )
+
+    result = runtime._extract_prompt_semantic("demo-ref.wav")
+
+    assert result.tolist() == [5, 6, 7]
+    info_entries = [entry[1] for entry in logged if entry[0] == "info"]
+    assert any(
+        len(entry) == 4
+        and entry[0] == "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}"
+        and entry[1] == "librosa_load"
+        and "samples=2" in entry[3]
+        for entry in info_entries
+    )
+    assert any(
+        len(entry) == 4
+        and entry[0] == "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}"
+        and entry[1] == "ssl_model"
+        and "ssl_shape=" in entry[3]
+        for entry in info_entries
+    )
+    assert any(
+        len(entry) == 4
+        and entry[0] == "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}"
+        and entry[1] == "extract_latent"
+        and "codes_shape=" in entry[3]
+        for entry in info_entries
+    )
+
+
+def test_runtime_init_no_longer_calls_warmup_implicitly(monkeypatch):
+    warmup_calls: list[str] = []
+
+    class _FakeTorchModule:
+        def half(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def load_state_dict(self, *args, **kwargs):
+            return None
+
+    class _FakeLightningModule(_FakeTorchModule):
+        def __init__(self, config, *args, **kwargs):
+            del args, kwargs
+            self.config = config
+            self.model = SimpleNamespace()
+
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.cnhubert.get_model",
+        lambda: _FakeTorchModule(),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.AutoTokenizer.from_pretrained",
+        lambda path: object(),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.AutoModelForMaskedLM.from_pretrained",
+        lambda path: _FakeTorchModule(),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.torch.load",
+        lambda path, map_location="cpu": {"config": {"data": {}}, "weight": {}},
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.Text2SemanticLightningModule",
+        _FakeLightningModule,
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.load_sovits_new",
+        lambda path: {
+            "config": {
+                "data": {
+                    "filter_length": 1024,
+                    "hop_length": 256,
+                    "n_speakers": 1,
+                },
+                "train": {"segment_size": 4096},
+                "model": {"version": "v2"},
+            },
+            "weight": {},
+        },
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.get_sovits_version_from_path_fast",
+        lambda path: (None, "v2", None),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.SynthesizerTrn",
+        lambda *args, **kwargs: _FakeTorchModule(),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.SV",
+        lambda device, is_half: SimpleNamespace(embedding_model=_FakeTorchModule()),
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized.GPTSoVITSOptimizedInference.warmup",
+        lambda self: warmup_calls.append("called"),
+    )
+
+    runtime = GPTSoVITSOptimizedInference("demo-gpt.ckpt", "demo-sovits.pth", "hubert", "bert")
+
+    assert isinstance(runtime, GPTSoVITSOptimizedInference)
+    assert warmup_calls == []

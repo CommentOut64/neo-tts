@@ -8,7 +8,8 @@ from backend.app.inference.editable_types import ReferenceContext, ResolvedRende
 
 
 class _FakeBackend:
-    def build_reference_context(self, resolved_context):
+    def build_reference_context(self, resolved_context, *, progress_callback=None):
+        del progress_callback
         return ReferenceContext(
             reference_context_id="ctx-demo",
             voice_id=resolved_context.voice_id,

@@ -65,7 +65,20 @@ class _FakeEditableBackend:
         self.fail_boundary = fail_boundary
         self.gate = gate
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback=None,
+    ) -> ReferenceContext:
+        if callable(progress_callback):
+            progress_callback(
+                {
+                    "status": "preparing",
+                    "progress": 0.5,
+                    "message": "参考上下文准备中",
+                }
+            )
         return ReferenceContext(
             reference_context_id="ctx-1",
             voice_id=resolved_context.voice_id,
@@ -513,6 +526,34 @@ def test_run_initialize_job_updates_inference_runtime_while_segment_is_rendering
     final_snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
     assert final_snapshot.status == "completed"
     assert final_snapshot.progress == 1.0
+
+
+def test_prepare_updates_job_progress_from_reference_context_callback(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    plan = RenderPlan(
+        job_id=accepted.job.job_id,
+        job_kind="initialize",
+        document_id=accepted.job.document_id,
+        request=InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        ),
+    )
+
+    service._prepare(plan)  # noqa: SLF001
+
+    job = service.get_job(accepted.job.job_id)
+    assert job is not None
+    assert job.status == "preparing"
+    assert job.progress > 0.05
+    assert job.progress < 0.2
+    assert job.message == "文本切分完成，共 2 段。"
 
 
 def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_path):

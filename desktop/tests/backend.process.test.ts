@@ -63,6 +63,7 @@ describe("backend process options", () => {
 
     const options = buildDefaultBackendOptions(paths);
     const runtimePythonDir = path.dirname(paths.runtimePython);
+    const nltkDataDir = path.join(paths.resourcesDir, "runtime", "python", "nltk_data");
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -98,6 +99,7 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.NLTK_DATA).toBe(nltkDataDir);
     expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);
@@ -109,6 +111,7 @@ describe("backend process options", () => {
 
     const options = buildDefaultBackendOptions(paths);
     const runtimePythonDir = path.dirname(paths.runtimePython);
+    const nltkDataDir = path.join(paths.resourcesDir, "runtime", "python", "nltk_data");
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -133,6 +136,7 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.NLTK_DATA).toBe(nltkDataDir);
     expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);

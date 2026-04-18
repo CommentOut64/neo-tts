@@ -2,6 +2,7 @@ import pathlib
 import importlib
 import sys
 from types import SimpleNamespace
+from types import ModuleType
 
 from backend.app.inference.model_cache import PyTorchModelCache
 
@@ -115,6 +116,49 @@ def test_model_cache_default_factory_uses_backend_runtime_module(tmp_path: pathl
     engine = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
 
     assert engine is sentinel
+
+
+def test_model_cache_build_engine_logs_import_and_construct_boundaries(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+    fake_runtime_module = ModuleType("backend.app.inference.pytorch_optimized")
+    sentinel = object()
+
+    def fake_runtime(*args):
+        return sentinel
+
+    fake_runtime_module.GPTSoVITSOptimizedInference = fake_runtime
+    fake_inference_package = ModuleType("backend.app.inference")
+    fake_inference_package.pytorch_optimized = fake_runtime_module
+
+    monkeypatch.setattr("backend.app.inference.model_cache.model_cache_logger", _FakeLogger())
+    monkeypatch.setitem(sys.modules, "backend.app.inference", fake_inference_package)
+    monkeypatch.setitem(sys.modules, "backend.app.inference.pytorch_optimized", fake_runtime_module)
+
+    engine = PyTorchModelCache._build_engine("demo-gpt.ckpt", "demo-sovits.pth", "hubert", "bert")
+
+    assert engine is sentinel
+    info_entries = [entry[1] for entry in logged if entry[0] == "info"]
+    assert ("开始导入 PyTorch 推理模块",) in info_entries
+    assert any(
+        len(entry) == 3
+        and entry[0] == "开始构建 PyTorch 推理实例 gpt_path={} sovits_path={}"
+        and entry[1] == "demo-gpt.ckpt"
+        and entry[2] == "demo-sovits.pth"
+        for entry in info_entries
+    )
+    assert any(
+        len(entry) == 2 and entry[0] == "PyTorch 推理模块导入完成 elapsed_ms={:.2f}"
+        for entry in info_entries
+    )
+    assert any(
+        len(entry) == 2 and entry[0] == "PyTorch 推理实例构建完成 elapsed_ms={:.2f}"
+        for entry in info_entries
+    )
 
 
 def test_pytorch_runtime_bootstraps_gpt_sovits_import_paths():
