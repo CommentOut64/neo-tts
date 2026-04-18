@@ -222,7 +222,6 @@ class GPTSoVITSOptimizedInference:
         self.sv_model = SV(self.device, self.is_half)
         inference_logger.info("声纹模型加载完成 elapsed_ms={:.2f}", (time.perf_counter() - sv_started) * 1000)
 
-        self.warmup()
         inference_logger.info("模型初始化完成 total_ms={:.2f}", (time.perf_counter() - init_started) * 1000)
 
     def offload_from_gpu(self) -> None:
@@ -544,14 +543,51 @@ class GPTSoVITSOptimizedInference:
             dtype=torch.float16 if self.is_half else torch.float32,
             device=self.device,
         )
+        total_started = time.perf_counter()
         with torch.no_grad():
+            stage_started = time.perf_counter()
             wav16k, _ = librosa.load(reference_audio_path, sr=16000)
             wav16k = torch.from_numpy(wav16k).to(self.device)
             if self.is_half:
                 wav16k = wav16k.half()
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "librosa_load",
+                (time.perf_counter() - stage_started) * 1000,
+                "samples={} dtype={} device={}".format(
+                    wav16k.shape[0],
+                    str(wav16k.dtype),
+                    self.device,
+                ),
+            )
             wav16k = torch.cat([wav16k, zero_wav_16k])
+            stage_started = time.perf_counter()
             ssl_content = self.ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "ssl_model",
+                (time.perf_counter() - stage_started) * 1000,
+                "ssl_shape={} reference_audio_path={}".format(
+                    self._describe_value_shape(ssl_content),
+                    reference_audio_path,
+                ),
+            )
+            stage_started = time.perf_counter()
             codes = self.vq_model.extract_latent(ssl_content)
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "extract_latent",
+                (time.perf_counter() - stage_started) * 1000,
+                "codes_shape={} reference_audio_path={}".format(
+                    self._describe_value_shape(codes),
+                    reference_audio_path,
+                ),
+            )
+        inference_logger.info(
+            "Prompt semantic extracted total_ms={:.2f} reference_audio_path={}",
+            (time.perf_counter() - total_started) * 1000,
+            reference_audio_path,
+        )
         return codes[0, 0]
 
     def _compute_reference_speaker_embedding(self, refer_audio: torch.Tensor) -> torch.Tensor:
@@ -598,6 +634,8 @@ class GPTSoVITSOptimizedInference:
     def build_reference_context(
         self,
         request_or_context: ResolvedRenderContext | InitializeEditSessionRequest,
+        *,
+        progress_callback=None,
     ) -> ReferenceContext:
         context_started = time.perf_counter()
         resolved_context = self._coerce_resolved_context(request_or_context)
@@ -625,12 +663,30 @@ class GPTSoVITSOptimizedInference:
         prompt_started = time.perf_counter()
         prompt_semantic = self._extract_prompt_semantic(reference_audio_path)
         prompt_elapsed_ms = (time.perf_counter() - prompt_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.25,
+            message="参考语义特征已准备。",
+        )
         spec_started = time.perf_counter()
         refer_spec, refer_audio = self.get_spepc(reference_audio_path)
         spec_elapsed_ms = (time.perf_counter() - spec_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.5,
+            message="参考频谱已准备。",
+        )
         speaker_started = time.perf_counter()
         speaker_embedding = self._compute_reference_speaker_embedding(refer_audio)
         speaker_elapsed_ms = (time.perf_counter() - speaker_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.75,
+            message="参考说话人特征已准备。",
+        )
         inference_logger.info(
             "Reference context built voice_id={} fingerprint={} prompt_semantic_ms={:.2f} spectrogram_ms={:.2f} speaker_embedding_ms={:.2f} total_ms={:.2f}",
             resolved_context.voice_id,
@@ -639,6 +695,12 @@ class GPTSoVITSOptimizedInference:
             spec_elapsed_ms,
             speaker_elapsed_ms,
             (time.perf_counter() - context_started) * 1000,
+        )
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=1.0,
+            message="参考上下文已准备。",
         )
 
         return ReferenceContext(

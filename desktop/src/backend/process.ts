@@ -305,6 +305,7 @@ export function buildDefaultBackendOptions(
 	);
 	const cnhubertPath = path.join(target.builtinModelDir, "chinese-hubert-base");
 	const bertPath = path.join(target.builtinModelDir, "chinese-roberta-wwm-ext-large");
+	const nltkDataPath = path.join(target.resourcesDir, "runtime", "python", "nltk_data");
 
 	return {
 		projectRoot: target.runtimeRoot,
@@ -336,6 +337,7 @@ export function buildDefaultBackendOptions(
 			BERT_PATH: bertPath,
 			GPT_SOVITS_BERT_PATH: bertPath,
 			bert_path: bertPath,
+			NLTK_DATA: nltkDataPath,
 			PATH: packagedPathEntries.join(path.delimiter),
 			PYTHONPATH: pythonPathEntries.join(path.delimiter),
 		},

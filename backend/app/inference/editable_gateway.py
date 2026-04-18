@@ -17,7 +17,12 @@ if TYPE_CHECKING:
 
 
 class EditableInferenceBackend(Protocol):
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext: ...
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ReferenceContext: ...
 
     def render_segment_base(
         self,
@@ -40,8 +45,13 @@ class EditableInferenceGateway:
     def __init__(self, backend: EditableInferenceBackend) -> None:
         self._backend = backend
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
-        return self._backend.build_reference_context(resolved_context)
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ReferenceContext:
+        return self._backend.build_reference_context(resolved_context, progress_callback=progress_callback)
 
     def render_segment_base(
         self,
@@ -74,10 +84,15 @@ class CacheBackedEditableInferenceBackend:
         self._gpt_path = gpt_path
         self._sovits_path = sovits_path
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ReferenceContext:
         handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
         try:
-            return handle.engine.build_reference_context(resolved_context)
+            return handle.engine.build_reference_context(resolved_context, progress_callback=progress_callback)
         finally:
             self._model_cache.release_model_handle(handle.cache_key)
 
@@ -123,8 +138,13 @@ class LazyEditableInferenceGateway:
                 self._backend = self._backend_factory()
             return self._backend
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
-        return self._get_backend().build_reference_context(resolved_context)
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ReferenceContext:
+        return self._get_backend().build_reference_context(resolved_context, progress_callback=progress_callback)
 
     def render_segment_base(
         self,
@@ -190,9 +210,17 @@ class RoutingEditableInferenceGateway:
             self._gateway_cache[cache_key] = created
             return created
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> ReferenceContext:
         cache_key = self._resolve_cache_key(resolved_context)
-        context = self._get_gateway(cache_key).build_reference_context(resolved_context)
+        context = self._get_gateway(cache_key).build_reference_context(
+            resolved_context,
+            progress_callback=progress_callback,
+        )
         if cache_key is None:
             return context
         return replace(context, backend_cache_key=cache_key)

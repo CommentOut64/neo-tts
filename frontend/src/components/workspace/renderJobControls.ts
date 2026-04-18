@@ -49,9 +49,26 @@ export function resolveWorkspaceProgressState({
   inferenceProgress?: InferenceProgressState | null;
   renderJob?: RenderJobResponse | null;
 }): WorkspaceProgressState {
+  const inferenceActive = Boolean(
+    inferenceProgress && isActiveInferenceStatus(inferenceProgress.status),
+  );
+  const inferencePercent = Math.round((inferenceProgress?.progress ?? 0) * 100);
+  const renderJobPercent = Math.round((renderJob?.progress ?? 0) * 100);
+  const renderJobPreparing = Boolean(
+    renderJob && ["queued", "preparing"].includes(renderJob.status),
+  );
+
+  if (renderJobPreparing && (!inferenceActive || renderJobPercent > inferencePercent)) {
+    return {
+      percent: Math.max(renderJobPercent, inferencePercent),
+      message: "加载中...",
+      source: "idle",
+    };
+  }
+
   if (inferenceProgress && isActiveInferenceStatus(inferenceProgress.status)) {
     return {
-      percent: Math.round(inferenceProgress.progress * 100),
+      percent: inferencePercent,
       message: formatInferenceMessage(inferenceProgress),
       source: "tts",
     };

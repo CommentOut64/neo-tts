@@ -85,6 +85,13 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
+from backend.app.services.render_job_progress_policy import (
+    PREPARE_END_PROGRESS,
+    PREPARE_START_PROGRESS,
+    build_prepare_progress,
+    build_prepare_progress_from_local,
+    build_render_segment_progress,
+)
 from backend.app.services.checkpoint_service import CheckpointService
 from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
@@ -1299,7 +1306,12 @@ class RenderJobService:
 
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
-        self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备参考上下文。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="preparing",
+            progress=PREPARE_START_PROGRESS,
+            message="正在准备参考上下文。",
+        )
         resolved_context = self._build_resolved_context_from_request(plan.request)
         render_job_logger.info(
             "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
@@ -1314,7 +1326,13 @@ class RenderJobService:
             resolved_context.noise_scale,
         )
         context_started = time.perf_counter()
-        plan.context = self._gateway.build_reference_context(resolved_context)
+        plan.context = self._gateway.build_reference_context(
+            resolved_context,
+            progress_callback=self._build_prepare_progress_callback(
+                job_id=plan.job_id,
+                default_message="正在准备参考上下文。",
+            ),
+        )
         render_job_logger.info(
             "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
             resolved_context.voice_id,
@@ -1423,15 +1441,53 @@ class RenderJobService:
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
-        self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="preparing",
+            progress=PREPARE_START_PROGRESS,
+            message="正在准备编辑作业。",
+        )
         if self._should_prepare_edit_reference_context(plan):
-            plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
+            plan.context = self._gateway.build_reference_context(
+                self._build_resolved_context_from_request(plan.request),
+                progress_callback=self._build_prepare_progress_callback(
+                    job_id=plan.job_id,
+                    default_message="正在准备编辑作业。",
+                ),
+            )
+        else:
+            self._runtime.update_job(
+                plan.job_id,
+                progress=build_prepare_progress(completed_stages=1, total_stages=1),
+            )
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.target_segment_ids) or len(plan.segments),
             message=f"编辑快照准备完成，版本将更新为 {plan.document_version}。",
         )
         self._persist_runtime_job(plan.job_id)
+
+    def _build_prepare_progress_callback(
+        self,
+        *,
+        job_id: str,
+        default_message: str,
+    ) -> Callable[[dict], None]:
+        def _progress_callback(event: dict) -> None:
+            raw_progress = event.get("progress")
+            mapped_progress = None
+            if isinstance(raw_progress, (int, float)):
+                mapped_progress = build_prepare_progress_from_local(local_progress=float(raw_progress))
+
+            raw_message = event.get("message")
+            self._runtime.update_job(
+                job_id,
+                status="preparing",
+                progress=mapped_progress,
+                message=raw_message if isinstance(raw_message, str) else default_message,
+            )
+
+        return _progress_callback
 
     @staticmethod
     def _should_prepare_edit_reference_context(plan: RenderPlan) -> bool:
@@ -1525,7 +1581,12 @@ class RenderJobService:
 
     def _render(self, plan: RenderPlan) -> None:
         assert plan.context is not None
-        self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在渲染段级资产。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="rendering",
+            progress=PREPARE_END_PROGRESS,
+            message="正在渲染段级资产。",
+        )
         total_segments = len(plan.segments)
         self._start_inference_tracking(plan, total_segments=total_segments, message="正在准备本次推理")
         try:
@@ -1562,7 +1623,12 @@ class RenderJobService:
                     plan.job_id,
                     current_segment_index=index,
                     total_segment_count=total_segments,
-                    progress=0.2 + 0.4 * (index / total_segments),
+                    progress=build_render_segment_progress(
+                        completed_segments=index,
+                        total_segments=total_segments,
+                        start_progress=PREPARE_END_PROGRESS,
+                        end_progress=0.6,
+                    ),
                     message=f"已完成第 {index}/{total_segments} 段渲染。",
                 )
                 self._runtime.emit_event(
@@ -1611,7 +1677,12 @@ class RenderJobService:
             return
 
         if not plan.compose_only:
-            self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在重渲染受影响资产。")
+            self._runtime.update_job(
+                plan.job_id,
+                status="rendering",
+                progress=PREPARE_END_PROGRESS,
+                message="正在重渲染受影响资产。",
+            )
 
         config_snapshot = self._build_temporary_snapshot(plan)
         total_targets = len(plan.target_segment_ids)
@@ -1642,7 +1713,12 @@ class RenderJobService:
                         plan.job_id,
                         current_segment_index=completed_targets,
                         total_segment_count=len(plan.target_segment_ids),
-                        progress=0.2 + 0.25 * (completed_targets / target_total),
+                        progress=build_render_segment_progress(
+                            completed_segments=completed_targets,
+                            total_segments=target_total,
+                            start_progress=PREPARE_END_PROGRESS,
+                            end_progress=0.45,
+                        ),
                         message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
                     )
                     self._runtime.emit_event(
