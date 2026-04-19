@@ -922,10 +922,24 @@ class RenderJobService:
             except _PartialRenderCommitted:
                 self._persist_runtime_job(job_id)
             except Exception as exc:
+                self._log_background_job_failure(
+                    job_kind=plan.job_kind,
+                    job_id=job_id,
+                    document_id=job.document_id,
+                    phase="run_initialize_job",
+                    exc=exc,
+                )
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
                 self._mark_session_failed(job.document_id)
         except Exception as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_initialize_job",
+                exc=exc,
+            )
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
             self._mark_session_failed(job.document_id)
@@ -985,9 +999,23 @@ class RenderJobService:
             except _PartialRenderCommitted:
                 self._persist_runtime_job(job_id)
             except Exception as exc:
+                self._log_background_job_failure(
+                    job_kind=plan.job_kind,
+                    job_id=job_id,
+                    document_id=job.document_id,
+                    phase="run_edit_job",
+                    exc=exc,
+                )
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
         except Exception as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_edit_job",
+                exc=exc,
+            )
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
         finally:
@@ -1475,17 +1503,15 @@ class RenderJobService:
     ) -> Callable[[dict], None]:
         def _progress_callback(event: dict) -> None:
             raw_progress = event.get("progress")
-            mapped_progress = None
+            update_payload: dict[str, object] = {
+                "status": "preparing",
+            }
             if isinstance(raw_progress, (int, float)):
-                mapped_progress = build_prepare_progress_from_local(local_progress=float(raw_progress))
+                update_payload["progress"] = build_prepare_progress_from_local(local_progress=float(raw_progress))
 
             raw_message = event.get("message")
-            self._runtime.update_job(
-                job_id,
-                status="preparing",
-                progress=mapped_progress,
-                message=raw_message if isinstance(raw_message, str) else default_message,
-            )
+            update_payload["message"] = raw_message if isinstance(raw_message, str) else default_message
+            self._runtime.update_job(job_id, **update_payload)
 
         return _progress_callback
 
@@ -2617,6 +2643,24 @@ class RenderJobService:
     def _mark_terminal(self, job_id: str, *, status: str, message: str) -> None:
         self._runtime.update_job(job_id, status=status, progress=1.0 if status == "completed" else 0.0, message=message)
         self._persist_runtime_job(job_id)
+
+    @staticmethod
+    def _log_background_job_failure(
+        *,
+        job_kind: str,
+        job_id: str,
+        document_id: str,
+        phase: str,
+        exc: Exception,
+    ) -> None:
+        render_job_logger.exception(
+            "后台渲染作业失败 job_kind={} job_id={} document_id={} phase={} reason={}",
+            job_kind,
+            job_id,
+            document_id,
+            phase,
+            str(exc),
+        )
 
     def _mark_session_failed(self, document_id: str) -> None:
         session = self._repository.get_active_session()

@@ -19,6 +19,17 @@ def _log_phones_and_bert_stage(*, stage: str, language: str, started: float, det
     )
 
 
+def _report_phones_and_bert_stage(
+    stage_reporter,
+    *,
+    stage: str,
+    language: str,
+    detail: str,
+) -> None:
+    if callable(stage_reporter):
+        stage_reporter(stage, language, detail)
+
+
 def normalize_whitespace(text: str) -> str:
     return re.sub(r" {2,}", " ", text).strip()
 
@@ -325,10 +336,17 @@ def build_phones_and_bert_features(
     is_half: bool,
     default_lang: str | None = None,
     return_norm_text: bool = False,
+    stage_reporter=None,
 ):
     import torch
 
     stage_started = time.perf_counter()
+    _report_phones_and_bert_stage(
+        stage_reporter,
+        stage="module_imports",
+        language=language,
+        detail="return_norm_text={}".format(return_norm_text),
+    )
     from GPT_SoVITS.text import cleaned_text_to_sequence
     from GPT_SoVITS.text.LangSegmenter import LangSegmenter
     from GPT_SoVITS.text.cleaner import clean_text
@@ -344,6 +362,12 @@ def build_phones_and_bert_features(
     langlist: list[str] = []
 
     stage_started = time.perf_counter()
+    _report_phones_and_bert_stage(
+        stage_reporter,
+        stage="lang_segment",
+        language=language,
+        detail="text_len={}".format(len(normalized_text)),
+    )
     if language == "all_zh":
         for item in LangSegmenter.getTexts(normalized_text, "zh"):
             langlist.append(item["lang"])
@@ -408,7 +432,14 @@ def build_phones_and_bert_features(
     for index, current_text in enumerate(textlist):
         lang = langlist[index]
         stage_started = time.perf_counter()
+        _report_phones_and_bert_stage(
+            stage_reporter,
+            stage="clean_text",
+            language=lang,
+            detail="chunk_index={} text_len={}".format(index, len(current_text)),
+        )
         phones, word2ph, norm_text = clean_text(current_text, lang, version)
+        word2ph_len_detail = len(word2ph) if word2ph is not None else "none"
         _log_phones_and_bert_stage(
             stage="clean_text",
             language=lang,
@@ -417,10 +448,16 @@ def build_phones_and_bert_features(
                 index,
                 len(current_text),
                 len(norm_text),
-                len(word2ph),
+                word2ph_len_detail,
             ),
         )
         stage_started = time.perf_counter()
+        _report_phones_and_bert_stage(
+            stage_reporter,
+            stage="cleaned_text_to_sequence",
+            language=lang,
+            detail="chunk_index={} phone_count={}".format(index, len(phones)),
+        )
         phones = cleaned_text_to_sequence(phones, version)
         _log_phones_and_bert_stage(
             stage="cleaned_text_to_sequence",
@@ -432,6 +469,12 @@ def build_phones_and_bert_features(
 
         if lang in ["zh", "yue"]:
             stage_started = time.perf_counter()
+            _report_phones_and_bert_stage(
+                stage_reporter,
+                stage="bert_features",
+                language=lang,
+                detail="chunk_index={} mode=bert".format(index),
+            )
             with torch.no_grad():
                 inputs = tokenizer(norm_text, return_tensors="pt")
                 for key in inputs:
@@ -450,6 +493,12 @@ def build_phones_and_bert_features(
             )
         else:
             stage_started = time.perf_counter()
+            _report_phones_and_bert_stage(
+                stage_reporter,
+                stage="bert_features",
+                language=lang,
+                detail="chunk_index={} mode=zeros".format(index),
+            )
             bert = torch.zeros((1024, len(phones)), dtype=target_dtype)
             _log_phones_and_bert_stage(
                 stage="bert_features",
