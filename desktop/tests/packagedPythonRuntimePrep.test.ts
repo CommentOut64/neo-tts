@@ -10,9 +10,24 @@ describe("packaged python runtime preparation", () => {
 
     expect(source).toContain('Join-Path $projectRoot "launcher\\internal\\nltkpatcher\\payload\\nltk_data"');
     expect(source).toContain('Join-Path $runtimePythonDir "nltk_data"');
+    expect(source).toContain('"nltk-payload-layout-v2"');
     expect(source).toContain("cmudict.zip");
     expect(source).toContain("averaged_perceptron_tagger.zip");
     expect(source).toContain("averaged_perceptron_tagger_eng.zip");
+    expect(source).toContain('$runtimeNltkCorporaZipPath = Join-Path $runtimeNltkCorporaDir "cmudict.zip"');
+    expect(source).toContain(
+      '$runtimeNltkAveragedPerceptronTaggerZipPath = Join-Path $runtimeNltkTaggersDir "averaged_perceptron_tagger.zip"',
+    );
+    expect(source).toContain(
+      '$runtimeNltkAveragedPerceptronTaggerEngZipPath = Join-Path $runtimeNltkTaggersDir "averaged_perceptron_tagger_eng.zip"',
+    );
+    expect(source).toContain("Copy-Item -LiteralPath $cmudictPayloadPath -Destination $runtimeNltkCorporaZipPath -Force");
+    expect(source).toContain(
+      "Copy-Item -LiteralPath $averagedPerceptronTaggerPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerZipPath -Force",
+    );
+    expect(source).toContain(
+      "Copy-Item -LiteralPath $averagedPerceptronTaggerEngPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerEngZipPath -Force",
+    );
   });
 
   it("compiles packaged python after builder and before final artifact assembly", () => {
