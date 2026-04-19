@@ -205,6 +205,11 @@ class PyTorchModelCache:
         )
 
         construct_started = time.perf_counter()
+        model_cache_logger.info(
+            "开始构建 PyTorch 推理实例 gpt_path={} sovits_path={}",
+            gpt_path,
+            sovits_path,
+        )
         engine = pytorch_optimized.GPTSoVITSOptimizedInference(
             gpt_path,
             sovits_path,

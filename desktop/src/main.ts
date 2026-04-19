@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 
 import type { BackendOwner, StartBackendProcessOptions } from "./backend/process";
-import { buildDefaultBackendOptions, startBackendProcess } from "./backend/process";
+import { buildDefaultBackendOptions, formatBackendMonitorSample, startBackendProcess } from "./backend/process";
 import {
 	APP_GET_RUNTIME_INFO_CHANNEL,
 	APP_OPEN_EXTERNAL_URL_CHANNEL,
@@ -55,6 +55,7 @@ export interface RunMainOptions {
 	distributionKind?: DistributionKind;
 	startBackend: (options: StartBackendProcessOptions) => Promise<BackendOwner>;
 	createMainWindow: () => MainWindowLike;
+	clearRendererCache?: () => Promise<void> | void;
 	openExternalUrl?: (url: string) => Promise<void> | void;
 	runtimeLogger?: RuntimeLogger;
 	onFatalState?: (state: FatalState) => void;
@@ -222,6 +223,9 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		backendOptions.onLogLine = (stream, line) => {
 			logger.info(`[backend:${stream}] ${line}`);
 		};
+		backendOptions.onMonitorSample = (sample) => {
+			logger.info(`[backend:monitor] ${formatBackendMonitorSample(sample)}`);
+		};
 		logger.info("starting backend process");
 		backend = await options.startBackend(backendOptions);
 		logger.info(`backend ready origin=${backend.origin}`);
@@ -285,6 +289,19 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		requestAppShutdown();
 	});
 
+	if (productPaths) {
+		try {
+			logger.info("clearing renderer cache before loading packaged frontend");
+			await Promise.resolve(options.clearRendererCache?.());
+		} catch (error) {
+			logger.warn(
+				`renderer cache clear failed, continuing startup: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
+
 	mainWindow = options.createMainWindow();
 	logger.info("main window created");
 	mainWindow.show();
@@ -301,7 +318,7 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 }
 
 export function buildDefaultRunMainOptions(): RunMainOptions {
-	const { app, ipcMain, shell } = require("electron") as typeof import("electron");
+	const { app, ipcMain, shell, session } = require("electron") as typeof import("electron");
 	const { createMainWindow } = require("./window/createMainWindow") as typeof import("./window/createMainWindow");
 	const productPaths = buildDefaultProductPaths();
 	const runtimeLogPath = path.join(productPaths.logsDir, `electron_${buildLogTimestampSuffix(new Date())}.log`);
@@ -320,6 +337,9 @@ export function buildDefaultRunMainOptions(): RunMainOptions {
 		productPaths,
 		startBackend: startBackendProcess,
 		createMainWindow,
+		clearRendererCache: async () => {
+			await session.defaultSession.clearCache();
+		},
 		openExternalUrl: (url: string) => shell.openExternal(url),
 		runtimeLogger,
 	};

@@ -43,7 +43,13 @@ class FakeEditableInferenceBackend:
         self.segment_calls: list[tuple[str, str]] = []
         self.boundary_calls: list[tuple[str, str, str]] = []
 
-    def build_reference_context(self, resolved_context: ResolvedRenderContext) -> ReferenceContext:
+    def build_reference_context(
+        self,
+        resolved_context: ResolvedRenderContext,
+        *,
+        progress_callback=None,
+    ) -> ReferenceContext:
+        del progress_callback
         return ReferenceContext(
             reference_context_id="ctx-1",
             voice_id=resolved_context.voice_id,

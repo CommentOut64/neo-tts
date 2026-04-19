@@ -155,8 +155,7 @@ def test_render_segment_base_shrinks_margin_when_segment_is_too_short():
         segment_id="seg-1",
         document_id="doc-1",
         order_key=1,
-        raw_text="你好",
-        normalized_text="你好",
+        stem="你好",
         text_language="zh",
         render_version=2,
     )
@@ -197,10 +196,10 @@ def test_render_segment_base_prefers_detected_language_for_auto_segment():
         segment_id="seg-auto-en",
         document_id="doc-1",
         order_key=1,
-        raw_text="Hello world!",
-        normalized_text="Hello world。",
+        stem="Hello world",
         text_language="auto",
         terminal_raw="!",
+        terminal_closer_suffix="",
         terminal_source="original",
         detected_language="en",
         render_version=2,
@@ -208,10 +207,7 @@ def test_render_segment_base_prefers_detected_language_for_auto_segment():
 
     asset = inference.render_segment_base(segment, context)
 
-    assert calls[0][1] == "zh"
-    assert calls[1][0] == "Hello world!"
-    assert calls[1][1] == "en"
-    assert calls[1][2] == "zh"
+    assert calls == [("Hello world!", "en", "zh")]
     assert asset.render_version == 2
 
 
@@ -231,8 +227,7 @@ def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
             segment_id="seg-left",
             document_id="doc-1",
             order_key=1,
-            raw_text="左段",
-            normalized_text="左段",
+            stem="左段",
             text_language="zh",
             render_version=3,
         ),
@@ -243,8 +238,7 @@ def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
             segment_id="seg-right",
             document_id="doc-1",
             order_key=2,
-            raw_text="右段",
-            normalized_text="右段",
+            stem="右段",
             text_language="zh",
             render_version=5,
         ),
@@ -285,8 +279,7 @@ def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
             segment_id="seg-left",
             document_id="doc-1",
             order_key=1,
-            raw_text="左段",
-            normalized_text="左段",
+            stem="左段",
             text_language="zh",
             render_version=3,
         ),
@@ -297,8 +290,7 @@ def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
             segment_id="seg-right",
             document_id="doc-1",
             order_key=2,
-            raw_text="右段",
-            normalized_text="右段",
+            stem="右段",
             text_language="zh",
             render_version=5,
         ),
@@ -323,7 +315,7 @@ def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
 
 def test_editable_gateway_delegates_to_backend():
     backend = SimpleNamespace(
-        build_reference_context=lambda resolved_context: ("context", resolved_context.voice_id),
+        build_reference_context=lambda resolved_context, *, progress_callback=None: ("context", resolved_context.voice_id),
         render_segment_base=lambda segment, context, *, progress_callback=None: ("segment", segment.segment_id, context),
         render_boundary_asset=lambda left_asset, right_asset, edge, context: (
             "boundary",
@@ -338,8 +330,7 @@ def test_editable_gateway_delegates_to_backend():
         segment_id="seg-1",
         document_id="doc-1",
         order_key=1,
-        raw_text="你好",
-        normalized_text="你好",
+        stem="你好",
         text_language="zh",
     )
     edge = EditableEdge(
@@ -377,13 +368,68 @@ def test_editable_gateway_delegates_to_backend():
     )
 
 
+def test_editable_gateway_forwards_reference_context_progress_callback():
+    captured_events: list[dict] = []
+
+    def _build_reference_context(resolved_context, *, progress_callback=None):
+        if callable(progress_callback):
+            progress_callback(
+                {
+                    "status": "preparing",
+                    "progress": 0.5,
+                    "message": "参考上下文准备中",
+                }
+            )
+        return ("context", resolved_context.voice_id)
+
+    backend = SimpleNamespace(
+        build_reference_context=_build_reference_context,
+        render_segment_base=lambda segment, context, *, progress_callback=None: ("segment", segment.segment_id, context),
+        render_boundary_asset=lambda left_asset, right_asset, edge, context: (
+            "boundary",
+            left_asset,
+            right_asset,
+            edge.edge_id,
+            context,
+        ),
+    )
+    gateway = EditableInferenceGateway(backend)
+
+    context = gateway.build_reference_context(
+        ResolvedRenderContext(
+            voice_id="voice-demo",
+            model_key="model-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-1",
+                voice_id="voice-demo",
+                model_key="model-demo",
+            ),
+            render_profile_id="profile-1",
+            render_profile_fingerprint="fp-1",
+        ),
+        progress_callback=captured_events.append,
+    )
+
+    assert context == ("context", "voice-demo")
+    assert captured_events == [
+        {
+            "status": "preparing",
+            "progress": 0.5,
+            "message": "参考上下文准备中",
+        }
+    ]
+
+
 def test_lazy_editable_gateway_clear_backend_forces_rebuild():
     created = []
 
     def build_backend():
         index = len(created) + 1
         backend = SimpleNamespace(
-            build_reference_context=lambda resolved_context, current=index: ("context", current, resolved_context.voice_id),
+            build_reference_context=lambda resolved_context, *, progress_callback=None, current=index: ("context", current, resolved_context.voice_id),
             render_segment_base=lambda segment, context: ("segment", segment.segment_id, context),
             render_boundary_asset=lambda left_asset, right_asset, edge, context: (
                 "boundary",
@@ -426,7 +472,7 @@ def test_routing_editable_gateway_dispatches_by_binding_paths():
 
     def build_backend(tag: str):
         return SimpleNamespace(
-            build_reference_context=lambda resolved_context, current=tag: ReferenceContext(
+            build_reference_context=lambda resolved_context, *, progress_callback=None, current=tag: ReferenceContext(
                 reference_context_id=f"{current}:{resolved_context.voice_id}",
                 voice_id=resolved_context.voice_id,
                 model_id=resolved_context.model_key,
@@ -466,8 +512,7 @@ def test_routing_editable_gateway_dispatches_by_binding_paths():
         segment_id="seg-1",
         document_id="doc-1",
         order_key=1,
-        raw_text="你好",
-        normalized_text="你好",
+        stem="你好",
         text_language="zh",
     )
     routed_context = gateway.build_reference_context(

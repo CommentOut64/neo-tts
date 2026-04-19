@@ -287,6 +287,40 @@ function Invoke-NativeStep {
     }
 }
 
+function Invoke-PackagedPythonCompile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$winUnpackedRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory
+    )
+
+    $packagedPythonExe = Join-Path $winUnpackedRoot "resources\app-runtime\runtime\python\python.exe"
+    $packagedBackendDir = Join-Path $winUnpackedRoot "resources\app-runtime\backend"
+    $packagedGptSovitsDir = Join-Path $winUnpackedRoot "resources\app-runtime\GPT_SoVITS"
+    $packagedSitePackagesDir = Join-Path $winUnpackedRoot "resources\app-runtime\runtime\python\Lib\site-packages"
+
+    foreach ($requiredPath in @($packagedPythonExe, $packagedBackendDir, $packagedGptSovitsDir, $packagedSitePackagesDir)) {
+        if (-not (Test-Path -LiteralPath $requiredPath)) {
+            throw "Packaged Python compile prerequisite missing: $requiredPath"
+        }
+    }
+
+    Invoke-NativeStep -Label "Compile packaged Python runtime" `
+        -WorkingDirectory $WorkingDirectory `
+        -FilePath $packagedPythonExe `
+        -Arguments @(
+            "-m",
+            "compileall",
+            "-f",
+            "-q",
+            $packagedBackendDir,
+            $packagedGptSovitsDir,
+            $packagedSitePackagesDir
+        )
+}
+
 function Find-SingleArtifact {
     param(
         [Parameter(Mandatory = $true)]
@@ -486,6 +520,8 @@ Copy-Item -LiteralPath $tutorialSourcePath -Destination $tutorialTargetPath -For
 if (-not (Test-Path -LiteralPath $tutorialTargetPath)) {
     throw "Integrated package validation failed after tutorial copy: missing $tutorialTargetPath"
 }
+
+Invoke-PackagedPythonCompile -WinUnpackedRoot $winUnpackedRoot -WorkingDirectory $desktopRoot
 
 if ($Distribution -eq "portable") {
     $portableLabel = if ($SkipPortableZip) { "Assemble portable root (skip zip)" } else { "Assemble portable zip" }

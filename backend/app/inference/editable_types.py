@@ -24,6 +24,9 @@ class ReferenceContext:
     reference_speaker_embedding: torch.Tensor
     inference_config_fingerprint: str
     inference_config: dict[str, Any] = field(default_factory=dict)
+    prompt_phones: list[int] = field(default_factory=list)
+    prompt_bert: torch.Tensor | None = None
+    prompt_norm_text: str = ""
     backend_cache_key: tuple[str, str] | None = None
 
 

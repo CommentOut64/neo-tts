@@ -119,3 +119,58 @@ def test_edit_session_edit_job_event_stream_replays_segment_and_block_progress_b
         assert interesting.index("segment_completed") < interesting.index("block_completed")
         assert interesting.index("block_completed") < interesting.index("timeline_committed")
         assert interesting.index("timeline_committed") < interesting.index("job_paused")
+
+
+def test_edit_session_event_stream_replays_prepare_progress_before_segments_initialized(test_app_settings):
+    class _PrepareProgressBackend(FakeEditableInferenceBackend):
+        def build_reference_context(self, resolved_context, *, progress_callback=None):
+            if callable(progress_callback):
+                progress_callback(
+                    {
+                        "status": "preparing",
+                        "progress": 0.5,
+                        "message": "参考上下文准备中",
+                    }
+                )
+            return super().build_reference_context(resolved_context)
+
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(_PrepareProgressBackend())
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/render-jobs",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        job_id = initialize.json()["job"]["job_id"]
+
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{job_id}").json()["status"] == "completed")
+
+        captured: list[tuple[str, dict]] = []
+        with client.stream("GET", f"/v1/edit-session/render-jobs/{job_id}/events") as response:
+            assert response.status_code == 200
+            current_event = ""
+            for line in response.iter_lines():
+                if line.startswith("event: "):
+                    current_event = line.removeprefix("event: ")
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                payload = json.loads(line.removeprefix("data: "))
+                captured.append((current_event, payload))
+                if current_event == "job_state_changed" and payload.get("status") == "completed":
+                    break
+
+        interesting: list[str] = []
+        for event, payload in captured:
+            if event == "job_state_changed" and payload.get("status") == "preparing" and payload.get("progress", 0) > 0.05:
+                interesting.append("prepare_progress")
+            elif event == "segments_initialized":
+                interesting.append("segments_initialized")
+
+        assert "prepare_progress" in interesting
+        assert "segments_initialized" in interesting
+        assert interesting.index("prepare_progress") < interesting.index("segments_initialized")
