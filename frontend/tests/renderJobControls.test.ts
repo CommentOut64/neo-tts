@@ -93,7 +93,34 @@ describe("render job controls", () => {
       },
     });
 
-    expect(resolved.percent).toBe(12);
+    expect(resolved.percent).toBe(0);
+    expect(resolved.message).toBe("加载中...");
+    expect(resolved.source).toBe("idle");
+  });
+
+  it("inference runtime 仍在 preparing 时也保持 0% 加载态", () => {
+    const resolved = resolveWorkspaceProgressState({
+      inferenceProgress: {
+        task_id: "tts-prepare",
+        status: "preparing",
+        progress: 0.64,
+        message: "参考上下文准备中。",
+        cancel_requested: false,
+        current_segment: null,
+        total_segments: null,
+        result_id: null,
+        updated_at: "2026-04-19T00:00:00.000Z",
+      },
+      renderJob: {
+        job_id: "job-prepare",
+        document_id: "doc-1",
+        status: "preparing",
+        progress: 0.18,
+        message: "参考上下文准备中。",
+      },
+    });
+
+    expect(resolved.percent).toBe(0);
     expect(resolved.message).toBe("加载中...");
     expect(resolved.source).toBe("idle");
   });
