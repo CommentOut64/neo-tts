@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 import time
 
+import numpy as np
+import torch
+
 from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+from backend.app.inference.editable_types import ResolvedRenderContext, ResolvedVoiceBinding
+from backend.app.inference.prompt_cache import PromptCache
+from backend.app.schemas.edit_session import EditableSegment, InitializeEditSessionRequest
 
 
 class _FakeModule:
@@ -263,6 +269,7 @@ def test_warmup_watchdog_logs_when_stage_runs_too_long(monkeypatch):
         and "text='Warmup text.'" in detail
         for message, stage, _, _, device, resident_device, half, _, _, cuda_mem, detail in warning_entries
     )
+    assert len(warning_entries) == 1
 
 
 def test_extract_prompt_semantic_logs_stage_breakdown(monkeypatch):
@@ -395,3 +402,308 @@ def test_runtime_init_no_longer_calls_warmup_implicitly(monkeypatch):
 
     assert isinstance(runtime, GPTSoVITSOptimizedInference)
     assert warmup_calls == []
+
+
+def _build_editable_runtime_for_prompt_cache() -> GPTSoVITSOptimizedInference:
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cpu"
+    runtime.is_half = False
+    runtime.hps = SimpleNamespace(
+        data=SimpleNamespace(
+            sampling_rate=32000,
+            filter_length=1024,
+            hop_length=640,
+            win_length=1024,
+        ),
+        model=SimpleNamespace(version="v2Pro"),
+    )
+    runtime.vq_model = SimpleNamespace(
+        decode_with_trace=lambda *args, **kwargs: (
+            torch.ones((1, 1, 14), dtype=torch.float32),
+            {"semantic_shape": [1, 1, 4]},
+            torch.arange(14, dtype=torch.float32).reshape(1, 1, -1),
+        )
+    )
+    runtime.t2s_model = SimpleNamespace(
+        model=SimpleNamespace(
+            infer_panel=lambda *args, **kwargs: (
+                torch.tensor([[0, 1, 2, 3]], dtype=torch.long),
+                4,
+            )
+        )
+    )
+    return runtime
+
+
+def test_build_reference_context_reuses_prompt_cache_for_same_reference():
+    runtime = _build_editable_runtime_for_prompt_cache()
+    counters = {
+        "semantic": 0,
+        "spectrogram": 0,
+        "speaker": 0,
+        "prompt_text": 0,
+    }
+
+    runtime._extract_prompt_semantic = lambda reference_audio_path: (
+        counters.__setitem__("semantic", counters["semantic"] + 1) or torch.tensor([1, 2, 3], dtype=torch.long)
+    )
+    runtime.get_spepc = lambda reference_audio_path: (
+        counters.__setitem__("spectrogram", counters["spectrogram"] + 1)
+        or (
+            torch.ones((1, 704, 12), dtype=torch.float32),
+            torch.ones((1, 16000), dtype=torch.float32),
+        )
+    )
+    runtime._compute_reference_speaker_embedding = lambda refer_audio: (
+        counters.__setitem__("speaker", counters["speaker"] + 1) or torch.ones((1, 2048), dtype=torch.float32)
+    )
+
+    def _get_phones_and_bert(text, language, version, default_lang=None):
+        del language, version, default_lang
+        if text == "参考文本。":
+            counters["prompt_text"] += 1
+            return [11, 12], torch.ones((1024, 2), dtype=torch.float32), text
+        raise AssertionError(f"unexpected text: {text}")
+
+    runtime.get_phones_and_bert = _get_phones_and_bert
+
+    request = InitializeEditSessionRequest(
+        raw_text="第一句。",
+        voice_id="voice-demo",
+        reference_audio_path="ref.wav",
+        reference_text="参考文本",
+        reference_language="zh",
+    )
+
+    first = runtime.build_reference_context(request)
+    second = runtime.build_reference_context(request)
+
+    assert first.prompt_phones == [11, 12]
+    assert second.prompt_phones == [11, 12]
+    assert counters == {
+        "semantic": 1,
+        "spectrogram": 1,
+        "speaker": 1,
+        "prompt_text": 1,
+    }
+
+
+def test_build_reference_context_keeps_prompt_bert_on_cpu_when_runtime_device_is_cuda():
+    class _FakeDeviceTensor:
+        def __init__(self, device_type: str = "cpu") -> None:
+            self.device = SimpleNamespace(type=device_type)
+            self.moves: list[str] = []
+
+        def to(self, device: str):
+            self.moves.append(device)
+            return _FakeDeviceTensor(device)
+
+    class _FakePromptCache:
+        def __init__(self, entry) -> None:
+            self._entry = entry
+
+        def get(self, key):
+            del key
+            return self._entry
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+    runtime.device = "cuda"
+    runtime.is_half = True
+    runtime.hps = SimpleNamespace(model=SimpleNamespace(version="v2Pro"))
+    runtime._resolve_reference_audio_path = lambda path: path
+
+    prompt_bert_cpu = _FakeDeviceTensor("cpu")
+    spectrogram_cpu = _FakeDeviceTensor("cpu")
+    speaker_embedding_cpu = _FakeDeviceTensor("cpu")
+    runtime._prompt_cache = _FakePromptCache(
+        SimpleNamespace(
+            reference_semantic_tokens=np.asarray([1, 2, 3], dtype=np.int64),
+            reference_spectrogram_cpu=spectrogram_cpu,
+            reference_speaker_embedding_cpu=speaker_embedding_cpu,
+            prompt_phones=[11, 12],
+            prompt_bert_cpu=prompt_bert_cpu,
+            prompt_norm_text="参考文本。",
+        )
+    )
+
+    context = runtime.build_reference_context(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="voice-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+        )
+    )
+
+    assert context.reference_spectrogram.device.type == "cuda"
+    assert context.reference_speaker_embedding.device.type == "cuda"
+    assert context.prompt_bert.device.type == "cpu"
+    assert prompt_bert_cpu.moves == []
+
+
+def test_render_segment_base_uses_prompt_features_from_context_instead_of_recomputing():
+    runtime = _build_editable_runtime_for_prompt_cache()
+    call_texts: list[str] = []
+
+    runtime._extract_prompt_semantic = lambda reference_audio_path: torch.tensor([1, 2, 3], dtype=torch.long)
+    runtime.get_spepc = lambda reference_audio_path: (
+        torch.ones((1, 704, 12), dtype=torch.float32),
+        torch.ones((1, 16000), dtype=torch.float32),
+    )
+    runtime._compute_reference_speaker_embedding = lambda refer_audio: torch.ones((1, 2048), dtype=torch.float32)
+
+    def _get_phones_and_bert(text, language, version, default_lang=None):
+        del language, version, default_lang
+        call_texts.append(text)
+        if text == "参考文本。":
+            return [11, 12], torch.ones((1024, 2), dtype=torch.float32), text
+        if text == "你好。":
+            return [21, 22], torch.ones((1024, 2), dtype=torch.float32), text
+        raise AssertionError(f"unexpected text: {text}")
+
+    runtime.get_phones_and_bert = _get_phones_and_bert
+
+    context = runtime.build_reference_context(
+        ResolvedRenderContext(
+            voice_id="voice-demo",
+            model_key="model-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+            resolved_voice_binding=ResolvedVoiceBinding(
+                voice_binding_id="binding-1",
+                voice_id="voice-demo",
+                model_key="model-demo",
+            ),
+            render_profile_id="profile-1",
+            render_profile_fingerprint="fp-1",
+        )
+    )
+    call_texts.clear()
+
+    asset = runtime.render_segment_base(
+        EditableSegment(
+            segment_id="seg-1",
+            document_id="doc-1",
+            order_key=1,
+            stem="你好",
+            text_language="zh",
+            terminal_raw="。",
+            terminal_closer_suffix="",
+            terminal_source="original",
+            render_version=2,
+        ),
+        context,
+    )
+
+    assert asset.render_version == 2
+    assert call_texts == ["你好。"]
+
+
+def test_build_reference_context_watchdog_logs_prompt_text_stage_and_emits_heartbeat(monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+    progress_events: list[dict[str, object]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged.append(("info", (message, *args)))
+
+        def warning(self, message, *args):
+            logged.append(("warning", (message, *args)))
+
+    class _FakeProcess:
+        def memory_info(self):
+            return SimpleNamespace(rss=256 * 1024 * 1024)
+
+        def cpu_percent(self, interval=None):
+            del interval
+            return 12.5
+
+        def num_threads(self):
+            return 9
+
+    runtime = _build_editable_runtime_for_prompt_cache()
+    runtime.resident_device = "cpu"
+    runtime._prompt_cache = PromptCache()
+    runtime._extract_prompt_semantic = lambda reference_audio_path, stage_reporter=None: torch.tensor(
+        [1, 2, 3],
+        dtype=torch.long,
+    )
+    runtime.get_spepc = lambda reference_audio_path: (
+        torch.ones((1, 704, 12), dtype=torch.float32),
+        torch.ones((1, 16000), dtype=torch.float32),
+    )
+    runtime._compute_reference_speaker_embedding = lambda refer_audio: torch.ones((1, 2048), dtype=torch.float32)
+
+    def _slow_get_phones_and_bert(text, language, version, default_lang=None, stage_reporter=None):
+        del version, default_lang
+        if callable(stage_reporter):
+            stage_reporter("clean_text", language, f"chunk_index=0 text_len={len(text)}")
+        time.sleep(0.05)
+        return [11, 12], torch.ones((1024, 2), dtype=torch.float32), text
+
+    runtime.get_phones_and_bert = _slow_get_phones_and_bert
+
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.inference_logger", _FakeLogger())
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.psutil.Process", lambda pid: _FakeProcess())
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.os.getpid", lambda: 2468)
+    monkeypatch.setattr("backend.app.inference.pytorch_optimized.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(
+        "backend.app.inference.pytorch_optimized._REFERENCE_CONTEXT_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+        raising=False,
+    )
+
+    runtime.build_reference_context(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="voice-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本",
+            reference_language="zh",
+        ),
+        progress_callback=progress_events.append,
+    )
+
+    warning_entries = [entry[1] for entry in logged if entry[0] == "warning"]
+    assert any(
+        message
+        == "Reference context still running stage={} stage_elapsed_ms={:.2f} total_elapsed_ms={:.2f} device={} resident_device={} half={} pid={} target_thread_id={} process_rss_mb={:.1f} process_cpu_percent={:.1f} thread_count={} prompt_cache_entries={} cuda_mem={} detail={}"
+        and stage == "prompt_text.clean_text"
+        and device == "cpu"
+        and resident_device == "cpu"
+        and half is False
+        and pid == 2468
+        and rss_mb == 256.0
+        and cpu_percent == 12.5
+        and thread_count == 9
+        and prompt_cache_entries == 0
+        and cuda_mem == "unavailable"
+        and "text_len=" in detail
+        for (
+            message,
+            stage,
+            _stage_elapsed_ms,
+            _total_elapsed_ms,
+            device,
+            resident_device,
+            half,
+            pid,
+            _target_thread_id,
+            rss_mb,
+            cpu_percent,
+            thread_count,
+            prompt_cache_entries,
+            cuda_mem,
+            detail,
+        ) in warning_entries
+    )
+    assert len(warning_entries) == 1
+    heartbeat_events = [
+        event
+        for event in progress_events
+        if event.get("status") == "preparing" and "仍在准备参考上下文" in str(event.get("message"))
+    ]
+    assert heartbeat_events
+    assert all("progress" not in event for event in heartbeat_events)

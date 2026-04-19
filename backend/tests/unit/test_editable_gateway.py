@@ -207,10 +207,7 @@ def test_render_segment_base_prefers_detected_language_for_auto_segment():
 
     asset = inference.render_segment_base(segment, context)
 
-    assert calls[0][1] == "zh"
-    assert calls[1][0] == "Hello world!"
-    assert calls[1][1] == "en"
-    assert calls[1][2] == "zh"
+    assert calls == [("Hello world!", "en", "zh")]
     assert asset.render_version == 2
 
 

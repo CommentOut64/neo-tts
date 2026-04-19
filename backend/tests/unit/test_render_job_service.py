@@ -1,6 +1,7 @@
 import threading
 import shutil
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -497,6 +498,79 @@ def test_run_initialize_job_marks_job_failed_when_render_raises(tmp_path):
     assert "segment render failed" in job.message
 
 
+def test_run_initialize_job_logs_traceback_when_render_raises(tmp_path, monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def warning(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            logged.append((message, args))
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service = _build_service(tmp_path, fail_render=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    assert logged == [
+        (
+            "后台渲染作业失败 job_kind={} job_id={} document_id={} phase={} reason={}",
+            ("initialize", accepted.job.job_id, accepted.job.document_id, "run_initialize_job", "segment render failed"),
+        )
+    ]
+
+
+def test_run_edit_job_logs_traceback_when_render_raises(tmp_path, monkeypatch):
+    logged: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def warning(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            logged.append((message, args))
+
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_snapshot()
+    assert snapshot is not None
+    rerender = service.create_rerender_segment_job(snapshot.segments[0].segment_id)
+
+    def _raise_render_error(*args, **kwargs):
+        raise RuntimeError("edit render failed")
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    monkeypatch.setattr(service._gateway, "render_segment_base", _raise_render_error)
+
+    service.run_edit_job(rerender.job.job_id)
+
+    assert logged == [
+        (
+            "后台渲染作业失败 job_kind={} job_id={} document_id={} phase={} reason={}",
+            ("segment_rerender", rerender.job.job_id, rerender.job.document_id, "run_edit_job", "edit render failed"),
+        )
+    ]
+
+
 def test_run_initialize_job_updates_inference_runtime_while_segment_is_rendering(tmp_path):
     gate = threading.Event()
     service = _build_service(tmp_path, gate=gate)
@@ -554,6 +628,33 @@ def test_prepare_updates_job_progress_from_reference_context_callback(tmp_path):
     assert job.progress > 0.05
     assert job.progress < 0.2
     assert job.message == "文本切分完成，共 2 段。"
+
+
+def test_prepare_progress_callback_preserves_progress_when_heartbeat_has_no_progress(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+    callback = service._build_prepare_progress_callback(  # noqa: SLF001
+        job_id=accepted.job.job_id,
+        default_message="正在准备参考上下文。",
+    )
+    service._runtime.update_job(accepted.job.job_id, progress=0.13, message="初始消息")  # noqa: SLF001
+
+    callback(
+        {
+            "status": "preparing",
+            "message": "仍在准备参考上下文。",
+        }
+    )
+
+    job = service.get_job(accepted.job.job_id)
+    assert job is not None
+    assert job.progress == 0.13
+    assert job.message == "仍在准备参考上下文。"
 
 
 def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_path):
