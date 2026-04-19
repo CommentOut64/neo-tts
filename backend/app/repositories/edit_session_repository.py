@@ -18,6 +18,7 @@ from backend.app.schemas.edit_session import (
     ExportJobRecord,
     RenderJobRecord,
 )
+from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
 TERMINAL_JOB_STATUSES = {"paused", "cancelled_partial", "completed", "failed"}
@@ -262,7 +263,7 @@ class EditSessionRepository:
                 """,
                 (document_id, snapshot_id, document_id, cursor, cursor, limit),
             ).fetchall()
-        return [EditableSegment.model_validate_json(row["payload"]) for row in rows]
+        return [self._load_segment_from_payload(row["payload"]) for row in rows]
 
     def list_edges(
         self,
@@ -681,18 +682,29 @@ class EditSessionRepository:
         upgraded_payload = self._upgrade_snapshot_payload(raw_payload)
         return DocumentSnapshot.model_validate(upgraded_payload)
 
+    def _load_segment_from_payload(self, payload: str) -> EditableSegment:
+        raw_payload = json.loads(payload)
+        upgraded_payload = self._upgrade_segment_payload(raw_payload)
+        return EditableSegment.model_validate(upgraded_payload)
+
     def _upgrade_snapshot_payload(self, payload: object) -> object:
         if not isinstance(payload, dict):
             return payload
 
         upgraded = dict(payload)
+        upgraded.pop("raw_text", None)
+        upgraded.pop("normalized_text", None)
+        segments = upgraded.get("segments") if isinstance(upgraded.get("segments"), list) else []
+        upgraded["segments"] = [
+            self._upgrade_segment_payload(segment)
+            for segment in segments
+        ]
         render_profiles = upgraded.get("render_profiles")
         if not isinstance(render_profiles, list):
             return upgraded
 
         binding_by_id = self._build_binding_payload_map(upgraded.get("voice_bindings"))
         group_by_id = self._build_group_payload_map(upgraded.get("groups"))
-        segments = upgraded.get("segments") if isinstance(upgraded.get("segments"), list) else []
         default_binding_id = upgraded.get("default_voice_binding_id")
 
         upgraded["render_profiles"] = [
@@ -782,6 +794,24 @@ class EditSessionRepository:
             for item in payload
             if isinstance(item, dict) and item.get("group_id") is not None
         }
+
+    @staticmethod
+    def _upgrade_segment_payload(payload: object) -> object:
+        if not isinstance(payload, dict):
+            return payload
+
+        upgraded = dict(payload)
+        raw_text = upgraded.pop("raw_text", None)
+        upgraded.pop("normalized_text", None)
+        if upgraded.get("stem") is not None or not isinstance(raw_text, str):
+            return upgraded
+
+        state = parse_terminal_capsule(raw_text)
+        upgraded["stem"] = state.stem
+        upgraded.setdefault("terminal_raw", state.terminal_raw)
+        upgraded.setdefault("terminal_closer_suffix", state.terminal_closer_suffix)
+        upgraded.setdefault("terminal_source", state.terminal_source)
+        return upgraded
 
     @staticmethod
     def _dump_model(

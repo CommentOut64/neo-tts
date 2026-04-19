@@ -23,20 +23,40 @@ import logging
 jieba_fast.setLogLevel(logging.CRITICAL)
 import jieba_fast.posseg as psg
 
-# is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
-# is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False
-is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False
-if is_g2pw:
-    # print("当前使用g2pw进行拼音推理")
-    from text.g2pw import G2PWPinyin, correct_pronunciation
+logger = logging.getLogger(__name__)
 
-    parent_directory = os.path.dirname(current_file_path)
-    g2pw = G2PWPinyin(
-        model_dir="GPT_SoVITS/text/G2PWModel",
-        model_source=os.environ.get("bert_path", "pretrained_models/chinese-roberta-wwm-ext-large"),
-        v_to_u=False,
-        neutral_tone_with_five=True,
-    )
+
+def correct_pronunciation(word, pinyins):
+    return pinyins
+
+
+def _resolve_g2pw_enabled():
+    raw_override = os.environ.get("is_g2pw")
+    if raw_override is not None and raw_override.strip() != "":
+        return raw_override.strip().lower() in {"1", "true", "yes", "on"}
+
+    distribution_kind = os.environ.get("NEO_TTS_DISTRIBUTION_KIND", "").strip().lower()
+    if distribution_kind in {"portable", "installed"}:
+        return False
+    return True
+
+
+is_g2pw = _resolve_g2pw_enabled()
+if is_g2pw:
+    try:
+        # print("当前使用g2pw进行拼音推理")
+        from text.g2pw import G2PWPinyin, correct_pronunciation as _correct_pronunciation
+
+        g2pw = G2PWPinyin(
+            model_dir="GPT_SoVITS/text/G2PWModel",
+            model_source=os.environ.get("bert_path", "pretrained_models/chinese-roberta-wwm-ext-large"),
+            v_to_u=False,
+            neutral_tone_with_five=True,
+        )
+        correct_pronunciation = _correct_pronunciation
+    except Exception:
+        is_g2pw = False
+        logger.warning("g2pw 初始化失败，已降级到 pypinyin。", exc_info=True)
 
 rep_map = {
     "：": ",",
@@ -202,7 +222,6 @@ def _g2p(segments):
                 # assert len(sub_initials) == len(sub_finals) == len(word)
             initials = sum(initials, [])
             finals = sum(finals, [])
-            print("pypinyin结果", initials, finals)
         else:
             # g2pw采用整句推理
             pinyins = g2pw.lazy_pinyin(seg, neutral_tone_with_five=True, style=Style.TONE3)

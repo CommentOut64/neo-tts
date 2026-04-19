@@ -17,6 +17,7 @@ import type {
   RenderJobEventType,
   VoiceBindingListResponse,
   VoiceBindingPatch,
+  SegmentTextPatch,
   SegmentBatchRenderProfilePatchBody,
   SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
@@ -133,7 +134,7 @@ export async function deleteSession(): Promise<void> {
 export async function updateSegment(
   id: string,
   updateData: {
-    raw_text?: string
+    text_patch?: SegmentTextPatch
     text_language?: string
     inference_override?: Record<string, unknown>
   },

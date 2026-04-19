@@ -538,6 +538,31 @@ describe("workspace editor host layout mode helpers", () => {
     );
   });
 
+  it("编辑态全删时会先恢复段块，再提示至少保留一段", () => {
+    const patchIndex = workspaceEditorHostSource.indexOf(
+      "const patchedDoc = patchEditorDocForRestoredSegments(",
+    );
+    const setContentIndex = workspaceEditorHostSource.indexOf(
+      "editor.commands.setContent(patchedDoc);",
+    );
+    const warningIndex = workspaceEditorHostSource.indexOf(
+      'ElMessage.warning("至少保留一段");',
+    );
+
+    expect(patchIndex).toBeGreaterThan(-1);
+    expect(setContentIndex).toBeGreaterThan(-1);
+    expect(warningIndex).toBeGreaterThan(-1);
+    expect(patchIndex).toBeLessThan(warningIndex);
+    expect(setContentIndex).toBeLessThan(warningIndex);
+  });
+
+  it("宿主层待重推理统计应排除删空段草稿，避免编辑中误亮重推理", () => {
+    expect(workspaceEditorHostSource).toContain("lightEdit.rerenderSegmentIds.value");
+    expect(workspaceEditorHostSource).not.toContain(
+      "dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value",
+    );
+  });
+
   it("列表式左侧强调线改为装饰层绘制，避免 border-left 挤压正文布局", () => {
     expect(workspaceEditorHostSource).toMatch(
       /:deep\(\.ProseMirror \.segment-block\)::before/,

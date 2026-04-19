@@ -26,8 +26,9 @@ interface ResolveWorkspaceEntryActionInput {
 
 interface SessionSegmentLike {
   segment_id: string;
-  raw_text: string;
+  stem: string;
   order_key: number;
+  text_language?: string | null;
   terminal_raw?: string;
   terminal_closer_suffix?: string;
   terminal_source?: "original" | "synthetic";

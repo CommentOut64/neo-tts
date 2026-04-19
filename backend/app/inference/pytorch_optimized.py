@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import gc
 import os
+import psutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from backend.app.inference.editable_types import (
     fingerprint_inference_config,
     split_segment_audio,
 )
+from backend.app.inference.prompt_cache import PromptCache, PromptCacheEntry, PromptCacheKey
 from backend.app.schemas.edit_session import InitializeEditSessionRequest
 
 def _ensure_gpt_sovits_import_paths() -> None:
@@ -72,6 +75,8 @@ from backend.app.inference.types import InferenceCancelledError
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IS_HALF = DEVICE == "cuda"
+_WARMUP_HEARTBEAT_INTERVAL_SECONDS = 10.0
+_REFERENCE_CONTEXT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 inference_logger = get_logger("pytorch_inference")
 
 
@@ -152,6 +157,17 @@ def _emit_progress(
     progress_callback(payload)
 
 
+def _emit_status_message(progress_callback, *, status: str, message: str) -> None:
+    if not callable(progress_callback):
+        return
+    progress_callback(
+        {
+            "status": status,
+            "message": message,
+        }
+    )
+
+
 class GPTSoVITSOptimizedInference:
     def __init__(self, gpt_path, sovits_path, cnhubert_base_path, bert_path):
         self.device = DEVICE
@@ -220,7 +236,7 @@ class GPTSoVITSOptimizedInference:
         self.sv_model = SV(self.device, self.is_half)
         inference_logger.info("声纹模型加载完成 elapsed_ms={:.2f}", (time.perf_counter() - sv_started) * 1000)
 
-        self.warmup()
+        self._prompt_cache = PromptCache()
         inference_logger.info("模型初始化完成 total_ms={:.2f}", (time.perf_counter() - init_started) * 1000)
 
     def offload_from_gpu(self) -> None:
@@ -251,19 +267,130 @@ class GPTSoVITSOptimizedInference:
         if self.device != target_device:
             self.device = target_device
 
+    def _describe_cuda_memory(self) -> str:
+        if not torch.cuda.is_available() or not hasattr(torch.cuda, "mem_get_info"):
+            return "unavailable"
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            allocated_bytes = torch.cuda.memory_allocated() if hasattr(torch.cuda, "memory_allocated") else 0
+            reserved_bytes = torch.cuda.memory_reserved() if hasattr(torch.cuda, "memory_reserved") else 0
+        except Exception as exc:
+            return f"error:{exc}"
+        mib = 1024 * 1024
+        return (
+            f"free_mb={free_bytes / mib:.0f} "
+            f"total_mb={total_bytes / mib:.0f} "
+            f"allocated_mb={allocated_bytes / mib:.0f} "
+            f"reserved_mb={reserved_bytes / mib:.0f}"
+        )
+
+    def _log_warmup_context(self) -> None:
+        resident_device = getattr(self, "resident_device", self.device)
+        inference_logger.info(
+            "Warmup context device={} resident_device={} half={} pid={} thread_id={} cuda_mem={}",
+            self.device,
+            resident_device,
+            self.is_half,
+            os.getpid(),
+            threading.get_ident(),
+            self._describe_cuda_memory(),
+        )
+
+    def _log_warmup_stage_begin(
+        self,
+        stage_state: dict[str, str | float],
+        stage: str,
+        detail: str,
+    ) -> float:
+        stage_started = time.perf_counter()
+        stage_state["stage"] = stage
+        stage_state["detail"] = detail
+        stage_state["stage_started"] = stage_started
+        stage_state["watchdog_warning_emitted"] = False
+        inference_logger.info("Warmup stage begin stage={} detail={}", stage, detail)
+        return stage_started
+
+    def _log_warmup_stage_end(self, stage: str, stage_started: float, detail: str) -> None:
+        inference_logger.info(
+            "Warmup stage end stage={} stage_elapsed_ms={:.2f} detail={}",
+            stage,
+            (time.perf_counter() - stage_started) * 1000,
+            detail,
+        )
+
+    def _run_warmup_watchdog(
+        self,
+        stop_event: threading.Event,
+        stage_state: dict[str, str | float],
+        warmup_started: float,
+    ) -> None:
+        while not stop_event.wait(_WARMUP_HEARTBEAT_INTERVAL_SECONDS):
+            if bool(stage_state.get("watchdog_warning_emitted", False)):
+                continue
+            stage_started = float(stage_state.get("stage_started", warmup_started))
+            resident_device = getattr(self, "resident_device", self.device)
+            inference_logger.warning(
+                "Warmup still running stage={} stage_elapsed_ms={:.2f} total_elapsed_ms={:.2f} device={} resident_device={} half={} pid={} thread_id={} cuda_mem={} detail={}",
+                str(stage_state.get("stage", "unknown")),
+                (time.perf_counter() - stage_started) * 1000,
+                (time.perf_counter() - warmup_started) * 1000,
+                self.device,
+                resident_device,
+                self.is_half,
+                os.getpid(),
+                threading.get_ident(),
+                self._describe_cuda_memory(),
+                str(stage_state.get("detail", "-")),
+            )
+            stage_state["watchdog_warning_emitted"] = True
+
+    @staticmethod
+    def _describe_value_shape(value) -> str:
+        shape = getattr(value, "shape", None)
+        if shape is None:
+            return type(value).__name__
+        try:
+            return str(tuple(shape))
+        except TypeError:
+            return str(shape)
+
     def warmup(self):
         warmup_started = time.perf_counter()
         stage = "bootstrap"
+        stage_state: dict[str, str | float] = {
+            "stage": stage,
+            "detail": "bootstrap",
+            "stage_started": warmup_started,
+        }
         inference_logger.info("Warming up models (GPT, SoVITS, BERT, etc.)...")
+        self._log_warmup_context()
+        watchdog_stop_event = threading.Event()
+        watchdog_thread = threading.Thread(
+            target=self._run_warmup_watchdog,
+            args=(watchdog_stop_event, stage_state, warmup_started),
+            name="warmup-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
         try:
             stage = "phones_and_bert_en"
-            phones, _, _ = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
+            stage_started = self._log_warmup_stage_begin(stage_state, stage, "text='Warmup text.' lang=en")
+            phones, _, norm_text_en = self.get_phones_and_bert("Warmup text.", "en", self.hps.model.version)
+            self._log_warmup_stage_end(
+                stage,
+                stage_started,
+                f"phones={len(phones)} norm_text_len={len(norm_text_en)}",
+            )
+
             stage = "phones_and_bert_zh"
-            _ = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
+            stage_started = self._log_warmup_stage_begin(stage_state, stage, "text='你好，预热文本。' lang=zh")
+            _, _, norm_text_zh = self.get_phones_and_bert("你好，预热文本。", "zh", self.hps.model.version)
+            self._log_warmup_stage_end(stage, stage_started, f"norm_text_len={len(norm_text_zh)}")
 
             inference_logger.info("Warming up GPU kernels...")
             with torch.no_grad():
                 stage = "prepare_dummy_inputs"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, f"phone_count={len(phones)}")
                 dummy_prompt = torch.zeros((1, 1), dtype=torch.long, device=self.device)
                 dummy_bert = torch.zeros(
                     (1, 1024, len(phones) + 1),
@@ -272,8 +399,26 @@ class GPTSoVITSOptimizedInference:
                 )
                 dummy_phones = torch.LongTensor(phones + [0]).unsqueeze(0).to(self.device)
                 dummy_phones_len = torch.tensor([dummy_phones.shape[-1]]).to(self.device)
+                self._log_warmup_stage_end(
+                    stage,
+                    stage_started,
+                    "dummy_prompt_shape={} dummy_bert_shape={} dummy_phones_shape={} dummy_phones_len_shape={}".format(
+                        self._describe_value_shape(dummy_prompt),
+                        self._describe_value_shape(dummy_bert),
+                        self._describe_value_shape(dummy_phones),
+                        self._describe_value_shape(dummy_phones_len),
+                    ),
+                )
 
                 stage = "t2s_infer_panel"
+                stage_started = self._log_warmup_stage_begin(
+                    stage_state,
+                    stage,
+                    "dummy_phones_shape={} dummy_bert_shape={}".format(
+                        self._describe_value_shape(dummy_phones),
+                        self._describe_value_shape(dummy_bert),
+                    ),
+                )
                 pred_semantic, _ = self.t2s_model.model.infer_panel(
                     dummy_phones,
                     dummy_phones_len,
@@ -286,8 +431,18 @@ class GPTSoVITSOptimizedInference:
                 )
                 if pred_semantic is None:
                     raise RuntimeError("warmup infer_panel returned no semantic tokens")
+                self._log_warmup_stage_end(
+                    stage,
+                    stage_started,
+                    "pred_semantic_shape={} dummy_prefix_len={}".format(
+                        self._describe_value_shape(pred_semantic),
+                        dummy_prompt.shape[1],
+                    ),
+                )
 
                 stage = "prepare_dummy_semantic"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, "building decode inputs")
+                prepare_dummy_semantic_started = stage_started
                 dummy_spec = torch.zeros((1, self.hps.data.filter_length // 2 + 1, 10), device=self.device)
                 if self.is_half:
                     dummy_spec = dummy_spec.half()
@@ -295,20 +450,55 @@ class GPTSoVITSOptimizedInference:
                 dummy_semantic = pred_semantic[:, dummy_prefix_len:].unsqueeze(0)
                 dummy_sv_emb = None
                 if getattr(self.vq_model, "is_v2pro", False):
+                    sv_stage = "build_dummy_sv_embedding"
+                    sv_stage_started = self._log_warmup_stage_begin(stage_state, sv_stage, "vq_model.is_v2pro=True")
                     dummy_sv_emb = [self._build_dummy_warmup_speaker_embedding()]
+                    self._log_warmup_stage_end(
+                        sv_stage,
+                        sv_stage_started,
+                        f"sv_emb_shape={self._describe_value_shape(dummy_sv_emb[0])}",
+                    )
+                    stage_state["stage"] = stage
+                    stage_state["detail"] = "building decode inputs"
+                    stage_state["stage_started"] = prepare_dummy_semantic_started
+                self._log_warmup_stage_end(
+                    stage,
+                    prepare_dummy_semantic_started,
+                    "dummy_semantic_shape={} dummy_spec_shape={} has_sv_emb={}".format(
+                        self._describe_value_shape(dummy_semantic),
+                        self._describe_value_shape(dummy_spec),
+                        dummy_sv_emb is not None,
+                    ),
+                )
 
                 stage = "vq_decode"
+                stage_started = self._log_warmup_stage_begin(
+                    stage_state,
+                    stage,
+                    "dummy_semantic_shape={} phone_count={} has_sv_emb={}".format(
+                        self._describe_value_shape(dummy_semantic),
+                        len(phones),
+                        dummy_sv_emb is not None,
+                    ),
+                )
                 _ = self.vq_model.decode(
                     dummy_semantic,
                     torch.LongTensor(phones).unsqueeze(0).to(self.device),
                     [dummy_spec],
                     sv_emb=dummy_sv_emb,
                 )
+                self._log_warmup_stage_end(stage, stage_started, "decode_call_completed")
             if torch.cuda.is_available():
+                stage = "cuda_synchronize"
+                stage_started = self._log_warmup_stage_begin(stage_state, stage, "torch.cuda.synchronize")
                 torch.cuda.synchronize()
+                self._log_warmup_stage_end(stage, stage_started, "cuda_sync_completed")
             inference_logger.info("Warmup completed elapsed_ms={:.2f}", (time.perf_counter() - warmup_started) * 1000)
         except Exception as exc:
             inference_logger.exception("Warmup failed at stage={} reason={}", stage, str(exc))
+        finally:
+            watchdog_stop_event.set()
+            watchdog_thread.join(timeout=1.0)
 
     def get_bert_feature(self, text, word2ph):
         with torch.no_grad():
@@ -338,7 +528,7 @@ class GPTSoVITSOptimizedInference:
 
         return bert
 
-    def get_phones_and_bert(self, text, language, version, default_lang=None):
+    def get_phones_and_bert(self, text, language, version, default_lang=None, stage_reporter=None):
         phones, bert, norm_text = build_phones_and_bert_features(
             text=text,
             language=language,
@@ -349,6 +539,7 @@ class GPTSoVITSOptimizedInference:
             is_half=self.is_half,
             default_lang=default_lang,
             return_norm_text=True,
+            stage_reporter=stage_reporter,
         )
         return phones, bert, norm_text
 
@@ -366,21 +557,147 @@ class GPTSoVITSOptimizedInference:
     def _resolve_reference_audio_path(self, value: str) -> str:
         return str(Path(value).expanduser().resolve())
 
-    def _extract_prompt_semantic(self, reference_audio_path: str) -> torch.Tensor:
+    def _extract_prompt_semantic(self, reference_audio_path: str, stage_reporter=None) -> torch.Tensor:
         zero_wav_16k = torch.zeros(
             int(16000 * 0.3),
             dtype=torch.float16 if self.is_half else torch.float32,
             device=self.device,
         )
+        total_started = time.perf_counter()
         with torch.no_grad():
+            stage_started = time.perf_counter()
+            if callable(stage_reporter):
+                stage_reporter("librosa_load", f"reference_audio_path={reference_audio_path}")
             wav16k, _ = librosa.load(reference_audio_path, sr=16000)
             wav16k = torch.from_numpy(wav16k).to(self.device)
             if self.is_half:
                 wav16k = wav16k.half()
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "librosa_load",
+                (time.perf_counter() - stage_started) * 1000,
+                "samples={} dtype={} device={}".format(
+                    wav16k.shape[0],
+                    str(wav16k.dtype),
+                    self.device,
+                ),
+            )
             wav16k = torch.cat([wav16k, zero_wav_16k])
+            stage_started = time.perf_counter()
+            if callable(stage_reporter):
+                stage_reporter("ssl_model", f"reference_audio_path={reference_audio_path}")
             ssl_content = self.ssl_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2)
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "ssl_model",
+                (time.perf_counter() - stage_started) * 1000,
+                "ssl_shape={} reference_audio_path={}".format(
+                    self._describe_value_shape(ssl_content),
+                    reference_audio_path,
+                ),
+            )
+            stage_started = time.perf_counter()
+            if callable(stage_reporter):
+                stage_reporter("extract_latent", f"reference_audio_path={reference_audio_path}")
             codes = self.vq_model.extract_latent(ssl_content)
+            inference_logger.info(
+                "Prompt semantic stage end stage={} elapsed_ms={:.2f} detail={}",
+                "extract_latent",
+                (time.perf_counter() - stage_started) * 1000,
+                "codes_shape={} reference_audio_path={}".format(
+                    self._describe_value_shape(codes),
+                    reference_audio_path,
+                ),
+            )
+        inference_logger.info(
+            "Prompt semantic extracted total_ms={:.2f} reference_audio_path={}",
+            (time.perf_counter() - total_started) * 1000,
+            reference_audio_path,
+        )
         return codes[0, 0]
+
+    @staticmethod
+    def _update_reference_context_stage(
+        stage_state: dict[str, object],
+        *,
+        stage: str,
+        detail: str,
+    ) -> None:
+        stage_state["stage"] = stage
+        stage_state["detail"] = detail
+        stage_state["stage_started"] = time.perf_counter()
+        stage_state["watchdog_warning_emitted"] = False
+
+    def _get_prompt_cache_entry_count(self) -> int:
+        prompt_cache = self._get_prompt_cache()
+        if hasattr(prompt_cache, "entry_count"):
+            return int(prompt_cache.entry_count())
+        entries = getattr(prompt_cache, "_entries", None)
+        if entries is None:
+            return -1
+        return len(entries)
+
+    @staticmethod
+    def _describe_process_runtime() -> tuple[float, float, int]:
+        try:
+            process = psutil.Process(os.getpid())
+            rss_bytes = process.memory_info().rss
+            cpu_percent = process.cpu_percent(interval=None)
+            thread_count = process.num_threads()
+        except Exception:
+            return (-1.0, -1.0, -1)
+        return (rss_bytes / (1024 * 1024), float(cpu_percent), int(thread_count))
+
+    @staticmethod
+    def _call_with_optional_stage_reporter(callable_obj, *args, stage_reporter=None, **kwargs):
+        if not callable(stage_reporter):
+            return callable_obj(*args, **kwargs)
+        try:
+            return callable_obj(*args, stage_reporter=stage_reporter, **kwargs)
+        except TypeError as exc:
+            if "stage_reporter" not in str(exc):
+                raise
+            return callable_obj(*args, **kwargs)
+
+    def _run_reference_context_watchdog(
+        self,
+        stop_event: threading.Event,
+        stage_state: dict[str, object],
+        context_started: float,
+        progress_callback,
+    ) -> None:
+        while not stop_event.wait(_REFERENCE_CONTEXT_HEARTBEAT_INTERVAL_SECONDS):
+            if bool(stage_state.get("watchdog_warning_emitted", False)):
+                continue
+            stage_started = float(stage_state.get("stage_started", context_started))
+            stage = str(stage_state.get("stage", "unknown"))
+            detail = str(stage_state.get("detail", "-"))
+            rss_mb, cpu_percent, thread_count = self._describe_process_runtime()
+            prompt_cache_entries = self._get_prompt_cache_entry_count()
+            target_thread_id = int(stage_state.get("target_thread_id", 0))
+            inference_logger.warning(
+                "Reference context still running stage={} stage_elapsed_ms={:.2f} total_elapsed_ms={:.2f} device={} resident_device={} half={} pid={} target_thread_id={} process_rss_mb={:.1f} process_cpu_percent={:.1f} thread_count={} prompt_cache_entries={} cuda_mem={} detail={}",
+                stage,
+                (time.perf_counter() - stage_started) * 1000,
+                (time.perf_counter() - context_started) * 1000,
+                self.device,
+                getattr(self, "resident_device", self.device),
+                self.is_half,
+                os.getpid(),
+                target_thread_id,
+                float(rss_mb),
+                float(cpu_percent),
+                int(thread_count),
+                prompt_cache_entries,
+                self._describe_cuda_memory(),
+                detail,
+            )
+            stage_state["watchdog_warning_emitted"] = True
+            _emit_status_message(
+                progress_callback,
+                status="preparing",
+                message=f"仍在准备参考上下文：{stage} | {detail}",
+            )
 
     def _compute_reference_speaker_embedding(self, refer_audio: torch.Tensor) -> torch.Tensor:
         if refer_audio.shape[0] > 1:
@@ -426,6 +743,8 @@ class GPTSoVITSOptimizedInference:
     def build_reference_context(
         self,
         request_or_context: ResolvedRenderContext | InitializeEditSessionRequest,
+        *,
+        progress_callback=None,
     ) -> ReferenceContext:
         context_started = time.perf_counter()
         resolved_context = self._coerce_resolved_context(request_or_context)
@@ -450,38 +769,227 @@ class GPTSoVITSOptimizedInference:
             "boundary_result_frame_count": 6,
         }
         fingerprint = fingerprint_inference_config(inference_config)
-        prompt_started = time.perf_counter()
-        prompt_semantic = self._extract_prompt_semantic(reference_audio_path)
-        prompt_elapsed_ms = (time.perf_counter() - prompt_started) * 1000
-        spec_started = time.perf_counter()
-        refer_spec, refer_audio = self.get_spepc(reference_audio_path)
-        spec_elapsed_ms = (time.perf_counter() - spec_started) * 1000
-        speaker_started = time.perf_counter()
-        speaker_embedding = self._compute_reference_speaker_embedding(refer_audio)
-        speaker_elapsed_ms = (time.perf_counter() - speaker_started) * 1000
-        inference_logger.info(
-            "Reference context built voice_id={} fingerprint={} prompt_semantic_ms={:.2f} spectrogram_ms={:.2f} speaker_embedding_ms={:.2f} total_ms={:.2f}",
-            resolved_context.voice_id,
-            fingerprint[:12],
-            prompt_elapsed_ms,
-            spec_elapsed_ms,
-            speaker_elapsed_ms,
-            (time.perf_counter() - context_started) * 1000,
+        cache_key = PromptCacheKey(
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            reference_language=resolved_context.reference_language,
+            model_version=self.hps.model.version,
+            inference_config_fingerprint=fingerprint,
         )
+        inference_logger.info("Prompt cache lookup start key={}", cache_key.short())
+        prompt_elapsed_ms = 0.0
+        spec_elapsed_ms = 0.0
+        speaker_elapsed_ms = 0.0
+        prompt_text_elapsed_ms = 0.0
+        cache_result = "hit"
+        prompt_cache = self._get_prompt_cache()
+        stage_state: dict[str, object] = {
+            "stage": "prompt_cache_lookup",
+            "detail": f"key={cache_key.short()}",
+            "stage_started": context_started,
+            "target_thread_id": threading.get_ident(),
+        }
+        watchdog_stop_event = threading.Event()
+        watchdog_thread = threading.Thread(
+            target=self._run_reference_context_watchdog,
+            args=(watchdog_stop_event, stage_state, context_started, progress_callback),
+            name="reference-context-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
+        try:
+            cache_entry = prompt_cache.get(cache_key)
+            if cache_entry is None:
+                cache_result = "miss"
+                cache_entry, prompt_elapsed_ms, spec_elapsed_ms, speaker_elapsed_ms, prompt_text_elapsed_ms = (
+                    self._build_prompt_cache_entry(
+                        reference_audio_path=reference_audio_path,
+                        reference_text=reference_text,
+                        reference_language=resolved_context.reference_language,
+                        progress_callback=progress_callback,
+                        stage_reporter=lambda stage, detail: self._update_reference_context_stage(
+                            stage_state,
+                            stage=stage,
+                            detail=detail,
+                        ),
+                    )
+                )
+                self._update_reference_context_stage(
+                    stage_state,
+                    stage="prompt_cache_store",
+                    detail=f"key={cache_key.short()}",
+                )
+                prompt_cache.put(cache_key, cache_entry)
+                cache_entry = prompt_cache.get(cache_key)
+                if cache_entry is None:
+                    raise RuntimeError("Prompt cache entry was not available after put.")
+            else:
+                self._update_reference_context_stage(
+                    stage_state,
+                    stage="prompt_cache_hit",
+                    detail=f"key={cache_key.short()}",
+                )
+                _emit_progress(
+                    progress_callback,
+                    status="preparing",
+                    progress=0.25,
+                    message="参考语义特征已准备。",
+                )
+                _emit_progress(
+                    progress_callback,
+                    status="preparing",
+                    progress=0.5,
+                    message="参考频谱已准备。",
+                )
+                _emit_progress(
+                    progress_callback,
+                    status="preparing",
+                    progress=0.75,
+                    message="参考说话人特征已准备。",
+                )
+            inference_logger.info("Prompt cache lookup end key={} result={}", cache_key.short(), cache_result)
+            self._update_reference_context_stage(
+                stage_state,
+                stage="move_cache_entry_to_device",
+                detail=f"device={self.device}",
+            )
+            refer_spec = cache_entry.reference_spectrogram_cpu.to(self.device)
+            speaker_embedding = cache_entry.reference_speaker_embedding_cpu.to(self.device)
+            prompt_bert = cache_entry.prompt_bert_cpu
+            inference_logger.info(
+                "Reference context built voice_id={} fingerprint={} prompt_cache={} prompt_semantic_ms={:.2f} spectrogram_ms={:.2f} speaker_embedding_ms={:.2f} prompt_text_ms={:.2f} total_ms={:.2f}",
+                resolved_context.voice_id,
+                fingerprint[:12],
+                cache_result,
+                prompt_elapsed_ms,
+                spec_elapsed_ms,
+                speaker_elapsed_ms,
+                prompt_text_elapsed_ms,
+                (time.perf_counter() - context_started) * 1000,
+            )
+            _emit_progress(
+                progress_callback,
+                status="preparing",
+                progress=1.0,
+                message="参考上下文已准备。",
+            )
+        finally:
+            watchdog_stop_event.set()
+            watchdog_thread.join(timeout=1.0)
 
         return ReferenceContext(
             reference_context_id=f"{resolved_context.voice_id}:{fingerprint[:12]}",
             voice_id=resolved_context.voice_id,
             model_id=resolved_context.model_key,
             reference_audio_path=reference_audio_path,
-            reference_text=reference_text,
+            reference_text=cache_entry.prompt_norm_text,
             reference_language=resolved_context.reference_language,
-            reference_semantic_tokens=prompt_semantic.detach().cpu().numpy(),
+            reference_semantic_tokens=cache_entry.reference_semantic_tokens,
             reference_spectrogram=refer_spec,
             reference_speaker_embedding=speaker_embedding,
             inference_config_fingerprint=fingerprint,
             inference_config=inference_config,
+            prompt_phones=cache_entry.prompt_phones,
+            prompt_bert=prompt_bert,
+            prompt_norm_text=cache_entry.prompt_norm_text,
         )
+
+    def _build_prompt_cache_entry(
+        self,
+        *,
+        reference_audio_path: str,
+        reference_text: str,
+        reference_language: str,
+        progress_callback=None,
+        stage_reporter=None,
+    ) -> tuple[PromptCacheEntry, float, float, float, float]:
+        prompt_started = time.perf_counter()
+        if callable(stage_reporter):
+            stage_reporter("prompt_semantic", f"reference_audio_path={reference_audio_path}")
+        prompt_semantic = self._call_with_optional_stage_reporter(
+            self._extract_prompt_semantic,
+            reference_audio_path,
+            stage_reporter=(
+                None
+                if not callable(stage_reporter)
+                else lambda stage, detail: stage_reporter(f"prompt_semantic.{stage}", detail)
+            ),
+        )
+        prompt_elapsed_ms = (time.perf_counter() - prompt_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.25,
+            message="参考语义特征已准备。",
+        )
+
+        spec_started = time.perf_counter()
+        if callable(stage_reporter):
+            stage_reporter("reference_spectrogram", f"reference_audio_path={reference_audio_path}")
+        refer_spec, refer_audio = self.get_spepc(reference_audio_path)
+        spec_elapsed_ms = (time.perf_counter() - spec_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.5,
+            message="参考频谱已准备。",
+        )
+
+        speaker_started = time.perf_counter()
+        if callable(stage_reporter):
+            stage_reporter("speaker_embedding", f"reference_audio_path={reference_audio_path}")
+        speaker_embedding = self._compute_reference_speaker_embedding(refer_audio)
+        speaker_elapsed_ms = (time.perf_counter() - speaker_started) * 1000
+        _emit_progress(
+            progress_callback,
+            status="preparing",
+            progress=0.75,
+            message="参考说话人特征已准备。",
+        )
+
+        prompt_text_started = time.perf_counter()
+        if callable(stage_reporter):
+            stage_reporter(
+                "prompt_text",
+                f"reference_language={reference_language} text_len={len(reference_text)}",
+            )
+        prompt_phones, prompt_bert, prompt_norm_text = self._call_with_optional_stage_reporter(
+            self.get_phones_and_bert,
+            reference_text,
+            reference_language,
+            self.hps.model.version,
+            stage_reporter=(
+                None
+                if not callable(stage_reporter)
+                else lambda stage, language, detail: stage_reporter(
+                    f"prompt_text.{stage}",
+                    f"language={language} {detail}",
+                )
+            ),
+        )
+        prompt_text_elapsed_ms = (time.perf_counter() - prompt_text_started) * 1000
+
+        return (
+            PromptCacheEntry(
+                reference_semantic_tokens=prompt_semantic.detach().cpu().numpy(),
+                reference_spectrogram_cpu=refer_spec,
+                reference_speaker_embedding_cpu=speaker_embedding,
+                prompt_phones=prompt_phones,
+                prompt_bert_cpu=prompt_bert,
+                prompt_norm_text=prompt_norm_text,
+            ),
+            prompt_elapsed_ms,
+            spec_elapsed_ms,
+            speaker_elapsed_ms,
+            prompt_text_elapsed_ms,
+        )
+
+    def _get_prompt_cache(self) -> PromptCache:
+        prompt_cache = getattr(self, "_prompt_cache", None)
+        if prompt_cache is None:
+            prompt_cache = PromptCache()
+            self._prompt_cache = prompt_cache
+        return prompt_cache
 
     def render_segment_base(
         self,
@@ -498,11 +1006,10 @@ class GPTSoVITSOptimizedInference:
             current_segment=0,
             total_segments=1,
         )
-        prompt_phones, prompt_bert, _ = self.get_phones_and_bert(
-            context.reference_text,
-            context.reference_language,
-            self.hps.model.version,
-        )
+        prompt_phones = list(context.prompt_phones)
+        prompt_bert = context.prompt_bert
+        if not prompt_phones or prompt_bert is None:
+            raise ValueError("ReferenceContext is missing prompt text features.")
         segment_inference_language = _resolve_segment_inference_language(segment)
         if segment_inference_language != segment.text_language:
             inference_logger.info(
@@ -513,8 +1020,7 @@ class GPTSoVITSOptimizedInference:
                 segment_inference_language,
             )
         segment_text = build_segment_render_text(
-            raw_text=segment.raw_text,
-            normalized_text=segment.normalized_text,
+            stem=segment.stem,
             text_language=segment_inference_language,
             terminal_raw=getattr(segment, "terminal_raw", ""),
             terminal_closer_suffix=getattr(segment, "terminal_closer_suffix", ""),

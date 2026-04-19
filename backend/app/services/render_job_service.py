@@ -85,6 +85,13 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.playback_map_service import PlaybackMapService
 from backend.app.services.render_planner import RenderPlanner, TargetedRenderPlan
+from backend.app.services.render_job_progress_policy import (
+    PREPARE_END_PROGRESS,
+    PREPARE_START_PROGRESS,
+    build_prepare_progress,
+    build_prepare_progress_from_local,
+    build_render_segment_progress,
+)
 from backend.app.services.checkpoint_service import CheckpointService
 from backend.app.services.segment_service import SegmentService
 from backend.app.services.segment_group_service import SegmentGroupService
@@ -915,10 +922,24 @@ class RenderJobService:
             except _PartialRenderCommitted:
                 self._persist_runtime_job(job_id)
             except Exception as exc:
+                self._log_background_job_failure(
+                    job_kind=plan.job_kind,
+                    job_id=job_id,
+                    document_id=job.document_id,
+                    phase="run_initialize_job",
+                    exc=exc,
+                )
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
                 self._mark_session_failed(job.document_id)
         except Exception as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_initialize_job",
+                exc=exc,
+            )
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
             self._mark_session_failed(job.document_id)
@@ -978,9 +999,23 @@ class RenderJobService:
             except _PartialRenderCommitted:
                 self._persist_runtime_job(job_id)
             except Exception as exc:
+                self._log_background_job_failure(
+                    job_kind=plan.job_kind,
+                    job_id=job_id,
+                    document_id=job.document_id,
+                    phase="run_edit_job",
+                    exc=exc,
+                )
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
         except Exception as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_edit_job",
+                exc=exc,
+            )
             self._rollback_uncommitted_assets(job_id)
             self._mark_terminal(job_id, status="failed", message=str(exc))
         finally:
@@ -1238,7 +1273,8 @@ class RenderJobService:
             segments=[
                 StandardizationPreviewSegment(
                     order_key=segment.order_key,
-                    canonical_text=segment.canonical_text,
+                    stem=segment.stem,
+                    display_text=segment.display_text,
                     terminal_raw=segment.terminal_raw,
                     terminal_closer_suffix=segment.terminal_closer_suffix,
                     terminal_source=segment.terminal_source,
@@ -1298,7 +1334,12 @@ class RenderJobService:
 
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
-        self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备参考上下文。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="preparing",
+            progress=PREPARE_START_PROGRESS,
+            message="正在准备参考上下文。",
+        )
         resolved_context = self._build_resolved_context_from_request(plan.request)
         render_job_logger.info(
             "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
@@ -1313,7 +1354,13 @@ class RenderJobService:
             resolved_context.noise_scale,
         )
         context_started = time.perf_counter()
-        plan.context = self._gateway.build_reference_context(resolved_context)
+        plan.context = self._gateway.build_reference_context(
+            resolved_context,
+            progress_callback=self._build_prepare_progress_callback(
+                job_id=plan.job_id,
+                default_message="正在准备参考上下文。",
+            ),
+        )
         render_job_logger.info(
             "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
             resolved_context.voice_id,
@@ -1397,7 +1444,9 @@ class RenderJobService:
                     {
                         "segment_id": segment.segment_id,
                         "order_key": segment.order_key,
-                        "raw_text": segment.raw_text,
+                        "stem": segment.stem,
+                        "display_text": segment.display_text,
+                        "text_language": segment.text_language,
                         "terminal_raw": segment.terminal_raw,
                         "terminal_closer_suffix": segment.terminal_closer_suffix,
                         "terminal_source": segment.terminal_source,
@@ -1420,15 +1469,51 @@ class RenderJobService:
 
     def _prepare_edit(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
-        self._runtime.update_job(plan.job_id, status="preparing", progress=0.05, message="正在准备编辑作业。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="preparing",
+            progress=PREPARE_START_PROGRESS,
+            message="正在准备编辑作业。",
+        )
         if self._should_prepare_edit_reference_context(plan):
-            plan.context = self._gateway.build_reference_context(self._build_resolved_context_from_request(plan.request))
+            plan.context = self._gateway.build_reference_context(
+                self._build_resolved_context_from_request(plan.request),
+                progress_callback=self._build_prepare_progress_callback(
+                    job_id=plan.job_id,
+                    default_message="正在准备编辑作业。",
+                ),
+            )
+        else:
+            self._runtime.update_job(
+                plan.job_id,
+                progress=build_prepare_progress(completed_stages=1, total_stages=1),
+            )
         self._runtime.update_job(
             plan.job_id,
             total_segment_count=len(plan.target_segment_ids) or len(plan.segments),
             message=f"编辑快照准备完成，版本将更新为 {plan.document_version}。",
         )
         self._persist_runtime_job(plan.job_id)
+
+    def _build_prepare_progress_callback(
+        self,
+        *,
+        job_id: str,
+        default_message: str,
+    ) -> Callable[[dict], None]:
+        def _progress_callback(event: dict) -> None:
+            raw_progress = event.get("progress")
+            update_payload: dict[str, object] = {
+                "status": "preparing",
+            }
+            if isinstance(raw_progress, (int, float)):
+                update_payload["progress"] = build_prepare_progress_from_local(local_progress=float(raw_progress))
+
+            raw_message = event.get("message")
+            update_payload["message"] = raw_message if isinstance(raw_message, str) else default_message
+            self._runtime.update_job(job_id, **update_payload)
+
+        return _progress_callback
 
     @staticmethod
     def _should_prepare_edit_reference_context(plan: RenderPlan) -> bool:
@@ -1522,7 +1607,12 @@ class RenderJobService:
 
     def _render(self, plan: RenderPlan) -> None:
         assert plan.context is not None
-        self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在渲染段级资产。")
+        self._runtime.update_job(
+            plan.job_id,
+            status="rendering",
+            progress=PREPARE_END_PROGRESS,
+            message="正在渲染段级资产。",
+        )
         total_segments = len(plan.segments)
         self._start_inference_tracking(plan, total_segments=total_segments, message="正在准备本次推理")
         try:
@@ -1559,7 +1649,12 @@ class RenderJobService:
                     plan.job_id,
                     current_segment_index=index,
                     total_segment_count=total_segments,
-                    progress=0.2 + 0.4 * (index / total_segments),
+                    progress=build_render_segment_progress(
+                        completed_segments=index,
+                        total_segments=total_segments,
+                        start_progress=PREPARE_END_PROGRESS,
+                        end_progress=0.6,
+                    ),
                     message=f"已完成第 {index}/{total_segments} 段渲染。",
                 )
                 self._runtime.emit_event(
@@ -1608,7 +1703,12 @@ class RenderJobService:
             return
 
         if not plan.compose_only:
-            self._runtime.update_job(plan.job_id, status="rendering", progress=0.2, message="正在重渲染受影响资产。")
+            self._runtime.update_job(
+                plan.job_id,
+                status="rendering",
+                progress=PREPARE_END_PROGRESS,
+                message="正在重渲染受影响资产。",
+            )
 
         config_snapshot = self._build_temporary_snapshot(plan)
         total_targets = len(plan.target_segment_ids)
@@ -1639,7 +1739,12 @@ class RenderJobService:
                         plan.job_id,
                         current_segment_index=completed_targets,
                         total_segment_count=len(plan.target_segment_ids),
-                        progress=0.2 + 0.25 * (completed_targets / target_total),
+                        progress=build_render_segment_progress(
+                            completed_segments=completed_targets,
+                            total_segments=target_total,
+                            start_progress=PREPARE_END_PROGRESS,
+                            end_progress=0.45,
+                        ),
                         message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
                     )
                     self._runtime.emit_event(
@@ -1895,8 +2000,6 @@ class RenderJobService:
         snapshot_payload = {
             "document_id": plan.document_id,
             "document_version": plan.document_version,
-            "raw_text": "".join(segment.raw_text for segment in plan.segments),
-            "normalized_text": "".join(segment.normalized_text for segment in plan.segments),
             "segment_ids": [segment.segment_id for segment in plan.segments],
             "edge_ids": [edge.edge_id for edge in plan.edges],
             "block_ids": [entry.block_asset_id for entry in plan.timeline_manifest.block_entries],
@@ -1990,8 +2093,6 @@ class RenderJobService:
             document_id=plan.document_id,
             snapshot_kind="head",
             document_version=plan.document_version,
-            raw_text="".join(segment.raw_text for segment in plan.segments),
-            normalized_text="".join(segment.normalized_text for segment in plan.segments),
             segment_ids=[segment.segment_id for segment in plan.segments],
             edge_ids=[edge.edge_id for edge in plan.edges],
             block_ids=block_ids,
@@ -2044,8 +2145,6 @@ class RenderJobService:
             document_id=plan.document_id,
             snapshot_kind="staging",
             document_version=plan.document_version,
-            raw_text="".join(segment.raw_text for segment in plan.segments),
-            normalized_text="".join(segment.normalized_text for segment in plan.segments),
             segment_ids=[segment.segment_id for segment in plan.segments],
             edge_ids=[edge.edge_id for edge in plan.edges],
             groups=[group.model_copy(deep=True) for group in plan.groups],
@@ -2237,8 +2336,7 @@ class RenderJobService:
                 document_id=document_id,
                 order_key=index,
                 previous_segment_id=previous_segment_id,
-                raw_text=standardized.raw_text,
-                normalized_text=standardized.normalized_text,
+                stem=standardized.stem,
                 text_language=text_language,
                 terminal_raw=standardized.terminal_raw,
                 terminal_closer_suffix=standardized.terminal_closer_suffix,
@@ -2545,6 +2643,24 @@ class RenderJobService:
     def _mark_terminal(self, job_id: str, *, status: str, message: str) -> None:
         self._runtime.update_job(job_id, status=status, progress=1.0 if status == "completed" else 0.0, message=message)
         self._persist_runtime_job(job_id)
+
+    @staticmethod
+    def _log_background_job_failure(
+        *,
+        job_kind: str,
+        job_id: str,
+        document_id: str,
+        phase: str,
+        exc: Exception,
+    ) -> None:
+        render_job_logger.exception(
+            "后台渲染作业失败 job_kind={} job_id={} document_id={} phase={} reason={}",
+            job_kind,
+            job_id,
+            document_id,
+            phase,
+            str(exc),
+        )
 
     def _mark_session_failed(self, document_id: str) -> None:
         session = self._repository.get_active_session()

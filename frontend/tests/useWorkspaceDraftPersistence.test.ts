@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkspaceSegmentTextDraft } from "../src/components/workspace/workspace-editor/terminalRegionModel";
 
 function createStorage() {
   const store = new Map<string, string>();
@@ -24,6 +25,19 @@ async function loadPersistenceModule() {
   return import("../src/composables/useWorkspaceDraftPersistence");
 }
 
+function createDraft(
+  overrides: Partial<WorkspaceSegmentTextDraft> = {},
+): WorkspaceSegmentTextDraft {
+  return {
+    segmentId: "seg-1",
+    stem: "已提交的第一段草稿",
+    terminal_raw: "",
+    terminal_closer_suffix: "",
+    terminal_source: "synthetic",
+    ...overrides,
+  };
+}
+
 describe("useWorkspaceDraftPersistence", () => {
   const localStorageMock = createStorage();
 
@@ -39,7 +53,7 @@ describe("useWorkspaceDraftPersistence", () => {
     const persistence = useWorkspaceDraftPersistence();
 
     persistence.saveSnapshot({
-      schemaVersion: 2,
+      schemaVersion: 3,
       documentId: "doc-1",
       documentVersion: 3,
       segmentIds: ["seg-1", "seg-2"],
@@ -85,7 +99,7 @@ describe("useWorkspaceDraftPersistence", () => {
           },
         ],
       },
-      segmentDrafts: { "seg-1": "已提交的第一段草稿" },
+      segmentDrafts: { "seg-1": createDraft() },
       effectiveText: "正在编辑中的正文",
       compositionLayoutHints: {
         basis: "source_text",
@@ -104,7 +118,7 @@ describe("useWorkspaceDraftPersistence", () => {
     ).toMatchObject({
       mode: "editing",
       effectiveText: "正在编辑中的正文",
-      segmentDrafts: { "seg-1": "已提交的第一段草稿" },
+      segmentDrafts: { "seg-1": createDraft() },
       compositionLayoutHints: {
         basis: "source_text",
         segmentIdsByBlock: [["seg-1", "seg-2"]],
@@ -118,7 +132,7 @@ describe("useWorkspaceDraftPersistence", () => {
     const persistence = useWorkspaceDraftPersistence();
 
     persistence.saveSnapshot({
-      schemaVersion: 2,
+      schemaVersion: 3,
       documentId: "doc-1",
       documentVersion: 3,
       segmentIds: ["seg-1"],
@@ -131,7 +145,9 @@ describe("useWorkspaceDraftPersistence", () => {
         type: "doc",
         content: [{ type: "paragraph", content: [{ type: "text", text: "旧版本草稿" }] }],
       },
-      segmentDrafts: { "seg-1": "旧版本草稿" },
+      segmentDrafts: {
+        "seg-1": createDraft({ stem: "旧版本草稿" }),
+      },
       effectiveText: "旧版本草稿",
       compositionLayoutHints: null,
       updatedAt: "2026-04-08T09:00:00.000Z",
@@ -162,7 +178,9 @@ describe("useWorkspaceDraftPersistence", () => {
           type: "doc",
           content: [{ type: "paragraph", content: [{ type: "text", text: "旧草稿" }] }],
         },
-        segmentDrafts: { "seg-1": "旧草稿" },
+        segmentDrafts: {
+          "seg-1": createDraft({ stem: "旧草稿" }),
+        },
         effectiveText: "旧草稿",
         updatedAt: "2026-04-08T09:00:00.000Z",
       }),

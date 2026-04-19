@@ -8,10 +8,11 @@ from backend.app.inference.text_processing import is_decimal_dot_at, normalize_w
 from backend.app.text.language_profiles import ResolvedLanguage, get_language_profile
 from backend.app.text.terminal_capsule import (
     CLOSER_CHARACTERS,
+    SegmentTextState,
     TERMINAL_STRINGS,
     TerminalCapsule,
-    build_display_text,
-    build_render_text,
+    build_display_text_from_state,
+    build_render_text_from_state,
     parse_terminal_capsule,
 )
 
@@ -23,14 +24,18 @@ _APPROX_CHARS_PER_SECOND = 5.0
 _SHORT_SEGMENT_SECONDS = 3.0
 _LONG_SEGMENT_SECONDS = 30.0
 _SUPPORTED_LANGUAGES = {"zh", "ja", "en"}
+_FORCED_NEWLINE_TRAILING_PUNCTUATION = frozenset("，,、；;：:。．.!！？?…—")
+_FORCED_NEWLINE_LEADING_PUNCTUATION = (
+    _FORCED_NEWLINE_TRAILING_PUNCTUATION | CLOSER_CHARACTERS
+)
 LanguageDetectionSource = Literal["explicit", "auto"]
 
 
 @dataclass(frozen=True)
 class SegmentStandardizationResult:
     stem: str
-    raw_text: str
-    normalized_text: str
+    display_text: str
+    render_text: str
     terminal_raw: str
     terminal_closer_suffix: str
     terminal_source: str
@@ -45,6 +50,23 @@ class SegmentStandardizationResult:
             terminal_closer_suffix=self.terminal_closer_suffix,
             terminal_source=self.terminal_source,
         )
+
+    @property
+    def state(self) -> SegmentTextState:
+        return SegmentTextState(
+            stem=self.stem,
+            terminal_raw=self.terminal_raw,
+            terminal_closer_suffix=self.terminal_closer_suffix,
+            terminal_source=self.terminal_source,
+        )
+
+    @property
+    def raw_text(self) -> str:
+        return self.display_text
+
+    @property
+    def normalized_text(self) -> str:
+        return _build_legacy_normalized_text(self.stem)
 
 
 @dataclass(frozen=True)
@@ -63,7 +85,8 @@ class StandardizationBatchResult:
 @dataclass(frozen=True)
 class StandardizationPreviewSegmentResult:
     order_key: int
-    canonical_text: str
+    stem: str
+    display_text: str
     terminal_raw: str
     terminal_closer_suffix: str
     terminal_source: str
@@ -92,24 +115,39 @@ def standardize_segment_text(
     inference_exclusion_reason: str | None = None,
 ) -> SegmentStandardizationResult:
     normalized_input = normalize_whitespace(raw_text)
-    parsed = parse_terminal_capsule(normalized_input)
+    state = parse_terminal_capsule(normalized_input)
+    return standardize_segment_text_state(
+        state,
+        text_language,
+        detected_language=detected_language,
+        inference_exclusion_reason=inference_exclusion_reason,
+    )
+
+
+def standardize_segment_text_state(
+    state: SegmentTextState,
+    text_language: str,
+    *,
+    detected_language: ResolvedLanguage | None = None,
+    inference_exclusion_reason: str | None = None,
+) -> SegmentStandardizationResult:
     if detected_language is None or inference_exclusion_reason is None:
-        language_meta = _resolve_single_segment_language_meta(parsed.stem, text_language)
+        language_meta = _resolve_single_segment_language_meta(state.stem, text_language)
         detected_language = language_meta.detected_language
         inference_exclusion_reason = language_meta.inference_exclusion_reason
     profile = get_language_profile(detected_language if detected_language != "unknown" else "unknown")
-    display_text = build_display_text(parsed.stem, parsed.capsule, profile)
-    canonical_text = parsed.canonical_text
+    display_text = build_display_text_from_state(state, profile)
+    render_text = build_render_text_from_state(state, profile)
     return SegmentStandardizationResult(
-        stem=parsed.stem,
-        raw_text=display_text,
-        normalized_text=canonical_text,
-        terminal_raw=parsed.capsule.terminal_raw,
-        terminal_closer_suffix=parsed.capsule.terminal_closer_suffix,
-        terminal_source=parsed.capsule.terminal_source,
+        stem=state.stem,
+        display_text=display_text,
+        render_text=render_text,
+        terminal_raw=state.terminal_raw,
+        terminal_closer_suffix=state.terminal_closer_suffix,
+        terminal_source=state.terminal_source,
         detected_language=detected_language,
         inference_exclusion_reason=inference_exclusion_reason,
-        risk_flags=_derive_risk_flags(canonical_text),
+        risk_flags=_derive_risk_flags(state.stem),
     )
 
 
@@ -181,7 +219,8 @@ def build_standardization_preview(
         segments=[
             StandardizationPreviewSegmentResult(
                 order_key=offset + index,
-                canonical_text=segment.normalized_text,
+                stem=segment.stem,
+                display_text=segment.display_text,
                 terminal_raw=segment.terminal_raw,
                 terminal_closer_suffix=segment.terminal_closer_suffix,
                 terminal_source=segment.terminal_source,
@@ -196,46 +235,65 @@ def build_standardization_preview(
 
 def build_segment_display_text(
     *,
-    raw_text: str,
-    normalized_text: str | None,
+    stem: str | None = None,
+    raw_text: str | None = None,
+    normalized_text: str | None = None,
     text_language: str,
     terminal_raw: str,
     terminal_closer_suffix: str,
     terminal_source: str,
 ) -> str:
-    stem = _resolve_stem(raw_text=raw_text, normalized_text=normalized_text)
-    capsule = _build_capsule_or_fallback(
+    del normalized_text
+    state = _resolve_segment_text_state(
+        stem=stem,
         raw_text=raw_text,
         terminal_raw=terminal_raw,
         terminal_closer_suffix=terminal_closer_suffix,
         terminal_source=terminal_source,
     )
     profile = get_language_profile(_profile_language(text_language))
-    return build_display_text(stem, capsule, profile)
+    return build_display_text_from_state(state, profile)
 
 
 def build_segment_render_text(
     *,
-    raw_text: str,
-    normalized_text: str | None,
+    stem: str | None = None,
+    raw_text: str | None = None,
+    normalized_text: str | None = None,
     text_language: str,
     terminal_raw: str,
     terminal_closer_suffix: str,
     terminal_source: str,
 ) -> str:
-    stem = _resolve_stem(raw_text=raw_text, normalized_text=normalized_text)
-    capsule = _build_capsule_or_fallback(
+    del normalized_text
+    state = _resolve_segment_text_state(
+        stem=stem,
         raw_text=raw_text,
         terminal_raw=terminal_raw,
         terminal_closer_suffix=terminal_closer_suffix,
         terminal_source=terminal_source,
     )
     profile = get_language_profile(_profile_language(text_language))
-    return build_render_text(stem, capsule, profile)
+    return build_render_text_from_state(state, profile)
 
 
-def extract_segment_stem(*, raw_text: str, normalized_text: str | None) -> str:
-    return _resolve_stem(raw_text=raw_text, normalized_text=normalized_text)
+def extract_segment_stem(
+    *,
+    stem: str | None = None,
+    raw_text: str | None = None,
+    normalized_text: str | None = None,
+    terminal_raw: str | None = None,
+    terminal_closer_suffix: str | None = None,
+    terminal_source: str | None = None,
+) -> str:
+    del normalized_text
+    return _resolve_segment_text_state(
+        stem=stem,
+        raw_text=raw_text,
+        terminal_raw=terminal_raw,
+        terminal_closer_suffix=terminal_closer_suffix,
+        terminal_source=terminal_source,
+    ).stem
 
 
 def split_text_segments_with_terminal_capsules(raw_text: str) -> list[str]:
@@ -249,9 +307,9 @@ def split_text_segments_with_terminal_capsules(raw_text: str) -> list[str]:
     while index < len(normalized):
         current_char = normalized[index]
         if current_char == "\n":
-            _append_segment_slice(segments, normalized[start:index])
-            start = index + 1
-            index += 1
+            _append_forced_newline_segment(segments, normalized[start:index])
+            start = _consume_forced_newline_leading_punctuation(normalized, index + 1)
+            index = start
             continue
 
         terminal = _match_terminal_at(normalized, index)
@@ -278,16 +336,35 @@ def split_text_segments_with_terminal_capsules(raw_text: str) -> list[str]:
     return segments
 
 
-def _resolve_stem(*, raw_text: str, normalized_text: str | None) -> str:
-    if normalized_text:
-        normalized = normalize_whitespace(normalized_text)
-        if normalized.endswith("。") and len(normalized) > 1:
-            return normalized[:-1]
-    return parse_terminal_capsule(raw_text).stem
+def _append_forced_newline_segment(segments: list[str], text: str) -> None:
+    normalized = normalize_whitespace(text.replace("\n", " "))
+    if not normalized:
+        return
+
+    state = parse_terminal_capsule(normalized)
+    stem = state.stem.rstrip("".join(_FORCED_NEWLINE_TRAILING_PUNCTUATION)).rstrip()
+    if not stem:
+        return
+
+    segments.append(f"{stem}{state.terminal_closer_suffix}")
+
+
+def _consume_forced_newline_leading_punctuation(text: str, start_index: int) -> int:
+    cursor = start_index
+    while cursor < len(text):
+        current_char = text[cursor]
+        if current_char.isspace() and current_char != "\n":
+            cursor += 1
+            continue
+        if current_char in _FORCED_NEWLINE_LEADING_PUNCTUATION:
+            cursor += 1
+            continue
+        break
+    return cursor
 
 
 def _append_segment_slice(segments: list[str], text: str) -> None:
-    normalized = normalize_whitespace(text)
+    normalized = normalize_whitespace(text.replace("\n", " "))
     if normalized:
         segments.append(normalized)
 
@@ -299,22 +376,6 @@ def _match_terminal_at(text: str, index: int) -> str | None:
         if text.startswith(terminal, index):
             return terminal
     return None
-
-
-def _build_capsule_or_fallback(
-    *,
-    raw_text: str,
-    terminal_raw: str,
-    terminal_closer_suffix: str,
-    terminal_source: str,
-) -> TerminalCapsule:
-    if terminal_raw or terminal_closer_suffix or terminal_source == "original":
-        return TerminalCapsule(
-            terminal_raw=terminal_raw,
-            terminal_closer_suffix=terminal_closer_suffix,
-            terminal_source=terminal_source,
-        )
-    return parse_terminal_capsule(raw_text).capsule
 
 
 def _resolve_single_segment_language_meta(text: str, text_language: str) -> SegmentLanguageMeta:
@@ -501,10 +562,37 @@ def _profile_language(text_language: str) -> ResolvedLanguage:
     return "unknown"
 
 
-def _derive_risk_flags(normalized_text: str) -> list[str]:
+def _resolve_segment_text_state(
+    *,
+    stem: str | None,
+    raw_text: str | None,
+    terminal_raw: str | None,
+    terminal_closer_suffix: str | None,
+    terminal_source: str | None,
+) -> SegmentTextState:
+    if stem is None:
+        if raw_text is None:
+            raise ValueError("Either stem or raw_text must be provided.")
+        stem = parse_terminal_capsule(raw_text).stem
+    return SegmentTextState(
+        stem=stem,
+        terminal_raw=terminal_raw or "",
+        terminal_closer_suffix=terminal_closer_suffix or "",
+        terminal_source=terminal_source or "synthetic",
+    )
+
+
+def _build_legacy_normalized_text(stem: str) -> str:
+    normalized_stem = stem.rstrip()
+    if not normalized_stem:
+        raise ValueError("Segment text must contain readable speech content.")
+    return f"{normalized_stem}。"
+
+
+def _derive_risk_flags(speech_text: str) -> list[str]:
     speech_char_count = sum(
         1
-        for char in normalized_text
+        for char in speech_text
         if not char.isspace() and char not in _NON_SPEECH_CHARACTERS
     )
     if speech_char_count <= 0:

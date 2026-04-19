@@ -25,11 +25,7 @@ export function getPrimaryRenderActionLabel(
 function isActiveInferenceStatus(
   status: InferenceProgressState["status"] | undefined,
 ): boolean {
-  return (
-    status === "preparing" ||
-    status === "inferencing" ||
-    status === "cancelling"
-  );
+  return status === "inferencing" || status === "cancelling";
 }
 
 function formatInferenceMessage(progress: InferenceProgressState): string {
@@ -49,9 +45,27 @@ export function resolveWorkspaceProgressState({
   inferenceProgress?: InferenceProgressState | null;
   renderJob?: RenderJobResponse | null;
 }): WorkspaceProgressState {
+  const inferenceStatus = inferenceProgress?.status;
+  const inferenceActive = Boolean(
+    inferenceProgress && isActiveInferenceStatus(inferenceStatus),
+  );
+  const inferencePercent = Math.round((inferenceProgress?.progress ?? 0) * 100);
+  const renderJobPreparing = Boolean(
+    renderJob && ["queued", "preparing"].includes(renderJob.status),
+  );
+  const inferencePreparing = inferenceStatus === "preparing";
+
+  if (renderJobPreparing || inferencePreparing) {
+    return {
+      percent: 0,
+      message: "加载中...",
+      source: "idle",
+    };
+  }
+
   if (inferenceProgress && isActiveInferenceStatus(inferenceProgress.status)) {
     return {
-      percent: Math.round(inferenceProgress.progress * 100),
+      percent: inferencePercent,
       message: formatInferenceMessage(inferenceProgress),
       source: "tts",
     };

@@ -238,8 +238,6 @@ class CheckpointService:
             document_id=document_id,
             snapshot_kind="head",
             document_version=document_version,
-            raw_text="".join(segment.raw_text for segment in segments),
-            normalized_text="".join(segment.normalized_text for segment in segments),
             segment_ids=[segment.segment_id for segment in segments],
             edge_ids=[edge.edge_id for edge in edges],
             block_ids=[],

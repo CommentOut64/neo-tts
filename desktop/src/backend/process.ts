@@ -12,6 +12,16 @@ export interface BackendOwner {
 	exited: Promise<Error | null>;
 }
 
+export interface BackendProcessMonitorSample {
+	pid: number;
+	cpuSeconds: number | null;
+	workingSetMb: number | null;
+	threadCount: number | null;
+	gpuMemoryMb: number | null;
+	sampledAt: string;
+	error?: string;
+}
+
 export interface StartBackendProcessOptions {
 	projectRoot: string;
 	workingDirectory?: string;
@@ -24,15 +34,20 @@ export interface StartBackendProcessOptions {
 	healthIntervalMs?: number;
 	healthTimeoutMs?: number;
 	onLogLine?: (stream: "stdout" | "stderr", line: string) => void;
+	onMonitorSample?: (sample: BackendProcessMonitorSample) => void;
+	monitorIntervalMs?: number;
+	sampleProcessMonitor?: (pid: number) => BackendProcessMonitorSample | null;
 }
 
 const defaultBackendHost = "127.0.0.1";
 const defaultBackendPort = 18600;
 const defaultHealthIntervalMs = 200;
 const defaultHealthTimeoutMs = 30_000;
+const defaultMonitorIntervalMs = 5_000;
 // 产品态允许稍长冷启动窗口，但保持在 40s 以内，避免无反馈等待过久。
 const packagedHealthTimeoutMs = 40_000;
 const netstatProbeTimeoutMs = 5_000;
+const monitorProbeTimeoutMs = 5_000;
 
 function readPortNetstatOutput(port: number): string {
 	const command = `netstat -ano -p TCP | findstr /R /C:":${String(port)} "`;
@@ -81,6 +96,117 @@ export function parsePortOccupierPids(
 		}
 	}
 	return [...pidSet].sort((left, right) => left - right);
+}
+
+export function parseNvidiaSmiComputeAppsMemoryMiB(csvOutput: string, pid: number): number | null {
+	let total = 0;
+	let matched = false;
+	for (const line of csvOutput.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (trimmed.length === 0) {
+			continue;
+		}
+		const parts = trimmed.split(",");
+		if (parts.length < 2) {
+			continue;
+		}
+		const rowPid = Number(parts[0]?.trim());
+		const usedMemoryMiB = Number(parts[1]?.trim());
+		if (!Number.isFinite(rowPid) || !Number.isFinite(usedMemoryMiB) || rowPid !== pid) {
+			continue;
+		}
+		matched = true;
+		total += usedMemoryMiB;
+	}
+	return matched ? total : null;
+}
+
+interface WindowsBackendProcessSnapshot {
+	cpuSeconds: number | null;
+	workingSetMb: number | null;
+	threadCount: number | null;
+}
+
+function parseWindowsProcessSnapshot(jsonText: string): WindowsBackendProcessSnapshot {
+	const parsed = JSON.parse(jsonText) as {
+		CPU?: number;
+		WorkingSet64?: number;
+		ThreadCount?: number;
+	};
+	return {
+		cpuSeconds: typeof parsed.CPU === "number" ? parsed.CPU : null,
+		workingSetMb: typeof parsed.WorkingSet64 === "number" ? parsed.WorkingSet64 / (1024 * 1024) : null,
+		threadCount: typeof parsed.ThreadCount === "number" ? parsed.ThreadCount : null,
+	};
+}
+
+interface WindowsBackendProcessMonitorDependencies {
+	now?: () => Date;
+	runCommand(command: string): string;
+}
+
+function defaultMonitorCommandRunner(command: string): string {
+	return execSync(command, {
+		encoding: "utf-8",
+		timeout: monitorProbeTimeoutMs,
+		windowsHide: true,
+	});
+}
+
+export function sampleWindowsBackendProcess(
+	pid: number,
+	dependencies?: WindowsBackendProcessMonitorDependencies,
+): BackendProcessMonitorSample {
+	const runCommand = dependencies?.runCommand ?? defaultMonitorCommandRunner;
+	const now = dependencies?.now ?? (() => new Date());
+	try {
+		const processJson = runCommand(
+			`powershell -NoProfile -Command "Get-Process -Id ${String(pid)} | Select-Object Id,CPU,WorkingSet64,@{Name='ThreadCount';Expression={$_.Threads.Count}} | ConvertTo-Json -Compress"`,
+		);
+		const processSnapshot = parseWindowsProcessSnapshot(processJson);
+		let gpuMemoryMb: number | null = null;
+		try {
+			const gpuCsv = runCommand(
+				"nvidia-smi --query-compute-apps=pid,used_gpu_memory --format=csv,noheader,nounits",
+			);
+			gpuMemoryMb = parseNvidiaSmiComputeAppsMemoryMiB(gpuCsv, pid);
+		} catch {
+			gpuMemoryMb = null;
+		}
+		return {
+			pid,
+			cpuSeconds: processSnapshot.cpuSeconds,
+			workingSetMb: processSnapshot.workingSetMb,
+			threadCount: processSnapshot.threadCount,
+			gpuMemoryMb,
+			sampledAt: now().toISOString(),
+		};
+	} catch (error) {
+		return {
+			pid,
+			cpuSeconds: null,
+			workingSetMb: null,
+			threadCount: null,
+			gpuMemoryMb: null,
+			sampledAt: now().toISOString(),
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+export function formatBackendMonitorSample(sample: BackendProcessMonitorSample): string {
+	const parts = [
+		`pid=${String(sample.pid)}`,
+		`rss_mb=${sample.workingSetMb === null ? "na" : sample.workingSetMb.toFixed(1)}`,
+		`cpu_s=${sample.cpuSeconds === null ? "na" : sample.cpuSeconds.toFixed(1)}`,
+		`threads=${sample.threadCount === null ? "na" : String(sample.threadCount)}`,
+		`gpu_mb=${sample.gpuMemoryMb === null ? "na" : String(sample.gpuMemoryMb)}`,
+		`sampled_at=${sample.sampledAt}`,
+	];
+	if (typeof sample.error === "string" && sample.error.length > 0) {
+		parts.push(`error=${sample.error}`);
+	}
+	return parts.join(" ");
 }
 
 /**
@@ -154,12 +280,45 @@ export async function startBackendProcess(
 		bindRealtimeProcessLog(child.stdout, "stdout", options.onLogLine);
 		bindRealtimeProcessLog(child.stderr, "stderr", options.onLogLine);
 	}
+	const sampleProcessMonitor =
+		options.sampleProcessMonitor ??
+		((pid: number) => (process.platform === "win32" ? sampleWindowsBackendProcess(pid) : null));
+	const monitorTimer =
+		typeof options.onMonitorSample === "function" && typeof child.pid === "number"
+			? globalThis.setInterval(() => {
+					if (child.exitCode !== null || child.killed) {
+						return;
+					}
+					try {
+						const sample = sampleProcessMonitor(child.pid!);
+						if (sample) {
+							options.onMonitorSample?.(sample);
+						}
+					} catch (error) {
+						options.onMonitorSample?.({
+							pid: child.pid!,
+							cpuSeconds: null,
+							workingSetMb: null,
+							threadCount: null,
+							gpuMemoryMb: null,
+							sampledAt: new Date().toISOString(),
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}, options.monitorIntervalMs ?? defaultMonitorIntervalMs)
+			: null;
 
 	const exited = new Promise<Error | null>((resolve) => {
 		child.once("error", (error) => {
+			if (monitorTimer !== null) {
+				globalThis.clearInterval(monitorTimer);
+			}
 			resolve(error);
 		});
 		child.once("exit", (code, signal) => {
+			if (monitorTimer !== null) {
+				globalThis.clearInterval(monitorTimer);
+			}
 			if (code === 0 || signal === "SIGTERM") {
 				resolve(null);
 				return;
@@ -196,6 +355,9 @@ export async function startBackendProcess(
 		},
 		async stop() {
 			if (child.exitCode !== null || child.killed) {
+				if (monitorTimer !== null) {
+					globalThis.clearInterval(monitorTimer);
+				}
 				return;
 			}
 			child.stdin?.end();
@@ -299,8 +461,13 @@ export function buildDefaultBackendOptions(
 		target.gptSovitsDir,
 		process.env.PYTHONPATH,
 	].filter((value): value is string => typeof value === "string" && value.length > 0);
+	const runtimePythonDir = path.dirname(target.runtimePython);
+	const packagedPathEntries = [runtimePythonDir, process.env.PATH].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
 	const cnhubertPath = path.join(target.builtinModelDir, "chinese-hubert-base");
 	const bertPath = path.join(target.builtinModelDir, "chinese-roberta-wwm-ext-large");
+	const nltkDataPath = path.join(target.resourcesDir, "runtime", "python", "nltk_data");
 
 	return {
 		projectRoot: target.runtimeRoot,
@@ -332,6 +499,8 @@ export function buildDefaultBackendOptions(
 			BERT_PATH: bertPath,
 			GPT_SOVITS_BERT_PATH: bertPath,
 			bert_path: bertPath,
+			NLTK_DATA: nltkDataPath,
+			PATH: packagedPathEntries.join(path.delimiter),
 			PYTHONPATH: pythonPathEntries.join(path.delimiter),
 		},
 		fetchImpl: globalThis.fetch.bind(globalThis),

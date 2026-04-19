@@ -8,6 +8,7 @@ export const SegmentBlock = Node.create({
   group: "block",
   content: "inline*",
   defining: true,
+  isolating: true,
   selectable: false,
 
   addAttributes() {

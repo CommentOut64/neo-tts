@@ -3,14 +3,7 @@ import type {
   WorkspaceRenderPlan,
   WorkspaceSemanticDocument,
 } from "./layoutTypes";
-
-function buildSegmentTextNode(segmentId: string, text: string) {
-  return {
-    type: "text",
-    text,
-    marks: [{ type: "segmentAnchor", attrs: { segmentId } }],
-  };
-}
+import { buildWorkspaceSegmentTextNodesFromDisplayText } from "./terminalRegionModel";
 
 function buildPauseBoundaryNode(
   semanticDocument: WorkspaceSemanticDocument,
@@ -84,7 +77,12 @@ export function buildCompositionLayoutDocument(
           const renderedText =
             segment.renderStatus === "completed" ? segment.text : "";
           if (renderedText) {
-            paragraphContent.push(buildSegmentTextNode(segmentId, renderedText));
+            paragraphContent.push(
+              ...buildWorkspaceSegmentTextNodesFromDisplayText({
+                segmentId,
+                text: renderedText,
+              }),
+            );
           }
 
           const isLastSegmentInBlock = segmentIndex === block.segmentIds.length - 1;

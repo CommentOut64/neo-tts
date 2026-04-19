@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "version": "0.0.1-dev4",
+  "version": "0.0.1-dev9",
   "private": true,
   "main": "dist/main.js",
   "scripts": {

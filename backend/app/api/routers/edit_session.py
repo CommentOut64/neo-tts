@@ -794,8 +794,8 @@ def patch_segments_voice_binding_batch(
     "/segments/{segment_id}",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="更新段文本或推理覆盖项",
-    description="修改单个段的文本、语言或旧版 inference_override，并触发新的编辑作业。",
+    summary="更新段文本 patch 或推理覆盖项",
+    description="修改单个段的结构化文本 patch、语言或旧版 inference_override，并触发新的编辑作业。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def patch_segment(request: Request, segment_id: str, body: UpdateSegmentRequest) -> RenderJobAcceptedResponse:
@@ -942,7 +942,7 @@ def get_playback_map(request: Request) -> PlaybackMapResponse:
     "/standardization-preview",
     response_model=StandardizationPreviewResponse,
     summary="预览文本标准化结果",
-    description="按后端权威标准化器切段并返回 canonical/capsule/语言元数据预览，不写入正式会话。",
+    description="按后端权威标准化器切段并返回 stem/display_text/terminal capsule/语言元数据预览，不写入正式会话。",
     responses=BAD_REQUEST_RESPONSE,
 )
 def get_standardization_preview(

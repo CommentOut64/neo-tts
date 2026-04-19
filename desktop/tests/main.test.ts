@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
-import { APP_OPEN_EXTERNAL_URL_CHANNEL, APP_REQUEST_EXIT_CHANNEL } from "../src/ipc/channels";
+import {
+  APP_OPEN_EXTERNAL_URL_CHANNEL,
+  APP_REQUEST_EXIT_CHANNEL,
+} from "../src/ipc/channels";
 import { runMain } from "../src/main";
 import type { ProductPaths } from "../src/runtime/paths";
 
@@ -716,6 +719,53 @@ describe("desktop main", () => {
     expect(loadedURL).toBe("http://127.0.0.1:18600");
   });
 
+  it("production mode clears renderer cache before loading frontend via loadURL", async () => {
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+    const order: string[] = [];
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {
+          order.push("whenReady");
+        },
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.runtimeRoot,
+      productPaths,
+      startBackend: async () => {
+        order.push("startBackend");
+        return createBackendOwnerStub(createDeferred<Error | null>().promise);
+      },
+      clearRendererCache: async () => {
+        order.push("clearRendererCache");
+      },
+      createMainWindow: () =>
+        createWindowStub({
+          show: () => {
+            order.push("show");
+          },
+          loadURL: async () => {
+            order.push("loadURL");
+          },
+        }),
+    });
+
+    expect(order).toEqual([
+      "whenReady",
+      "startBackend",
+      "clearRendererCache",
+      "show",
+      "loadURL",
+    ]);
+  });
+
   it("bridges backend stdout/stderr lines into runtime logger", async () => {
     const logger = {
       info: vi.fn(),
@@ -744,5 +794,73 @@ describe("desktop main", () => {
     });
 
     expect(logger.info).toHaveBeenCalledWith("[backend:stderr] backend log line");
+  });
+
+  it("bridges backend process monitor samples into runtime logger", async () => {
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      runtimeLogger: logger,
+      startBackend: async (options) => {
+        options.onMonitorSample?.({
+          pid: 2468,
+          cpuSeconds: 12.5,
+          workingSetMb: 256,
+          threadCount: 9,
+          gpuMemoryMb: 1024,
+          sampledAt: "2026-04-19T04:00:00.000Z",
+        });
+        return createBackendOwnerStub(createDeferred<Error | null>().promise);
+      },
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "[backend:monitor] pid=2468 rss_mb=256.0 cpu_s=12.5 threads=9 gpu_mb=1024 sampled_at=2026-04-19T04:00:00.000Z",
+    );
+  });
+
+  it("does not register the legacy renderer diagnostic IPC channel", async () => {
+    const handledChannels: string[] = [];
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: (channel) => {
+          handledChannels.push(channel);
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      runtimeLogger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(handledChannels).not.toContain("app:renderer-log");
   });
 });

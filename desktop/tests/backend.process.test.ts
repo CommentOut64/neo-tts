@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import type { ProductPaths } from "../src/runtime/paths";
 import {
   buildDefaultBackendOptions,
+  formatBackendMonitorSample,
   parsePortOccupierPids,
+  parseNvidiaSmiComputeAppsMemoryMiB,
+  sampleWindowsBackendProcess,
 } from "../src/backend/process";
 
 function createProductPaths(distributionKind: "installed" | "portable"): ProductPaths {
@@ -58,10 +61,67 @@ describe("backend process options", () => {
     expect(occupiers).toEqual([1234]);
   });
 
+  it("parses nvidia-smi compute apps csv and sums target pid memory", () => {
+    const csv = [
+      "1234, 2048",
+      "4321, 512",
+      "1234, 256",
+    ].join("\n");
+
+    expect(parseNvidiaSmiComputeAppsMemoryMiB(csv, 1234)).toBe(2304);
+    expect(parseNvidiaSmiComputeAppsMemoryMiB(csv, 9999)).toBeNull();
+  });
+
+  it("samples backend process monitor info through injected command runner", () => {
+    const sample = sampleWindowsBackendProcess(2468, {
+      now: () => new Date("2026-04-19T04:00:00.000Z"),
+      runCommand(command) {
+        if (command.includes("Get-Process")) {
+          return JSON.stringify({
+            Id: 2468,
+            CPU: 12.5,
+            WorkingSet64: 268435456,
+            ThreadCount: 9,
+          });
+        }
+        if (command.includes("nvidia-smi")) {
+          return "2468, 1024\n";
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    });
+
+    expect(sample).toEqual({
+      pid: 2468,
+      cpuSeconds: 12.5,
+      workingSetMb: 256,
+      threadCount: 9,
+      gpuMemoryMb: 1024,
+      sampledAt: "2026-04-19T04:00:00.000Z",
+    });
+  });
+
+  it("formats backend monitor samples into compact runtime log lines", () => {
+    const line = formatBackendMonitorSample({
+      pid: 2468,
+      cpuSeconds: 12.5,
+      workingSetMb: 256,
+      threadCount: 9,
+      gpuMemoryMb: 1024,
+      sampledAt: "2026-04-19T04:00:00.000Z",
+    });
+
+    expect(line).toBe(
+      "pid=2468 rss_mb=256.0 cpu_s=12.5 threads=9 gpu_mb=1024 sampled_at=2026-04-19T04:00:00.000Z",
+    );
+  });
+
   it("starts installed flavor backend with appdata paths", () => {
     const paths = createProductPaths("installed");
 
     const options = buildDefaultBackendOptions(paths);
+    const runtimePythonDir = path.dirname(paths.runtimePython);
+    const nltkDataDir = path.join(paths.resourcesDir, "runtime", "python", "nltk_data");
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -97,6 +157,8 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.NLTK_DATA).toBe(nltkDataDir);
+    expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);
     expect(options.healthTimeoutMs).toBe(40_000);
@@ -106,6 +168,8 @@ describe("backend process options", () => {
     const paths = createProductPaths("portable");
 
     const options = buildDefaultBackendOptions(paths);
+    const runtimePythonDir = path.dirname(paths.runtimePython);
+    const nltkDataDir = path.join(paths.resourcesDir, "runtime", "python", "nltk_data");
 
     expect(options.pythonExecutable).toBe(paths.runtimePython);
     expect(options.workingDirectory).toBe(paths.resourcesDir);
@@ -130,6 +194,8 @@ describe("backend process options", () => {
     expect(options.environment?.bert_path).toBe(
       path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"),
     );
+    expect(options.environment?.NLTK_DATA).toBe(nltkDataDir);
+    expect(options.environment?.PATH?.startsWith(runtimePythonDir)).toBe(true);
     expect(options.environment?.PYTHONPATH).toContain(paths.resourcesDir);
     expect(options.environment?.PYTHONPATH).toContain(paths.gptSovitsDir);
     expect(options.healthTimeoutMs).toBe(40_000);

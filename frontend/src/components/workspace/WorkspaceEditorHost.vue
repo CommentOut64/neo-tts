@@ -19,7 +19,10 @@ import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft
 import type { EditableEdge, EditableSegment } from "@/types/editSession";
 import { buildSegmentDisplayText } from "@/utils/segmentTextDisplay";
 import { extractWorkspaceEffectiveText } from "@/utils/workspaceEffectiveText";
-import type { WorkspaceDraftMode } from "@/utils/workspaceDraftSnapshot";
+import {
+  WORKSPACE_DRAFT_SCHEMA_VERSION,
+  type WorkspaceDraftMode,
+} from "@/utils/workspaceDraftSnapshot";
 
 import EndSessionDialog from "./EndSessionDialog.vue";
 import SegmentContextMenu from "./SegmentContextMenu.vue";
@@ -52,13 +55,15 @@ import type { WorkspaceEditorLayoutMode } from "./workspace-editor/layoutTypes";
 import type { WorkspaceSemanticEdge } from "./workspace-editor/layoutTypes";
 import { createEmptyWorkspaceSourceDoc, buildWorkspaceSourceDoc } from "./workspace-editor/sourceDocModel";
 import {
-  extractOrderedSegmentTextsFromWorkspaceViewDoc,
+  extractOrderedSegmentDraftsFromWorkspaceViewDoc,
   normalizeWorkspaceViewDocToSourceDoc,
 } from "./workspace-editor/sourceDocNormalizer";
 import { segmentDecorationKey } from "./workspace-editor/segmentDecoration";
 import {
-  sanitizeWorkspaceViewDocTerminalCapsules,
-} from "./workspace-editor/terminalCapsuleProtection";
+  buildWorkspaceSegmentDisplayTextFromDraft,
+  createEmptyWorkspaceSegmentTextDraft,
+  type WorkspaceSegmentTextDraft,
+} from "./workspace-editor/terminalRegionModel";
 import EditorSelectionHintBubble from "./workspace-editor/EditorSelectionHintBubble.vue";
 import {
   canStartListReorder,
@@ -127,12 +132,11 @@ const lastSessionSegments = ref<
       EditableSegment,
       | "segment_id"
       | "order_key"
-      | "raw_text"
       | "terminal_raw"
       | "terminal_closer_suffix"
       | "terminal_source"
       | "detected_language"
-    >
+    > & { display_text: string }
   >
 >([]);
 const lastSessionEdges = ref<EditableEdge[]>([]);
@@ -199,9 +203,23 @@ const backendSegmentTextById = computed<Record<string, string>>(() =>
     ]),
   ),
 );
+const backendSegmentDraftById = computed<Record<string, WorkspaceSegmentTextDraft>>(() =>
+  Object.fromEntries(
+    sortedReadySegments.value.map((segment) => [
+      segment.segment_id,
+      {
+        segmentId: segment.segment_id,
+        stem: segment.stem,
+        terminal_raw: segment.terminal_raw ?? "",
+        terminal_closer_suffix: segment.terminal_closer_suffix ?? "",
+        terminal_source: segment.terminal_source ?? "synthetic",
+      },
+    ]),
+  ),
+);
 const pendingRerenderTargets = computed(() =>
   resolveRerenderTargets({
-    dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value,
+    dirtyTextSegmentIds: lightEdit.rerenderSegmentIds.value,
     segments: editSession.segments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,
@@ -232,7 +250,33 @@ const currentSessionKey = computed(() => {
   ].join("::");
 });
 
-const sourceDocSegmentTexts = computed(() => {
+function areSegmentDraftsEqual(
+  left: WorkspaceSegmentTextDraft,
+  right: WorkspaceSegmentTextDraft,
+) {
+  return left.stem === right.stem &&
+    left.terminal_raw === right.terminal_raw &&
+    left.terminal_closer_suffix === right.terminal_closer_suffix &&
+    left.terminal_source === right.terminal_source;
+}
+
+function getSessionSegmentById(segmentId: string): EditableSegment | undefined {
+  return sortedReadySegments.value.find((segment) => segment.segment_id === segmentId);
+}
+
+function buildDisplayTextForDraft(
+  segmentId: string,
+  draft: WorkspaceSegmentTextDraft,
+): string {
+  const segment = getSessionSegmentById(segmentId);
+  return buildWorkspaceSegmentDisplayTextFromDraft({
+    draft,
+    detectedLanguage: segment?.detected_language ?? null,
+    textLanguage: segment?.text_language ?? null,
+  });
+}
+
+const sourceDocSegmentDraftEntries = computed<WorkspaceSegmentTextDraft[]>(() => {
   if (
     editSession.sessionStatus.value !== "ready" ||
     currentSessionKey.value === null ||
@@ -240,22 +284,27 @@ const sourceDocSegmentTexts = computed(() => {
   ) {
     return sortedReadySegments.value.map((segment) => ({
       segmentId: segment.segment_id,
-      orderKey: segment.order_key,
-      text: buildSegmentDisplayText(segment),
+      stem: segment.stem,
+      terminal_raw: segment.terminal_raw ?? "",
+      terminal_closer_suffix: segment.terminal_closer_suffix ?? "",
+      terminal_source: segment.terminal_source ?? "synthetic",
     }));
   }
 
-  const extracted = extractOrderedSegmentTextsFromWorkspaceViewDoc(
+  return extractOrderedSegmentDraftsFromWorkspaceViewDoc(
     sourceDoc.value,
     currentSessionSegmentIds.value,
+    backendSegmentDraftById.value,
   );
-
-  return extracted.map(({ segmentId, text }, index) => ({
-    segmentId,
-    orderKey: sortedReadySegments.value[index]?.order_key ?? index + 1,
-    text,
-  }));
 });
+
+const sourceDocSegmentTexts = computed(() =>
+  sourceDocSegmentDraftEntries.value.map((draft, index) => ({
+    segmentId: draft.segmentId,
+    orderKey: sortedReadySegments.value[index]?.order_key ?? index + 1,
+    text: buildDisplayTextForDraft(draft.segmentId, draft),
+  })),
+);
 
 const listReorder = useWorkspaceListReorder({
   canStartDrag() {
@@ -278,11 +327,15 @@ const listReorder = useWorkspaceListReorder({
   },
 });
 
-const sourceDocSegmentDrafts = computed<Record<string, string>>(() =>
+const sourceDocSegmentDrafts = computed<Record<string, WorkspaceSegmentTextDraft>>(() =>
   Object.fromEntries(
-    sourceDocSegmentTexts.value
-      .filter(({ segmentId, text }) => text !== getBackendSegmentText(segmentId))
-      .map(({ segmentId, text }) => [segmentId, text]),
+    sourceDocSegmentDraftEntries.value
+      .filter((draft) => !areSegmentDraftsEqual(
+        draft,
+        backendSegmentDraftById.value[draft.segmentId] ??
+          createEmptyWorkspaceSegmentTextDraft(draft.segmentId),
+      ))
+      .map((draft) => [draft.segmentId, draft]),
   ),
 );
 
@@ -640,9 +693,14 @@ onBeforeUnmount(() => {
 });
 
 function buildSegmentDraftRecord(
-  drafts: Record<string, string> = sourceDocSegmentDrafts.value,
-): Record<string, string> {
-  return { ...drafts };
+  drafts: Record<string, WorkspaceSegmentTextDraft> = sourceDocSegmentDrafts.value,
+): Record<string, WorkspaceSegmentTextDraft> {
+  return Object.fromEntries(
+    Object.entries(drafts).map(([segmentId, draft]) => [
+      segmentId,
+      { ...draft },
+    ]),
+  );
 }
 
 function setSourceDoc(nextDoc: JSONContent) {
@@ -735,6 +793,9 @@ function syncEditingSourceState(viewDoc: JSONContent): boolean {
       viewDoc,
       orderedSegmentIds: currentSessionSegmentIds.value,
       edges: workspaceEdges.value,
+      previousDraftsBySegmentId: Object.fromEntries(
+        sourceDocSegmentDraftEntries.value.map((draft) => [draft.segmentId, draft]),
+      ),
     }));
     sourceDocSessionKey.value = currentSessionKey.value;
     updateCompositionLayoutHintsForEditingView(viewDoc);
@@ -750,7 +811,7 @@ function syncEditingSourceState(viewDoc: JSONContent): boolean {
 function persistWorkspaceDraftSnapshot(
   mode: WorkspaceDraftMode,
   editorDoc: JSONContent,
-  segmentDrafts: Record<string, string> = buildSegmentDraftRecord(),
+  segmentDrafts: Record<string, WorkspaceSegmentTextDraft> = buildSegmentDraftRecord(),
 ) {
   if (!currentDocumentId.value || currentDocumentVersion.value === null) {
     return;
@@ -768,7 +829,7 @@ function persistWorkspaceDraftSnapshot(
   }
 
   const saved = workspaceDraftPersistence.saveSnapshot({
-    schemaVersion: 2,
+    schemaVersion: WORKSPACE_DRAFT_SCHEMA_VERSION,
     documentId: currentDocumentId.value,
     documentVersion: currentDocumentVersion.value,
     segmentIds: [...currentSessionSegmentIds.value],
@@ -884,9 +945,10 @@ function isEditorSnapshotCompatible(editorDoc: JSONContent): boolean {
   }
 
   try {
-    extractOrderedSegmentTextsFromWorkspaceViewDoc(
+    extractOrderedSegmentDraftsFromWorkspaceViewDoc(
       editorDoc,
       currentSessionSegmentIds.value,
+      backendSegmentDraftById.value,
     );
     return true;
   } catch {
@@ -915,6 +977,11 @@ function getBackendSegmentText(segmentId: string): string {
     (item) => item.segment_id === segmentId,
   );
   return segment ? buildSegmentDisplayText(segment) : "";
+}
+
+function getBackendSegmentDraft(segmentId: string): WorkspaceSegmentTextDraft {
+  return backendSegmentDraftById.value[segmentId] ??
+    createEmptyWorkspaceSegmentTextDraft(segmentId);
 }
 
 function syncPauseBoundaryAttrsInEditor(nextEdges: EditableEdge[]) {
@@ -1012,14 +1079,21 @@ function commitEditWithDoc(editorDoc: JSONContent) {
       viewDoc: editorDoc,
       orderedSegmentIds: currentSessionSegmentIds.value,
       edges: workspaceEdges.value,
+      previousDraftsBySegmentId: Object.fromEntries(
+        sourceDocSegmentDraftEntries.value.map((draft) => [draft.segmentId, draft]),
+      ),
     });
     const nextDrafts = Object.fromEntries(
-      extractOrderedSegmentTextsFromWorkspaceViewDoc(
+      extractOrderedSegmentDraftsFromWorkspaceViewDoc(
         nextSourceDoc,
         currentSessionSegmentIds.value,
+        backendSegmentDraftById.value,
       )
-        .filter(({ segmentId, text }) => text !== getBackendSegmentText(segmentId))
-        .map(({ segmentId, text }) => [segmentId, text]),
+        .filter((draft) => !areSegmentDraftsEqual(
+          draft,
+          getBackendSegmentDraft(draft.segmentId),
+        ))
+        .map((draft) => [draft.segmentId, draft]),
     );
 
     clearPendingDraftPersist();
@@ -1075,7 +1149,22 @@ async function commitAndExitEdit() {
     ? detectDeletionCandidates(editorDoc, currentSessionSegmentIds.value)
     : [];
   if (candidates.length > 0) {
+    const restorations = candidates.map((id) => ({
+      segmentId: id,
+      originalDraft: getBackendSegmentDraft(id),
+      detectedLanguage: getSessionSegmentById(id)?.detected_language ?? null,
+      textLanguage: getSessionSegmentById(id)?.text_language ?? null,
+      trailingEdge: workspaceEdges.value.find((edge) => edge.leftSegmentId === id) ?? null,
+    }));
+    const patchedDoc = patchEditorDocForRestoredSegments(
+      editorDoc,
+      currentSessionSegmentIds.value,
+      restorations,
+    );
+    editor.commands.setContent(patchedDoc);
+
     if (candidates.length >= currentSessionSegmentIds.value.length) {
+      syncEditingSourceState(patchedDoc);
       ElMessage.warning("至少保留一段");
       return;
     }
@@ -1089,15 +1178,6 @@ async function commitAndExitEdit() {
       );
       return;
     }
-
-    const restorations = candidates.map((id) => ({
-      segmentId: id,
-      originalText: getBackendSegmentText(id),
-    }));
-    const patchedDoc = patchEditorDocForRestoredSegments(
-      editorDoc, currentSessionSegmentIds.value, restorations,
-    );
-    editor.commands.setContent(patchedDoc);
 
     if (!confirmed) {
       // 用户选择不删除 — 段文字已回退，留在编辑态
@@ -1235,21 +1315,8 @@ function onDocUpdate(value: JSONContent) {
     return;
   }
 
-  const sanitized = sanitizeWorkspaceViewDocTerminalCapsules({
-    previousDoc: currentViewDoc.value,
-    nextDoc: value,
-    orderedSegmentIds: currentSessionSegmentIds.value,
-  });
-  const nextDoc = sanitized.doc;
-
-  if (sanitized.touchedCapsule) {
-    showEditorSelectionHint();
-  }
-
+  const nextDoc = value;
   currentViewDoc.value = nextDoc;
-  if (nextDoc !== value) {
-    pushContentToEditor(editorRef.value?.editor, nextDoc, displayViewKey.value, true);
-  }
   clearPendingDraftPersist();
   if (!syncEditingSourceState(nextDoc)) {
     return;
@@ -1529,7 +1596,7 @@ watch(
           nextSegments: sortedReadySegments.value.map((segment) => ({
             segment_id: segment.segment_id,
             order_key: segment.order_key,
-            raw_text: buildSegmentDisplayText(segment),
+            display_text: buildSegmentDisplayText(segment),
           })),
           previousEdges: lastSessionEdges.value,
           nextEdges: sessionEdges.value,
@@ -1546,7 +1613,12 @@ watch(
           segments: sortedReadySegments.value.map((segment) => ({
             segmentId: segment.segment_id,
             orderKey: segment.order_key,
-            text: buildSegmentDisplayText(segment),
+            stem: segment.stem,
+            terminal_raw: segment.terminal_raw ?? "",
+            terminal_closer_suffix: segment.terminal_closer_suffix ?? "",
+            terminal_source: segment.terminal_source ?? "synthetic",
+            detectedLanguage: segment.detected_language ?? null,
+            textLanguage: segment.text_language ?? null,
           })),
           edges: workspaceEdges.value,
         }));
@@ -1564,7 +1636,7 @@ watch(
     lastSessionSegments.value = sortedReadySegments.value.map((segment) => ({
       segment_id: segment.segment_id,
       order_key: segment.order_key,
-      raw_text: buildSegmentDisplayText(segment),
+      display_text: buildSegmentDisplayText(segment),
       terminal_raw: segment.terminal_raw,
       terminal_closer_suffix: segment.terminal_closer_suffix,
       terminal_source: segment.terminal_source,
