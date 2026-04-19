@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 
 import type { BackendOwner, StartBackendProcessOptions } from "./backend/process";
-import { buildDefaultBackendOptions, startBackendProcess } from "./backend/process";
+import { buildDefaultBackendOptions, formatBackendMonitorSample, startBackendProcess } from "./backend/process";
 import {
 	APP_GET_RUNTIME_INFO_CHANNEL,
 	APP_OPEN_EXTERNAL_URL_CHANNEL,
@@ -222,6 +222,9 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		};
 		backendOptions.onLogLine = (stream, line) => {
 			logger.info(`[backend:${stream}] ${line}`);
+		};
+		backendOptions.onMonitorSample = (sample) => {
+			logger.info(`[backend:monitor] ${formatBackendMonitorSample(sample)}`);
 		};
 		logger.info("starting backend process");
 		backend = await options.startBackend(backendOptions);
