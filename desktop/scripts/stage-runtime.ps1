@@ -695,6 +695,7 @@ else {
 
 $uvLockHash = Get-FileSha256 -Path $uvLockPath
 $requirementsLockPath = Join-Path $requirementsCacheRoot ("python-requirements.{0}.{1}.{2}.txt" -f $Profile, $uvLockHash, $pythonRuntimePruneFingerprint)
+$nltkPayloadLayoutVersion = "nltk-payload-layout-v2"
 $pythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
     "runtime-python",
     $pythonVersion,
@@ -705,6 +706,7 @@ $pythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
 )
 $nltkPayloadFingerprint = Get-FingerprintFromStrings -Values @(
     "nltk-payload",
+    $nltkPayloadLayoutVersion,
     (Get-PathFingerprint -Path $cmudictPayloadPath),
     (Get-PathFingerprint -Path $averagedPerceptronTaggerPayloadPath),
     (Get-PathFingerprint -Path $averagedPerceptronTaggerEngPayloadPath)
@@ -857,8 +859,16 @@ if (-not $reuseStagePythonPartition) {
     $runtimeNltkDataDir = Join-Path $runtimePythonDir "nltk_data"
     $runtimeNltkCorporaDir = Join-Path $runtimeNltkDataDir "corpora"
     $runtimeNltkTaggersDir = Join-Path $runtimeNltkDataDir "taggers"
+    $runtimeNltkCorporaZipPath = Join-Path $runtimeNltkCorporaDir "cmudict.zip"
+    $runtimeNltkAveragedPerceptronTaggerZipPath = Join-Path $runtimeNltkTaggersDir "averaged_perceptron_tagger.zip"
+    $runtimeNltkAveragedPerceptronTaggerEngZipPath = Join-Path $runtimeNltkTaggersDir "averaged_perceptron_tagger_eng.zip"
     Ensure-Directory -Path $runtimeNltkCorporaDir
     Ensure-Directory -Path $runtimeNltkTaggersDir
+
+    Write-Host "[stage-runtime] Copying bundled NLTK payload zips into staged runtime ..."
+    Copy-Item -LiteralPath $cmudictPayloadPath -Destination $runtimeNltkCorporaZipPath -Force
+    Copy-Item -LiteralPath $averagedPerceptronTaggerPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerZipPath -Force
+    Copy-Item -LiteralPath $averagedPerceptronTaggerEngPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerEngZipPath -Force
 
     Write-Host "[stage-runtime] Extracting bundled NLTK payload into staged runtime ..."
     Expand-Archive -LiteralPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -Force
