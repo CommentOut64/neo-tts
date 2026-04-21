@@ -125,18 +125,26 @@ export function resolveRendererEntry(
 }
 
 function validateProductPaths(productPaths: ProductPaths): Error | null {
+	if (productPaths.resolutionKind === "missing-descriptor") {
+		return new Error(
+			`Product runtime validation failed: runtime descriptor missing for product root (${productPaths.productRoot})`,
+		);
+	}
+
 	const requiredTargets: Array<{ path: string; label: string }> = [
+		{ path: path.join(productPaths.shellRoot, "NeoTTSApp.exe"), label: "shell executable" },
 		{ path: productPaths.runtimePython, label: "bundled python" },
 		{ path: productPaths.backendDir, label: "backend dir" },
 		{ path: productPaths.frontendDir, label: "frontend dist dir" },
 		{ path: path.join(productPaths.frontendDir, "index.html"), label: "frontend index.html" },
 		{ path: productPaths.gptSovitsDir, label: "GPT_SoVITS dir" },
 		{ path: productPaths.builtinModelDir, label: "builtin model dir" },
+		{ path: productPaths.pretrainedModelsDir, label: "pretrained model dir" },
 		{ path: productPaths.configDir, label: "config dir" },
 	];
 	if (productPaths.distributionKind === "portable") {
 		requiredTargets.push({
-			path: path.join(productPaths.runtimeRoot, "portable.flag"),
+			path: path.join(productPaths.productRoot, "portable.flag"),
 			label: "portable.flag",
 		});
 	}

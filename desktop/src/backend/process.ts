@@ -456,8 +456,13 @@ export function buildDefaultBackendOptions(
 		};
 	}
 
+	const productRoot = target.productRoot ?? target.bootstrapRoot ?? target.runtimeRoot;
+	const appCoreRoot = target.appCoreRoot ?? target.resourcesDir;
+	const runtimeLayerRoot = target.runtimeRoot;
+	const modelsRoot = target.modelsRoot ?? target.resourcesDir;
+	const pretrainedModelsRoot = target.pretrainedModelsRoot ?? target.resourcesDir;
 	const pythonPathEntries = [
-		target.resourcesDir,
+		appCoreRoot,
 		target.gptSovitsDir,
 		process.env.PYTHONPATH,
 	].filter((value): value is string => typeof value === "string" && value.length > 0);
@@ -467,11 +472,11 @@ export function buildDefaultBackendOptions(
 	);
 	const cnhubertPath = path.join(target.builtinModelDir, "chinese-hubert-base");
 	const bertPath = path.join(target.builtinModelDir, "chinese-roberta-wwm-ext-large");
-	const nltkDataPath = path.join(target.resourcesDir, "runtime", "python", "nltk_data");
+	const nltkDataPath = path.join(runtimePythonDir, "nltk_data");
 
 	return {
-		projectRoot: target.runtimeRoot,
-		workingDirectory: target.resourcesDir,
+		projectRoot: productRoot,
+		workingDirectory: appCoreRoot,
 		host: defaultBackendHost,
 		port: defaultBackendPort,
 		healthTimeoutMs: packagedHealthTimeoutMs,
@@ -487,8 +492,13 @@ export function buildDefaultBackendOptions(
 		environment: {
 			...process.env,
 			NEO_TTS_DISTRIBUTION_KIND: target.distributionKind,
-			NEO_TTS_PROJECT_ROOT: target.runtimeRoot,
-			NEO_TTS_RESOURCES_ROOT: target.resourcesDir,
+			NEO_TTS_PROJECT_ROOT: productRoot,
+			NEO_TTS_RUNTIME_DESCRIPTOR: target.runtimeDescriptorPath ?? "",
+			NEO_TTS_APP_CORE_ROOT: appCoreRoot,
+			NEO_TTS_RUNTIME_ROOT: runtimeLayerRoot,
+			NEO_TTS_MODELS_ROOT: modelsRoot,
+			NEO_TTS_PRETRAINED_MODELS_ROOT: pretrainedModelsRoot,
+			NEO_TTS_RESOURCES_ROOT: appCoreRoot,
 			NEO_TTS_GPT_SOVITS_ROOT: target.gptSovitsDir,
 			NEO_TTS_USER_DATA_ROOT: target.userDataDir,
 			NEO_TTS_EXPORTS_ROOT: target.exportsDir,

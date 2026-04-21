@@ -163,7 +163,7 @@ func writeJSONAtomic(path string, payload any) (string, error) {
 	if err := os.WriteFile(tempPath, buffer.Bytes(), 0o644); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := replaceFileAtomically(tempPath, path); err != nil {
 		return "", err
 	}
 	return path, nil

@@ -584,6 +584,12 @@ class VoiceRepository:
         return path.resolve().as_posix()
 
     def _resolve_project_path(self, raw_path: str | Path) -> Path:
+        candidate = Path(raw_path).expanduser()
+        if self._settings.distribution_kind != "development":
+            return self._resolve_packaged_relative_path(
+                candidate,
+                is_managed=_is_managed_relative_path(candidate),
+            )
         return resolve_runtime_path(
             raw_path,
             project_root=self._settings.project_root,
@@ -663,17 +669,37 @@ class VoiceRepository:
     def _normalize_product_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(entry)
         is_managed = bool(normalized.get("managed"))
-        base_dir = self._settings.user_data_root if is_managed else self._settings.resources_root
         for field_name in ("gpt_path", "sovits_path", "ref_audio"):
             raw_value = normalized.get(field_name)
             if not isinstance(raw_value, str):
                 continue
             candidate = Path(raw_value)
-            if candidate.is_absolute() or base_dir is None:
-                normalized[field_name] = str(candidate)
+            if candidate.is_absolute():
+                normalized[field_name] = str(candidate.resolve())
                 continue
-            normalized[field_name] = str((base_dir / candidate).resolve())
+            normalized[field_name] = str(
+                self._resolve_packaged_relative_path(candidate, is_managed=is_managed)
+            )
         return normalized
+
+    def _resolve_packaged_relative_path(self, raw_path: Path, *, is_managed: bool) -> Path:
+        if raw_path.is_absolute():
+            return raw_path.resolve()
+
+        if is_managed:
+            base_dir = self._settings.user_data_root
+        else:
+            normalized = raw_path.as_posix()
+            if normalized == "models" or normalized.startswith("models/"):
+                base_dir = self._settings.models_root
+            elif normalized == "pretrained_models" or normalized.startswith("pretrained_models/"):
+                base_dir = self._settings.pretrained_models_root
+            else:
+                base_dir = self._settings.app_core_root or self._settings.resources_root
+
+        if base_dir is None:
+            return raw_path.resolve()
+        return (base_dir / raw_path).resolve()
 
     def _is_managed_file(self, path: Path) -> bool:
         try:
@@ -709,3 +735,8 @@ class VoiceRepository:
         if normalized in {".", ".."} or any(separator in normalized for separator in ("/", "\\")):
             raise ValueError("Voice name must not contain path separators.")
         return normalized
+
+
+def _is_managed_relative_path(path_value: Path) -> bool:
+    normalized = path_value.as_posix()
+    return normalized == "managed_voices" or normalized.startswith("managed_voices/")
