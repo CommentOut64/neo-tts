@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend.app.core.logging import get_logger
+from backend.app.core.path_resolution import resolve_runtime_path
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.services.edit_asset_store import EditAssetStore
@@ -20,11 +21,17 @@ from backend.app.services.synthesis_result_store import SynthesisResultStore
 lifespan_logger = get_logger("lifespan")
 
 
-def _resolve_project_path(project_root: Path, raw_path: str) -> str:
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = project_root / path
-    return str(path.resolve())
+def _resolve_runtime_voice_path(app: FastAPI, raw_path: str) -> str:
+    settings = app.state.settings
+    return str(
+        resolve_runtime_path(
+            raw_path,
+            project_root=settings.project_root,
+            user_data_root=settings.user_data_root,
+            resources_root=settings.resources_root,
+            managed_voices_dir=settings.managed_voices_dir,
+        )
+    )
 
 
 def _preload_configured_voices(app: FastAPI, model_cache) -> None:
@@ -41,8 +48,8 @@ def _preload_configured_voices(app: FastAPI, model_cache) -> None:
             continue
 
         try:
-            resolved_gpt_path = _resolve_project_path(settings.project_root, str(voice["gpt_path"]))
-            resolved_sovits_path = _resolve_project_path(settings.project_root, str(voice["sovits_path"]))
+            resolved_gpt_path = _resolve_runtime_voice_path(app, str(voice["gpt_path"]))
+            resolved_sovits_path = _resolve_runtime_voice_path(app, str(voice["sovits_path"]))
             get_model_handle = getattr(model_cache, "get_model_handle", None)
             if callable(get_model_handle):
                 handle = get_model_handle(

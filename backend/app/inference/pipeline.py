@@ -5,6 +5,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from backend.app.core.path_resolution import resolve_runtime_path
 from backend.app.inference.text_processing import normalize_whitespace
 from backend.app.inference.types import CancelChecker, PreparedSynthesisRequest, ProgressCallback
 
@@ -48,7 +49,4 @@ class PyTorchSynthesisPipeline:
         return sample_rate, stream
 
     def _resolve_ref_audio(self, ref_audio: str) -> str:
-        path = Path(ref_audio)
-        if not path.is_absolute():
-            path = self._project_root / path
-        return str(path.resolve())
+        return str(resolve_runtime_path(ref_audio, project_root=self._project_root))

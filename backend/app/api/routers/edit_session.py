@@ -8,9 +8,9 @@ from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from backend.app.api.reference_audio_upload import (
-    store_temporary_reference_audio,
     validate_reference_audio_filename,
 )
+from backend.app.core.path_resolution import resolve_runtime_path
 from backend.app.core.exceptions import AssetNotFoundError, EditSessionNotFoundError
 from backend.app.inference.editable_gateway import (
     CacheBackedEditableInferenceBackend,
@@ -109,11 +109,17 @@ def _build_voice_service(request: Request) -> VoiceService:
     return VoiceService(repository)
 
 
-def _resolve_project_path(project_root: Path, raw_path: str) -> str:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return str(path)
-    return str((project_root / path).resolve())
+def _resolve_runtime_model_path(request: Request, raw_path: str) -> str:
+    settings = request.app.state.settings
+    return str(
+        resolve_runtime_path(
+            raw_path,
+            project_root=settings.project_root,
+            user_data_root=settings.user_data_root,
+            resources_root=settings.resources_root,
+            managed_voices_dir=settings.managed_voices_dir,
+        )
+    )
 
 
 def _build_editable_gateway(
@@ -145,8 +151,8 @@ def _build_editable_gateway(
     default_cache_key = (voice.gpt_path, voice.sovits_path)
 
     def _build_cached_gateway(gpt_path: str, sovits_path: str) -> LazyEditableInferenceGateway:
-        resolved_gpt_path = _resolve_project_path(settings.project_root, gpt_path)
-        resolved_sovits_path = _resolve_project_path(settings.project_root, sovits_path)
+        resolved_gpt_path = _resolve_runtime_model_path(request, gpt_path)
+        resolved_sovits_path = _resolve_runtime_model_path(request, sovits_path)
 
         def _build_backend():
             return CacheBackedEditableInferenceBackend(
@@ -287,8 +293,19 @@ async def upload_reference_audio(
 ) -> ReferenceAudioUploadResponse:
     filename = validate_reference_audio_filename(ref_audio_file.filename)
     payload = await ref_audio_file.read()
-    temp_path = store_temporary_reference_audio(request=request, filename=filename, payload=payload)
-    return ReferenceAudioUploadResponse(reference_audio_path=str(temp_path), filename=filename)
+    asset = _build_edit_session_service(request).create_session_reference_asset(
+        filename=filename,
+        payload=payload,
+    )
+    return ReferenceAudioUploadResponse(
+        reference_asset_id=asset.reference_asset_id,
+        reference_scope="session_override",
+        reference_identity=f"{asset.session_id}:{asset.reference_asset_id}",
+        reference_audio_fingerprint=asset.audio_fingerprint,
+        reference_text_fingerprint=asset.reference_text_fingerprint,
+        reference_audio_path=asset.audio_path,
+        filename=filename,
+    )
 
 
 @router.post(

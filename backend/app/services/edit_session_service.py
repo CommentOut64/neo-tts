@@ -23,6 +23,10 @@ from backend.app.schemas.edit_session import (
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
+from backend.app.services.session_reference_asset_service import (
+    SessionReferenceAsset,
+    SessionReferenceAssetService,
+)
 from backend.app.services.voice_service import VoiceService
 
 
@@ -38,11 +42,15 @@ class EditSessionService:
         asset_store: EditAssetStore,
         runtime: EditSessionRuntime,
         voice_service: VoiceService,
+        session_reference_asset_service: SessionReferenceAssetService | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
         self._runtime = runtime
         self._voice_service = voice_service
+        self._session_reference_asset_service = session_reference_asset_service or SessionReferenceAssetService(
+            assets_root=asset_store.assets_root
+        )
 
     def prepare_initialize_request(self, request: InitializeEditSessionRequest) -> InitializeEditSessionRequest:
         voice = self._voice_service.get_voice(request.voice_id)
@@ -56,6 +64,49 @@ class EditSessionService:
 
     def get_voice_profile(self, voice_id: str):
         return self._voice_service.get_voice(voice_id)
+
+    def create_session_reference_asset(
+        self,
+        *,
+        filename: str,
+        payload: bytes,
+        binding_key: str | None = None,
+        reference_text: str = "",
+        reference_language: str = "",
+    ) -> SessionReferenceAsset:
+        active_session = self.require_active_session()
+        return self._session_reference_asset_service.create_asset(
+            session_id=active_session.document_id,
+            filename=filename,
+            payload=payload,
+            binding_key=binding_key,
+            reference_text=reference_text,
+            reference_language=reference_language,
+        )
+
+    def get_session_reference_asset(self, reference_asset_id: str) -> SessionReferenceAsset:
+        active_session = self.require_active_session()
+        return self._session_reference_asset_service.get_asset(
+            session_id=active_session.document_id,
+            reference_asset_id=reference_asset_id,
+        )
+
+    def update_session_reference_asset(
+        self,
+        *,
+        reference_asset_id: str,
+        binding_key: str | None = None,
+        reference_text: str | None = None,
+        reference_language: str | None = None,
+    ) -> SessionReferenceAsset:
+        active_session = self.require_active_session()
+        return self._session_reference_asset_service.update_asset(
+            session_id=active_session.document_id,
+            reference_asset_id=reference_asset_id,
+            binding_key=binding_key,
+            reference_text=reference_text,
+            reference_language=reference_language,
+        )
 
     def initialize_document(self, request: InitializeEditSessionRequest) -> tuple[ActiveDocumentState, RenderJobResponse]:
         now = datetime.now(timezone.utc)
