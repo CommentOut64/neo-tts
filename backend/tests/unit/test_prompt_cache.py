@@ -7,23 +7,46 @@ def test_prompt_cache_key_changes_when_reference_inputs_change():
     from backend.app.inference.prompt_cache import PromptCacheKey
 
     base_key = PromptCacheKey(
+        reference_scope="voice_preset",
+        reference_identity="voice-a:preset",
         reference_audio_path="ref.wav",
+        reference_audio_fingerprint="audio-fp-1",
         reference_text="参考文本",
+        reference_text_fingerprint="text-fp-1",
         reference_language="zh",
         model_version="v2Pro",
         inference_config_fingerprint="fp-1",
     )
 
     changed_text_key = PromptCacheKey(
+        reference_scope="voice_preset",
+        reference_identity="voice-a:preset",
         reference_audio_path="ref.wav",
+        reference_audio_fingerprint="audio-fp-1",
         reference_text="另一段参考文本",
+        reference_text_fingerprint="text-fp-2",
         reference_language="zh",
         model_version="v2Pro",
         inference_config_fingerprint="fp-1",
     )
     changed_audio_key = PromptCacheKey(
+        reference_scope="voice_preset",
+        reference_identity="voice-a:preset",
         reference_audio_path="ref-2.wav",
+        reference_audio_fingerprint="audio-fp-2",
         reference_text="参考文本",
+        reference_text_fingerprint="text-fp-1",
+        reference_language="zh",
+        model_version="v2Pro",
+        inference_config_fingerprint="fp-1",
+    )
+    changed_scope_key = PromptCacheKey(
+        reference_scope="session_override",
+        reference_identity="session-1:binding-a",
+        reference_audio_path="ref.wav",
+        reference_audio_fingerprint="audio-fp-1",
+        reference_text="参考文本",
+        reference_text_fingerprint="text-fp-1",
         reference_language="zh",
         model_version="v2Pro",
         inference_config_fingerprint="fp-1",
@@ -31,6 +54,7 @@ def test_prompt_cache_key_changes_when_reference_inputs_change():
 
     assert base_key != changed_text_key
     assert base_key != changed_audio_key
+    assert base_key != changed_scope_key
 
 
 def test_prompt_cache_stores_cpu_payload_and_evicts_oldest_entry():
@@ -38,15 +62,23 @@ def test_prompt_cache_stores_cpu_payload_and_evicts_oldest_entry():
 
     cache = PromptCache(max_entries=1)
     first_key = PromptCacheKey(
+        reference_scope="voice_preset",
+        reference_identity="voice-a:preset",
         reference_audio_path="ref-1.wav",
+        reference_audio_fingerprint="audio-fp-1",
         reference_text="参考文本一",
+        reference_text_fingerprint="text-fp-1",
         reference_language="zh",
         model_version="v2Pro",
         inference_config_fingerprint="fp-1",
     )
     second_key = PromptCacheKey(
+        reference_scope="session_override",
+        reference_identity="session-1:binding-a",
         reference_audio_path="ref-2.wav",
+        reference_audio_fingerprint="audio-fp-2",
         reference_text="参考文本二",
+        reference_text_fingerprint="text-fp-2",
         reference_language="zh",
         model_version="v2Pro",
         inference_config_fingerprint="fp-1",

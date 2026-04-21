@@ -488,6 +488,68 @@ def test_build_reference_context_reuses_prompt_cache_for_same_reference():
     }
 
 
+def test_build_reference_context_does_not_reuse_prompt_cache_across_reference_scope():
+    runtime = _build_editable_runtime_for_prompt_cache()
+    counters = {
+        "semantic": 0,
+        "spectrogram": 0,
+        "speaker": 0,
+        "prompt_text": 0,
+    }
+
+    runtime._extract_prompt_semantic = lambda reference_audio_path: (
+        counters.__setitem__("semantic", counters["semantic"] + 1) or torch.tensor([1, 2, 3], dtype=torch.long)
+    )
+    runtime.get_spepc = lambda reference_audio_path: (
+        counters.__setitem__("spectrogram", counters["spectrogram"] + 1)
+        or (
+            torch.ones((1, 704, 12), dtype=torch.float32),
+            torch.ones((1, 16000), dtype=torch.float32),
+        )
+    )
+    runtime._compute_reference_speaker_embedding = lambda refer_audio: (
+        counters.__setitem__("speaker", counters["speaker"] + 1) or torch.ones((1, 2048), dtype=torch.float32)
+    )
+
+    def _get_phones_and_bert(text, language, version, default_lang=None):
+        del language, version, default_lang
+        if text == "参考文本。":
+            counters["prompt_text"] += 1
+            return [11, 12], torch.ones((1024, 2), dtype=torch.float32), text
+        raise AssertionError(f"unexpected text: {text}")
+
+    runtime.get_phones_and_bert = _get_phones_and_bert
+
+    preset_context = ResolvedRenderContext(
+        voice_id="voice-demo",
+        model_key="model-demo",
+        reference_audio_path="ref.wav",
+        reference_text="参考文本",
+        reference_language="zh",
+        reference_scope="voice_preset",
+        reference_identity="voice-demo:preset",
+    )
+    override_context = ResolvedRenderContext(
+        voice_id="voice-demo",
+        model_key="model-demo",
+        reference_audio_path="ref.wav",
+        reference_text="参考文本",
+        reference_language="zh",
+        reference_scope="session_override",
+        reference_identity="session-1:binding-a",
+    )
+
+    runtime.build_reference_context(preset_context)
+    runtime.build_reference_context(override_context)
+
+    assert counters == {
+        "semantic": 2,
+        "spectrogram": 2,
+        "speaker": 2,
+        "prompt_text": 2,
+    }
+
+
 def test_build_reference_context_keeps_prompt_bert_on_cpu_when_runtime_device_is_cuda():
     class _FakeDeviceTensor:
         def __init__(self, device_type: str = "cpu") -> None:
@@ -540,6 +602,22 @@ def test_build_reference_context_keeps_prompt_bert_on_cpu_when_runtime_device_is
     assert context.reference_speaker_embedding.device.type == "cuda"
     assert context.prompt_bert.device.type == "cpu"
     assert prompt_bert_cpu.moves == []
+
+
+def test_resolve_reference_audio_path_prefers_user_data_root_for_managed_voice_relative_path(tmp_path, monkeypatch):
+    storage_root = tmp_path / "storage"
+    reference_audio = storage_root / "managed_voices" / "voice-demo" / "references" / "ref.wav"
+    reference_audio.parent.mkdir(parents=True)
+    reference_audio.write_bytes(b"RIFFfake")
+    monkeypatch.setenv("NEO_TTS_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("NEO_TTS_USER_DATA_ROOT", str(storage_root))
+    monkeypatch.setenv("NEO_TTS_RESOURCES_ROOT", str(tmp_path))
+
+    runtime = object.__new__(GPTSoVITSOptimizedInference)
+
+    resolved = runtime._resolve_reference_audio_path("managed_voices/voice-demo/references/ref.wav")
+
+    assert resolved == str(reference_audio.resolve())
 
 
 def test_render_segment_base_uses_prompt_features_from_context_instead_of_recomputing():

@@ -65,3 +65,21 @@ def test_pipeline_rejects_empty_input_text(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Input text is empty"):
         pipeline.synthesize_stream(model, request)
+
+
+def test_pipeline_resolves_managed_ref_audio_relative_to_user_data_root(tmp_path: Path, monkeypatch):
+    storage_root = tmp_path / "storage"
+    reference_audio = storage_root / "managed_voices" / "voice-demo" / "references" / "ref.wav"
+    reference_audio.parent.mkdir(parents=True)
+    reference_audio.write_bytes(b"RIFFfake")
+    monkeypatch.setenv("NEO_TTS_USER_DATA_ROOT", str(storage_root))
+    model = _FakeModel()
+    pipeline = PyTorchSynthesisPipeline(project_root=tmp_path)
+    request = _build_request(ref_audio="managed_voices/voice-demo/references/ref.wav")
+
+    sample_rate, stream = pipeline.synthesize_stream(model, request)
+    chunks = list(stream)
+
+    assert sample_rate == 32000
+    assert len(chunks) == 1
+    assert model.calls[0]["ref_wav_path"] == str(reference_audio.resolve())

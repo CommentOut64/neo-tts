@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -90,3 +91,58 @@ def test_build_editable_gateway_reuses_app_model_cache(test_app_settings):
     ]
     assert model_cache.released == [f"{expected_cache_key[0]}|{expected_cache_key[1]}"]
     assert resolved.backend_cache_key == ("pretrained_models/demo.ckpt", "pretrained_models/demo.pth")
+
+
+def test_build_editable_gateway_resolves_managed_weight_paths_relative_to_user_data_root(
+    test_app_settings,
+    monkeypatch,
+):
+    backend = _FakeBackend()
+    model_cache = _FakeModelCache(backend)
+    managed_gpt_path = "managed_voices/demo/weights/demo.ckpt"
+    managed_sovits_path = "managed_voices/demo/weights/demo.pth"
+    managed_settings = replace(
+        test_app_settings,
+        managed_voices_dir=test_app_settings.user_data_root / "managed_voices",
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=managed_settings,
+                model_cache=model_cache,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "backend.app.api.routers.edit_session._build_voice_service",
+        lambda request: SimpleNamespace(
+            get_voice=lambda voice_id: SimpleNamespace(
+                gpt_path=managed_gpt_path,
+                sovits_path=managed_sovits_path,
+            )
+        ),
+    )
+
+    gateway = _build_editable_gateway(request, voice_id="demo")
+    context = ResolvedRenderContext(
+        voice_id="demo",
+        model_key="gpt-sovits-v2",
+        reference_audio_path="demo.wav",
+        reference_text="参考文本",
+        reference_language="zh",
+        resolved_voice_binding=ResolvedVoiceBinding(
+            voice_binding_id="binding-demo",
+            voice_id="demo",
+            model_key="gpt-sovits-v2",
+            gpt_path=managed_gpt_path,
+            sovits_path=managed_sovits_path,
+        ),
+    )
+
+    gateway.build_reference_context(context)
+
+    expected_gpt_path = str((managed_settings.user_data_root / "managed_voices" / "demo" / "weights" / "demo.ckpt").resolve())
+    expected_sovits_path = str(
+        (managed_settings.user_data_root / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()
+    )
+    assert model_cache.acquired == [(expected_gpt_path, expected_sovits_path)]

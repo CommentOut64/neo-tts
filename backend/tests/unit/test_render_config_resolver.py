@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableSegment,
@@ -7,11 +9,13 @@ from backend.app.schemas.edit_session import (
     VoiceBinding,
 )
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
+from backend.app.inference.asset_fingerprint import fingerprint_file
 from backend.app.services.render_config_resolver import RenderConfigResolver
+from backend.app.services.session_reference_asset_service import SessionReferenceAsset
 
 
 class _FakeVoiceService:
-    def __init__(self) -> None:
+    def __init__(self, *, session_assets: dict[str, SessionReferenceAsset] | None = None) -> None:
         self._voices = {
             "voice-a": VoiceProfile(
                 name="voice-a",
@@ -44,9 +48,13 @@ class _FakeVoiceService:
                 managed=True,
             ),
         }
+        self._session_assets = session_assets or {}
 
     def get_voice(self, voice_name: str) -> VoiceProfile:
         return self._voices[voice_name]
+
+    def get_session_reference_asset(self, reference_asset_id: str) -> SessionReferenceAsset:
+        return self._session_assets[reference_asset_id]
 
 
 def _segment(segment_id: str, order_key: int, **overrides) -> EditableSegment:
@@ -54,6 +62,7 @@ def _segment(segment_id: str, order_key: int, **overrides) -> EditableSegment:
         "segment_id": segment_id,
         "document_id": "doc-1",
         "order_key": order_key,
+        "stem": f"第{order_key}句",
         "raw_text": f"第{order_key}句。",
         "normalized_text": f"第{order_key}句。",
         "text_language": "zh",
@@ -64,8 +73,8 @@ def _segment(segment_id: str, order_key: int, **overrides) -> EditableSegment:
     return EditableSegment(**payload)
 
 
-def _resolver() -> RenderConfigResolver:
-    return RenderConfigResolver(voice_service=_FakeVoiceService())
+def _resolver(voice_service: _FakeVoiceService | None = None) -> RenderConfigResolver:
+    return RenderConfigResolver(voice_service=voice_service or _FakeVoiceService())
 
 
 def test_render_config_resolver_prefers_segment_then_group_then_session_scope_and_resolves_binding_reference():
@@ -157,6 +166,8 @@ def test_render_config_resolver_prefers_segment_then_group_then_session_scope_an
     assert resolved.resolved_reference is not None
     assert resolved.resolved_reference.binding_key == "voice-c:model-b"
     assert resolved.resolved_reference.source == "custom"
+    assert resolved.resolved_reference.reference_scope == "session_override"
+    assert resolved.resolved_reference.reference_identity == "voice-c:model-b"
     assert resolved.render_profile.reference_audio_path == "segment-custom.wav"
     assert resolved.render_profile.reference_text == "段级自定义"
     assert resolved.render_profile.reference_language == "en"
@@ -229,3 +240,168 @@ def test_render_config_resolver_unrelated_binding_override_does_not_change_curre
     assert before_resolved.resolved_reference.reference_audio_path == "custom-a.wav"
     assert after_resolved.resolved_reference.reference_audio_path == "custom-a.wav"
     assert before_resolved.render_context_fingerprint == after_resolved.render_context_fingerprint
+
+
+def test_render_config_resolver_prefers_session_reference_asset_identity_over_flat_override_path(tmp_path):
+    asset_audio_path = tmp_path / "references" / "asset-a" / "audio.wav"
+    asset_audio_path.parent.mkdir(parents=True, exist_ok=True)
+    asset_audio_path.write_bytes(b"RIFFasset-a")
+    session_asset = SessionReferenceAsset(
+        reference_asset_id="asset-a",
+        session_id="doc-1",
+        binding_key="voice-a:model-a",
+        audio_path=str(asset_audio_path),
+        audio_fingerprint=fingerprint_file(str(asset_audio_path)),
+        reference_text="",
+        reference_text_fingerprint="",
+        reference_language="",
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-asset",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        raw_text="第一句。",
+        normalized_text="第一句。",
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={
+                    "voice-a:model-a": ReferenceBindingOverride(
+                        session_reference_asset_id="asset-a",
+                        reference_audio_path="stale-flat-path.wav",
+                    )
+                },
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = _resolver(_FakeVoiceService(session_assets={"asset-a": session_asset})).resolve_segment(
+        snapshot=snapshot,
+        segment_id="seg-1",
+    )
+
+    assert resolved.resolved_reference is not None
+    assert resolved.resolved_reference.reference_scope == "session_override"
+    assert resolved.resolved_reference.reference_identity == "doc-1:asset-a"
+    assert resolved.resolved_reference.reference_audio_path == str(asset_audio_path)
+    assert resolved.resolved_reference.reference_audio_fingerprint == session_asset.audio_fingerprint
+    assert resolved.render_profile.reference_audio_path == str(asset_audio_path)
+    assert resolved.render_profile.reference_text == "预设-A"
+    assert resolved.render_profile.reference_language == "zh"
+
+
+def test_render_config_resolver_session_reference_asset_identity_change_updates_fingerprint(tmp_path):
+    asset_audio_path = tmp_path / "references" / "shared" / "audio.wav"
+    asset_audio_path.parent.mkdir(parents=True, exist_ok=True)
+    asset_audio_path.write_bytes(b"RIFFshared")
+    shared_fingerprint = fingerprint_file(str(asset_audio_path))
+    voice_service = _FakeVoiceService(
+        session_assets={
+            "asset-a": SessionReferenceAsset(
+                reference_asset_id="asset-a",
+                session_id="doc-1",
+                binding_key="voice-a:model-a",
+                audio_path=str(asset_audio_path),
+                audio_fingerprint=shared_fingerprint,
+                reference_text="",
+                reference_text_fingerprint="",
+                reference_language="",
+                created_at=datetime.now(timezone.utc),
+            ),
+            "asset-b": SessionReferenceAsset(
+                reference_asset_id="asset-b",
+                session_id="doc-1",
+                binding_key="voice-a:model-a",
+                audio_path=str(asset_audio_path),
+                audio_fingerprint=shared_fingerprint,
+                reference_text="",
+                reference_text_fingerprint="",
+                reference_language="",
+                created_at=datetime.now(timezone.utc),
+            ),
+        }
+    )
+    before_snapshot = DocumentSnapshot(
+        snapshot_id="head-before",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        raw_text="第一句。",
+        normalized_text="第一句。",
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={
+                    "voice-a:model-a": ReferenceBindingOverride(
+                        session_reference_asset_id="asset-a",
+                        reference_audio_path=str(asset_audio_path),
+                        reference_text="自定义参考",
+                        reference_language="zh",
+                    )
+                },
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+    after_snapshot = before_snapshot.model_copy(
+        deep=True,
+        update={
+            "render_profiles": [
+                before_snapshot.render_profiles[0].model_copy(
+                    deep=True,
+                    update={
+                        "reference_overrides_by_binding": {
+                            "voice-a:model-a": ReferenceBindingOverride(
+                                session_reference_asset_id="asset-b",
+                                reference_audio_path=str(asset_audio_path),
+                                reference_text="自定义参考",
+                                reference_language="zh",
+                            )
+                        }
+                    },
+                )
+            ]
+        },
+    )
+
+    before_resolved = _resolver(voice_service).resolve_segment(snapshot=before_snapshot, segment_id="seg-1")
+    after_resolved = _resolver(voice_service).resolve_segment(snapshot=after_snapshot, segment_id="seg-1")
+
+    assert before_resolved.resolved_reference is not None
+    assert after_resolved.resolved_reference is not None
+    assert before_resolved.resolved_reference.reference_audio_path == after_resolved.resolved_reference.reference_audio_path
+    assert before_resolved.resolved_reference.reference_audio_fingerprint == after_resolved.resolved_reference.reference_audio_fingerprint
+    assert before_resolved.resolved_reference.reference_identity == "doc-1:asset-a"
+    assert after_resolved.resolved_reference.reference_identity == "doc-1:asset-b"
+    assert before_resolved.render_context_fingerprint != after_resolved.render_context_fingerprint
