@@ -526,6 +526,7 @@ class RenderJobService:
 
     def create_patch_session_render_profile_job(self, patch: RenderProfilePatchRequest) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        patch = self._prepare_render_profile_patch(patch)
         after_snapshot = self._segment_group_service.update_session_render_profile(patch, snapshot=before_snapshot)
         return self._enqueue_configuration_job(
             job_kind="session_render_profile_patch",
@@ -541,6 +542,7 @@ class RenderJobService:
         patch: RenderProfilePatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        patch = self._prepare_render_profile_patch(patch)
         after_snapshot = self._segment_group_service.update_group_render_profile(
             group_id,
             patch,
@@ -560,6 +562,7 @@ class RenderJobService:
         patch: RenderProfilePatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        patch = self._prepare_render_profile_patch(patch)
         working_snapshot, profile = self._segment_group_service.create_render_profile(
             snapshot=before_snapshot,
             scope="segment",
@@ -639,10 +642,11 @@ class RenderJobService:
         body: SegmentBatchRenderProfilePatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        prepared_patch = self._prepare_render_profile_patch(body.patch)
         working_snapshot, profile = self._segment_group_service.create_render_profile(
             snapshot=before_snapshot,
             scope="segment",
-            patch=body.patch,
+            patch=prepared_patch,
             base_profile_id=before_snapshot.default_render_profile_id,
         )
         after_snapshot = self._segment_service.update_segments_render_profile(
@@ -723,6 +727,7 @@ class RenderJobService:
     def commit_patch_session_render_profile(self, patch: RenderProfilePatchRequest) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        patch = self._prepare_render_profile_patch(patch)
         after_snapshot = self._segment_group_service.update_session_render_profile(patch, snapshot=before_snapshot)
         changed_segment_ids = self._collect_changed_segment_ids(
             before_snapshot=before_snapshot,
@@ -755,6 +760,7 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        patch = self._prepare_render_profile_patch(patch)
         working_snapshot, profile = self._segment_group_service.create_render_profile(
             snapshot=before_snapshot,
             scope="segment",
@@ -810,10 +816,11 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        prepared_patch = self._prepare_render_profile_patch(body.patch)
         working_snapshot, profile = self._segment_group_service.create_render_profile(
             snapshot=before_snapshot,
             scope="segment",
-            patch=body.patch,
+            patch=prepared_patch,
             base_profile_id=before_snapshot.default_render_profile_id,
         )
         after_snapshot = self._segment_service.update_segments_render_profile(
@@ -2856,6 +2863,33 @@ class RenderJobService:
             segment_id=segment_id,
         ).render_profile.render_profile_id
 
+    def _prepare_render_profile_patch(self, patch: RenderProfilePatchRequest) -> RenderProfilePatchRequest:
+        reference_override = patch.reference_override
+        if (
+            reference_override is None
+            or reference_override.operation != "upsert"
+            or not reference_override.session_reference_asset_id
+        ):
+            return patch
+        asset = self._session_service.update_session_reference_asset(
+            reference_asset_id=reference_override.session_reference_asset_id,
+            binding_key=reference_override.binding_key,
+            reference_text=reference_override.reference_text,
+            reference_language=reference_override.reference_language,
+        )
+        return patch.model_copy(
+            update={
+                "reference_override": reference_override.model_copy(
+                    update={
+                        "reference_identity": f"{asset.session_id}:{asset.reference_asset_id}",
+                        "reference_audio_fingerprint": asset.audio_fingerprint,
+                        "reference_audio_path": asset.audio_path,
+                        "reference_text_fingerprint": asset.reference_text_fingerprint,
+                    }
+                )
+            }
+        )
+
     def _resolve_segment_assigned_voice_binding_id(self, snapshot: DocumentSnapshot, segment_id: str) -> str | None:
         return self._render_config_resolver.resolve_segment(
             snapshot=snapshot,
@@ -2875,6 +2909,7 @@ class RenderJobService:
             reference_overrides_by_binding[
                 build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
             ] = ReferenceBindingOverride(
+                session_reference_asset_id=None,
                 reference_audio_path=request.reference_audio_path,
                 reference_text=request.reference_text,
                 reference_language=request.reference_language,
@@ -2923,6 +2958,26 @@ class RenderJobService:
                 if resolved_reference is not None
                 else (resolved.render_profile.reference_language or "")
             ),
+            reference_scope=(
+                resolved_reference.reference_scope
+                if resolved_reference is not None
+                else "voice_preset"
+            ),
+            reference_identity=(
+                resolved_reference.reference_identity
+                if resolved_reference is not None
+                else f"{resolved.voice_binding.voice_id}:preset"
+            ),
+            reference_audio_fingerprint=(
+                resolved_reference.reference_audio_fingerprint
+                if resolved_reference is not None
+                else ""
+            ),
+            reference_text_fingerprint=(
+                resolved_reference.reference_text_fingerprint
+                if resolved_reference is not None
+                else ""
+            ),
             speed=resolved.render_profile.speed,
             top_k=resolved.render_profile.top_k,
             top_p=resolved.render_profile.top_p,
@@ -2966,6 +3021,12 @@ class RenderJobService:
             reference_audio_path=request.reference_audio_path or "",
             reference_text=request.reference_text or "",
             reference_language=request.reference_language or "",
+            reference_scope="session_override" if request.reference_source == "custom" else "voice_preset",
+            reference_identity=(
+                f"{request.voice_id}:{request.model_id}"
+                if request.reference_source == "custom"
+                else f"{request.voice_id}:preset"
+            ),
             speed=request.speed,
             top_k=request.top_k,
             top_p=request.top_p,

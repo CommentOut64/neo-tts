@@ -32,6 +32,7 @@ import {
 } from "@/components/workspace/parameter-panel/resolveParameterScope";
 import type {
   EdgeUpdateBody,
+  ReferenceAudioUploadResponse,
   ReferenceBindingOverridePatch,
   RenderProfile,
   RenderProfilePatch,
@@ -131,9 +132,14 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
     },
     reference: {
       source: null,
+      reference_scope: null,
       binding_key: null,
+      reference_identity: null,
+      session_reference_asset_id: null,
+      reference_audio_fingerprint: null,
       reference_audio_path: null,
       reference_text: null,
+      reference_text_fingerprint: null,
       reference_language: null,
       preset_audio_path: null,
       preset_text: null,
@@ -477,6 +483,22 @@ export function useParameterPanel() {
     const nextOverride: ReferenceBindingOverridePatch = {
       binding_key: currentBindingKey,
       operation: "upsert",
+      reference_identity:
+        field === "reference_audio_path"
+          ? null
+          : normalizeReferenceFieldValue(currentReference.reference_identity),
+      session_reference_asset_id:
+        field === "reference_audio_path"
+          ? null
+          : normalizeReferenceFieldValue(
+              currentReference.session_reference_asset_id,
+            ),
+      reference_audio_fingerprint:
+        field === "reference_audio_path"
+          ? null
+          : normalizeReferenceFieldValue(
+              currentReference.reference_audio_fingerprint,
+            ),
       reference_audio_path:
         field === "reference_audio_path"
           ? value
@@ -485,6 +507,12 @@ export function useParameterPanel() {
         field === "reference_text"
           ? value
           : normalizeReferenceFieldValue(currentReference.reference_text),
+      reference_text_fingerprint:
+        field === "reference_text"
+          ? null
+          : normalizeReferenceFieldValue(
+              currentReference.reference_text_fingerprint,
+            ),
       reference_language:
         field === "reference_language"
           ? value
@@ -496,6 +524,31 @@ export function useParameterPanel() {
     if (resolvedValues.value.reference.source !== "custom") {
       markDirty("reference.source");
     }
+  }
+
+  function applyUploadedReferenceAudio(
+    response: ReferenceAudioUploadResponse,
+  ) {
+    const currentBindingKey = getActiveBindingKey();
+    if (!currentBindingKey) {
+      return;
+    }
+
+    referenceSourceIntent.value = "custom";
+    const currentReference = displayValues.value.reference;
+    replaceReferenceOverride({
+      binding_key: currentBindingKey,
+      operation: "upsert",
+      session_reference_asset_id: response.reference_asset_id,
+      reference_identity: response.reference_identity,
+      reference_audio_fingerprint: response.reference_audio_fingerprint,
+      reference_audio_path: response.reference_audio_path,
+      reference_text: normalizeReferenceFieldValue(currentReference.reference_text),
+      reference_text_fingerprint: response.reference_text_fingerprint,
+      reference_language: normalizeReferenceFieldValue(currentReference.reference_language),
+    });
+    markDirty("reference.source");
+    markDirty("reference.reference_audio_path");
   }
 
   function replaceReferenceOverride(
@@ -792,6 +845,7 @@ export function useParameterPanel() {
     updateVoiceBindingField,
     updateReferenceSource,
     updateReferenceField,
+    applyUploadedReferenceAudio,
     updateEdgeField,
     discardDraft,
     submitDraft,
@@ -932,8 +986,12 @@ function applyReferenceOverrideDraft(
     delete nextOverrides[draftReferenceOverride.binding_key];
   } else {
     nextOverrides[draftReferenceOverride.binding_key] = {
+      session_reference_asset_id: draftReferenceOverride.session_reference_asset_id ?? null,
+      reference_identity: draftReferenceOverride.reference_identity ?? null,
+      reference_audio_fingerprint: draftReferenceOverride.reference_audio_fingerprint ?? null,
       reference_audio_path: draftReferenceOverride.reference_audio_path ?? null,
       reference_text: draftReferenceOverride.reference_text ?? null,
+      reference_text_fingerprint: draftReferenceOverride.reference_text_fingerprint ?? null,
       reference_language: draftReferenceOverride.reference_language ?? null,
     };
   }
@@ -950,9 +1008,14 @@ function pickDisplayReferenceState(
   if (states.length === 0) {
     return {
       source: null,
+      reference_scope: null,
       binding_key: null,
+      reference_identity: null,
+      session_reference_asset_id: null,
+      reference_audio_fingerprint: null,
       reference_audio_path: null,
       reference_text: null,
+      reference_text_fingerprint: null,
       reference_language: null,
       preset_audio_path: null,
       preset_text: null,
@@ -967,9 +1030,14 @@ function pickDisplayReferenceState(
 
   return {
     source: pickValue(states.map((state) => state.source)),
+    reference_scope: pickValue(states.map((state) => state.reference_scope)),
     binding_key: pickValue(states.map((state) => state.binding_key)),
+    reference_identity: pickValue(states.map((state) => state.reference_identity)),
+    session_reference_asset_id: pickValue(states.map((state) => state.session_reference_asset_id)),
+    reference_audio_fingerprint: pickValue(states.map((state) => state.reference_audio_fingerprint)),
     reference_audio_path: pickValue(states.map((state) => state.reference_audio_path)),
     reference_text: pickValue(states.map((state) => state.reference_text)),
+    reference_text_fingerprint: pickValue(states.map((state) => state.reference_text_fingerprint)),
     reference_language: pickValue(states.map((state) => state.reference_language)),
     preset_audio_path: pickValue(states.map((state) => state.preset_audio_path)),
     preset_text: pickValue(states.map((state) => state.preset_text)),

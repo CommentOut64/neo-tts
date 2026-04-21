@@ -8,6 +8,7 @@ declare global {
       backendOrigin: string;
       requestAppExit(): Promise<void>;
       openExternalUrl(url: string): Promise<void>;
+      getPathForFile(file: File): string | null;
     };
   }
 }

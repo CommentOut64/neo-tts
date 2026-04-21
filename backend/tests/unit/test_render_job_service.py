@@ -18,6 +18,7 @@ from backend.app.inference.editable_types import (
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
+    ReferenceBindingOverride,
     DocumentSnapshot,
     EditableEdge,
     EditableSegment,
@@ -328,6 +329,80 @@ def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
 
     assert snapshot.session_status == "ready"
     assert snapshot.source_text == "第一句。\n第二句。"
+
+
+def test_collect_changed_segment_ids_detects_session_reference_asset_switch(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    head_snapshot = service._session_service.get_head_snapshot()  # noqa: SLF001
+    binding_key = build_binding_key(voice_id="demo", model_key="gpt-sovits-v2")
+    asset_a = service._session_service.create_session_reference_asset(  # noqa: SLF001
+        filename="custom-a.wav",
+        payload=b"RIFFcustom-a",
+        binding_key=binding_key,
+        reference_text="会话覆盖",
+        reference_language="zh",
+    )
+    asset_b = service._session_service.create_session_reference_asset(  # noqa: SLF001
+        filename="custom-b.wav",
+        payload=b"RIFFcustom-b",
+        binding_key=binding_key,
+        reference_text="会话覆盖",
+        reference_language="zh",
+    )
+    before_snapshot = head_snapshot.model_copy(
+        deep=True,
+        update={
+            "render_profiles": [
+                head_snapshot.render_profiles[0].model_copy(
+                    deep=True,
+                    update={
+                        "reference_overrides_by_binding": {
+                            binding_key: ReferenceBindingOverride(
+                                session_reference_asset_id=asset_a.reference_asset_id,
+                                reference_audio_path=asset_a.audio_path,
+                                reference_text="会话覆盖",
+                                reference_language="zh",
+                            )
+                        }
+                    },
+                )
+            ]
+        },
+    )
+    after_snapshot = before_snapshot.model_copy(
+        deep=True,
+        update={
+            "render_profiles": [
+                before_snapshot.render_profiles[0].model_copy(
+                    deep=True,
+                    update={
+                        "reference_overrides_by_binding": {
+                            binding_key: ReferenceBindingOverride(
+                                session_reference_asset_id=asset_b.reference_asset_id,
+                                reference_audio_path=asset_b.audio_path,
+                                reference_text="会话覆盖",
+                                reference_language="zh",
+                            )
+                        }
+                    },
+                )
+            ]
+        },
+    )
+
+    changed_segment_ids = service._collect_changed_segment_ids(  # noqa: SLF001
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+    )
+
+    assert changed_segment_ids == {before_snapshot.segments[0].segment_id}
 
 
 def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):

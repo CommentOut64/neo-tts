@@ -121,16 +121,24 @@ export interface RenderProfile {
 }
 
 export interface ReferenceBindingOverride {
+  session_reference_asset_id?: string | null
+  reference_identity?: string | null
+  reference_audio_fingerprint?: string | null
   reference_audio_path: string | null
   reference_text: string | null
+  reference_text_fingerprint?: string | null
   reference_language: string | null
 }
 
 export interface ReferenceBindingOverridePatch {
   binding_key: string
   operation: 'upsert' | 'clear'
+  session_reference_asset_id?: string | null
+  reference_identity?: string | null
+  reference_audio_fingerprint?: string | null
   reference_audio_path?: string | null
   reference_text?: string | null
+  reference_text_fingerprint?: string | null
   reference_language?: string | null
 }
 
@@ -233,6 +241,11 @@ export interface StandardizationPreviewResponse {
 }
 
 export interface ReferenceAudioUploadResponse {
+  reference_asset_id: string
+  reference_scope: 'session_override'
+  reference_identity: string
+  reference_audio_fingerprint: string
+  reference_text_fingerprint: string
   reference_audio_path: string
   filename: string
 }

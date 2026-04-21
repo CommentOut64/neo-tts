@@ -39,10 +39,31 @@ class ModelHandle:
     gpt_path: str
     sovits_path: str
     engine: Any
+    gpt_fingerprint: str = ""
+    sovits_fingerprint: str = ""
     active_count: int = 0
     last_used_at: float = 0.0
     resident_device: str = "cuda"
     pinned: bool = False
+
+
+@dataclass(frozen=True)
+class ModelCacheIdentity:
+    gpt_path: str
+    sovits_path: str
+    gpt_fingerprint: str = ""
+    sovits_fingerprint: str = ""
+
+    @property
+    def cache_key(self) -> str:
+        return "|".join(
+            [
+                self.gpt_path,
+                self.gpt_fingerprint,
+                self.sovits_path,
+                self.sovits_fingerprint,
+            ]
+        )
 
 
 @dataclass(frozen=True)

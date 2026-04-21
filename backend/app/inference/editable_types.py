@@ -28,6 +28,10 @@ class ReferenceContext:
     prompt_bert: torch.Tensor | None = None
     prompt_norm_text: str = ""
     backend_cache_key: tuple[str, str] | None = None
+    reference_scope: str = ""
+    reference_identity: str = ""
+    reference_audio_fingerprint: str = ""
+    reference_text_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,10 @@ class ResolvedRenderContext:
     reference_audio_path: str
     reference_text: str
     reference_language: str
+    reference_scope: str = ""
+    reference_identity: str = ""
+    reference_audio_fingerprint: str = ""
+    reference_text_fingerprint: str = ""
     speed: float = 1.0
     top_k: int = 15
     top_p: float = 1.0

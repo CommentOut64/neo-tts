@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +15,12 @@ class VoiceProfile(BaseModel):
     name: str = Field(description="音色名称，也是接口里使用的 voice ID。")
     gpt_path: str = Field(description="该音色关联的 GPT 权重文件路径。")
     sovits_path: str = Field(description="该音色关联的 SoVITS 权重文件路径。")
+    weight_storage_mode: Literal["external", "managed"] = Field(
+        default="external",
+        description="权重存储模式；`external` 表示引用外部路径，`managed` 表示复制到项目内受管目录。",
+    )
+    gpt_fingerprint: str = Field(default="", description="GPT 权重当前指纹；未启用时为空字符串。")
+    sovits_fingerprint: str = Field(default="", description="SoVITS 权重当前指纹；未启用时为空字符串。")
     ref_audio: str = Field(description="参考音频文件路径。")
     ref_text: str = Field(description="参考音频对应的参考文本。")
     ref_lang: str = Field(default="zh", description="参考文本语言。")

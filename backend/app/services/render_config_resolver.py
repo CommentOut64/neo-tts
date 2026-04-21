@@ -6,6 +6,7 @@ import json
 from typing import Literal
 
 from backend.app.core.exceptions import EditSessionNotFoundError
+from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdge,
@@ -15,6 +16,7 @@ from backend.app.schemas.edit_session import (
     VoiceBinding,
 )
 from backend.app.services.reference_binding import build_binding_key, merge_reference_override
+from backend.app.services.session_reference_asset_service import SessionReferenceAsset
 
 
 @dataclass(frozen=True)
@@ -35,8 +37,12 @@ class ResolvedSegmentConfig:
 class ResolvedReferenceSelection:
     binding_key: str
     source: Literal["preset", "custom"]
+    reference_scope: str
+    reference_identity: str
     reference_audio_path: str
+    reference_audio_fingerprint: str
     reference_text: str
+    reference_text_fingerprint: str
     reference_language: str
 
 
@@ -77,6 +83,14 @@ class RenderConfigResolver:
                 "reference_audio_path": effective_render_profile.reference_audio_path or "",
                 "reference_text": effective_render_profile.reference_text or "",
                 "reference_language": effective_render_profile.reference_language or "",
+                "reference_scope": resolved_reference.reference_scope if resolved_reference is not None else "",
+                "reference_identity": resolved_reference.reference_identity if resolved_reference is not None else "",
+                "reference_audio_fingerprint": (
+                    resolved_reference.reference_audio_fingerprint if resolved_reference is not None else ""
+                ),
+                "reference_text_fingerprint": (
+                    resolved_reference.reference_text_fingerprint if resolved_reference is not None else ""
+                ),
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -181,16 +195,30 @@ class RenderConfigResolver:
         override = render_profile.reference_overrides_by_binding.get(binding_key)
         legacy_override = self._build_legacy_reference_override(render_profile)
         active_override = override or legacy_override or self._resolve_legacy_binding_fallback(render_profile)
+        session_reference_asset = self._resolve_session_reference_asset(active_override)
 
         if self._voice_service is None:
             if active_override is None:
                 return None
-            payload = active_override.model_dump(mode="json")
+            payload = self._build_effective_override_payload(
+                active_override=active_override,
+                session_reference_asset=session_reference_asset,
+            )
             return ResolvedReferenceSelection(
                 binding_key=binding_key,
                 source="custom",
+                reference_scope="session_override",
+                reference_identity=self._build_session_reference_identity(
+                    binding_key=binding_key,
+                    session_reference_asset=session_reference_asset,
+                ),
                 reference_audio_path=payload.get("reference_audio_path") or "",
+                reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
+                    payload.get("reference_audio_path") or "",
+                    session_reference_asset=session_reference_asset,
+                ),
                 reference_text=payload.get("reference_text") or "",
+                reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
                 reference_language=payload.get("reference_language") or "",
             )
 
@@ -202,36 +230,136 @@ class RenderConfigResolver:
             else:
                 if active_override is None:
                     return None
-                payload = active_override.model_dump(mode="json")
+                payload = self._build_effective_override_payload(
+                    active_override=active_override,
+                    session_reference_asset=session_reference_asset,
+                )
                 return ResolvedReferenceSelection(
                     binding_key=binding_key,
                     source="custom",
+                    reference_scope="session_override",
+                    reference_identity=self._build_session_reference_identity(
+                        binding_key=binding_key,
+                        session_reference_asset=session_reference_asset,
+                    ),
                     reference_audio_path=payload.get("reference_audio_path") or "",
+                    reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
+                        payload.get("reference_audio_path") or "",
+                        session_reference_asset=session_reference_asset,
+                    ),
                     reference_text=payload.get("reference_text") or "",
+                    reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
                     reference_language=payload.get("reference_language") or "",
                 )
         except Exception:
             if active_override is None:
                 return None
-            payload = active_override.model_dump(mode="json")
+            payload = self._build_effective_override_payload(
+                active_override=active_override,
+                session_reference_asset=session_reference_asset,
+            )
             return ResolvedReferenceSelection(
                 binding_key=binding_key,
                 source="custom",
+                reference_scope="session_override",
+                reference_identity=self._build_session_reference_identity(
+                    binding_key=binding_key,
+                    session_reference_asset=session_reference_asset,
+                ),
                 reference_audio_path=payload.get("reference_audio_path") or "",
+                reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
+                    payload.get("reference_audio_path") or "",
+                    session_reference_asset=session_reference_asset,
+                ),
                 reference_text=payload.get("reference_text") or "",
+                reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
                 reference_language=payload.get("reference_language") or "",
             )
         merged_reference = merge_reference_override(
             preset_voice=preset_voice,
-            override=active_override,
+            override=self._build_effective_override_payload(
+                active_override=active_override,
+                session_reference_asset=session_reference_asset,
+            )
+            if active_override is not None
+            else None,
+        )
+        reference_scope = "session_override" if active_override is not None else "voice_preset"
+        reference_identity = (
+            self._build_session_reference_identity(
+                binding_key=binding_key,
+                session_reference_asset=session_reference_asset,
+            )
+            if active_override is not None
+            else f"{voice_binding.voice_id}:preset"
         )
         return ResolvedReferenceSelection(
             binding_key=binding_key,
             source="custom" if active_override is not None else "preset",
+            reference_scope=reference_scope,
+            reference_identity=reference_identity,
             reference_audio_path=merged_reference["reference_audio_path"],
+            reference_audio_fingerprint=self._safe_fingerprint_file(merged_reference["reference_audio_path"]),
             reference_text=merged_reference["reference_text"],
+            reference_text_fingerprint=fingerprint_text(merged_reference["reference_text"]),
             reference_language=merged_reference["reference_language"],
         )
+
+    def _resolve_session_reference_asset(
+        self,
+        override: ReferenceBindingOverride | None,
+    ) -> SessionReferenceAsset | None:
+        if (
+            override is None
+            or not override.session_reference_asset_id
+            or self._voice_service is None
+            or not hasattr(self._voice_service, "get_session_reference_asset")
+        ):
+            return None
+        return self._voice_service.get_session_reference_asset(override.session_reference_asset_id)
+
+    @staticmethod
+    def _build_effective_override_payload(
+        *,
+        active_override: ReferenceBindingOverride,
+        session_reference_asset: SessionReferenceAsset | None,
+    ) -> dict[str, str | None]:
+        payload = active_override.model_dump(mode="json")
+        if session_reference_asset is None:
+            return payload
+        payload["reference_audio_path"] = session_reference_asset.audio_path
+        if not RenderConfigResolver._has_value(payload.get("reference_text")) and session_reference_asset.reference_text:
+            payload["reference_text"] = session_reference_asset.reference_text
+        if (
+            not RenderConfigResolver._has_value(payload.get("reference_language"))
+            and session_reference_asset.reference_language
+        ):
+            payload["reference_language"] = session_reference_asset.reference_language
+        return payload
+
+    @staticmethod
+    def _build_session_reference_identity(
+        *,
+        binding_key: str,
+        session_reference_asset: SessionReferenceAsset | None,
+    ) -> str:
+        if session_reference_asset is None:
+            return binding_key
+        return f"{session_reference_asset.session_id}:{session_reference_asset.reference_asset_id}"
+
+    @staticmethod
+    def _resolve_reference_audio_fingerprint(
+        raw_path: str,
+        *,
+        session_reference_asset: SessionReferenceAsset | None,
+    ) -> str:
+        if session_reference_asset is not None:
+            return session_reference_asset.audio_fingerprint
+        return RenderConfigResolver._safe_fingerprint_file(raw_path)
+
+    @staticmethod
+    def _has_value(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
 
     @staticmethod
     def _apply_effective_reference(
@@ -270,3 +398,12 @@ class RenderConfigResolver:
         if len(render_profile.reference_overrides_by_binding) != 1:
             return None
         return next(iter(render_profile.reference_overrides_by_binding.values()))
+
+    @staticmethod
+    def _safe_fingerprint_file(raw_path: str) -> str:
+        if not raw_path:
+            return ""
+        try:
+            return fingerprint_file(raw_path)
+        except FileNotFoundError:
+            return ""

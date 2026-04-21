@@ -65,6 +65,68 @@ def test_app_lifespan_preloads_configured_voices_on_start(test_app_settings, mon
         ]
 
 
+def test_app_lifespan_preloads_managed_voice_relative_to_user_data_root_on_start(tmp_path, monkeypatch):
+    preload_calls: list[tuple[str, str]] = []
+
+    class _FakeModelCache:
+        def __init__(self, project_root, cnhubert_base_path, bert_path, engine_factory=None, warmup_hook=None) -> None:
+            del project_root, cnhubert_base_path, bert_path, engine_factory, warmup_hook
+
+        def get_engine(self, gpt_path, sovits_path):
+            preload_calls.append((gpt_path, sovits_path))
+            return object()
+
+        def clear(self):
+            return None
+
+    voices_config_path = tmp_path / "voices.json"
+    voices_config_path.write_text(
+        json.dumps(
+            {
+                "demo": {
+                    "gpt_path": "managed_voices/demo/weights/demo.ckpt",
+                    "sovits_path": "managed_voices/demo/weights/demo.pth",
+                    "ref_audio": "managed_voices/demo/references/demo.wav",
+                    "ref_text": "ref",
+                    "ref_lang": "zh",
+                    "description": "demo managed voice",
+                    "managed": True,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = AppSettings(
+        project_root=tmp_path,
+        voices_config_path=voices_config_path,
+        managed_voices_dir=tmp_path / "storage" / "managed_voices",
+        synthesis_results_dir=tmp_path / "storage" / "synthesis_results",
+        inference_params_cache_file=tmp_path / "storage" / "state" / "params_cache.json",
+        edit_session_db_file=tmp_path / "storage" / "edit_session" / "session.db",
+        edit_session_assets_dir=tmp_path / "storage" / "edit_session" / "assets",
+        edit_session_exports_dir=tmp_path / "storage" / "edit_session" / "exports",
+        edit_session_staging_ttl_seconds=60,
+        preload_on_start=True,
+        preload_voice_ids=("demo",),
+    )
+
+    monkeypatch.setattr(
+        "backend.app.inference.model_cache.PyTorchModelCache",
+        _FakeModelCache,
+    )
+    application = create_app(settings=settings)
+
+    with TestClient(application):
+        assert preload_calls == [
+            (
+                str((settings.user_data_root / "managed_voices" / "demo" / "weights" / "demo.ckpt").resolve()),
+                str((settings.user_data_root / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()),
+            )
+        ]
+
+
 def test_create_app_exposes_health_route():
     application = create_app()
 

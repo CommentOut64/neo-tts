@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolveBindingReferenceState,
   resolveReferenceSelectionBySource,
   resolveReferenceSelectionForBinding,
 } from "../src/features/reference-binding";
@@ -46,6 +47,7 @@ describe("reference-binding", () => {
       bindingKey: "voice-a:gpt-sovits-v2",
       selection: {
         source: "preset",
+        session_reference_asset_id: null,
         custom_ref_path: null,
         ref_text: "voice-a-preset",
         ref_lang: "zh",
@@ -96,10 +98,50 @@ describe("reference-binding", () => {
       bindingKey: "voice-a:gpt-sovits-v2",
       selection: {
         source: "preset",
+        session_reference_asset_id: null,
         custom_ref_path: null,
         ref_text: "voice-a-preset",
         ref_lang: "zh",
       },
+    });
+  });
+
+  it("binding 级 custom override 会保留会话临时参考资产身份，避免与 preset 混淆", () => {
+    expect(
+      resolveBindingReferenceState({
+        binding: {
+          voice_id: "voice-a",
+          model_key: "gpt-sovits-v2",
+        },
+        profile: {
+          reference_overrides_by_binding: {
+            "voice-a:gpt-sovits-v2": {
+              session_reference_asset_id: "session-ref-1",
+              reference_identity: "doc-1:session-ref-1",
+              reference_audio_fingerprint: "audio-fp-1",
+              reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
+              reference_text: "session-custom",
+              reference_text_fingerprint: "text-fp-1",
+              reference_language: "ja",
+            },
+          },
+        },
+        voices,
+      }),
+    ).toEqual({
+      source: "custom",
+      reference_scope: "session_override",
+      binding_key: "voice-a:gpt-sovits-v2",
+      reference_identity: "doc-1:session-ref-1",
+      session_reference_asset_id: "session-ref-1",
+      reference_audio_fingerprint: "audio-fp-1",
+      reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
+      reference_text: "session-custom",
+      reference_text_fingerprint: "text-fp-1",
+      reference_language: "ja",
+      preset_audio_path: "voices/a.wav",
+      preset_text: "voice-a-preset",
+      preset_language: "zh",
     });
   });
 });

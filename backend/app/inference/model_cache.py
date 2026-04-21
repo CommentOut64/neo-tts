@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from backend.app.core.logging import get_logger
-from backend.app.inference.types import ModelHandle
+from backend.app.core.path_resolution import resolve_runtime_path
+from backend.app.inference.asset_fingerprint import fingerprint_file
+from backend.app.inference.types import ModelCacheIdentity, ModelHandle
 
 if TYPE_CHECKING:
     from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
@@ -21,6 +23,9 @@ model_cache_logger = get_logger("model_cache")
 def build_model_cache_from_settings(*, settings: Any, model_cache_cls: type["PyTorchModelCache"]) -> "PyTorchModelCache":
     candidate_kwargs = {
         "project_root": settings.project_root,
+        "user_data_root": settings.user_data_root,
+        "resources_root": settings.resources_root,
+        "managed_voices_dir": settings.managed_voices_dir,
         "cnhubert_base_path": settings.cnhubert_base_path,
         "bert_path": settings.bert_path,
         "gpu_offload_enabled": settings.gpu_offload_enabled,
@@ -42,6 +47,9 @@ class PyTorchModelCache:
         project_root: Path,
         cnhubert_base_path: str | Path,
         bert_path: str | Path,
+        user_data_root: Path | None = None,
+        resources_root: Path | None = None,
+        managed_voices_dir: Path | None = None,
         engine_factory: EngineFactory | None = None,
         warmup_hook: WarmupHook | None = None,
         gpu_offload_enabled: bool = True,
@@ -50,6 +58,9 @@ class PyTorchModelCache:
         cuda_mem_get_info: CudaMemGetInfo | None = None,
     ) -> None:
         self._project_root = project_root
+        self._user_data_root = user_data_root
+        self._resources_root = resources_root
+        self._managed_voices_dir = managed_voices_dir
         self._cnhubert_base_path = self._resolve_path(cnhubert_base_path)
         self._bert_path = self._resolve_path(bert_path)
         self._engine_factory = engine_factory or self._build_engine
@@ -61,13 +72,36 @@ class PyTorchModelCache:
         self._engines: dict[str, ModelHandle] = {}
         self._lock = threading.RLock()
 
-    def get_engine(self, gpt_path: str | Path, sovits_path: str | Path) -> Any:
-        return self.get_model_handle(gpt_path=gpt_path, sovits_path=sovits_path).engine
+    def get_engine(
+        self,
+        gpt_path: str | Path,
+        sovits_path: str | Path,
+        *,
+        gpt_fingerprint: str | None = None,
+        sovits_fingerprint: str | None = None,
+    ) -> Any:
+        return self.get_model_handle(
+            gpt_path=gpt_path,
+            sovits_path=sovits_path,
+            gpt_fingerprint=gpt_fingerprint,
+            sovits_fingerprint=sovits_fingerprint,
+        ).engine
 
-    def get_model_handle(self, gpt_path: str | Path, sovits_path: str | Path) -> ModelHandle:
-        resolved_gpt_path = self._resolve_path(gpt_path)
-        resolved_sovits_path = self._resolve_path(sovits_path)
-        cache_key = f"{resolved_gpt_path}|{resolved_sovits_path}"
+    def get_model_handle(
+        self,
+        gpt_path: str | Path,
+        sovits_path: str | Path,
+        *,
+        gpt_fingerprint: str | None = None,
+        sovits_fingerprint: str | None = None,
+    ) -> ModelHandle:
+        identity = self._build_cache_identity(
+            gpt_path=gpt_path,
+            sovits_path=sovits_path,
+            gpt_fingerprint=gpt_fingerprint,
+            sovits_fingerprint=sovits_fingerprint,
+        )
+        cache_key = identity.cache_key
         with self._lock:
             handle = self._engines.get(cache_key)
             if handle is not None:
@@ -82,8 +116,8 @@ class PyTorchModelCache:
                 cache_key,
             )
             engine = self._engine_factory(
-                resolved_gpt_path,
-                resolved_sovits_path,
+                identity.gpt_path,
+                identity.sovits_path,
                 self._cnhubert_base_path,
                 self._bert_path,
             )
@@ -91,9 +125,11 @@ class PyTorchModelCache:
                 self._warmup_hook(engine)
             handle = ModelHandle(
                 cache_key=cache_key,
-                gpt_path=resolved_gpt_path,
-                sovits_path=resolved_sovits_path,
+                gpt_path=identity.gpt_path,
+                sovits_path=identity.sovits_path,
                 engine=engine,
+                gpt_fingerprint=identity.gpt_fingerprint,
+                sovits_fingerprint=identity.sovits_fingerprint,
                 last_used_at=time.perf_counter(),
                 resident_device=self._detect_resident_device(engine),
             )
@@ -105,9 +141,21 @@ class PyTorchModelCache:
             )
             return handle
 
-    def acquire_model_handle(self, gpt_path: str | Path, sovits_path: str | Path) -> ModelHandle:
+    def acquire_model_handle(
+        self,
+        gpt_path: str | Path,
+        sovits_path: str | Path,
+        *,
+        gpt_fingerprint: str | None = None,
+        sovits_fingerprint: str | None = None,
+    ) -> ModelHandle:
         with self._lock:
-            handle = self.get_model_handle(gpt_path=gpt_path, sovits_path=sovits_path)
+            handle = self.get_model_handle(
+                gpt_path=gpt_path,
+                sovits_path=sovits_path,
+                gpt_fingerprint=gpt_fingerprint,
+                sovits_fingerprint=sovits_fingerprint,
+            )
             if handle.resident_device == "cpu":
                 ensure_on_gpu = getattr(handle.engine, "ensure_on_gpu", None)
                 if callable(ensure_on_gpu):
@@ -132,10 +180,41 @@ class PyTorchModelCache:
             self._engines.clear()
 
     def _resolve_path(self, raw_path: str | Path) -> str:
-        path = Path(raw_path)
-        if not path.is_absolute():
-            path = self._project_root / path
-        return str(path.resolve())
+        return str(
+            resolve_runtime_path(
+                raw_path,
+                project_root=self._project_root,
+                user_data_root=self._user_data_root,
+                resources_root=self._resources_root,
+                managed_voices_dir=self._managed_voices_dir,
+            )
+        )
+
+    def _build_cache_identity(
+        self,
+        *,
+        gpt_path: str | Path,
+        sovits_path: str | Path,
+        gpt_fingerprint: str | None,
+        sovits_fingerprint: str | None,
+    ) -> ModelCacheIdentity:
+        resolved_gpt_path = self._resolve_path(gpt_path)
+        resolved_sovits_path = self._resolve_path(sovits_path)
+        return ModelCacheIdentity(
+            gpt_path=resolved_gpt_path,
+            sovits_path=resolved_sovits_path,
+            gpt_fingerprint=self._resolve_fingerprint(resolved_gpt_path, gpt_fingerprint),
+            sovits_fingerprint=self._resolve_fingerprint(resolved_sovits_path, sovits_fingerprint),
+        )
+
+    @staticmethod
+    def _resolve_fingerprint(resolved_path: str, explicit_fingerprint: str | None) -> str:
+        if explicit_fingerprint is not None:
+            return explicit_fingerprint
+        try:
+            return fingerprint_file(resolved_path)
+        except FileNotFoundError:
+            return ""
 
     @staticmethod
     def _default_cuda_mem_get_info() -> CudaMemGetInfo | None:

@@ -296,7 +296,12 @@ it("resumeRenderJob unwraps accepted response payload", async () => {
 it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
   const post = vi.fn().mockResolvedValue({
     data: {
-      reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+      reference_asset_id: "session-ref-1",
+      reference_scope: "session_override",
+      reference_identity: "doc-1:session-ref-1",
+      reference_audio_fingerprint: "audio-fp-1",
+      reference_text_fingerprint: "text-fp-empty",
+      reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
       filename: "custom.wav",
     },
   });
@@ -321,7 +326,12 @@ it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
   expect(body).toBeInstanceOf(FormData);
   expect(body.get("ref_audio_file")).toBe(file);
   expect(response).toEqual({
-    reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+    reference_asset_id: "session-ref-1",
+    reference_scope: "session_override",
+    reference_identity: "doc-1:session-ref-1",
+    reference_audio_fingerprint: "audio-fp-1",
+    reference_text_fingerprint: "text-fp-empty",
+    reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
     filename: "custom.wav",
   });
 });

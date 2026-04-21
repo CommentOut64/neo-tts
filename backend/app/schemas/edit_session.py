@@ -49,6 +49,14 @@ class InitializeEditSessionRequest(BaseModel):
 
 
 class ReferenceAudioUploadResponse(BaseModel):
+    reference_asset_id: str = Field(description="上传后生成的会话临时参考资产 ID。")
+    reference_scope: Literal["session_override"] = Field(
+        default="session_override",
+        description="上传参考的作用域；当前固定为会话临时覆盖。",
+    )
+    reference_identity: str = Field(description="上传参考的结构化身份。")
+    reference_audio_fingerprint: str = Field(description="上传参考音频指纹。")
+    reference_text_fingerprint: str = Field(description="上传参考文本指纹。")
     reference_audio_path: str = Field(description="上传后生成的临时参考音频路径。")
     filename: str = Field(description="上传文件名。")
 
@@ -90,16 +98,24 @@ class RenderProfile(BaseModel):
 
 
 class ReferenceBindingOverride(BaseModel):
+    session_reference_asset_id: str | None = Field(default=None, description="会话临时参考资产 ID。")
+    reference_identity: str | None = Field(default=None, description="当前参考的结构化身份。")
+    reference_audio_fingerprint: str | None = Field(default=None, description="当前参考音频指纹。")
     reference_audio_path: str | None = Field(default=None, description="binding 维度的参考音频覆写。")
     reference_text: str | None = Field(default=None, description="binding 维度的参考文本覆写。")
+    reference_text_fingerprint: str | None = Field(default=None, description="当前参考文本指纹。")
     reference_language: str | None = Field(default=None, description="binding 维度的参考语言覆写。")
 
 
 class ReferenceBindingOverridePatchRequest(BaseModel):
     binding_key: str = Field(description="目标 binding key。")
     operation: Literal["upsert", "clear"] = Field(description="reference override 操作。")
+    session_reference_asset_id: str | None = Field(default=None, description="新的会话临时参考资产 ID。")
+    reference_identity: str | None = Field(default=None, description="新的参考结构化身份。")
+    reference_audio_fingerprint: str | None = Field(default=None, description="新的参考音频指纹。")
     reference_audio_path: str | None = Field(default=None, description="新的参考音频路径。")
     reference_text: str | None = Field(default=None, description="新的参考文本。")
+    reference_text_fingerprint: str | None = Field(default=None, description="新的参考文本指纹。")
     reference_language: str | None = Field(default=None, description="新的参考语言。")
 
 
