@@ -611,9 +611,45 @@ describe("useParameterPanel", () => {
       reference_override: {
         binding_key: "voice-b:voice-b",
         operation: "upsert",
+        session_reference_asset_id: null,
+        reference_identity: "voice-b:voice-b",
+        reference_audio_fingerprint: null,
         reference_audio_path: "voice-b-custom.wav",
         reference_text: "音色B自定义",
+        reference_text_fingerprint: null,
         reference_language: "ja",
+      },
+    });
+  });
+
+  it("上传参考音频后会把 session_reference_asset_id 一并写入当前 reference_override", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const panel = useParameterPanel();
+
+    (panel as any).setVoices(createVoices());
+    (panel as any).applyUploadedReferenceAudio({
+      reference_asset_id: "session-ref-1",
+      reference_scope: "session_override",
+      reference_identity: "doc-1:session-ref-1",
+      reference_audio_fingerprint: "audio-fp-1",
+      reference_text_fingerprint: "text-fp-empty",
+      reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
+      filename: "custom.wav",
+    });
+    await nextTick();
+    await panel.submitDraft();
+
+    expect(apiMock.commitSessionRenderProfile).toHaveBeenCalledWith({
+      reference_override: {
+        binding_key: "voice-default:voice-default",
+        operation: "upsert",
+        session_reference_asset_id: "session-ref-1",
+        reference_identity: "doc-1:session-ref-1",
+        reference_audio_fingerprint: "audio-fp-1",
+        reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
+        reference_text: "默认预设",
+        reference_text_fingerprint: "text-fp-empty",
+        reference_language: "zh",
       },
     });
   });
