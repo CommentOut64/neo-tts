@@ -3,11 +3,7 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $scriptDir "dist"
-$outputPath = Join-Path $distDir "launcher-dev.exe"
 $iconPath = Join-Path (Split-Path -Parent $scriptDir) "frontend\public\512.ico"
-$resourceDir = Join-Path $scriptDir "cmd\launcher"
-$resourcePath = Join-Path $resourceDir "launcher.syso"
-$legacyResourcePath = Join-Path $scriptDir "launcher.syso"
 $targetGOOS = "windows"
 $targetGOARCH = "amd64"
 
@@ -18,18 +14,13 @@ function Build-GoBinaryWithIcon {
         [Parameter(Mandatory = $true)]
         [string]$OutputPath,
         [Parameter(Mandatory = $true)]
-        [string]$ResourceDir,
-        [string]$LegacyResourcePath = ""
+        [string]$ResourceDir
     )
 
     $resourcePath = Join-Path $ResourceDir "launcher.syso"
 
     New-Item -ItemType Directory -Force -Path $ResourceDir | Out-Null
     & $rsrcCommand.Source -arch $targetGOARCH -ico $iconPath -o $resourcePath
-    if ($LegacyResourcePath -and (Test-Path -LiteralPath $LegacyResourcePath)) {
-        Remove-Item -LiteralPath $LegacyResourcePath -Force
-    }
-
     go build -o $OutputPath $PackagePath
     Write-Host "Built: $OutputPath"
 }
@@ -49,9 +40,10 @@ try {
 
     $env:GOOS = $targetGOOS
     $env:GOARCH = $targetGOARCH
-
     $rsrcCommand = Get-Command "rsrc.exe" -ErrorAction Stop
-    Build-GoBinaryWithIcon -PackagePath "./cmd/launcher" -OutputPath $outputPath -ResourceDir $resourceDir -LegacyResourcePath $legacyResourcePath
+
+    Build-GoBinaryWithIcon -PackagePath "./cmd/bootstrap" -OutputPath (Join-Path $distDir "NeoTTS.exe") -ResourceDir (Join-Path $scriptDir "cmd\bootstrap")
+    Build-GoBinaryWithIcon -PackagePath "./cmd/update-agent" -OutputPath (Join-Path $distDir "NeoTTSUpdateAgent.exe") -ResourceDir (Join-Path $scriptDir "cmd\update-agent")
 }
 finally {
     if ($hadGOOS) {
