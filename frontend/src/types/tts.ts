@@ -10,6 +10,9 @@ export interface VoiceProfile {
   name: string
   gpt_path: string
   sovits_path: string
+  weight_storage_mode: 'external' | 'managed'
+  gpt_fingerprint: string
+  sovits_fingerprint: string
   ref_audio: string
   ref_text: string
   ref_lang: string
@@ -116,6 +119,7 @@ export interface InferenceParamsCacheResponse {
 
 export interface ReferenceSelectionByBindingEntry {
   source: 'preset' | 'custom'
+  session_reference_asset_id?: string | null
   custom_ref_path: string | null
   ref_text: string
   ref_lang: string
