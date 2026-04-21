@@ -42,6 +42,10 @@ type BackendOwnerStub = {
   exited: Promise<Error | null>;
 };
 
+type ProductPathsWithRoot = ProductPaths & {
+  productRoot: string;
+};
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((innerResolve) => {
@@ -76,32 +80,48 @@ function createWindowStub(overrides: Partial<WindowStub> = {}): WindowStub {
   };
 }
 
-function createProductPaths(distributionKind: "installed" | "portable"): ProductPaths {
+function createProductPaths(distributionKind: "installed" | "portable"): ProductPathsWithRoot {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "neo-tts-main-"));
-  const runtimeRoot =
+  const productRoot =
     distributionKind === "installed"
       ? path.join(workspace, "NeoTTS")
       : path.join(workspace, "NeoTTS-Portable");
-  const resourcesDir = path.join(runtimeRoot, "resources", "app-runtime");
+  const bootstrapRoot = path.join(productRoot, "packages", "bootstrap", "1.1.0");
+  const updateAgentRoot = path.join(productRoot, "packages", "update-agent", "1.1.0");
+  const shellRoot = path.join(productRoot, "packages", "shell", "v0.0.1");
+  const appCoreRoot = path.join(productRoot, "packages", "app-core", "v0.0.1");
+  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu124-v1");
+  const modelsRoot = path.join(productRoot, "packages", "models", "builtin-v1");
+  const pretrainedModelsRoot = path.join(productRoot, "packages", "pretrained-models", "support-v1");
   const userDataDir =
     distributionKind === "installed"
       ? path.join(workspace, "AppData", "Local", "NeoTTS")
-      : path.join(runtimeRoot, "data");
+      : path.join(productRoot, "data");
   const exportsDir =
     distributionKind === "installed"
       ? path.join(workspace, "Documents", "NeoTTS", "Exports")
-      : path.join(runtimeRoot, "exports");
+      : path.join(productRoot, "exports");
 
   return {
+    resolutionKind: "descriptor",
+    runtimeDescriptorPath: path.join(productRoot, "state", "current.json"),
     distributionKind,
-    runtimeRoot,
-    resourcesDir,
-    backendDir: path.join(resourcesDir, "backend"),
-    frontendDir: path.join(resourcesDir, "frontend-dist"),
-    gptSovitsDir: path.join(resourcesDir, "GPT_SoVITS"),
-    runtimePython: path.join(resourcesDir, "runtime", "python", "python.exe"),
-    builtinModelDir: path.join(resourcesDir, "models", "builtin"),
-    configDir: path.join(resourcesDir, "config"),
+    productRoot,
+    bootstrapRoot,
+    updateAgentRoot,
+    shellRoot,
+    appCoreRoot,
+    runtimeRoot: runtimeLayerRoot,
+    modelsRoot,
+    pretrainedModelsRoot,
+    resourcesDir: appCoreRoot,
+    backendDir: path.join(appCoreRoot, "backend"),
+    frontendDir: path.join(appCoreRoot, "frontend-dist"),
+    gptSovitsDir: path.join(appCoreRoot, "GPT_SoVITS"),
+    runtimePython: path.join(runtimeLayerRoot, "runtime", "python", "python.exe"),
+    builtinModelDir: path.join(modelsRoot, "models", "builtin"),
+    pretrainedModelsDir: path.join(pretrainedModelsRoot, "pretrained_models"),
+    configDir: path.join(appCoreRoot, "config"),
     userDataDir,
     logsDir: path.join(userDataDir, "logs"),
     exportsDir,
@@ -109,16 +129,31 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   };
 }
 
-function materializeRuntime(paths: ProductPaths, options?: { includeFrontend?: boolean }) {
+function materializeRuntime(
+  paths: ProductPathsWithRoot,
+  options?: {
+    includeFrontend?: boolean;
+    includeShell?: boolean;
+    includePretrainedModels?: boolean;
+  },
+) {
   fs.mkdirSync(paths.backendDir, { recursive: true });
   fs.mkdirSync(paths.gptSovitsDir, { recursive: true });
   fs.mkdirSync(paths.builtinModelDir, { recursive: true });
+  fs.mkdirSync(paths.pretrainedModelsDir, { recursive: true });
   fs.mkdirSync(paths.configDir, { recursive: true });
   fs.mkdirSync(path.dirname(paths.runtimePython), { recursive: true });
   fs.writeFileSync(paths.runtimePython, "", "utf-8");
   if (paths.distributionKind === "portable") {
-    fs.mkdirSync(paths.runtimeRoot, { recursive: true });
-    fs.writeFileSync(path.join(paths.runtimeRoot, "portable.flag"), "", "utf-8");
+    fs.mkdirSync(paths.productRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.productRoot, "portable.flag"), "", "utf-8");
+  }
+  if (options?.includeShell !== false) {
+    fs.mkdirSync(paths.shellRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.shellRoot, "NeoTTSApp.exe"), "", "utf-8");
+  }
+  if (options?.includePretrainedModels === false) {
+    fs.rmSync(paths.pretrainedModelsDir, { recursive: true, force: true });
   }
   if (options?.includeFrontend !== false) {
     fs.mkdirSync(paths.frontendDir, { recursive: true });
@@ -591,7 +626,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async (options) => {
         receivedOptions = options;
@@ -630,7 +665,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async (options) => {
         receivedOptions = options;
@@ -644,11 +679,44 @@ describe("desktop main", () => {
         onLogLine: expect.any(Function),
         environment: expect.objectContaining({
           NEO_TTS_DISTRIBUTION_KIND: "portable",
+          NEO_TTS_PROJECT_ROOT: productPaths.productRoot,
           NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
           NEO_TTS_EXPORTS_ROOT: productPaths.exportsDir,
         }),
       }),
     );
+  });
+
+  it("portable runtime validation reads portable.flag from product root instead of bootstrap package root", async () => {
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn().mockResolvedValue(
+      createBackendOwnerStub(createDeferred<Error | null>().promise),
+    );
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).toHaveBeenCalledOnce();
+    expect(onFatalState).not.toHaveBeenCalled();
+    expect(quit).not.toHaveBeenCalled();
   });
 
   it("reports fatal state when frontend dist is missing", async () => {
@@ -669,7 +737,41 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(onFatalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "invalid-runtime",
+      }),
+    );
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("reports fatal state when pretrained-models layer is missing", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths, { includePretrainedModels: false });
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend,
       createMainWindow: () => createWindowStub(),
@@ -702,7 +804,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
       createMainWindow: () => createWindowStub({
@@ -737,7 +839,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async () => {
         order.push("startBackend");

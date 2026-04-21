@@ -769,3 +769,139 @@ def test_update_managed_voice_rejects_static_voice(sample_voice_config):
             ref_text="updated reference text",
             ref_lang="ja",
         )
+
+
+def test_product_mode_normalizes_models_prefixed_paths_against_models_root(tmp_path):
+    voices_config = tmp_path / "voices.json"
+    voices_config.write_text(
+        json.dumps(
+            {
+                "builtin-demo": {
+                    "gpt_path": "models/builtin/demo/demo.ckpt",
+                    "sovits_path": "models/builtin/demo/demo.pth",
+                    "ref_audio": "config/reference.wav",
+                    "ref_text": "reference text",
+                    "ref_lang": "zh",
+                    "description": "builtin voice",
+                    "defaults": {},
+                    "managed": False,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = AppSettings(
+        project_root=tmp_path,
+        distribution_kind="installed",
+        resources_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        app_core_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        runtime_root=tmp_path / "packages" / "runtime" / "py311-cu124-v1",
+        models_root=tmp_path / "packages" / "models" / "builtin-v1",
+        pretrained_models_root=tmp_path / "packages" / "pretrained-models" / "support-v1",
+        user_data_root=tmp_path / "data",
+        builtin_voices_config_path=voices_config,
+        voices_config_path=tmp_path / "data" / "config" / "voices.json",
+        managed_voices_dir=tmp_path / "data" / "managed_voices",
+    )
+    repository = VoiceRepository(settings=settings)
+
+    voice = repository.get_voice("builtin-demo")
+
+    assert voice["gpt_path"] == str((settings.models_root / "models" / "builtin" / "demo" / "demo.ckpt").resolve())
+    assert voice["sovits_path"] == str((settings.models_root / "models" / "builtin" / "demo" / "demo.pth").resolve())
+    assert voice["ref_audio"] == str((settings.app_core_root / "config" / "reference.wav").resolve())
+
+
+def test_product_mode_normalizes_pretrained_models_prefixed_paths_against_pretrained_models_root(tmp_path):
+    voices_config = tmp_path / "voices.json"
+    voices_config.write_text(
+        json.dumps(
+            {
+                "support-demo": {
+                    "gpt_path": "pretrained_models/GPT_weights/demo.ckpt",
+                    "sovits_path": "pretrained_models/SoVITS_weights/demo.pth",
+                    "ref_audio": "pretrained_models/reference.wav",
+                    "ref_text": "reference text",
+                    "ref_lang": "zh",
+                    "description": "support voice",
+                    "defaults": {},
+                    "managed": False,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = AppSettings(
+        project_root=tmp_path,
+        distribution_kind="portable",
+        resources_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        app_core_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        runtime_root=tmp_path / "packages" / "runtime" / "py311-cu124-v1",
+        models_root=tmp_path / "packages" / "models" / "builtin-v1",
+        pretrained_models_root=tmp_path / "packages" / "pretrained-models" / "support-v1",
+        user_data_root=tmp_path / "data",
+        builtin_voices_config_path=voices_config,
+        voices_config_path=tmp_path / "data" / "config" / "voices.json",
+        managed_voices_dir=tmp_path / "data" / "managed_voices",
+    )
+    repository = VoiceRepository(settings=settings)
+
+    voice = repository.get_voice("support-demo")
+
+    assert voice["gpt_path"] == str((settings.pretrained_models_root / "pretrained_models" / "GPT_weights" / "demo.ckpt").resolve())
+    assert voice["sovits_path"] == str((settings.pretrained_models_root / "pretrained_models" / "SoVITS_weights" / "demo.pth").resolve())
+    assert voice["ref_audio"] == str((settings.pretrained_models_root / "pretrained_models" / "reference.wav").resolve())
+
+
+def test_product_mode_keeps_managed_voice_paths_under_user_data_root(tmp_path):
+    managed_dir = tmp_path / "data" / "managed_voices" / "managed-demo"
+    managed_dir.mkdir(parents=True)
+    (managed_dir / "weights").mkdir(parents=True)
+    (managed_dir / "references").mkdir(parents=True)
+    (managed_dir / "weights" / "demo.ckpt").write_bytes(b"fake-gpt")
+    (managed_dir / "weights" / "demo.pth").write_bytes(b"fake-sovits")
+    (managed_dir / "references" / "ref-demo.wav").write_bytes(b"RIFFfake")
+    voices_config = tmp_path / "user-voices.json"
+    voices_config.write_text(
+        json.dumps(
+            {
+                "managed-demo": {
+                    "gpt_path": "managed_voices/managed-demo/weights/demo.ckpt",
+                    "sovits_path": "managed_voices/managed-demo/weights/demo.pth",
+                    "ref_audio": "managed_voices/managed-demo/references/ref-demo.wav",
+                    "ref_text": "reference text",
+                    "ref_lang": "zh",
+                    "description": "managed voice",
+                    "defaults": {},
+                    "managed": True,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = AppSettings(
+        project_root=tmp_path,
+        distribution_kind="installed",
+        resources_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        app_core_root=tmp_path / "packages" / "app-core" / "v0.0.1",
+        runtime_root=tmp_path / "packages" / "runtime" / "py311-cu124-v1",
+        models_root=tmp_path / "packages" / "models" / "builtin-v1",
+        pretrained_models_root=tmp_path / "packages" / "pretrained-models" / "support-v1",
+        user_data_root=tmp_path / "data",
+        builtin_voices_config_path=tmp_path / "builtin-voices.json",
+        voices_config_path=voices_config,
+        managed_voices_dir=tmp_path / "data" / "managed_voices",
+    )
+    repository = VoiceRepository(settings=settings)
+
+    voice = repository.get_voice("managed-demo")
+
+    assert voice["gpt_path"] == str((settings.user_data_root / "managed_voices" / "managed-demo" / "weights" / "demo.ckpt").resolve())
+    assert voice["sovits_path"] == str((settings.user_data_root / "managed_voices" / "managed-demo" / "weights" / "demo.pth").resolve())
+    assert voice["ref_audio"] == str((settings.user_data_root / "managed_voices" / "managed-demo" / "references" / "ref-demo.wav").resolve())

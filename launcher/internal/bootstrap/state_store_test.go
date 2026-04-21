@@ -148,6 +148,37 @@ func TestSaveCurrentReplacesExistingFileAtomically(t *testing.T) {
 	}
 }
 
+func TestReplaceFileAtomicallyReplacesExistingTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "state", "current.json")
+	tempPath := targetPath + ".tmp"
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile(targetPath) returned error: %v", err)
+	}
+	if err := os.WriteFile(tempPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("WriteFile(tempPath) returned error: %v", err)
+	}
+
+	if err := replaceFileAtomically(tempPath, targetPath); err != nil {
+		t.Fatalf("replaceFileAtomically returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(targetPath) returned error: %v", err)
+	}
+	if string(content) != "new" {
+		t.Fatalf("target content = %q, want %q", string(content), "new")
+	}
+	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary file should not remain, got err=%v", err)
+	}
+}
+
 func TestTryAcquireUpdateLockWritesDiagnosticsAndIsExclusive(t *testing.T) {
 	rootDir := t.TempDir()
 	acquiredAt := time.Date(2026, 4, 21, 14, 0, 0, 0, time.UTC)
