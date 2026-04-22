@@ -4,8 +4,11 @@ import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  APP_CHECK_UPDATE_CHANNEL,
   APP_OPEN_EXTERNAL_URL_CHANNEL,
   APP_REQUEST_EXIT_CHANNEL,
+  APP_RESTART_AND_APPLY_UPDATE_CHANNEL,
+  APP_START_UPDATE_DOWNLOAD_CHANNEL,
 } from "../src/ipc/channels";
 import { runMain } from "../src/main";
 import type { ProductPaths } from "../src/runtime/paths";
@@ -19,7 +22,7 @@ type AppStub = {
 };
 
 type IpcMainStub = {
-  handle: (channel: string, listener: () => Promise<void> | void) => void;
+  handle: (channel: string, listener: (...args: unknown[]) => Promise<unknown> | unknown) => void;
   on: (channel: string, listener: (event: { returnValue?: unknown }) => void) => void;
 };
 
@@ -40,6 +43,18 @@ type BackendOwnerStub = {
   prepareForExit: () => Promise<void>;
   stop: () => Promise<void>;
   exited: Promise<Error | null>;
+};
+
+type BootstrapControlClientStub = {
+  apiVersion: string;
+  bootstrapVersion: string;
+  sessionId: string;
+  checkForUpdate: (...args: unknown[]) => Promise<unknown>;
+  downloadUpdate: (...args: unknown[]) => Promise<unknown>;
+  restartAndApplyUpdate: (...args: unknown[]) => Promise<unknown>;
+  reportSessionReady: (...args: unknown[]) => Promise<unknown>;
+  reportSessionFailed: (...args: unknown[]) => Promise<unknown>;
+  reportRestartForUpdate: (...args: unknown[]) => Promise<unknown>;
 };
 
 type ProductPathsWithRoot = ProductPaths & {
@@ -565,6 +580,221 @@ describe("desktop main", () => {
     await openExternalHandler?.({} as never, "https://github.com/CommentOut64/neo-tts");
 
     expect(openExternal).toHaveBeenCalledWith("https://github.com/CommentOut64/neo-tts");
+  });
+
+  it("registers update IPC handlers that delegate to bootstrap control client", async () => {
+    const handled = new Map<string, (...args: unknown[]) => Promise<unknown> | unknown>();
+    const order: string[] = [];
+    const bootstrapClient: BootstrapControlClientStub = {
+      apiVersion: "v1",
+      bootstrapVersion: "1.1.0",
+      sessionId: "session-1",
+      checkForUpdate: vi.fn().mockResolvedValue({ status: "update-available" }),
+      downloadUpdate: vi.fn().mockResolvedValue({ status: "ready-to-restart" }),
+      restartAndApplyUpdate: vi.fn().mockResolvedValue({ status: "switching" }),
+      reportSessionReady: vi.fn().mockResolvedValue(undefined),
+      reportSessionFailed: vi.fn().mockResolvedValue(undefined),
+      reportRestartForUpdate: vi.fn().mockResolvedValue({ status: "restart-requested" }),
+    };
+
+    await runMain({
+      ipcMain: {
+        handle: (channel, listener) => {
+          handled.set(channel, listener);
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      productPaths: (() => {
+        const paths = createProductPaths("installed");
+        materializeRuntime(paths);
+        return paths;
+      })(),
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => bootstrapClient,
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {
+          order.push("prepareForExit");
+        },
+        stop: async () => {
+          order.push("stopBackend");
+        },
+        exited: createDeferred<Error | null>().promise,
+      }),
+      createMainWindow: () =>
+        createWindowStub({
+          close: () => {
+            order.push("closeWindow");
+          },
+        }),
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {
+          order.push("quit");
+        },
+      },
+    });
+
+    await expect(handled.get(APP_CHECK_UPDATE_CHANNEL)?.({}, { channel: "stable", automatic: false })).resolves.toEqual({
+      status: "update-available",
+    });
+    await expect(handled.get(APP_START_UPDATE_DOWNLOAD_CHANNEL)?.({}, { releaseId: "v0.0.2" })).resolves.toEqual({
+      status: "ready-to-restart",
+    });
+    await expect(handled.get(APP_RESTART_AND_APPLY_UPDATE_CHANNEL)?.({}, { releaseId: "v0.0.2" })).resolves.toEqual({
+      status: "switching",
+    });
+
+    expect(bootstrapClient.checkForUpdate).toHaveBeenCalledWith({ channel: "stable", automatic: false });
+    expect(bootstrapClient.downloadUpdate).toHaveBeenCalledWith({ releaseId: "v0.0.2" });
+    expect(bootstrapClient.restartAndApplyUpdate).toHaveBeenCalledWith({ releaseId: "v0.0.2" });
+    expect(bootstrapClient.reportRestartForUpdate).toHaveBeenCalledWith({ sessionId: "session-1" });
+    expect(order).toEqual(["prepareForExit", "stopBackend", "closeWindow", "quit"]);
+  });
+
+  it("reports session-ready to bootstrap after packaged renderer load succeeds", async () => {
+    const reportSessionReady = vi.fn().mockResolvedValue(undefined);
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady,
+        reportSessionFailed: vi.fn(),
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(reportSessionReady).toHaveBeenCalledWith({ sessionId: "session-1" });
+  });
+
+  it("reports startup-failed to bootstrap when backend startup fails", async () => {
+    const reportSessionFailed = vi.fn().mockResolvedValue(undefined);
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady: vi.fn(),
+        reportSessionFailed,
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => {
+        throw new Error("backend health check timed out");
+      },
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(reportSessionFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        code: "startup-failed",
+      }),
+    );
+  });
+
+  it("reports backend-exit to bootstrap when backend exits unexpectedly", async () => {
+    const backendExit = createDeferred<Error | null>();
+    const reportSessionFailed = vi.fn().mockResolvedValue(undefined);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady: vi.fn(),
+        reportSessionFailed,
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {},
+        stop: async () => {},
+        exited: backendExit.promise,
+      }),
+      createMainWindow: () => createWindowStub(),
+    });
+
+    backendExit.resolve(new Error("backend exited unexpectedly"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reportSessionFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        code: "backend-exit",
+      }),
+    );
   });
 
   it("backend exit moves the app into fatal state instead of silently hanging", async () => {

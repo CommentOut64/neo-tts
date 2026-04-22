@@ -17,4 +17,13 @@ describe("AboutDialog", () => {
 
     expect(source).toContain("版本 {{ displayVersion }}");
   });
+
+  it("wires update dialog actions through composable-driven events instead of opening release URLs directly", () => {
+    const filePath = path.join(process.cwd(), "src", "components", "AboutDialog.vue");
+    const source = readFileSync(filePath, "utf-8");
+
+    expect(source).toContain("@start-download=");
+    expect(source).toContain("@restart-now=");
+    expect(source).toContain(":state=\"updateState\"");
+  });
 });
