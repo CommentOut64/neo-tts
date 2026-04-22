@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"neo-tts/launcher/internal/bootstrap"
 	"neo-tts/launcher/internal/logging"
 	"neo-tts/launcher/internal/updateagent"
 )
@@ -28,6 +29,14 @@ func main() {
 		StartupSource:    "update-agent",
 	})
 	if session.LogFilePath != "" {
-		_ = logging.Append(session.LogFilePath, fmt.Sprintf("update-agent plan=%s bootstrap_pid=%d", options.PlanPath, options.BootstrapPID))
+		_ = logging.Append(session.LogFilePath, bootstrap.FormatLogEntry(
+			"INFO",
+			"update-agent",
+			"update-agent loaded execution plan",
+			map[string]any{
+				"planPath":     options.PlanPath,
+				"bootstrapPid": options.BootstrapPID,
+			},
+		))
 	}
 }

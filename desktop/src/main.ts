@@ -5,13 +5,21 @@ import os from "node:os";
 import type { BackendOwner, StartBackendProcessOptions } from "./backend/process";
 import { buildDefaultBackendOptions, formatBackendMonitorSample, startBackendProcess } from "./backend/process";
 import {
+	APP_CHECK_UPDATE_CHANNEL,
 	APP_GET_RUNTIME_INFO_CHANNEL,
 	APP_OPEN_EXTERNAL_URL_CHANNEL,
 	APP_REQUEST_EXIT_CHANNEL,
+	APP_RESTART_AND_APPLY_UPDATE_CHANNEL,
+	APP_START_UPDATE_DOWNLOAD_CHANNEL,
 } from "./ipc/channels";
 import { buildElectronRuntimeInfo } from "./ipc/runtimeInfo";
 import { createCompositeRuntimeLogger, createFileRuntimeLogger, createNoopRuntimeLogger, type RuntimeLogger } from "./logging/runtimeLogger";
 import { buildDefaultProductPaths, type DistributionKind, type ProductPaths } from "./runtime/paths";
+import {
+	connectBootstrapControlFromEnvironment,
+	type BootstrapControlClient,
+	type ConnectBootstrapControlFromEnvironmentOptions,
+} from "./update/bootstrapClient";
 
 export interface ElectronAppLike {
 	requestSingleInstanceLock(): boolean;
@@ -35,7 +43,7 @@ export interface MainWindowLike {
 }
 
 export interface IpcMainLike {
-	handle(channel: string, listener: (...args: unknown[]) => Promise<void> | void): void;
+	handle(channel: string, listener: (...args: unknown[]) => Promise<unknown> | unknown): void;
 	on(
 		channel: string,
 		listener: (event: { returnValue?: unknown }, ...args: unknown[]) => void,
@@ -59,6 +67,10 @@ export interface RunMainOptions {
 	openExternalUrl?: (url: string) => Promise<void> | void;
 	runtimeLogger?: RuntimeLogger;
 	onFatalState?: (state: FatalState) => void;
+	environment?: NodeJS.ProcessEnv;
+	createBootstrapClient?: (
+		options: ConnectBootstrapControlFromEnvironmentOptions,
+	) => Promise<BootstrapControlClient | null>;
 }
 
 function closeMainWindow(mainWindow: MainWindowLike | undefined, logger: RuntimeLogger) {
@@ -163,6 +175,7 @@ function validateProductPaths(productPaths: ProductPaths): Error | null {
 
 export async function runMain(options: RunMainOptions): Promise<void> {
 	const logger = options.runtimeLogger ?? createNoopRuntimeLogger();
+	const environment = options.environment ?? process.env;
 	logger.info("electron main entering runMain");
 
 	if (!options.app.requestSingleInstanceLock()) {
@@ -205,11 +218,32 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 	await options.app.whenReady();
 	logger.info("electron app.whenReady resolved");
 
+	const createBootstrapClient = options.createBootstrapClient ?? connectBootstrapControlFromEnvironment;
+	let bootstrapClient: BootstrapControlClient | null = null;
+	try {
+		bootstrapClient = await createBootstrapClient({
+			env: environment,
+			fetchImpl: globalThis.fetch.bind(globalThis),
+		});
+		if (bootstrapClient) {
+			logger.info(
+				`bootstrap control connected origin=${bootstrapClient.origin} apiVersion=${bootstrapClient.apiVersion} bootstrapVersion=${bootstrapClient.bootstrapVersion} sessionId=${bootstrapClient.sessionId}`,
+			);
+		}
+	} catch (error) {
+		logger.warn(
+			`bootstrap control negotiation failed, update features disabled: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+
 	const productPaths = options.productPaths;
 	if (productPaths) {
 		const validationError = validateProductPaths(productPaths);
 		if (validationError) {
 			logger.error(`product runtime validation failed: ${validationError.message}`);
+			await reportBootstrapSessionFailed(bootstrapClient, logger, "invalid-runtime", validationError);
 			options.onFatalState?.({
 				reason: "invalid-runtime",
 				error: validationError,
@@ -239,6 +273,12 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		logger.info(`backend ready origin=${backend.origin}`);
 	} catch (error) {
 		logger.error(`backend startup failed: ${error instanceof Error ? error.message : String(error)}`);
+		await reportBootstrapSessionFailed(
+			bootstrapClient,
+			logger,
+			"startup-failed",
+			error instanceof Error ? error : new Error(String(error)),
+		);
 		options.onFatalState?.({
 			reason: "startup-failed",
 			error: error instanceof Error ? error : new Error(String(error)),
@@ -252,6 +292,48 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 	});
 	options.ipcMain.on(APP_GET_RUNTIME_INFO_CHANNEL, (event) => {
 		event.returnValue = runtimeInfo;
+	});
+	options.ipcMain.handle(APP_CHECK_UPDATE_CHANNEL, async (_event, request) => {
+		return await requireBootstrapControlClient(bootstrapClient).checkForUpdate(
+			(request ?? { channel: "stable", automatic: false }) as Parameters<
+				BootstrapControlClient["checkForUpdate"]
+			>[0],
+		);
+	});
+	options.ipcMain.handle(APP_START_UPDATE_DOWNLOAD_CHANNEL, async (_event, request) => {
+		return await requireBootstrapControlClient(bootstrapClient).downloadUpdate(
+			(request ?? {}) as Parameters<BootstrapControlClient["downloadUpdate"]>[0],
+		);
+	});
+	options.ipcMain.handle(APP_RESTART_AND_APPLY_UPDATE_CHANNEL, async (_event, request) => {
+		const client = requireBootstrapControlClient(bootstrapClient);
+		const response = await client.restartAndApplyUpdate(
+			(request ?? {}) as Parameters<BootstrapControlClient["restartAndApplyUpdate"]>[0],
+		);
+		await reportBootstrapSessionRestartForUpdate(client, logger);
+		if (!shuttingDown) {
+			shuttingDown = true;
+			try {
+				await backend.prepareForExit();
+			} catch (error) {
+				logger.error(
+					`backend prepare-exit failed, continuing shutdown: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			try {
+				await backend.stop();
+			} catch (error) {
+				logger.error(
+					`backend stop failed during shutdown: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			requestAppShutdown();
+		}
+		return response;
 	});
 	options.ipcMain.handle(APP_REQUEST_EXIT_CHANNEL, async () => {
 		if (shuttingDown) {
@@ -290,6 +372,7 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		}
 		shuttingDown = true;
 		logger.error(`backend exited unexpectedly: ${error?.message ?? "unknown"}`);
+		void reportBootstrapSessionFailed(bootstrapClient, logger, "backend-exit", error);
 		options.onFatalState?.({
 			reason: "backend-exit",
 			error,
@@ -323,6 +406,7 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 		logger.info("loading renderer from frontend/dist/index.html");
 		await Promise.resolve(mainWindow.loadFile(resolveRendererEntry(options.projectRoot)));
 	}
+	await reportBootstrapSessionReady(bootstrapClient, logger);
 }
 
 export function buildDefaultRunMainOptions(): RunMainOptions {
@@ -360,4 +444,77 @@ function buildLogTimestampSuffix(now: Date): string {
 
 if (require.main === module) {
 	void runMain(buildDefaultRunMainOptions());
+}
+
+function requireBootstrapControlClient(
+	client: BootstrapControlClient | null,
+): BootstrapControlClient {
+	if (client !== null) {
+		return client;
+	}
+	throw new Error("bootstrap control client is unavailable");
+}
+
+async function reportBootstrapSessionReady(
+	client: BootstrapControlClient | null,
+	logger: RuntimeLogger,
+): Promise<void> {
+	if (!client) {
+		return;
+	}
+	try {
+		await client.reportSessionReady({
+			sessionId: client.sessionId,
+		});
+	} catch (error) {
+		logger.warn(
+			`failed to report bootstrap session-ready: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+async function reportBootstrapSessionRestartForUpdate(
+	client: BootstrapControlClient | null,
+	logger: RuntimeLogger,
+): Promise<void> {
+	if (!client) {
+		return;
+	}
+	try {
+		await client.reportRestartForUpdate({
+			sessionId: client.sessionId,
+		});
+	} catch (error) {
+		logger.warn(
+			`failed to report bootstrap restart-for-update: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+async function reportBootstrapSessionFailed(
+	client: BootstrapControlClient | null,
+	logger: RuntimeLogger,
+	code: FatalState["reason"],
+	error: Error | null,
+): Promise<void> {
+	if (!client) {
+		return;
+	}
+	try {
+		await client.reportSessionFailed({
+			sessionId: client.sessionId,
+			code,
+			message: error?.message ?? code,
+		});
+	} catch (reportError) {
+		logger.warn(
+			`failed to report bootstrap session failure: ${
+				reportError instanceof Error ? reportError.message : String(reportError)
+			}`,
+		);
+	}
 }

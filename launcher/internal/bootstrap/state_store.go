@@ -47,15 +47,27 @@ type FailedReleaseState struct {
 }
 
 type StageSessionState struct {
-	SchemaVersion     int       `json:"schemaVersion"`
-	ReleaseID         string    `json:"releaseId"`
-	ManifestSha256    string    `json:"manifestSha256"`
-	TargetPackages    []string  `json:"targetPackages,omitempty"`
-	CompletedPackages []string  `json:"completedPackages,omitempty"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	SchemaVersion          int               `json:"schemaVersion"`
+	ReleaseID              string            `json:"releaseId"`
+	ManifestSha256         string            `json:"manifestSha256"`
+	TargetPackages         []string          `json:"targetPackages,omitempty"`
+	CompletedPackages      []string          `json:"completedPackages,omitempty"`
+	PackageVersions        map[string]string `json:"packageVersions,omitempty"`
+	NotesURL               string            `json:"notesUrl,omitempty"`
+	EstimatedDownloadBytes int64             `json:"estimatedDownloadBytes,omitempty"`
+	Status                 string            `json:"status"`
+	CreatedAt              time.Time         `json:"createdAt"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
 }
+
+type PackageIntegrityState struct {
+	SHA256 string `json:"sha256"`
+}
+
+const (
+	StageSessionStatusPartial        = "partial"
+	StageSessionStatusStagedComplete = "staged-complete"
+)
 
 type StateStore struct {
 	rootDir string
@@ -103,6 +115,31 @@ func (store StateStore) LoadStageSession(releaseID string) (StageSessionState, e
 
 func (store StateStore) SaveStageSession(releaseID string, state StageSessionState) (string, error) {
 	return writeJSONAtomic(store.stageSessionPath(releaseID), state)
+}
+
+func (store StateStore) ListStageSessions() ([]StageSessionState, error) {
+	pattern := filepath.Join(store.rootDir, "cache", "staging", "*", "session.json")
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make([]StageSessionState, 0, len(paths))
+	for _, path := range paths {
+		session, err := loadJSON[StageSessionState](path)
+		if err != nil {
+			return nil, err
+		}
+		if session.ReleaseID == "" {
+			continue
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, nil
+}
+
+func (store StateStore) DeletePendingSwitch() error {
+	return deleteIfExists(store.pendingSwitchPath())
 }
 
 func (store StateStore) UpdateLockPath() string {
@@ -167,4 +204,12 @@ func writeJSONAtomic(path string, payload any) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func deleteIfExists(path string) error {
+	err := os.Remove(path)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
