@@ -197,4 +197,66 @@ describe("product runtime paths", () => {
 		expect(paths.shellRoot).toBe(path.join(portableRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.frontendDir).toBe(path.join(paths.appCoreRoot, "frontend-dist"));
 	});
+
+	it("resolves portable layered roots from version-only descriptor entries after moving the portable root", () => {
+		const workspace = createTempDir("neo-tts-layered-portable-relocated-");
+		const portableRoot = path.join(workspace, "MovedPortable", "NeoTTS");
+		const executablePath = path.join(portableRoot, "NeoTTS.exe");
+		const descriptorPath = path.join(portableRoot, "state", "current.json");
+		fs.mkdirSync(portableRoot, { recursive: true });
+		fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+		fs.writeFileSync(path.join(portableRoot, "portable.flag"), "", "utf-8");
+		fs.writeFileSync(
+			descriptorPath,
+			JSON.stringify(
+				{
+					schemaVersion: 1,
+					distributionKind: "portable",
+					channel: "stable",
+					releaseId: "v0.0.1",
+					packages: {
+						bootstrap: { version: "1.1.0" },
+						"update-agent": { version: "1.1.0" },
+						shell: { version: "v0.0.1" },
+						"app-core": { version: "v0.0.1" },
+						runtime: { version: "py311-cu124-v1" },
+						models: { version: "builtin-v1" },
+						"pretrained-models": { version: "support-v1" },
+					},
+					paths: {
+						userDataRoot: "./data",
+						exportsRoot: "./exports",
+					},
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const paths = resolveProductPaths({
+			appName: "NeoTTS",
+			executablePath,
+			resourcesPath: path.join(portableRoot, "resources"),
+			localAppDataPath: path.join(workspace, "LocalAppData"),
+			documentsPath: path.join(workspace, "Documents"),
+			env: {
+				NEO_TTS_RUNTIME_DESCRIPTOR: descriptorPath,
+			},
+		});
+
+		expect(paths.resolutionKind).toBe("descriptor");
+		expect(paths.distributionKind).toBe("portable");
+		expect(paths.bootstrapRoot).toBe(path.join(portableRoot, "packages", "bootstrap", "1.1.0"));
+		expect(paths.updateAgentRoot).toBe(path.join(portableRoot, "packages", "update-agent", "1.1.0"));
+		expect(paths.shellRoot).toBe(path.join(portableRoot, "packages", "shell", "v0.0.1"));
+		expect(paths.appCoreRoot).toBe(path.join(portableRoot, "packages", "app-core", "v0.0.1"));
+		expect(paths.runtimeRoot).toBe(path.join(portableRoot, "packages", "runtime", "py311-cu124-v1"));
+		expect(paths.modelsRoot).toBe(path.join(portableRoot, "packages", "models", "builtin-v1"));
+		expect(paths.pretrainedModelsRoot).toBe(
+			path.join(portableRoot, "packages", "pretrained-models", "support-v1"),
+		);
+		expect(paths.userDataDir).toBe(path.join(portableRoot, "data"));
+		expect(paths.exportsDir).toBe(path.join(portableRoot, "exports"));
+	});
 });
