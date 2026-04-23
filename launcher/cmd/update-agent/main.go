@@ -39,4 +39,31 @@ func main() {
 			},
 		))
 	}
+
+	executablePath, err := os.Executable()
+	if err != nil {
+		executablePath = os.Args[0]
+	}
+
+	if err := updateagent.ExecutePlan(updateagent.ExecutePlanOptions{
+		PlanPath:              options.PlanPath,
+		BootstrapPID:          options.BootstrapPID,
+		CurrentPID:            os.Getpid(),
+		CurrentExecutablePath: executablePath,
+	}, plan, updateagent.ExecutePlanDeps{}); err != nil {
+		if session.LogFilePath != "" {
+			_ = logging.Append(session.LogFilePath, bootstrap.FormatLogEntry(
+				"ERROR",
+				"update-agent",
+				"update-agent execution failed",
+				map[string]any{
+					"planPath":     options.PlanPath,
+					"bootstrapPid": options.BootstrapPID,
+					"error":        err.Error(),
+				},
+			))
+		}
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

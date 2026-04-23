@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -57,27 +58,39 @@ func main() {
 			appendBootstrapLog(session.LogFilePath, level, message, fields)
 		},
 	})
-	if recovered, err := updateManager.RecoverPendingSwitch(); err != nil {
-		if session.LogFilePath != "" {
-			appendBootstrapLog(session.LogFilePath, "ERROR", "failed to recover interrupted pending switch", map[string]any{
-				"errorCode":    bootstrap.ErrCodeSwitchFailed,
-				"releasePhase": "pending-switch-recovery",
-				"error":        err.Error(),
+	if options.StartupSource != "update-agent" {
+		if recovered, err := updateManager.RecoverPendingSwitch(); err != nil {
+			if session.LogFilePath != "" {
+				appendBootstrapLog(session.LogFilePath, "ERROR", "failed to recover interrupted pending switch", map[string]any{
+					"errorCode":    bootstrap.ErrCodeSwitchFailed,
+					"releasePhase": "pending-switch-recovery",
+					"error":        err.Error(),
+				})
+			}
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		} else if recovered && session.LogFilePath != "" {
+			appendBootstrapLog(session.LogFilePath, "WARN", "recovered interrupted pending switch", map[string]any{
+				"errorCode": bootstrap.ErrCodeSwitchFailed,
 			})
 		}
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	} else if recovered && session.LogFilePath != "" {
-		appendBootstrapLog(session.LogFilePath, "WARN", "recovered interrupted pending switch", map[string]any{
-			"errorCode": bootstrap.ErrCodeSwitchFailed,
-		})
 	}
 	store := bootstrap.NewStateStore(options.RootDir)
+	switcher := bootstrap.NewSwitcher(bootstrap.SwitcherOptions{
+		RootDir: options.RootDir,
+		Store:   store,
+	})
 	currentState, err := store.LoadCurrent()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	pendingSwitch, err := store.LoadPendingSwitch()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	awaitingCandidateValidation := options.StartupSource == "update-agent" && pendingSwitch.ReleaseID != ""
 
 	initialUpdateState := bootstrap.CheckUpdateResponse{Status: bootstrap.UpdateStatusIdle}
 	if resumable, ok, err := updateManager.FindResumableStageSession(); err != nil {
@@ -321,54 +334,94 @@ func main() {
 		"sessionId": sessionID,
 	})
 
-	launchSpec, err := bootstrap.BuildShellLaunchSpec(bootstrap.BuildShellLaunchSpecOptions{
-		RootDir:       options.RootDir,
-		Current:       currentState,
-		ControlOrigin: controlServer.Origin,
-		SessionID:     sessionID,
-		BaseEnv:       os.Environ(),
-	})
-	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	appendBootstrapLog(session.LogFilePath, "INFO", "launching product shell", map[string]any{
-		"shellPath": launchSpec.ExecutablePath,
-		"sessionId": sessionID,
-	})
-	child := exec.Command(launchSpec.ExecutablePath)
-	child.Dir = launchSpec.WorkingDirectory
-	child.Env = launchSpec.Environment
-	if err := child.Start(); err != nil {
-		appendBootstrapLog(session.LogFilePath, "ERROR", "failed to launch product shell", map[string]any{
-			"shellPath": launchSpec.ExecutablePath,
-			"sessionId": sessionID,
-			"errorCode": bootstrap.ErrCodeStageFailed,
-			"error":     err.Error(),
+	for {
+		launchSpec, err := bootstrap.BuildShellLaunchSpec(bootstrap.BuildShellLaunchSpecOptions{
+			RootDir:       options.RootDir,
+			Current:       currentState,
+			ControlOrigin: controlServer.Origin,
+			SessionID:     sessionID,
+			BaseEnv:       os.Environ(),
 		})
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	appendBootstrapLog(session.LogFilePath, "INFO", "product shell started", map[string]any{
-		"shellPath": launchSpec.ExecutablePath,
-		"sessionId": sessionID,
-		"pid":       child.Process.Pid,
-	})
-	if err := child.Wait(); err != nil {
-		appendBootstrapLog(session.LogFilePath, "WARN", "product shell exited with error", map[string]any{
-			"sessionId": sessionID,
-			"error":     err.Error(),
-		})
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+
+		result, err := runShellSession(runShellSessionOptions{
+			LogFilePath:                 session.LogFilePath,
+			SessionID:                   sessionID,
+			LaunchSpec:                  launchSpec,
+			App:                         app,
+			AwaitingCandidateValidation: awaitingCandidateValidation,
+			Switcher:                    switcher,
+			CandidateState:              currentState,
+			Store:                       store,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		if result.CandidateRolledBack {
+			currentState, err = store.LoadCurrent()
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			awaitingCandidateValidation = false
+			app.ResetSessionStatus(bootstrap.SessionStatusBooting)
+			continue
+		}
+
+		if result.SessionStatus == bootstrap.SessionStatusRestartRequested {
+			releaseID := strings.TrimSpace(app.UpdateState().ReleaseID)
+			stageSession, err := store.LoadStageSession(releaseID)
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if stageSession.ReleaseID == "" {
+				_, _ = fmt.Fprintln(os.Stderr, "staged update session is missing")
+				os.Exit(1)
+			}
+
+			candidateState, err := switcher.PreparePendingSwitch(currentState, stageSession)
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if bootstrap.RequiresBootstrapSelfUpdate(currentState, candidateState) {
+				if err := launchUpdateAgent(options.RootDir, currentState, candidateState, session.LogFilePath); err != nil {
+					_, _ = fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				return
+			}
+
+			currentState = candidateState
+			awaitingCandidateValidation = true
+			app.ResetSessionStatus(bootstrap.SessionStatusBooting)
+			app.SetUpdateState(bootstrap.CheckUpdateResponse{Status: bootstrap.UpdateStatusIdle})
+			continue
+		}
+
+		if result.ExitErr != nil {
+			appendBootstrapLog(session.LogFilePath, "WARN", "product shell exited with error", map[string]any{
+				"sessionId": sessionID,
+				"error":     result.ExitErr.Error(),
+			})
+			if exitErr, ok := result.ExitErr.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			_, _ = fmt.Fprintln(os.Stderr, result.ExitErr)
+			os.Exit(1)
+		}
+		appendBootstrapLog(session.LogFilePath, "INFO", "product shell exited", map[string]any{
+			"sessionId": sessionID,
+			"status":    result.SessionStatus,
+		})
+		return
 	}
-	appendBootstrapLog(session.LogFilePath, "INFO", "product shell exited", map[string]any{
-		"sessionId": sessionID,
-		"status":    app.SessionStatus(),
-	})
 }
 
 func appendBootstrapLog(logFilePath string, level string, message string, fields map[string]any) {
@@ -447,4 +500,166 @@ func appOrIdleState(state bootstrap.CheckUpdateResponse) bootstrap.CheckUpdateRe
 		return bootstrap.CheckUpdateResponse{Status: bootstrap.UpdateStatusUpToDate}
 	}
 	return state
+}
+
+type runShellSessionOptions struct {
+	LogFilePath                 string
+	SessionID                   string
+	LaunchSpec                  bootstrap.ShellLaunchSpec
+	App                         *bootstrap.App
+	AwaitingCandidateValidation bool
+	Switcher                    *bootstrap.Switcher
+	CandidateState              bootstrap.CurrentState
+	Store                       bootstrap.StateStore
+}
+
+type shellSessionResult struct {
+	SessionStatus       bootstrap.SessionStatus
+	ExitErr             error
+	CandidateRolledBack bool
+}
+
+func runShellSession(options runShellSessionOptions) (shellSessionResult, error) {
+	appendBootstrapLog(options.LogFilePath, "INFO", "launching product shell", map[string]any{
+		"shellPath": options.LaunchSpec.ExecutablePath,
+		"sessionId": options.SessionID,
+	})
+	child := exec.Command(options.LaunchSpec.ExecutablePath)
+	child.Dir = options.LaunchSpec.WorkingDirectory
+	child.Env = options.LaunchSpec.Environment
+	if err := child.Start(); err != nil {
+		appendBootstrapLog(options.LogFilePath, "ERROR", "failed to launch product shell", map[string]any{
+			"shellPath": options.LaunchSpec.ExecutablePath,
+			"sessionId": options.SessionID,
+			"errorCode": bootstrap.ErrCodeStageFailed,
+			"error":     err.Error(),
+		})
+		return shellSessionResult{}, err
+	}
+	appendBootstrapLog(options.LogFilePath, "INFO", "product shell started", map[string]any{
+		"shellPath": options.LaunchSpec.ExecutablePath,
+		"sessionId": options.SessionID,
+		"pid":       child.Process.Pid,
+	})
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- child.Wait()
+	}()
+
+	if options.AwaitingCandidateValidation {
+		deadline := time.NewTimer(30 * time.Second)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer deadline.Stop()
+		defer ticker.Stop()
+
+		for {
+			select {
+			case err := <-waitCh:
+				if rollbackErr := options.Switcher.RollbackPendingSwitch(bootstrap.ErrCodeCandidateExit, "candidate process exited before reporting ready"); rollbackErr != nil {
+					return shellSessionResult{}, rollbackErr
+				}
+				appendBootstrapLog(options.LogFilePath, "WARN", "candidate shell exited before ready and rollback was applied", map[string]any{
+					"sessionId":  options.SessionID,
+					"errorCode":  bootstrap.ErrCodeCandidateExit,
+					"releaseId":  options.CandidateState.ReleaseID,
+					"exitReason": errorString(err),
+				})
+				return shellSessionResult{
+					SessionStatus:       options.App.SessionStatus(),
+					ExitErr:             err,
+					CandidateRolledBack: true,
+				}, nil
+			case <-deadline.C:
+				_ = child.Process.Kill()
+				err := <-waitCh
+				if rollbackErr := options.Switcher.RollbackPendingSwitch(bootstrap.ErrCodeCandidateReadyTimeout, "candidate did not report ready before timeout"); rollbackErr != nil {
+					return shellSessionResult{}, rollbackErr
+				}
+				appendBootstrapLog(options.LogFilePath, "WARN", "candidate shell timed out before ready and rollback was applied", map[string]any{
+					"sessionId":  options.SessionID,
+					"errorCode":  bootstrap.ErrCodeCandidateReadyTimeout,
+					"releaseId":  options.CandidateState.ReleaseID,
+					"exitReason": errorString(err),
+				})
+				return shellSessionResult{
+					SessionStatus:       options.App.SessionStatus(),
+					ExitErr:             err,
+					CandidateRolledBack: true,
+				}, nil
+			case <-ticker.C:
+				switch options.App.SessionStatus() {
+				case bootstrap.SessionStatusReady:
+					if err := options.Switcher.CommitPendingSwitch(options.CandidateState); err != nil {
+						return shellSessionResult{}, err
+					}
+					appendBootstrapLog(options.LogFilePath, "INFO", "candidate shell reported ready and switch was committed", map[string]any{
+						"sessionId": options.SessionID,
+						"releaseId": options.CandidateState.ReleaseID,
+					})
+					err := <-waitCh
+					return shellSessionResult{
+						SessionStatus: options.App.SessionStatus(),
+						ExitErr:       err,
+					}, nil
+				case bootstrap.SessionStatusFailed:
+					_ = child.Process.Kill()
+					err := <-waitCh
+					if rollbackErr := options.Switcher.RollbackPendingSwitch(bootstrap.ErrCodeCandidateExit, "candidate reported startup failure"); rollbackErr != nil {
+						return shellSessionResult{}, rollbackErr
+					}
+					appendBootstrapLog(options.LogFilePath, "WARN", "candidate shell reported startup failure and rollback was applied", map[string]any{
+						"sessionId":  options.SessionID,
+						"releaseId":  options.CandidateState.ReleaseID,
+						"errorCode":  bootstrap.ErrCodeCandidateExit,
+						"exitReason": errorString(err),
+					})
+					return shellSessionResult{
+						SessionStatus:       options.App.SessionStatus(),
+						ExitErr:             err,
+						CandidateRolledBack: true,
+					}, nil
+				}
+			}
+		}
+	}
+
+	err := <-waitCh
+	return shellSessionResult{
+		SessionStatus: options.App.SessionStatus(),
+		ExitErr:       err,
+	}, nil
+}
+
+func launchUpdateAgent(rootDir string, current bootstrap.CurrentState, candidate bootstrap.CurrentState, logFilePath string) error {
+	plan, err := bootstrap.BuildSelfUpdatePlan(rootDir, candidate)
+	if err != nil {
+		return err
+	}
+	planPath, err := bootstrap.SaveSelfUpdatePlan(rootDir, plan)
+	if err != nil {
+		return err
+	}
+
+	updateAgentPath := filepath.Join(rootDir, "NeoTTSUpdateAgent.exe")
+	command := exec.Command(updateAgentPath, "--plan", planPath, "--bootstrap-pid", fmt.Sprintf("%d", os.Getpid()))
+	command.Dir = rootDir
+	if err := command.Start(); err != nil {
+		return err
+	}
+	appendBootstrapLog(logFilePath, "INFO", "spawned update-agent for bootstrap self-update", map[string]any{
+		"planPath":         planPath,
+		"updateAgentPath":  updateAgentPath,
+		"candidateRelease": candidate.ReleaseID,
+		"currentRelease":   current.ReleaseID,
+		"pid":              command.Process.Pid,
+	})
+	return command.Process.Release()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

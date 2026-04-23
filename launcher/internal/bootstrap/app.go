@@ -139,6 +139,10 @@ func (app *App) setSessionStatus(status SessionStatus) {
 	app.sessionStatus = status
 }
 
+func (app *App) ResetSessionStatus(status SessionStatus) {
+	app.setSessionStatus(status)
+}
+
 func (app *App) UpdateState() CheckUpdateResponse {
 	app.mu.RLock()
 	defer app.mu.RUnlock()

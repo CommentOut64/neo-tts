@@ -142,6 +142,10 @@ func (store StateStore) DeletePendingSwitch() error {
 	return deleteIfExists(store.pendingSwitchPath())
 }
 
+func (store StateStore) DeleteFailedRelease() error {
+	return deleteIfExists(store.failedReleasePath())
+}
+
 func (store StateStore) UpdateLockPath() string {
 	return filepath.Join(store.rootDir, "state", "update.lock")
 }
