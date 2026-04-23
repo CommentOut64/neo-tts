@@ -16,7 +16,7 @@ export type RuntimePackageKey =
 
 export interface RuntimeDescriptorPackage {
 	version: string;
-	root: string;
+	root?: string;
 }
 
 export interface RuntimeDescriptor {

@@ -8,6 +8,10 @@
   ],
   "resourcesRoot": "resources/app-runtime",
   "portableMarker": "portable.flag",
+  "runtimeLayout": {
+    "stateRoot": "state",
+    "packagesRoot": "packages"
+  },
   "userDataPolicy": {
     "userDataRoot": "./data",
     "exportsRoot": "./exports"

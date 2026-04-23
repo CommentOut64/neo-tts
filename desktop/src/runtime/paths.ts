@@ -5,6 +5,7 @@ import process from "node:process";
 import {
 	readRuntimeDescriptor,
 	resolveRuntimeDescriptorPath,
+	type RuntimePackageKey,
 	type RuntimeDescriptor,
 } from "./runtimeDescriptor";
 
@@ -159,16 +160,55 @@ function buildDescriptorProductPaths(options: {
 		runtimeDescriptorPath: options.descriptorPath,
 		distributionKind: options.descriptor.distributionKind,
 		productRoot,
-		bootstrapRoot: options.descriptor.packages.bootstrap.root,
-		updateAgentRoot: options.descriptor.packages["update-agent"].root,
-		shellRoot: options.descriptor.packages.shell.root,
-		appCoreRoot: options.descriptor.packages["app-core"].root,
-		runtimeRoot: options.descriptor.packages.runtime.root,
-		modelsRoot: options.descriptor.packages.models.root,
-		pretrainedModelsRoot: options.descriptor.packages["pretrained-models"].root,
-		userDataDir: options.descriptor.paths.userDataRoot,
-		exportsDir: options.descriptor.paths.exportsRoot,
+		bootstrapRoot: resolveDescriptorPackageRoot(
+			productRoot,
+			options.descriptor,
+			"bootstrap",
+		),
+		updateAgentRoot: resolveDescriptorPackageRoot(
+			productRoot,
+			options.descriptor,
+			"update-agent",
+		),
+		shellRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "shell"),
+		appCoreRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "app-core"),
+		runtimeRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "runtime"),
+		modelsRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "models"),
+		pretrainedModelsRoot: resolveDescriptorPackageRoot(
+			productRoot,
+			options.descriptor,
+			"pretrained-models",
+		),
+		userDataDir: resolveDescriptorPath(productRoot, options.descriptor.paths.userDataRoot),
+		exportsDir: resolveDescriptorPath(productRoot, options.descriptor.paths.exportsRoot),
 	});
+}
+
+function resolveDescriptorPackageRoot(
+	productRoot: string,
+	descriptor: RuntimeDescriptor,
+	packageKey: RuntimePackageKey,
+): string {
+	const packageState = descriptor.packages[packageKey];
+	const configuredRoot = packageState.root?.trim();
+	if (configuredRoot) {
+		return resolveDescriptorPath(productRoot, configuredRoot);
+	}
+
+	const version = packageState.version?.trim();
+	if (version) {
+		return path.join(productRoot, "packages", packageKey, version);
+	}
+
+	throw new Error(`runtime descriptor package "${packageKey}" is missing both root and version`);
+}
+
+function resolveDescriptorPath(productRoot: string, configuredPath: string): string {
+	const trimmedPath = configuredPath.trim();
+	if (!trimmedPath) {
+		throw new Error("runtime descriptor contains an empty path value");
+	}
+	return path.resolve(productRoot, trimmedPath);
 }
 
 function buildProductPaths(options: {
