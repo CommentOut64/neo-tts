@@ -4,12 +4,13 @@
 
 GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改任何一句话都需要整篇重跑。Neo TTS 围绕这个痛点重新设计：将长文本拆分为独立管理的语音段，每段独立推理、独立编辑、独立重做，并通过 Latent Overlap 边界增强保持段间自然衔接，最终组装为完整音频导出。
 
+<a href="https://www.bilibili.com/video/BV13Pd6BMEWh"><img src="https://img.shields.io/static/v1?label=%20&message=%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91&color=F37697&style=flat&logo=bilibili&logoColor=white&logoWidth=20" height="36"></a>
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
 ![GPT-SoVITS](https://img.shields.io/badge/GPT--SoVITS-v2%20%2F%20v2Pro%20%2F%20v2ProPlus-8A2BE2)
-<a href="https://www.bilibili.com/video/BV13Pd6BMEWh"><img src="https://img.shields.io/static/v1?label=%20&message=%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91&color=F37697&style=flat&logo=bilibili&logoColor=white&logoWidth=20" height="36"></a>
+
 
 <p align="center">
   <img src="assets/main1.png" width="100%" />
