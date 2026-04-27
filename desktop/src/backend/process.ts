@@ -48,6 +48,33 @@ const defaultMonitorIntervalMs = 5_000;
 const packagedHealthTimeoutMs = 40_000;
 const netstatProbeTimeoutMs = 5_000;
 const monitorProbeTimeoutMs = 5_000;
+const packagedBackendPassthroughEnvKeys = [
+	"NEO_TTS_OWNER_CONTROL_ORIGIN",
+	"NEO_TTS_OWNER_CONTROL_TOKEN",
+	"NEO_TTS_OWNER_SESSION_ID",
+	"NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN",
+	"NEO_TTS_BOOTSTRAP_API_VERSION",
+] as const;
+const packagedBackendControlEnvKeys = [
+	"NEO_TTS_STDIN_WATCHDOG_ENABLED",
+	"GPT_SOVITS_PRELOAD_ON_START",
+	"GPT_SOVITS_PRELOAD_VOICES",
+	"GPT_SOVITS_GPU_OFFLOAD_ENABLED",
+	"GPT_SOVITS_GPU_MIN_FREE_MB",
+	"GPT_SOVITS_GPU_RESERVE_MB_FOR_LOAD",
+	"GPT_SOVITS_EDIT_SESSION_STAGING_TTL_SECONDS",
+	"GPT_SOVITS_PREPEND_COMMA_TO_SHORT_ENGLISH",
+] as const;
+const packagedBackendSystemEnvKeys = [
+	"SystemRoot",
+	"WINDIR",
+	"TEMP",
+	"TMP",
+	"COMSPEC",
+	"PATHEXT",
+	"NUMBER_OF_PROCESSORS",
+	"PROCESSOR_ARCHITECTURE",
+] as const;
 
 function readPortNetstatOutput(port: number): string {
 	const command = `netstat -ano -p TCP | findstr /R /C:":${String(port)} "`;
@@ -461,17 +488,12 @@ export function buildDefaultBackendOptions(
 	const runtimeLayerRoot = target.runtimeRoot;
 	const modelsRoot = target.modelsRoot ?? target.resourcesDir;
 	const pretrainedModelsRoot = target.pretrainedModelsRoot ?? target.resourcesDir;
-	const pythonPathEntries = [
-		appCoreRoot,
-		target.gptSovitsDir,
-		process.env.PYTHONPATH,
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
+	const pythonPathEntries = [appCoreRoot, target.gptSovitsDir];
 	const runtimePythonDir = path.dirname(target.runtimePython);
-	const packagedPathEntries = [runtimePythonDir, process.env.PATH].filter(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
+	const packagedPathEntries = buildPackagedBackendPathEntries(runtimePythonDir);
 	const cnhubertPath = path.join(target.builtinModelDir, "chinese-hubert-base");
 	const bertPath = path.join(target.builtinModelDir, "chinese-roberta-wwm-ext-large");
+	const svModelPath = path.join(target.pretrainedModelsDir, "sv", "pretrained_eres2netv2w24s4ep4.ckpt");
 	const nltkDataPath = path.join(runtimePythonDir, "nltk_data");
 
 	return {
@@ -490,7 +512,9 @@ export function buildDefaultBackendOptions(
 			String(defaultBackendPort),
 		],
 		environment: {
-			...process.env,
+			...pickProcessEnvironment(packagedBackendSystemEnvKeys),
+			...pickProcessEnvironment(packagedBackendPassthroughEnvKeys),
+			...pickProcessEnvironment(packagedBackendControlEnvKeys),
 			NEO_TTS_DISTRIBUTION_KIND: target.distributionKind,
 			NEO_TTS_PROJECT_ROOT: productRoot,
 			NEO_TTS_RUNTIME_DESCRIPTOR: target.runtimeDescriptorPath ?? "",
@@ -509,10 +533,57 @@ export function buildDefaultBackendOptions(
 			BERT_PATH: bertPath,
 			GPT_SOVITS_BERT_PATH: bertPath,
 			bert_path: bertPath,
+			SV_MODEL_PATH: svModelPath,
 			NLTK_DATA: nltkDataPath,
 			PATH: packagedPathEntries.join(path.delimiter),
+			PYTHONNOUSERSITE: "1",
 			PYTHONPATH: pythonPathEntries.join(path.delimiter),
 		},
 		fetchImpl: globalThis.fetch.bind(globalThis),
 	};
+}
+
+function buildPackagedBackendPathEntries(runtimePythonDir: string): string[] {
+	const windowsRoot = readProcessEnvironment("SystemRoot") ?? readProcessEnvironment("WINDIR");
+	return uniqueNonEmptyStrings([
+		runtimePythonDir,
+		windowsRoot ? path.join(windowsRoot, "System32") : undefined,
+		windowsRoot,
+		windowsRoot ? path.join(windowsRoot, "System32", "WindowsPowerShell", "v1.0") : undefined,
+	]);
+}
+
+function pickProcessEnvironment(keys: readonly string[]): NodeJS.ProcessEnv {
+	const environment: NodeJS.ProcessEnv = {};
+	for (const key of keys) {
+		const value = readProcessEnvironment(key);
+		if (typeof value === "string" && value.length > 0) {
+			environment[key] = value;
+		}
+	}
+	return environment;
+}
+
+function readProcessEnvironment(name: string): string | undefined {
+	if (typeof process.env[name] === "string") {
+		return process.env[name];
+	}
+	const normalizedName = name.toLowerCase();
+	const matchingKey = Object.keys(process.env).find(
+		(key) => key.toLowerCase() === normalizedName,
+	);
+	return matchingKey ? process.env[matchingKey] : undefined;
+}
+
+function uniqueNonEmptyStrings(values: Array<string | undefined>): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const value of values) {
+		if (typeof value !== "string" || value.length === 0 || seen.has(value)) {
+			continue;
+		}
+		seen.add(value);
+		result.push(value);
+	}
+	return result;
 }
