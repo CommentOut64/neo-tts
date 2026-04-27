@@ -14,8 +14,6 @@ param(
 
     [switch]$BuildUpdatePackages,
 
-    [switch]$SkipPackagedPythonCompile,
-
     [string]$InnoSetupCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
 
     [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
@@ -458,9 +456,6 @@ function Invoke-CudaRuntimeVariantBuild {
     if ($SkipPortableZip) {
         $arguments += "-SkipPortableZip"
     }
-    if ($SkipPackagedPythonCompile) {
-        $arguments += "-SkipPackagedPythonCompile"
-    }
     if ($KeepWinUnpacked) {
         $arguments += "-KeepWinUnpacked"
     }
@@ -557,40 +552,6 @@ function Invoke-NativeStep {
             Pop-Location
         }
     }
-}
-
-function Invoke-PackagedPythonCompile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$winUnpackedRoot,
-
-        [Parameter(Mandatory = $true)]
-        [string]$WorkingDirectory
-    )
-
-    $packagedPythonExe = Join-Path $winUnpackedRoot "resources\app-runtime\runtime\python\python.exe"
-    $packagedBackendDir = Join-Path $winUnpackedRoot "resources\app-runtime\backend"
-    $packagedGptSovitsDir = Join-Path $winUnpackedRoot "resources\app-runtime\GPT_SoVITS"
-    $packagedSitePackagesDir = Join-Path $winUnpackedRoot "resources\app-runtime\runtime\python\Lib\site-packages"
-
-    foreach ($requiredPath in @($packagedPythonExe, $packagedBackendDir, $packagedGptSovitsDir, $packagedSitePackagesDir)) {
-        if (-not (Test-Path -LiteralPath $requiredPath)) {
-            throw "Packaged Python compile prerequisite missing: $requiredPath"
-        }
-    }
-
-    Invoke-NativeStep -Label "Compile packaged Python runtime" `
-        -WorkingDirectory $WorkingDirectory `
-        -FilePath $packagedPythonExe `
-        -Arguments @(
-            "-m",
-            "compileall",
-            "-f",
-            "-q",
-            $packagedBackendDir,
-            $packagedGptSovitsDir,
-            $packagedSitePackagesDir
-        )
 }
 
 function Find-SingleArtifact {
@@ -1051,13 +1012,6 @@ foreach ($requiredPath in @($winUnpackedBootstrapExe, $winUnpackedShellExe, $win
 Copy-Item -LiteralPath $tutorialSourcePath -Destination $tutorialTargetPath -Force
 if (-not (Test-Path -LiteralPath $tutorialTargetPath)) {
     throw "Integrated package validation failed after tutorial copy: missing $tutorialTargetPath"
-}
-
-if ($SkipPackagedPythonCompile) {
-    Write-Host "[build-integrated-package] Skipping packaged Python compile because -SkipPackagedPythonCompile was set."
-}
-else {
-    Invoke-PackagedPythonCompile -WinUnpackedRoot $winUnpackedRoot -WorkingDirectory $desktopRoot
 }
 
 if ($BuildUpdatePackages) {
