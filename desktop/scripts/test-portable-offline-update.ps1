@@ -352,7 +352,7 @@ function Get-DiagnosticSummary {
             $lines.Add((Get-Content -Raw -LiteralPath $path))
         }
     }
-    $launcherLogRoot = Join-Path $PortableRoot "logs\launcher"
+    $launcherLogRoot = Join-Path $PortableRoot "data\logs"
     if (Test-Path -LiteralPath $launcherLogRoot) {
         $latestLog = Get-ChildItem -LiteralPath $launcherLogRoot -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($null -ne $latestLog) {
@@ -430,6 +430,7 @@ try {
             -LayeredReleaseRoot $layeredRootPath `
             -ReleaseId $ReleaseId `
             -Channel $Channel `
+            -BaselinePortableRoot $baselinePortablePath `
             -OutputRoot $offlineOutputRoot
         if ($LASTEXITCODE -ne 0) {
             throw "build-offline-update-package.ps1 failed with exit code $LASTEXITCODE"

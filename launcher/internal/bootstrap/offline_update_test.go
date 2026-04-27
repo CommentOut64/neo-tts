@@ -215,6 +215,7 @@ func TestStageOfflineUpdateAndPrepareSwitch(t *testing.T) {
 	source := createPreparedOfflineSource(t, rootDir, "v0.0.2")
 	manager := NewUpdateManager(UpdateManagerOptions{RootDir: rootDir})
 	switcher := NewSwitcher(SwitcherOptions{RootDir: rootDir})
+	var progressEvents []StageProgress
 
 	candidate, err := StageOfflineUpdateAndPrepareSwitch(context.Background(), OfflineSwitchOptions{
 		SessionID: "test-session",
@@ -222,6 +223,9 @@ func TestStageOfflineUpdateAndPrepareSwitch(t *testing.T) {
 		Source:    source,
 		Manager:   manager,
 		Switcher:  switcher,
+		Progress: func(progress StageProgress) {
+			progressEvents = append(progressEvents, progress)
+		},
 	})
 	if err != nil {
 		t.Fatalf("StageOfflineUpdateAndPrepareSwitch returned error: %v", err)
@@ -234,6 +238,9 @@ func TestStageOfflineUpdateAndPrepareSwitch(t *testing.T) {
 	}
 	if !pathExists(source.ArchivePath) {
 		t.Fatal("expected inbox archive to be retained until candidate validation finishes")
+	}
+	if len(progressEvents) == 0 {
+		t.Fatal("expected offline staging progress events")
 	}
 }
 

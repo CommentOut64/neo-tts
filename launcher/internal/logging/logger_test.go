@@ -27,8 +27,43 @@ func TestBootstrapLoggerCreatesSessionLogFile(t *testing.T) {
 	if _, err := os.Stat(session.LogFilePath); err != nil {
 		t.Fatalf("Stat(%q): %v", session.LogFilePath, err)
 	}
-	if !strings.Contains(session.LogFilePath, filepath.Join("logs", "launcher")) {
-		t.Fatalf("LogFilePath = %q, want logs/launcher segment", session.LogFilePath)
+	if !strings.Contains(session.LogFilePath, filepath.Join("data", "logs")) {
+		t.Fatalf("LogFilePath = %q, want data/logs segment", session.LogFilePath)
+	}
+	if filepath.Base(session.LogFilePath) != "launcher_"+time.Now().Format("20060102")+".log" {
+		t.Fatalf("LogFilePath = %q, want daily launcher log", session.LogFilePath)
+	}
+}
+
+func TestBootstrapLoggerReusesDailyLauncherLog(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	first, err := Bootstrap(projectRoot, StartupContext{
+		WorkingDirectory: projectRoot,
+		ExecutablePath:   filepath.Join(projectRoot, "NeoTTS.exe"),
+		StartupSource:    "direct",
+	})
+	if err != nil {
+		t.Fatalf("Bootstrap(first) returned error: %v", err)
+	}
+	second, err := Bootstrap(projectRoot, StartupContext{
+		WorkingDirectory: projectRoot,
+		ExecutablePath:   filepath.Join(projectRoot, "NeoTTSUpdateAgent.exe"),
+		StartupSource:    "update-agent",
+	})
+	if err != nil {
+		t.Fatalf("Bootstrap(second) returned error: %v", err)
+	}
+
+	if first.LogFilePath != second.LogFilePath {
+		t.Fatalf("log paths differ: first=%q second=%q", first.LogFilePath, second.LogFilePath)
+	}
+	content, err := os.ReadFile(first.LogFilePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", first.LogFilePath, err)
+	}
+	if strings.Count(string(content), "startup begin") != 2 {
+		t.Fatalf("content = %q, want two startup lines", string(content))
 	}
 }
 

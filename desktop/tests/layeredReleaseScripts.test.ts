@@ -1,4 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -28,10 +31,14 @@ describe("layered release scripts", () => {
     const electronBuilderPath = path.join(process.cwd(), "electron-builder.yml");
     const integratedPackagePath = path.join(process.cwd(), "scripts", "build-integrated-package.ps1");
     const portableAssemblyPath = path.join(process.cwd(), "scripts", "assemble-portable.ps1");
+    const bootstrapBuildPath = path.join(process.cwd(), "..", "launcher", "build-bootstrap.ps1");
+    const launcherBuildPath = path.join(process.cwd(), "..", "launcher", "build.ps1");
 
     const electronBuilder = readFileSync(electronBuilderPath, "utf-8");
     const integratedPackage = readFileSync(integratedPackagePath, "utf-8");
     const portableAssembly = readFileSync(portableAssemblyPath, "utf-8");
+    const bootstrapBuild = readFileSync(bootstrapBuildPath, "utf-8");
+    const launcherBuild = readFileSync(launcherBuildPath, "utf-8");
 
     expect(electronBuilder).toMatch(/executableName:\s*NeoTTSApp/);
     expect(integratedPackage).toContain("build-bootstrap.ps1");
@@ -40,6 +47,8 @@ describe("layered release scripts", () => {
     expect(integratedPackage).toContain("NeoTTS.exe");
     expect(portableAssembly).toContain("NeoTTSApp.exe");
     expect(portableAssembly).toContain("NeoTTS.exe");
+    expect(bootstrapBuild).toContain("-H windowsgui");
+    expect(launcherBuild).toContain("-H windowsgui");
   });
 
   it("records staged layer-package mapping metadata and version hints for reusable layered artifacts", () => {
@@ -89,6 +98,9 @@ describe("layered release scripts", () => {
     expect(offlineScript).toContain("manifest.releaseId");
     expect(offlineScript).toContain("manifestSha256");
     expect(offlineScript).toContain("PSObject.Properties");
+    expect(offlineScript).toContain("BaselinePortableRoot");
+    expect(offlineScript).toContain("Write-Utf8NoBomFile");
+    expect(offlineScript).toContain("NoCompression");
     expect(offlineScript).not.toContain('Copy-Item -LiteralPath (Join-Path $layeredRootPath "channels")');
     expect(offlineScript).not.toContain('Copy-Item -LiteralPath (Join-Path $layeredRootPath "releases")');
     expect(offlineScript).not.toContain("Copy-Item -LiteralPath $packagesPath");
@@ -98,6 +110,114 @@ describe("layered release scripts", () => {
 
     const packageJson = readFileSync(packageJsonPath, "utf-8");
     expect(packageJson).not.toContain("build-offline-update-package.ps1");
+  });
+
+  it("builds a baseline-diff portable offline update package with generated UTF-8 latest metadata", () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "neotts-offline-fixture-"));
+    try {
+      const layeredRoot = path.join(tempRoot, "release");
+      const baselineRoot = path.join(tempRoot, "baseline");
+      const outputRoot = path.join(tempRoot, "output");
+      mkdirSync(path.join(layeredRoot, "releases", "v0.0.2"), { recursive: true });
+      mkdirSync(path.join(layeredRoot, "packages", "bootstrap"), { recursive: true });
+      mkdirSync(path.join(layeredRoot, "packages", "runtime"), { recursive: true });
+      mkdirSync(path.join(baselineRoot, "state"), { recursive: true });
+      mkdirSync(outputRoot, { recursive: true });
+
+      writeFileSync(path.join(layeredRoot, "packages", "bootstrap", "0.0.2.zip"), "bootstrap-package");
+      writeFileSync(path.join(layeredRoot, "packages", "runtime", "py311-cu124-v1.zip"), "runtime-package");
+      const manifestPayload = JSON.stringify({
+        schemaVersion: 1,
+        releaseId: "v0.0.2",
+        channel: "stable",
+        releaseKind: "stable",
+        packages: {
+          bootstrap: { version: "0.0.2", sha256: "bootstrap", sizeBytes: 17 },
+          runtime: { version: "py311-cu124-v1", sha256: "runtime", sizeBytes: 15 },
+        },
+      });
+      writeFileSync(
+        path.join(layeredRoot, "releases", "v0.0.2", "manifest.json"),
+        manifestPayload,
+      );
+      mkdirSync(path.join(layeredRoot, "channels", "stable"), { recursive: true });
+      writeFileSync(
+        path.join(layeredRoot, "channels", "stable", "latest.json"),
+        Buffer.concat([
+          Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from(JSON.stringify({
+          schemaVersion: 1,
+          channel: "stable",
+          releaseId: "v0.0.2",
+          releaseKind: "stable",
+          manifestUrl: "releases/v0.0.2/manifest.json",
+          manifestSha256: createHash("sha256").update(manifestPayload).digest("hex"),
+          minBootstrapVersion: "0.0.0",
+          publishedAt: "2026-04-27T00:00:00.000Z",
+        })),
+        ]),
+      );
+      writeFileSync(
+        path.join(baselineRoot, "state", "current.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          distributionKind: "portable",
+          releaseId: "v0.0.1",
+          packages: {
+            bootstrap: { version: "0.0.1" },
+            runtime: { version: "py311-cu124-v1" },
+          },
+        }),
+      );
+
+      execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          path.join(process.cwd(), "scripts", "build-offline-update-package.ps1"),
+          "-LayeredReleaseRoot",
+          layeredRoot,
+          "-ReleaseId",
+          "v0.0.2",
+          "-BaselinePortableRoot",
+          baselineRoot,
+          "-OutputRoot",
+          outputRoot,
+        ],
+        { stdio: "pipe" },
+      );
+
+      const zipPath = path.join(outputRoot, "NeoTTS-Update-v0.0.2.zip");
+      expect(existsSync(zipPath)).toBe(true);
+      const inspection = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          [
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem;",
+            `$zip=[System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}');`,
+            "try {",
+            "$zip.Entries | ForEach-Object { $_.FullName };",
+            "$latest=$zip.GetEntry('channels/stable/latest.json');",
+            "$stream=$latest.Open();",
+            "try { $buffer=New-Object byte[] 3; $read=$stream.Read($buffer,0,3); \"LATEST_PREFIX=$([System.BitConverter]::ToString($buffer,0,$read))\" } finally { $stream.Dispose() }",
+            "} finally { $zip.Dispose() }",
+          ].join(" "),
+        ],
+        { encoding: "utf-8" },
+      );
+
+      expect(inspection).toContain("packages/bootstrap/0.0.2.zip");
+      expect(inspection).not.toContain("packages/runtime/py311-cu124-v1.zip");
+      expect(inspection).toContain("LATEST_PREFIX=7B");
+      expect(inspection).not.toContain("LATEST_PREFIX=EF-BB-BF");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("adds an automated real portable offline update acceptance test entrypoint", () => {
@@ -110,10 +230,12 @@ describe("layered release scripts", () => {
     expect(acceptanceScript).toContain("BaselinePortableRoot");
     expect(acceptanceScript).toContain("LayeredReleaseRoot");
     expect(acceptanceScript).toContain("build-offline-update-package.ps1");
+    expect(acceptanceScript).toContain("-BaselinePortableRoot $baselinePortablePath");
     expect(acceptanceScript).toContain("NeoTTS-Update-v");
     expect(acceptanceScript).toContain("pending-switch.json");
     expect(acceptanceScript).toContain("last-known-good.json");
     expect(acceptanceScript).toContain("cache\\offline-update\\inbox");
+    expect(acceptanceScript).toContain("data\\logs");
     expect(acceptanceScript).toContain("Start-Process");
 
     const packageJson = readFileSync(packageJsonPath, "utf-8");
