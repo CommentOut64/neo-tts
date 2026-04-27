@@ -11,6 +11,7 @@ import { resolveRerenderTargets } from "./rerenderTargets";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
+import { useSegmentSelection } from "@/composables/useSegmentSelection";
 
 const props = defineProps<{
   sessionStatus: SessionStatus;
@@ -27,6 +28,7 @@ const {
 const runtimeState = useRuntimeState();
 const workspaceProcessing = useWorkspaceProcessing();
 const reorderDraft = useWorkspaceReorderDraft();
+const segmentSelection = useSegmentSelection();
 const rerenderTargets = computed(() =>
   resolveRerenderTargets({
     dirtyTextSegmentIds: lightEdit.rerenderSegmentIds.value,
@@ -37,6 +39,25 @@ const rerenderTargets = computed(() =>
     })),
   }),
 );
+const randomDrawSegmentId = computed(() => {
+  if (
+    rerenderTargets.value.count !== 0 ||
+    parameterPanel.hasDirty.value ||
+    reorderDraft.hasDraft.value
+  ) {
+    return null;
+  }
+
+  const selectedSegmentIds = Array.from(segmentSelection.selectedSegmentIds.value);
+  if (selectedSegmentIds.length !== 1) {
+    return null;
+  }
+
+  const segmentId = selectedSegmentIds[0];
+  return editSession.segments.value.some((segment) => segment.segment_id === segmentId)
+    ? segmentId
+    : null;
+});
 const queue = createSegmentRerenderQueue({
   submitSegmentUpdate: async (segmentId) => {
     const draftText = lightEdit.getDraft(segmentId);
@@ -93,6 +114,7 @@ const buttonState = computed(() =>
     sessionStatus: props.sessionStatus,
     dirtyCount: rerenderTargets.value.count,
     hasReorderDraft: reorderDraft.hasDraft.value,
+    canRandomDraw: randomDrawSegmentId.value !== null,
     canInitialize: false,
     canMutate: runtimeState.canMutate.value && !workspaceProcessing.isInteractionLocked.value,
   }),
@@ -182,6 +204,33 @@ const handleStart = async () => {
   }
 };
 
+const handleRandomDraw = async () => {
+  const segmentId = randomDrawSegmentId.value;
+  if (!segmentId) {
+    return;
+  }
+
+  runtimeState.lockedSegmentIds.value = new Set([segmentId]);
+  try {
+    const jobResponse = await rerenderSegment(segmentId);
+    runtimeState.trackJob(jobResponse, {
+      initialRendering: false,
+      lockedSegmentIds: [segmentId],
+      refreshSessionOnTerminal: false,
+    });
+
+    const terminalStatus = await runtimeState.waitForJobTerminal(jobResponse.job_id);
+    if (terminalStatus === "completed") {
+      await refreshFormalSessionState();
+    }
+  } catch (error) {
+    console.warn("Random draw rerender failed", error);
+    ElMessage.error(error instanceof Error ? error.message : "重新抽卡失败");
+  } finally {
+    runtimeState.lockedSegmentIds.value = new Set();
+  }
+};
+
 const onClick = async () => {
   if (buttonState.value.disabled) {
     return;
@@ -200,6 +249,11 @@ const onClick = async () => {
     parameterPanel.triggerFlash();
     // “不能只起提醒作用”，除了高亮外还要阻止重推理以防用旧参数空跑
     ElMessage.warning('请先提交或放弃暂存的参数配置');
+    return;
+  }
+
+  if (buttonState.value.mode === "random_draw") {
+    await handleRandomDraw();
     return;
   }
 
@@ -227,7 +281,7 @@ function handleDiscardReorder() {
         'bg-cta text-white':
           buttonState.mode === 'init' && !buttonState.disabled,
         'bg-[#fc8c4a] hover:bg-[#e37e2e] dark:bg-[#e37e2e] dark:hover:bg-[#fc8c4a] text-white':
-          buttonState.mode === 'rerender' && !buttonState.disabled,
+          (buttonState.mode === 'rerender' || buttonState.mode === 'random_draw') && !buttonState.disabled,
         'bg-blue-500 hover:bg-blue-600 text-white':
           buttonState.mode === 'apply_reorder' && !buttonState.disabled,
         'bg-secondary/50 text-muted-fg cursor-not-allowed': buttonState.disabled,

@@ -17,6 +17,7 @@ const actionState = computed(() =>
     sessionStatus: "empty",
     dirtyCount: 0,
     hasReorderDraft: false,
+    canRandomDraw: false,
     canInitialize: props.canSubmit,
     canMutate: true,
   }),
