@@ -21,7 +21,7 @@ function Build-GoBinaryWithIcon {
 
     New-Item -ItemType Directory -Force -Path $ResourceDir | Out-Null
     & $rsrcCommand.Source -arch $targetGOARCH -ico $iconPath -o $resourcePath
-    go build -o $OutputPath $PackagePath
+    go build -ldflags "-H windowsgui" -o $OutputPath $PackagePath
     Write-Host "Built: $OutputPath"
 }
 

@@ -30,7 +30,7 @@ function Build-GoBinaryWithIcon {
         Remove-Item -LiteralPath $LegacyResourcePath -Force
     }
 
-    go build -o $OutputPath $PackagePath
+    go build -ldflags "-H windowsgui" -o $OutputPath $PackagePath
     Write-Host "Built: $OutputPath"
 }
 
