@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import torch
 
 from backend.app.inference.text_processing import compute_effective_margin_frame_count
+
+if TYPE_CHECKING:
+    import numpy as np
+    import torch
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,8 @@ def split_segment_audio(
     generator_stride_samples: int,
     min_core_frame_count: int = 10,
 ) -> dict[str, Any]:
+    import numpy as np
+
     decoder_frame_count = int(encoder_frames.shape[-1])
     effective_margin_frame_count = compute_effective_margin_frame_count(
         decoder_frame_count=decoder_frame_count,
