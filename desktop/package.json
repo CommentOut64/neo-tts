@@ -12,6 +12,8 @@
                     "package:portable:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -Offline",
                     "package:portable:dir":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip",
                     "package:portable:dir:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip -Offline",
+                    "package:portable:cuda-variants":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildCudaRuntimeVariants",
+                    "package:portable:cuda-variants:dir":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildCudaRuntimeVariants -SkipPortableZip",
                     "package:installed":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed",
                     "package:installed:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed -Offline",
                     "package:verify":  "npm run test \u0026\u0026 uv run pytest ../backend/tests/unit/test_packaged_runtime_settings.py -v",

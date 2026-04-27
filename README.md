@@ -62,41 +62,7 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 ### 整合包
 
-当前整合包流水线以 Electron 为唯一正式产品入口，并统一先生成一套 staged runtime，再按 flavor 分发。
-
-当前产品态正式入口约束：
-
-- 开发态主入口是 `dev/web`
-- 打包后的唯一正式产品入口是 Electron 主程序
-- Go launcher 只作为开发态 owner，不再承担正式产品入口身份
-
-当前 Windows 产品态约束：
-
-- 安装版默认把只读程序资源放在 `<install-root>/resources/app-runtime`
-- 安装版可写目录默认落在 `%LOCALAPPDATA%/NeoTTS`，导出目录默认落在 `%USERPROFILE%/Documents/NeoTTS/Exports`
-- 便携版同样使用 `<portable-root>/resources/app-runtime` 承载只读资源
-- 便携版可写目录默认落在 `<portable-root>/data`，导出目录默认落在 `<portable-root>/exports`
-- `portable.flag` 必须与 `NeoTTS.exe` 同级，用于便携 flavor 识别
-
-当前 staging 入口：
-
-```powershell
-Set-Location desktop
-powershell -File .\scripts\stage-runtime.ps1 -Flavor portable
-```
-
-当前脚本会完成：
-
-- 复制 `frontend/dist` 到 `desktop/.stage/app-runtime/frontend-dist`
-- 按 `desktop/packaging/manifests/base.v1.json` 收集 backend、`GPT_SoVITS/` 与运行时必需模型
-- 按 `desktop/packaging/profiles/default.v1.json` 生成首发 builtin voice 和只读 `config/voices.json`
-- builtin voice 变化时只重建该 profile 负责的音色目录与只读 `config/voices.json`，不删除 manifest 已收包的 builtin support models
-- 使用 `uv.lock` + `pyproject.toml` 导出运行时依赖，并按 `desktop/packaging/python-runtime-prune.txt` 对桌面产品包做树级 prune 裁剪
-- 运行时依赖仍优先复用 `desktop/.cache/` 下的 wheelhouse、exported requirements 与 cached runtime
-- 仅在相关输入变化时重建对应 staged 分区，而不是每次删除整个 `desktop/.stage`
-- 生成 `desktop/.stage/manifest-lock.json`，作为本次收包的实际快照
-
-当前默认 profile 只内置一套示例音色 `neuro2`，并且默认 profile 已限制为仅允许该内置音色进入打包。
+当前整合包流水线以 Electron 为正式产品入口。完整打包链路、runtime 分支、缓存、压缩、硬链接和验证细节见 [Windows 桌面打包指南](llmdoc/guides/windows-desktop-packaging.md)。
 
 当前默认打包命令：
 
@@ -105,14 +71,7 @@ Set-Location desktop
 npm run package
 ```
 
-- 默认生成便携包相关产物：
-  - `release/<version>/NeoTTS-Portable-<version>.zip`
-  - `release/<version>/win-unpacked/NeoTTS.exe`
-- 默认不调用 Inno Setup 安装器链。
-- 默认不执行 desktop tests 或 backend packaged settings test。
-- `build-integrated-package.ps1` 会按输入指纹复用 frontend 与 desktop 的已有 build 输出，未变化时跳过重复构建。
-- 当前安装包链为 `electron-builder dir + Inno Setup`，压缩策略显式使用 `Compression=lzma2/normal`、`CompressionThreads=auto`、`LZMANumBlockThreads=2`、`SolidCompression=no`，优先降低安装器编译耗时。
-- 长期缓存目录位于 `desktop/.cache/`，不再放在会被重建的 `desktop/.stage/` 下；其中包含 build 复用元数据。
+- 默认生成 `release/<version>/NeoTTS-Portable-<version>-cu128.zip`。
 
 显式附加命令：
 
@@ -121,6 +80,9 @@ Set-Location desktop
 
 # 显式生成便携包（与默认链一致）
 npm run package:portable
+
+# 显式同时生成 cu128 标准包与 cu118 兼容包
+npm run package:portable:cuda-variants
 
 # 仅在需要时生成安装包
 npm run package:installed
