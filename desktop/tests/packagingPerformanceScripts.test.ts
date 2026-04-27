@@ -128,18 +128,19 @@ describe("packaging performance scripts", () => {
     expect(scripts["package:portable:cuda-variants"]).not.toContain("-BuildUpdatePackages");
   });
 
-  it("allows fast portable builds to skip packaged Python compileall", () => {
+  it("keeps fast portable builds focused on skipping final portable zip only", () => {
     const integrated = readFileSync(path.join(process.cwd(), "scripts", "build-integrated-package.ps1"), "utf-8");
     const packageJson = readFileSync(path.join(process.cwd(), "package.json"), "utf-8");
     const scripts = JSON.parse(packageJson).scripts as Record<string, string>;
 
-    expect(integrated).toContain("[switch]$SkipPackagedPythonCompile");
-    expect(integrated).toContain("if ($SkipPackagedPythonCompile)");
-    expect(integrated).toContain("Skipping packaged Python compile because -SkipPackagedPythonCompile was set.");
-    expect(integrated).toContain('$arguments += "-SkipPackagedPythonCompile"');
+    expect(integrated).not.toContain("SkipPackagedPythonCompile");
+    expect(integrated).not.toContain("Compile packaged Python runtime");
+    expect(integrated).not.toContain("compileall");
 
-    expect(scripts["package:portable:fast"]).toContain("-SkipPackagedPythonCompile");
-    expect(scripts["package:portable:cuda-variants:fast"]).toContain("-SkipPackagedPythonCompile");
+    expect(scripts["package:portable:fast"]).toContain("-SkipPortableZip");
+    expect(scripts["package:portable:fast"]).not.toContain("-SkipPackagedPythonCompile");
+    expect(scripts["package:portable:cuda-variants:fast"]).toContain("-SkipPortableZip");
+    expect(scripts["package:portable:cuda-variants:fast"]).not.toContain("-SkipPackagedPythonCompile");
   });
 
   it("validates concrete packaged model files before shipping artifacts", () => {

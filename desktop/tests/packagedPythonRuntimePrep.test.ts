@@ -30,26 +30,20 @@ describe("packaged python runtime preparation", () => {
     );
   });
 
-  it("compiles packaged python after builder and before final artifact assembly", () => {
+  it("does not run packaged python compileall during final artifact assembly", () => {
     const filePath = path.join(process.cwd(), "scripts", "build-integrated-package.ps1");
     const source = readFileSync(filePath, "utf-8");
 
-    expect(source).toContain('Invoke-NativeStep -Label "Compile packaged Python runtime"');
-    expect(source).toContain('"compileall"');
-    expect(source).toContain('Join-Path $winUnpackedRoot "resources\\app-runtime\\backend"');
-    expect(source).toContain('Join-Path $winUnpackedRoot "resources\\app-runtime\\GPT_SoVITS"');
-    expect(source).toContain('Join-Path $winUnpackedRoot "resources\\app-runtime\\runtime\\python\\Lib\\site-packages"');
+    expect(source).not.toContain("Invoke-PackagedPythonCompile");
+    expect(source).not.toContain('Invoke-NativeStep -Label "Compile packaged Python runtime"');
+    expect(source).not.toContain('"compileall"');
 
     const builderIndex = source.indexOf('Invoke-NativeStep -Label "Build Windows dir artifact"');
-    const compileIndex = source.indexOf(
-      "Invoke-PackagedPythonCompile -WinUnpackedRoot $winUnpackedRoot -WorkingDirectory $desktopRoot",
-    );
     const assembleIndex = source.indexOf('Invoke-NativeStep -Label $portableLabel');
     const installerIndex = source.indexOf('Invoke-NativeStep -Label "Build Windows installer with Inno Setup"');
 
     expect(builderIndex).toBeGreaterThan(-1);
-    expect(compileIndex).toBeGreaterThan(builderIndex);
-    expect(assembleIndex).toBeGreaterThan(compileIndex);
-    expect(installerIndex).toBeGreaterThan(compileIndex);
+    expect(assembleIndex).toBeGreaterThan(builderIndex);
+    expect(installerIndex).toBeGreaterThan(builderIndex);
   });
 });
