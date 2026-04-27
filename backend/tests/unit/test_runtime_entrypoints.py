@@ -1,5 +1,7 @@
 import re
 from pathlib import Path
+import subprocess
+import sys
 
 from backend.app.cli import build_parser, main
 
@@ -27,6 +29,36 @@ def test_start_dev_launcher_mentions_launcher_or_18600():
     source = Path("start_dev.bat").read_text(encoding="utf-8")
 
     assert "18600" in source
+
+
+def test_backend_app_startup_does_not_import_torch():
+    script = """
+import importlib.abc
+
+
+class _BlockTorchImport(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "torch" or fullname.startswith("torch."):
+            raise RuntimeError(f"unexpected torch import during backend startup: {fullname}")
+        return None
+
+
+import sys
+
+sys.meta_path.insert(0, _BlockTorchImport())
+import backend.app.main
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_backend_cli_disables_uvicorn_default_log_config(monkeypatch):

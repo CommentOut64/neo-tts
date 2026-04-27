@@ -136,6 +136,106 @@ export function resolveRendererEntry(
 	return path.join(projectRoot, "frontend", "dist", "index.html");
 }
 
+type PackagedVoiceConfig = Record<
+	string,
+	{
+		gpt_path?: unknown;
+		sovits_path?: unknown;
+		ref_audio?: unknown;
+	}
+>;
+
+function isReadablePath(targetPath: string): boolean {
+	try {
+		fs.accessSync(targetPath, fs.constants.R_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolvePackagedAssetPath(productPaths: ProductPaths, rawPath: string): string {
+	const normalized = rawPath.replace(/\\/g, "/");
+	if (path.isAbsolute(rawPath)) {
+		return rawPath;
+	}
+	if (normalized === "models" || normalized.startsWith("models/")) {
+		return path.join(productPaths.modelsRoot, rawPath);
+	}
+	if (normalized === "pretrained_models" || normalized.startsWith("pretrained_models/")) {
+		return path.join(productPaths.pretrainedModelsRoot, rawPath);
+	}
+	return path.join(productPaths.appCoreRoot, rawPath);
+}
+
+function collectPackagedModelTargets(productPaths: ProductPaths): Array<{ path: string; label: string }> {
+	const targets: Array<{ path: string; label: string }> = [
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-hubert-base", "config.json"),
+			label: "CNHubert config",
+		},
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-hubert-base", "preprocessor_config.json"),
+			label: "CNHubert preprocessor config",
+		},
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-hubert-base", "pytorch_model.bin"),
+			label: "CNHubert weights",
+		},
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-roberta-wwm-ext-large", "config.json"),
+			label: "BERT config",
+		},
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-roberta-wwm-ext-large", "pytorch_model.bin"),
+			label: "BERT weights",
+		},
+		{
+			path: path.join(productPaths.builtinModelDir, "chinese-roberta-wwm-ext-large", "tokenizer.json"),
+			label: "BERT tokenizer",
+		},
+		{
+			path: path.join(productPaths.pretrainedModelsDir, "sv", "pretrained_eres2netv2w24s4ep4.ckpt"),
+			label: "SV model weights",
+		},
+		{
+			path: path.join(productPaths.pretrainedModelsDir, "fast_langdetect", "lid.176.bin"),
+			label: "fast_langdetect model",
+		},
+	];
+
+	const voicesConfigPath = path.join(productPaths.configDir, "voices.json");
+	if (!isReadablePath(voicesConfigPath)) {
+		targets.push({ path: voicesConfigPath, label: "builtin voices config" });
+		return targets;
+	}
+
+	const rawVoices = fs.readFileSync(voicesConfigPath, "utf-8");
+	const voices = JSON.parse(rawVoices) as PackagedVoiceConfig;
+	for (const [voiceId, voice] of Object.entries(voices)) {
+		if (typeof voice.gpt_path === "string") {
+			targets.push({
+				path: resolvePackagedAssetPath(productPaths, voice.gpt_path),
+				label: `voice ${voiceId} GPT weights`,
+			});
+		}
+		if (typeof voice.sovits_path === "string") {
+			targets.push({
+				path: resolvePackagedAssetPath(productPaths, voice.sovits_path),
+				label: `voice ${voiceId} SoVITS weights`,
+			});
+		}
+		if (typeof voice.ref_audio === "string") {
+			targets.push({
+				path: resolvePackagedAssetPath(productPaths, voice.ref_audio),
+				label: `voice ${voiceId} reference audio`,
+			});
+		}
+	}
+
+	return targets;
+}
+
 function validateProductPaths(productPaths: ProductPaths): Error | null {
 	if (productPaths.resolutionKind === "missing-descriptor") {
 		return new Error(
@@ -154,6 +254,16 @@ function validateProductPaths(productPaths: ProductPaths): Error | null {
 		{ path: productPaths.pretrainedModelsDir, label: "pretrained model dir" },
 		{ path: productPaths.configDir, label: "config dir" },
 	];
+	try {
+		requiredTargets.push(...collectPackagedModelTargets(productPaths));
+	} catch (error) {
+		return new Error(
+			`Product runtime validation failed: builtin voices config is not readable (${path.join(
+				productPaths.configDir,
+				"voices.json",
+			)}): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 	if (productPaths.distributionKind === "portable") {
 		requiredTargets.push({
 			path: path.join(productPaths.productRoot, "portable.flag"),
@@ -161,7 +271,7 @@ function validateProductPaths(productPaths: ProductPaths): Error | null {
 		});
 	}
 
-	const missing = requiredTargets.filter((target) => !fs.existsSync(target.path));
+	const missing = requiredTargets.filter((target) => !isReadablePath(target.path));
 	if (missing.length === 0) {
 		return null;
 	}

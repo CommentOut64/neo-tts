@@ -48,3 +48,14 @@ func TestOfflineUpdateNoticeScriptWatchesStatusAndDoneFiles(t *testing.T) {
 		t.Fatalf("script missing window title: %s", script)
 	}
 }
+
+func TestNewOfflineUpdateNoticeCommandHidesWindow(t *testing.T) {
+	command := newOfflineUpdateNoticeCommand(offlineUpdateNoticePathSet{
+		statusPath: `F:\NeoTTS\cache\offline-update\notice\status.txt`,
+		donePath:   `F:\NeoTTS\cache\offline-update\notice\done`,
+	})
+
+	if command.SysProcAttr == nil || !command.SysProcAttr.HideWindow {
+		t.Fatal("offline update notice command HideWindow = false, want true")
+	}
+}

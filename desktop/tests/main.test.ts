@@ -105,7 +105,7 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   const updateAgentRoot = path.join(productRoot, "packages", "update-agent", "1.1.0");
   const shellRoot = path.join(productRoot, "packages", "shell", "v0.0.1");
   const appCoreRoot = path.join(productRoot, "packages", "app-core", "v0.0.1");
-  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu124-v1");
+  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu128-v1");
   const modelsRoot = path.join(productRoot, "packages", "models", "builtin-v1");
   const pretrainedModelsRoot = path.join(productRoot, "packages", "pretrained-models", "support-v1");
   const userDataDir =
@@ -150,6 +150,7 @@ function materializeRuntime(
     includeFrontend?: boolean;
     includeShell?: boolean;
     includePretrainedModels?: boolean;
+    includeSvModel?: boolean;
   },
 ) {
   fs.mkdirSync(paths.backendDir, { recursive: true });
@@ -159,6 +160,39 @@ function materializeRuntime(
   fs.mkdirSync(paths.configDir, { recursive: true });
   fs.mkdirSync(path.dirname(paths.runtimePython), { recursive: true });
   fs.writeFileSync(paths.runtimePython, "", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "chinese-hubert-base"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "preprocessor_config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "pytorch_model.bin"), "", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "pytorch_model.bin"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "tokenizer.json"), "{}", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "neuro2"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2-e4.ckpt"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2_e4_s424.pth"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "audio1.wav"), "", "utf-8");
+  fs.mkdirSync(path.join(paths.pretrainedModelsDir, "sv"), { recursive: true });
+  if (options?.includeSvModel !== false) {
+    fs.writeFileSync(
+      path.join(paths.pretrainedModelsDir, "sv", "pretrained_eres2netv2w24s4ep4.ckpt"),
+      "",
+      "utf-8",
+    );
+  }
+  fs.mkdirSync(path.join(paths.pretrainedModelsDir, "fast_langdetect"), { recursive: true });
+  fs.writeFileSync(path.join(paths.pretrainedModelsDir, "fast_langdetect", "lid.176.bin"), "", "utf-8");
+  fs.writeFileSync(
+    path.join(paths.configDir, "voices.json"),
+    JSON.stringify({
+      neuro2: {
+        gpt_path: "models/builtin/neuro2/neuro2-e4.ckpt",
+        sovits_path: "models/builtin/neuro2/neuro2_e4_s424.pth",
+        ref_audio: "models/builtin/neuro2/audio1.wav",
+      },
+    }),
+    "utf-8",
+  );
   if (paths.distributionKind === "portable") {
     fs.mkdirSync(paths.productRoot, { recursive: true });
     fs.writeFileSync(path.join(paths.productRoot, "portable.flag"), "", "utf-8");
@@ -986,6 +1020,40 @@ describe("desktop main", () => {
   it("reports fatal state when pretrained-models layer is missing", async () => {
     const productPaths = createProductPaths("installed");
     materializeRuntime(productPaths, { includePretrainedModels: false });
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.bootstrapRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(onFatalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "invalid-runtime",
+      }),
+    );
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("reports fatal state when packaged support model files are missing", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths, { includeSvModel: false });
     const quit = vi.fn();
     const onFatalState = vi.fn();
     const startBackend = vi.fn();

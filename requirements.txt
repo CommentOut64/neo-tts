@@ -1,3 +1,5 @@
+# PyTorch CUDA 12.8 wheel：使用该 legacy 文件安装时需显式附加 cu128 索引。
+# 示例：pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 --no-binary=opencc
 # 迁移期说明：ONNX/TensorRT 相关依赖仍保留为 legacy baseline，后续在 Chunk 5 清理
 numpy<2.0
@@ -18,7 +20,8 @@ cn2an
 pypinyin
 pyopenjtalk>=0.4.1
 g2p_en
-torchaudio
+torch==2.7.1
+torchaudio==2.7.1
 modelscope==1.10.0
 sentencepiece
 transformers>=4.43,<=4.50

@@ -468,7 +468,7 @@ func TestUpdateManagerCleanupObsoletePackagesDeletesOnlyExpiredUnreferencedDirec
 		ManifestSha256: "sha",
 		TargetPackages: []string{"runtime"},
 		PackageVersions: map[string]string{
-			"runtime": "py311-cu124-v2",
+			"runtime": "py311-cu128-v2",
 		},
 		Status:    StageSessionStatusPartial,
 		CreatedAt: time.Date(2026, 4, 22, 7, 0, 0, 0, time.UTC),
@@ -480,7 +480,7 @@ func TestUpdateManagerCleanupObsoletePackagesDeletesOnlyExpiredUnreferencedDirec
 
 	stalePackageDir := filepath.Join(rootDir, "packages", "app-core", "v0.0.1")
 	recentPackageDir := filepath.Join(rootDir, "packages", "models", "builtin-v2")
-	stagedPackageDir := filepath.Join(rootDir, "packages", "runtime", "py311-cu124-v2")
+	stagedPackageDir := filepath.Join(rootDir, "packages", "runtime", "py311-cu128-v2")
 	currentPackageDir := filepath.Join(rootDir, "packages", "shell", "v0.0.3")
 	for _, dir := range []string{stalePackageDir, recentPackageDir, stagedPackageDir, currentPackageDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

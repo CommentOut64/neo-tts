@@ -166,31 +166,48 @@ function Resolve-DefaultBaselinePortableRoot {
     $releaseRoot = Join-Path $DesktopRoot "release"
     Assert-RequiredPath -Path $releaseRoot -Description "desktop release root"
     $targetKey = Get-ReleaseSortKey -Value $TargetReleaseId
-    $candidates = @(Get-ChildItem -LiteralPath $releaseRoot -Directory | ForEach-Object {
-        $portableRoot = Join-Path $_.FullName "NeoTTS-Portable"
-        $currentPath = Join-Path $portableRoot "state\current.json"
-        if (-not (Test-Path -LiteralPath $currentPath)) {
-            return
+    $candidateList = New-Object System.Collections.Generic.List[object]
+    foreach ($releaseDir in (Get-ChildItem -LiteralPath $releaseRoot -Directory)) {
+        $portableRoots = @(Get-ChildItem -LiteralPath $releaseDir.FullName -Directory -Filter "NeoTTS-Portable*" | Where-Object {
+                $_.Name -eq "NeoTTS-Portable" -or $_.Name -eq "NeoTTS-Portable-cu128" -or $_.Name -eq "NeoTTS-Portable-cu118"
+            })
+        foreach ($portableRoot in $portableRoots) {
+            $currentPath = Join-Path $portableRoot.FullName "state\current.json"
+            if (-not (Test-Path -LiteralPath $currentPath)) {
+                continue
+            }
+            $state = Load-JsonFile -Path $currentPath
+            $release = [string]$state.releaseId
+            if ([string]::IsNullOrWhiteSpace($release)) {
+                continue
+            }
+            $key = Get-ReleaseSortKey -Value $release
+            if ($key -ge $targetKey) {
+                continue
+            }
+
+            $runtimePriority = switch ($portableRoot.Name) {
+                "NeoTTS-Portable-cu128" { 0; break }
+                "NeoTTS-Portable" { 1; break }
+                "NeoTTS-Portable-cu118" { 2; break }
+                default { 3 }
+            }
+            $candidateList.Add([pscustomobject]@{
+                    Path             = $portableRoot.FullName
+                    ReleaseId        = $release
+                    Key              = $key
+                    RuntimePriority  = $runtimePriority
+                    LastWriteTimeUtc = $portableRoot.LastWriteTimeUtc
+                }) | Out-Null
         }
-        $state = Load-JsonFile -Path $currentPath
-        $release = [string]$state.releaseId
-        if ([string]::IsNullOrWhiteSpace($release)) {
-            return
-        }
-        $key = Get-ReleaseSortKey -Value $release
-        if ($key -ge $targetKey) {
-            return
-        }
-        [pscustomobject]@{
-            Path             = $portableRoot
-            ReleaseId        = $release
-            Key              = $key
-            LastWriteTimeUtc = $_.LastWriteTimeUtc
-        }
-    } | Sort-Object -Property Key, LastWriteTimeUtc -Descending)
+    }
+    $candidates = @($candidateList | Sort-Object -Property `
+        @{ Expression = "Key"; Descending = $true },
+        @{ Expression = "RuntimePriority"; Ascending = $true },
+        @{ Expression = "LastWriteTimeUtc"; Descending = $true })
 
     if ($null -eq $candidates -or $candidates.Count -eq 0) {
-        throw "Could not auto-detect a baseline NeoTTS-Portable release older than $TargetReleaseId. Pass -BaselinePortableRoot."
+        throw "Could not auto-detect a baseline NeoTTS-Portable* release older than $TargetReleaseId. Pass -BaselinePortableRoot."
     }
     return [string]$candidates[0].Path
 }

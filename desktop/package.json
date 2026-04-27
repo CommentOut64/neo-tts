@@ -1,6 +1,6 @@
 {
     "name":  "desktop",
-    "version":  "0.0.2",
+    "version":  "0.1.0",
     "private":  true,
     "main":  "dist/main.js",
     "scripts":  {
@@ -12,6 +12,12 @@
                     "package:portable:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -Offline",
                     "package:portable:dir":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip",
                     "package:portable:dir:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip -Offline",
+                    "package:portable:cuda-variants":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildCudaRuntimeVariants",
+                    "package:portable:cuda-variants:dir":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildCudaRuntimeVariants -SkipPortableZip",
+                    "package:portable:fast":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -SkipPortableZip",
+                    "package:portable:cuda-variants:fast":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildCudaRuntimeVariants -SkipPortableZip",
+                    "package:update":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -BuildUpdatePackages -SkipPortableZip",
+                    "package:update:cu118":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution portable -CudaRuntime cu118 -BuildUpdatePackages -SkipPortableZip",
                     "package:installed":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed",
                     "package:installed:offline":  "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-integrated-package.ps1 -Distribution installed -Offline",
                     "package:verify":  "npm run test \u0026\u0026 uv run pytest ../backend/tests/unit/test_packaged_runtime_settings.py -v",

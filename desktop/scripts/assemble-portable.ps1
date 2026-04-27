@@ -5,6 +5,10 @@ param(
     [string]$ReleaseRoot,
     [string]$PortableRoot,
     [string]$PortableZipPath,
+    [string]$RuntimeVersionOverride,
+    [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
+    [ValidateRange(0, 9)]
+    [int]$ZipCompressionLevel = 1,
     [switch]$SkipZip
 )
 
@@ -84,6 +88,73 @@ function Load-JsonFile {
     return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
 }
 
+function Resolve-SevenZipPath {
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$ConfiguredPath
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        $candidates.Add($ConfiguredPath) | Out-Null
+    }
+    $candidates.Add("C:\Program Files\7-Zip\7z.exe") | Out-Null
+
+    $pathCommand = Get-Command "7z.exe" -ErrorAction SilentlyContinue
+    if ($pathCommand) {
+        $candidates.Add($pathCommand.Source) | Out-Null
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Get-Item -LiteralPath $candidate).FullName
+        }
+    }
+
+    throw "7-Zip executable not found. Install 7-Zip or pass -SevenZipPath."
+}
+
+function New-ZipArchiveWithSevenZip {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SevenZipExe,
+
+        [ValidateRange(0, 9)]
+        [int]$CompressionLevel = 1
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceDirectory)) {
+        throw "Zip source directory missing: $SourceDirectory"
+    }
+
+    Ensure-Directory -Path (Split-Path -Parent $ArchivePath)
+    if (Test-Path -LiteralPath $ArchivePath) {
+        Remove-Item -LiteralPath $ArchivePath -Force
+    }
+
+    Push-Location $SourceDirectory
+    try {
+        & $SevenZipExe "a" "-tzip" "-mx$CompressionLevel" "-mmt=on" $ArchivePath ".\*" "-r" | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath $ArchivePath)) {
+        throw "Zip archive was not created: $ArchivePath"
+    }
+}
+
 function Get-NormalizedReleaseId {
     param(
         [Parameter(Mandatory = $true)]
@@ -136,7 +207,38 @@ function Copy-DirectoryContents {
 
     Ensure-Directory -Path $DestinationPath
     Get-ChildItem -LiteralPath $SourcePath -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $DestinationPath $_.Name) -Recurse -Force
+        Copy-PortableItem -SourcePath $_.FullName -DestinationPath (Join-Path $DestinationPath $_.Name)
+    }
+}
+
+function Copy-PortableItem {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $sourceItem = Get-Item -LiteralPath $SourcePath
+    if ($sourceItem.PSIsContainer) {
+        Ensure-Directory -Path $DestinationPath
+        foreach ($entry in (Get-ChildItem -LiteralPath $SourcePath -Force)) {
+            Copy-PortableItem -SourcePath $entry.FullName -DestinationPath (Join-Path $DestinationPath $entry.Name)
+        }
+        return
+    }
+
+    Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+
+    try {
+        New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath | Out-Null
+    }
+    catch {
+        throw "Portable assembly hard link failed from '$SourcePath' to '$DestinationPath': $($_.Exception.Message)"
     }
 }
 
@@ -163,12 +265,12 @@ function Copy-ShellPayload {
                 if ($resourceEntry.Name -eq "app-runtime") {
                     continue
                 }
-                Copy-Item -LiteralPath $resourceEntry.FullName -Destination (Join-Path $resourcesDestination $resourceEntry.Name) -Recurse -Force
+                Copy-PortableItem -SourcePath $resourceEntry.FullName -DestinationPath (Join-Path $resourcesDestination $resourceEntry.Name)
             }
             continue
         }
 
-        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $DestinationRoot $entry.Name) -Recurse -Force
+        Copy-PortableItem -SourcePath $entry.FullName -DestinationPath (Join-Path $DestinationRoot $entry.Name)
     }
 }
 
@@ -233,7 +335,12 @@ if ([string]::IsNullOrWhiteSpace($stateRootName) -or [string]::IsNullOrWhiteSpac
     throw "Portable flavor metadata must declare runtimeLayout.stateRoot and runtimeLayout.packagesRoot."
 }
 
-$runtimeVersion = [string]$profileConfig.layeredPackages.runtimeVersion
+$runtimeVersion = if ([string]::IsNullOrWhiteSpace($RuntimeVersionOverride)) {
+    [string]$profileConfig.layeredPackages.runtimeVersion
+}
+else {
+    $RuntimeVersionOverride
+}
 $modelsVersion = [string]$profileConfig.layeredPackages.modelsVersion
 $pretrainedModelsVersion = [string]$profileConfig.layeredPackages.pretrainedModelsVersion
 foreach ($requiredValue in @(
@@ -257,6 +364,7 @@ $portableRootPath = Get-FullPath -Path $PortableRoot
 $portableZipPathResolved = Get-FullPath -Path $PortableZipPath
 Assert-PathWithinRoot -Path $portableRootPath -Root $releaseRootPath
 Assert-PathWithinRoot -Path $portableZipPathResolved -Root $releaseRootPath
+$sevenZipExe = Resolve-SevenZipPath -ConfiguredPath $SevenZipPath
 
 $stateRootPath = Join-Path $portableRootPath $stateRootName
 $packagesRootPath = Join-Path $portableRootPath $packagesRootName
@@ -287,16 +395,16 @@ Ensure-Directory -Path $portableDataPath
 Ensure-Directory -Path $portableExportsPath
 
 Write-Utf8File -Path $portableMarkerPath -Content ""
-Copy-Item -LiteralPath $bootstrapExePath -Destination $portableExePath -Force
-Copy-Item -LiteralPath $updateAgentExePath -Destination $portableUpdateAgentExePath -Force
+Copy-PortableItem -SourcePath $bootstrapExePath -DestinationPath $portableExePath
+Copy-PortableItem -SourcePath $updateAgentExePath -DestinationPath $portableUpdateAgentExePath
 if (Test-Path -LiteralPath $tutorialPath) {
-    Copy-Item -LiteralPath $tutorialPath -Destination (Join-Path $portableRootPath "使用教程.txt") -Force
+    Copy-PortableItem -SourcePath $tutorialPath -DestinationPath (Join-Path $portableRootPath "使用教程.txt")
 }
 
 Ensure-Directory -Path $bootstrapPackageRoot
 Ensure-Directory -Path $updateAgentPackageRoot
-Copy-Item -LiteralPath $bootstrapExePath -Destination (Join-Path $bootstrapPackageRoot "NeoTTS.exe") -Force
-Copy-Item -LiteralPath $updateAgentExePath -Destination (Join-Path $updateAgentPackageRoot "NeoTTSUpdateAgent.exe") -Force
+Copy-PortableItem -SourcePath $bootstrapExePath -DestinationPath (Join-Path $bootstrapPackageRoot "NeoTTS.exe")
+Copy-PortableItem -SourcePath $updateAgentExePath -DestinationPath (Join-Path $updateAgentPackageRoot "NeoTTSUpdateAgent.exe")
 Copy-ShellPayload -SourceRoot $winUnpackedRoot -DestinationRoot $shellPackageRoot
 foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
     Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot $directoryName) -DestinationPath (Join-Path $appCorePackageRoot $directoryName)
@@ -339,7 +447,18 @@ foreach ($requiredPath in @(
         (Join-Path $appCorePackageRoot "backend"),
         (Join-Path $runtimePackageRoot "runtime\python\python.exe"),
         (Join-Path $modelsPackageRoot "models\builtin"),
-        (Join-Path $pretrainedModelsPackageRoot "pretrained_models")
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\preprocessor_config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\pytorch_model.bin"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\pytorch_model.bin"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\tokenizer.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2-e4.ckpt"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2_e4_s424.pth"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\audio1.wav"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\sv\pretrained_eres2netv2w24s4ep4.ckpt"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\fast_langdetect\lid.176.bin")
     )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Portable assembly validation failed: missing $requiredPath"
@@ -356,14 +475,11 @@ if ($SkipZip) {
     Write-Host "  - state: $currentStatePath"
 }
 else {
-    Write-Host "[assemble-portable] Creating portable zip..."
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $portableRootPath,
-        $portableZipPathResolved,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false
-    )
+    Write-Host "[assemble-portable] Creating portable zip with 7-Zip..."
+    New-ZipArchiveWithSevenZip -SourceDirectory $portableRootPath `
+        -ArchivePath $portableZipPathResolved `
+        -SevenZipExe $sevenZipExe `
+        -CompressionLevel $ZipCompressionLevel
 
     if (-not (Test-Path -LiteralPath $portableZipPathResolved)) {
         throw "Portable zip was not created: $portableZipPathResolved"

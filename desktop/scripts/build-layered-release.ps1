@@ -9,6 +9,8 @@ param(
 
     [string]$ReleaseId,
 
+    [string]$RuntimeVersionOverride,
+
     [string]$StageRoot,
 
     [string]$ReleaseRoot,
@@ -20,6 +22,13 @@ param(
     [string]$BaseUrl,
 
     [string]$NotesUrl,
+
+    [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
+
+    [ValidateRange(0, 9)]
+    [int]$ZipCompressionLevel = 1,
+
+    [switch]$KeepExistingPackages,
 
     [switch]$SkipStageRuntime,
 
@@ -109,6 +118,73 @@ function Write-Utf8File {
     Ensure-Directory -Path (Split-Path -Parent $Path)
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Resolve-SevenZipPath {
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$ConfiguredPath
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        $candidates.Add($ConfiguredPath) | Out-Null
+    }
+    $candidates.Add("C:\Program Files\7-Zip\7z.exe") | Out-Null
+
+    $pathCommand = Get-Command "7z.exe" -ErrorAction SilentlyContinue
+    if ($pathCommand) {
+        $candidates.Add($pathCommand.Source) | Out-Null
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Get-Item -LiteralPath $candidate).FullName
+        }
+    }
+
+    throw "7-Zip executable not found. Install 7-Zip or pass -SevenZipPath."
+}
+
+function New-ZipArchiveWithSevenZip {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SevenZipExe,
+
+        [ValidateRange(0, 9)]
+        [int]$CompressionLevel = 1
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceDirectory)) {
+        throw "Zip source directory missing: $SourceDirectory"
+    }
+
+    Ensure-Directory -Path (Split-Path -Parent $ArchivePath)
+    if (Test-Path -LiteralPath $ArchivePath) {
+        Remove-Item -LiteralPath $ArchivePath -Force
+    }
+
+    Push-Location $SourceDirectory
+    try {
+        & $SevenZipExe "a" "-tzip" "-mx$CompressionLevel" "-mmt=on" $ArchivePath ".\*" "-r" | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath $ArchivePath)) {
+        throw "Zip archive was not created: $ArchivePath"
+    }
 }
 
 function Get-FileSha256 {
@@ -203,7 +279,38 @@ function Copy-DirectoryContents {
 
     Ensure-Directory -Path $DestinationPath
     Get-ChildItem -LiteralPath $SourcePath -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $DestinationPath $_.Name) -Recurse -Force
+        Copy-LayeredWorkspaceItem -SourcePath $_.FullName -DestinationPath (Join-Path $DestinationPath $_.Name)
+    }
+}
+
+function Copy-LayeredWorkspaceItem {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $sourceItem = Get-Item -LiteralPath $SourcePath
+    if ($sourceItem.PSIsContainer) {
+        Ensure-Directory -Path $DestinationPath
+        foreach ($entry in (Get-ChildItem -LiteralPath $SourcePath -Force)) {
+            Copy-LayeredWorkspaceItem -SourcePath $entry.FullName -DestinationPath (Join-Path $DestinationPath $entry.Name)
+        }
+        return
+    }
+
+    Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+
+    try {
+        New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath | Out-Null
+    }
+    catch {
+        throw "Layered release hard link failed from '$SourcePath' to '$DestinationPath': $($_.Exception.Message)"
     }
 }
 
@@ -234,12 +341,12 @@ function Copy-ShellPayload {
                 if ($resourceEntry.Name -eq "app-runtime") {
                     continue
                 }
-                Copy-Item -LiteralPath $resourceEntry.FullName -Destination (Join-Path $resourcesDestination $resourceEntry.Name) -Recurse -Force
+                Copy-LayeredWorkspaceItem -SourcePath $resourceEntry.FullName -DestinationPath (Join-Path $resourcesDestination $resourceEntry.Name)
             }
             continue
         }
 
-        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $DestinationRoot $entry.Name) -Recurse -Force
+        Copy-LayeredWorkspaceItem -SourcePath $entry.FullName -DestinationPath (Join-Path $DestinationRoot $entry.Name)
     }
 }
 
@@ -255,29 +362,32 @@ function New-PackageArchive {
         [scriptblock]$Populate
     )
 
-    $workspaceRoot = Join-Path $temporaryRoot $PackageId
-    Remove-PathIfExists -Path $workspaceRoot -AllowedRoot $temporaryRoot
-    Ensure-Directory -Path $workspaceRoot
-
-    & $Populate $workspaceRoot
-
-    if ((Get-ChildItem -LiteralPath $workspaceRoot -Force | Measure-Object).Count -eq 0) {
-        throw "Package '$PackageId' produced no files."
-    }
-
     $packageOutputRoot = Join-Path $packagesRoot $PackageId
     Ensure-Directory -Path $packageOutputRoot
     $archivePath = Join-Path $packageOutputRoot ("{0}.zip" -f $Version)
-    if (Test-Path -LiteralPath $archivePath) {
-        Remove-Item -LiteralPath $archivePath -Force
+    if ($KeepExistingPackages -and (Test-Path -LiteralPath $archivePath)) {
+        Write-Host "[build-layered-release] Reusing existing package archive: $archivePath"
     }
+    else {
+        $workspaceRoot = Join-Path $temporaryRoot $PackageId
+        Remove-PathIfExists -Path $workspaceRoot -AllowedRoot $temporaryRoot
+        Ensure-Directory -Path $workspaceRoot
 
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $workspaceRoot,
-        $archivePath,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false
-    )
+        & $Populate $workspaceRoot
+
+        if ((Get-ChildItem -LiteralPath $workspaceRoot -Force | Measure-Object).Count -eq 0) {
+            throw "Package '$PackageId' produced no files."
+        }
+
+        if (Test-Path -LiteralPath $archivePath) {
+            Remove-Item -LiteralPath $archivePath -Force
+        }
+
+        New-ZipArchiveWithSevenZip -SourceDirectory $workspaceRoot `
+            -ArchivePath $archivePath `
+            -SevenZipExe $sevenZipExe `
+            -CompressionLevel $ZipCompressionLevel
+    }
 
     if (-not (Test-Path -LiteralPath $archivePath)) {
         throw "Failed to create package archive: $archivePath"
@@ -467,15 +577,22 @@ if ($includePretrainedModelsPackage -and -not (Test-Path -LiteralPath $pretraine
     throw "Layered release prerequisite missing: $pretrainedModelsRoot"
 }
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+$sevenZipExe = Resolve-SevenZipPath -ConfiguredPath $SevenZipPath
 Ensure-Directory -Path $releaseRootPath
-Remove-PathIfExists -Path $packagesRoot -AllowedRoot $releaseRootPath
+if (-not $KeepExistingPackages) {
+    Remove-PathIfExists -Path $packagesRoot -AllowedRoot $releaseRootPath
+}
 Remove-PathIfExists -Path (Split-Path -Parent $manifestPath) -AllowedRoot $releaseRootPath
 Remove-PathIfExists -Path $temporaryRoot -AllowedRoot $releaseRootPath
 Ensure-Directory -Path $packagesRoot
 Ensure-Directory -Path $temporaryRoot
 
-$runtimeVersion = [string]$profileConfig.layeredPackages.runtimeVersion
+$runtimeVersion = if ([string]::IsNullOrWhiteSpace($RuntimeVersionOverride)) {
+    [string]$profileConfig.layeredPackages.runtimeVersion
+}
+else {
+    $RuntimeVersionOverride
+}
 $modelsVersion = [string]$profileConfig.layeredPackages.modelsVersion
 $pretrainedModelsVersion = [string]$profileConfig.layeredPackages.pretrainedModelsVersion
 if ($includeRuntimePackage -and [string]::IsNullOrWhiteSpace($runtimeVersion)) {
@@ -489,64 +606,67 @@ if ($includePretrainedModelsPackage -and [string]::IsNullOrWhiteSpace($pretraine
 }
 
 $packageEntries = New-Object System.Collections.Generic.List[object]
-$packageEntries.Add((New-PackageArchive -PackageId "bootstrap" -Version $packageVersion -Populate {
-            param($workspaceRoot)
-            Copy-Item -LiteralPath $launcherBootstrapExe -Destination (Join-Path $workspaceRoot "NeoTTS.exe") -Force
-        })) | Out-Null
-$packageEntries.Add((New-PackageArchive -PackageId "update-agent" -Version $packageVersion -Populate {
-            param($workspaceRoot)
-            Copy-Item -LiteralPath $launcherUpdateAgentExe -Destination (Join-Path $workspaceRoot "NeoTTSUpdateAgent.exe") -Force
-        })) | Out-Null
-$packageEntries.Add((New-PackageArchive -PackageId "shell" -Version $releaseIdResolved -Populate {
-            param($workspaceRoot)
-            Copy-ShellPayload -SourceRoot $winUnpackedRootPath -DestinationRoot $workspaceRoot
-        })) | Out-Null
-$packageEntries.Add((New-PackageArchive -PackageId "app-core" -Version $releaseIdResolved -Populate {
-            param($workspaceRoot)
-            foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
-                $sourcePath = Join-Path $appCoreRoot $directoryName
-                Copy-DirectoryContents -SourcePath $sourcePath -DestinationPath (Join-Path $workspaceRoot $directoryName)
-            }
-        })) | Out-Null
-
-if ($includeRuntimePackage) {
-    $packageEntries.Add((New-PackageArchive -PackageId "runtime" -Version $runtimeVersion -Populate {
+try {
+    $packageEntries.Add((New-PackageArchive -PackageId "bootstrap" -Version $packageVersion -Populate {
                 param($workspaceRoot)
-                Copy-DirectoryContents -SourcePath $runtimeRoot -DestinationPath (Join-Path $workspaceRoot "runtime")
+                Copy-LayeredWorkspaceItem -SourcePath $launcherBootstrapExe -DestinationPath (Join-Path $workspaceRoot "NeoTTS.exe")
             })) | Out-Null
-}
-if ($includeModelsPackage) {
-    $packageEntries.Add((New-PackageArchive -PackageId "models" -Version $modelsVersion -Populate {
+    $packageEntries.Add((New-PackageArchive -PackageId "update-agent" -Version $packageVersion -Populate {
                 param($workspaceRoot)
-                Copy-DirectoryContents -SourcePath $modelsRoot -DestinationPath (Join-Path $workspaceRoot "models")
+                Copy-LayeredWorkspaceItem -SourcePath $launcherUpdateAgentExe -DestinationPath (Join-Path $workspaceRoot "NeoTTSUpdateAgent.exe")
             })) | Out-Null
-}
-if ($includePretrainedModelsPackage) {
-    $packageEntries.Add((New-PackageArchive -PackageId "pretrained-models" -Version $pretrainedModelsVersion -Populate {
+    $packageEntries.Add((New-PackageArchive -PackageId "shell" -Version $releaseIdResolved -Populate {
                 param($workspaceRoot)
-                Copy-DirectoryContents -SourcePath $pretrainedModelsRoot -DestinationPath (Join-Path $workspaceRoot "pretrained_models")
+                Copy-ShellPayload -SourceRoot $winUnpackedRootPath -DestinationRoot $workspaceRoot
             })) | Out-Null
+    $packageEntries.Add((New-PackageArchive -PackageId "app-core" -Version $releaseIdResolved -Populate {
+                param($workspaceRoot)
+                foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
+                    $sourcePath = Join-Path $appCoreRoot $directoryName
+                    Copy-DirectoryContents -SourcePath $sourcePath -DestinationPath (Join-Path $workspaceRoot $directoryName)
+                }
+            })) | Out-Null
+
+    if ($includeRuntimePackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "runtime" -Version $runtimeVersion -Populate {
+                    param($workspaceRoot)
+                    Copy-DirectoryContents -SourcePath $runtimeRoot -DestinationPath (Join-Path $workspaceRoot "runtime")
+                })) | Out-Null
+    }
+    if ($includeModelsPackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "models" -Version $modelsVersion -Populate {
+                    param($workspaceRoot)
+                    Copy-DirectoryContents -SourcePath $modelsRoot -DestinationPath (Join-Path $workspaceRoot "models")
+                })) | Out-Null
+    }
+    if ($includePretrainedModelsPackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "pretrained-models" -Version $pretrainedModelsVersion -Populate {
+                    param($workspaceRoot)
+                    Copy-DirectoryContents -SourcePath $pretrainedModelsRoot -DestinationPath (Join-Path $workspaceRoot "pretrained_models")
+                })) | Out-Null
+    }
+
+    $packagesJson = $packageEntries | ConvertTo-Json -Depth 20
+    $packagesPayloadPath = Join-Path $temporaryRoot "packages.json"
+    Write-Utf8File -Path $packagesPayloadPath -Content $packagesJson
+    Invoke-NativeStep -Label "Write layered release manifest" `
+        -WorkingDirectory $desktopRoot `
+        -FilePath "powershell.exe" `
+        -Arguments @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $writeUpdateManifestScript,
+            "-ManifestPath", $manifestPath,
+            "-ReleaseId", $releaseIdResolved,
+            "-Channel", $Channel,
+            "-ReleaseKind", $releaseKind,
+            "-NotesUrl", $NotesUrl,
+            "-PackagesPath", $packagesPayloadPath
+        )
 }
-
-$packagesJson = $packageEntries | ConvertTo-Json -Depth 20
-$packagesPayloadPath = Join-Path $temporaryRoot "packages.json"
-Write-Utf8File -Path $packagesPayloadPath -Content $packagesJson
-Invoke-NativeStep -Label "Write layered release manifest" `
-    -WorkingDirectory $desktopRoot `
-    -FilePath "powershell.exe" `
-    -Arguments @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $writeUpdateManifestScript,
-        "-ManifestPath", $manifestPath,
-        "-ReleaseId", $releaseIdResolved,
-        "-Channel", $Channel,
-        "-ReleaseKind", $releaseKind,
-        "-NotesUrl", $NotesUrl,
-        "-PackagesPath", $packagesPayloadPath
-    )
-
-Remove-PathIfExists -Path $temporaryRoot -AllowedRoot $releaseRootPath
+finally {
+    Remove-PathIfExists -Path $temporaryRoot -AllowedRoot $releaseRootPath
+}
 
 Write-Host "[build-layered-release] Layered release artifacts completed:"
 foreach ($packageEntry in $packageEntries) {

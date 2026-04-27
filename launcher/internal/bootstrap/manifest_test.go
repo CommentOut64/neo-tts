@@ -115,7 +115,7 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 		Packages: map[string]RemotePackage{
 			"shell":              {Version: "v0.0.2", URL: "https://cdn.example.com/shell.zip", SHA256: "shell", SizeBytes: 100},
 			"app-core":           {Version: "v0.0.2", URL: "https://cdn.example.com/app-core.zip", SHA256: "app-core", SizeBytes: 200},
-			"runtime":            {Version: "py311-cu124-v1", URL: "https://cdn.example.com/runtime.zip", SHA256: "runtime", SizeBytes: 300},
+			"runtime":            {Version: "py311-cu128-v1", URL: "https://cdn.example.com/runtime.zip", SHA256: "runtime", SizeBytes: 300},
 			"models":             {Version: "builtin-v1", URL: "https://cdn.example.com/models.zip", SHA256: "models", SizeBytes: 400},
 			"pretrained-models":  {Version: "support-v2", URL: "https://cdn.example.com/pretrained.zip", SHA256: "pretrained", SizeBytes: 500},
 			"bootstrap":          {Version: "1.1.0", URL: "https://cdn.example.com/bootstrap.zip", SHA256: "bootstrap", SizeBytes: 10},
@@ -155,7 +155,7 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 				Packages: map[string]PackageState{
 					"shell":             {Version: "v0.0.1"},
 					"app-core":          {Version: "v0.0.1"},
-					"runtime":           {Version: "py311-cu124-v1"},
+					"runtime":           {Version: "py311-cu128-v1"},
 					"models":            {Version: "builtin-v1"},
 					"pretrained-models": {Version: "support-v1"},
 					"bootstrap":         {Version: "1.1.0"},

@@ -5,8 +5,8 @@ description = "GPT-SoVITS minimal inference with architecture rebuild in progres
 requires-python = ">=3.11,<3.12"
 dependencies = [
     # === 深度学习框架 ===
-    "torch",
-    "torchaudio",
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
 
     # === 推理加速（迁移期 legacy baseline，后续下线）===
     "onnx",
@@ -81,13 +81,13 @@ dev = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu124" }]
-torchaudio = [{ index = "pytorch-cu124" }]
+torch = [{ index = "pytorch-cu128" }]
+torchaudio = [{ index = "pytorch-cu128" }]
 
 [build-system]
 requires = ["hatchling"]

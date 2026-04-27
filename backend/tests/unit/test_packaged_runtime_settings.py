@@ -29,7 +29,7 @@ def _set_packaged_runtime_env(
 def test_installed_runtime_uses_appdata_and_documents(tmp_path, monkeypatch):
     runtime_root = tmp_path / "NeoTTS"
     app_core_root = runtime_root / "packages" / "app-core" / "v0.0.1"
-    python_root = runtime_root / "packages" / "runtime" / "py311-cu124-v1"
+    python_root = runtime_root / "packages" / "runtime" / "py311-cu128-v1"
     models_root = runtime_root / "packages" / "models" / "builtin-v1"
     pretrained_models_root = runtime_root / "packages" / "pretrained-models" / "support-v1"
     user_data_root = tmp_path / "AppData" / "Local" / "NeoTTS"
@@ -74,7 +74,7 @@ def test_installed_runtime_uses_appdata_and_documents(tmp_path, monkeypatch):
 def test_portable_runtime_uses_side_by_side_data_dirs(tmp_path, monkeypatch):
     runtime_root = tmp_path / "NeoTTS-Portable"
     app_core_root = runtime_root / "packages" / "app-core" / "v0.0.1"
-    python_root = runtime_root / "packages" / "runtime" / "py311-cu124-v1"
+    python_root = runtime_root / "packages" / "runtime" / "py311-cu128-v1"
     models_root = runtime_root / "packages" / "models" / "builtin-v1"
     pretrained_models_root = runtime_root / "packages" / "pretrained-models" / "support-v1"
     user_data_root = runtime_root / "data"

@@ -76,8 +76,11 @@ describe("layered release scripts", () => {
 
     expect(profile).toContain('"layeredPackages"');
     expect(profile).toContain('"runtimeVersion"');
+    expect(profile).toContain('"runtimeVersion": "py311-cu128-v1"');
     expect(profile).toContain('"modelsVersion"');
     expect(profile).toContain('"pretrainedModelsVersion"');
+    expect(stageRuntime).toContain("https://download.pytorch.org/whl/cu128");
+    expect(stageRuntime).not.toContain("https://download.pytorch.org/whl/cu124");
   });
 
   it("adds a manually-triggered portable offline update package builder", () => {
@@ -125,7 +128,7 @@ describe("layered release scripts", () => {
       mkdirSync(outputRoot, { recursive: true });
 
       writeFileSync(path.join(layeredRoot, "packages", "bootstrap", "0.0.2.zip"), "bootstrap-package");
-      writeFileSync(path.join(layeredRoot, "packages", "runtime", "py311-cu124-v1.zip"), "runtime-package");
+      writeFileSync(path.join(layeredRoot, "packages", "runtime", "py311-cu128-v1.zip"), "runtime-package");
       const manifestPayload = JSON.stringify({
         schemaVersion: 1,
         releaseId: "v0.0.2",
@@ -133,7 +136,7 @@ describe("layered release scripts", () => {
         releaseKind: "stable",
         packages: {
           bootstrap: { version: "0.0.2", sha256: "bootstrap", sizeBytes: 17 },
-          runtime: { version: "py311-cu124-v1", sha256: "runtime", sizeBytes: 15 },
+          runtime: { version: "py311-cu128-v1", sha256: "runtime", sizeBytes: 15 },
         },
       });
       writeFileSync(
@@ -165,7 +168,7 @@ describe("layered release scripts", () => {
           releaseId: "v0.0.1",
           packages: {
             bootstrap: { version: "0.0.1" },
-            runtime: { version: "py311-cu124-v1" },
+            runtime: { version: "py311-cu128-v1" },
           },
         }),
       );
@@ -212,7 +215,7 @@ describe("layered release scripts", () => {
       );
 
       expect(inspection).toContain("packages/bootstrap/0.0.2.zip");
-      expect(inspection).not.toContain("packages/runtime/py311-cu124-v1.zip");
+      expect(inspection).not.toContain("packages/runtime/py311-cu128-v1.zip");
       expect(inspection).toContain("LATEST_PREFIX=7B");
       expect(inspection).not.toContain("LATEST_PREFIX=EF-BB-BF");
     } finally {
