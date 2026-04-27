@@ -70,4 +70,54 @@ describe("layered release scripts", () => {
     expect(profile).toContain('"modelsVersion"');
     expect(profile).toContain('"pretrainedModelsVersion"');
   });
+
+  it("adds a manually-triggered portable offline update package builder", () => {
+    const offlineScriptPath = path.join(process.cwd(), "scripts", "build-offline-update-package.ps1");
+    const integratedPackagePath = path.join(process.cwd(), "scripts", "build-integrated-package.ps1");
+    const packageJsonPath = path.join(process.cwd(), "package.json");
+
+    expect(existsSync(offlineScriptPath)).toBe(true);
+    const offlineScript = readFileSync(offlineScriptPath, "utf-8");
+    expect(offlineScript).toContain("NeoTTS-Update-v");
+    expect(offlineScript).toContain("channels");
+    expect(offlineScript).toContain("releases");
+    expect(offlineScript).toContain("packages");
+    expect(offlineScript).toContain('ValidateSet("portable")');
+    expect(offlineScript).toContain("Load-JsonFile");
+    expect(offlineScript).toContain("Get-FileSha256");
+    expect(offlineScript).toContain("latest.releaseId");
+    expect(offlineScript).toContain("manifest.releaseId");
+    expect(offlineScript).toContain("manifestSha256");
+    expect(offlineScript).toContain("PSObject.Properties");
+    expect(offlineScript).not.toContain('Copy-Item -LiteralPath (Join-Path $layeredRootPath "channels")');
+    expect(offlineScript).not.toContain('Copy-Item -LiteralPath (Join-Path $layeredRootPath "releases")');
+    expect(offlineScript).not.toContain("Copy-Item -LiteralPath $packagesPath");
+
+    const integratedPackage = readFileSync(integratedPackagePath, "utf-8");
+    expect(integratedPackage).not.toContain("build-offline-update-package.ps1");
+
+    const packageJson = readFileSync(packageJsonPath, "utf-8");
+    expect(packageJson).not.toContain("build-offline-update-package.ps1");
+  });
+
+  it("adds an automated real portable offline update acceptance test entrypoint", () => {
+    const acceptanceScriptPath = path.join(process.cwd(), "scripts", "test-portable-offline-update.ps1");
+    const packageJsonPath = path.join(process.cwd(), "package.json");
+
+    expect(existsSync(acceptanceScriptPath)).toBe(true);
+
+    const acceptanceScript = readFileSync(acceptanceScriptPath, "utf-8");
+    expect(acceptanceScript).toContain("BaselinePortableRoot");
+    expect(acceptanceScript).toContain("LayeredReleaseRoot");
+    expect(acceptanceScript).toContain("build-offline-update-package.ps1");
+    expect(acceptanceScript).toContain("NeoTTS-Update-v");
+    expect(acceptanceScript).toContain("pending-switch.json");
+    expect(acceptanceScript).toContain("last-known-good.json");
+    expect(acceptanceScript).toContain("cache\\offline-update\\inbox");
+    expect(acceptanceScript).toContain("Start-Process");
+
+    const packageJson = readFileSync(packageJsonPath, "utf-8");
+    expect(packageJson).toContain("test:portable-offline-update");
+    expect(packageJson).toContain("test-portable-offline-update.ps1");
+  });
 });

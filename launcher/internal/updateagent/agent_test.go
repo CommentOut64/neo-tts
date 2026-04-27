@@ -168,7 +168,7 @@ func TestExecutePlanUsesSecondHopWhenUpdatingUpdateAgentItself(t *testing.T) {
 	}
 }
 
-func TestExecutePlanReplacesUpdateAgentOnSecondHopBeforeRelaunch(t *testing.T) {
+func TestExecutePlanSkipsBootstrapReplaceOnSecondHopBeforeRelaunch(t *testing.T) {
 	plan := Plan{
 		SchemaVersion:            1,
 		BootstrapSourcePath:      `F:\NeoTTS\packages\bootstrap\1.2.0\NeoTTS.exe`,
@@ -206,11 +206,11 @@ func TestExecutePlanReplacesUpdateAgentOnSecondHopBeforeRelaunch(t *testing.T) {
 		t.Fatalf("ExecutePlan returned error: %v", err)
 	}
 
-	if len(replaced) != 2 {
-		t.Fatalf("replace calls = %d, want 2", len(replaced))
+	if len(replaced) != 1 {
+		t.Fatalf("replace calls = %d, want 1", len(replaced))
 	}
-	if replaced[1][0] != plan.UpdateAgentSourcePath || replaced[1][1] != plan.UpdateAgentTargetPath {
-		t.Fatalf("update-agent replace = %#v, want source=%q target=%q", replaced[1], plan.UpdateAgentSourcePath, plan.UpdateAgentTargetPath)
+	if replaced[0][0] != plan.UpdateAgentSourcePath || replaced[0][1] != plan.UpdateAgentTargetPath {
+		t.Fatalf("update-agent replace = %#v, want source=%q target=%q", replaced[0], plan.UpdateAgentSourcePath, plan.UpdateAgentTargetPath)
 	}
 	if launched.ExecutablePath != plan.RelaunchExecutablePath {
 		t.Fatalf("relaunch executable = %q, want %q", launched.ExecutablePath, plan.RelaunchExecutablePath)
@@ -243,5 +243,39 @@ func TestExecutePlanReturnsReplaceFailure(t *testing.T) {
 	)
 	if !errors.Is(err, expected) {
 		t.Fatalf("ExecutePlan error = %v, want wrapped %v", err, expected)
+	}
+}
+
+func TestReplaceFileAtomicallyPreservesSourceFile(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "packages", "bootstrap", "1.2.0", "NeoTTS.exe")
+	targetPath := filepath.Join(rootDir, "NeoTTS.exe")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(source dir) returned error: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("new-bootstrap"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) returned error: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("old-bootstrap"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) returned error: %v", err)
+	}
+
+	if err := replaceFileAtomically(sourcePath, targetPath); err != nil {
+		t.Fatalf("replaceFileAtomically returned error: %v", err)
+	}
+
+	sourceContent, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(source) returned error: %v", err)
+	}
+	if string(sourceContent) != "new-bootstrap" {
+		t.Fatalf("source content = %q, want new-bootstrap", sourceContent)
+	}
+	targetContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(target) returned error: %v", err)
+	}
+	if string(targetContent) != "new-bootstrap" {
+		t.Fatalf("target content = %q, want new-bootstrap", targetContent)
 	}
 }

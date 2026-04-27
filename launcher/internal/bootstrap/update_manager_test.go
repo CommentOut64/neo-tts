@@ -94,6 +94,88 @@ func TestUpdateManagerStageReleaseDownloadsPackagesAndMarksStagedComplete(t *tes
 	}
 }
 
+func TestStageReleaseUsesPackageArchiveResolver(t *testing.T) {
+	rootDir := t.TempDir()
+	shellZip := mustZipArchive(t, map[string]string{
+		"NeoTTSApp.exe": "shell-binary",
+	})
+	archivePath := filepath.Join(rootDir, "source-shell.zip")
+	if err := os.WriteFile(archivePath, shellZip, 0o644); err != nil {
+		t.Fatalf("WriteFile(source archive) returned error: %v", err)
+	}
+	manager := NewUpdateManager(UpdateManagerOptions{RootDir: rootDir})
+
+	_, err := manager.StageRelease(context.Background(), StageReleaseRequest{
+		SessionID:      "test-session",
+		ReleaseID:      "v0.0.2",
+		ManifestSHA256: "manifest-sha",
+		TargetPackages: []string{"shell"},
+		RemotePackages: map[string]RemotePackage{
+			"shell": {Version: "v0.0.2", URL: "https://example.invalid/shell.zip", SHA256: sha256Hex(shellZip)},
+		},
+		PackageArchiveResolver: func(_ context.Context, packageID string, remote RemotePackage, targetPath string) error {
+			if packageID != "shell" || remote.Version != "v0.0.2" {
+				t.Fatalf("unexpected resolver args: %s %+v", packageID, remote)
+			}
+			payload, err := os.ReadFile(archivePath)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(targetPath, payload, 0o644)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StageRelease returned error: %v", err)
+	}
+	if !directoryExists(filepath.Join(rootDir, "packages", "shell", "v0.0.2")) {
+		t.Fatal("expected shell package to be promoted")
+	}
+}
+
+func TestStageReleaseFallsBackToCopyWhenPromoteRenameFails(t *testing.T) {
+	rootDir := t.TempDir()
+	shellZip := mustZipArchive(t, map[string]string{
+		"NeoTTSApp.exe": "shell-binary",
+	})
+	manager := NewUpdateManager(UpdateManagerOptions{
+		RootDir: rootDir,
+		Rename: func(_, _ string) error {
+			return os.ErrPermission
+		},
+	})
+
+	session, err := manager.StageRelease(context.Background(), StageReleaseRequest{
+		SessionID:      "test-session",
+		ReleaseID:      "v0.0.2",
+		ManifestSHA256: "manifest-sha",
+		TargetPackages: []string{"shell"},
+		RemotePackages: map[string]RemotePackage{
+			"shell": {Version: "v0.0.2", URL: "https://example.invalid/shell.zip", SHA256: sha256Hex(shellZip)},
+		},
+		PackageArchiveResolver: func(_ context.Context, _ string, _ RemotePackage, targetPath string) error {
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(targetPath, shellZip, 0o644)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StageRelease returned error: %v", err)
+	}
+	if session.Status != StageSessionStatusStagedComplete {
+		t.Fatalf("Status = %q, want %q", session.Status, StageSessionStatusStagedComplete)
+	}
+	if !directoryExists(filepath.Join(rootDir, "packages", "shell", "v0.0.2")) {
+		t.Fatal("expected shell package to be promoted by copy fallback")
+	}
+	if directoryExists(filepath.Join(rootDir, "cache", "staging", "v0.0.2", "work", "shell")) {
+		t.Fatal("expected staging work directory to be removed after copy fallback")
+	}
+}
+
 func TestUpdateManagerStageReleaseReusesCompletedPackagesFromExistingSession(t *testing.T) {
 	rootDir := t.TempDir()
 	now := time.Date(2026, 4, 22, 9, 30, 0, 0, time.UTC)
