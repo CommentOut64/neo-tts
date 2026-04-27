@@ -5,56 +5,39 @@
 GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改任何一句话都需要整篇重跑。Neo TTS 围绕这个痛点重新设计：将长文本拆分为独立管理的语音段，每段独立推理、独立编辑、独立重做，并通过 Latent Overlap 边界增强保持段间自然衔接，最终组装为完整音频导出。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Status](https://img.shields.io/badge/status-active%20development-orange.svg)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
+![GPT-SoVITS](https://img.shields.io/badge/GPT--SoVITS-v2%20%2F%20v2Pro%20%2F%20v2ProPlus-8A2BE2)
+<a href="https://www.bilibili.com/video/BV13Pd6BMEWh"><img src="https://img.shields.io/static/v1?label=%20&message=%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91&color=F37697&style=flat&logo=bilibili&logoColor=white&logoWidth=20" height="36"></a>
 
 <p align="center">
   <img src="assets/main1.png" width="100%" />
 </p>
 
-## 核心特性
+## 核心功能
 
-### 段级编辑与局部重推理
-
-支持对语音段的插入、追加、修改、删除、交换位置和区间重排。编辑后系统自动计算受影响的最小集合（目标段 + 相邻边界 + 所在块），只重做必要部分，不整篇重跑。
-
-### 段间衔接控制
-
-相邻段之间的停顿时长可逐条调节。边界融合支持三种策略：Latent Overlap + 等功率交叉淡化（默认）、纯交叉淡化、硬拼接。当左右段使用不同音色或不同模型时，系统自动降级为纯交叉淡化。
-
-### 灵活的参数与音色覆盖
-
-生成参数（语速、top_k、top_p、temperature、noise_scale、参考音频）和音色/模型绑定均支持会话级、组级、段级和批量段级覆盖。同一篇文档内可混合多种音色和参数配置。
-
-### 双布局工作区
-
-同一份文本可在列表式（逐段操作）和组合式（整体排布）两种视图之间切换。编辑器基于 Tiptap 构建，段与停顿作为一等结构节点内嵌，支持行内编辑、拖拽重排和右键菜单。
-
-### 统一播放与时间线
-
-播放器基于 Block 级 AudioBuffer 调度，支持点击段跳转、Seek 时交叉淡入淡出。时间线由后端 TimelineManifest 驱动，`useTimeline` 会把当前播放位置统一解析为 segment / boundary / pause / ended 等游标语义，保证正文高亮、控制栏和波形图共用同一播放真源。
-
-### 导出
-
-支持整条成品导出（拼接为单个 WAV）和分段导出（每段一个 WAV + manifest），覆盖最终交付和素材回收两种场景。
-
-### 模型管理
-
-支持查看现有音色、上传托管模型、删除托管模型、刷新配置。手动维护的静态音色（`config/voices.json`）与上传的托管音色（`storage/managed_voices/`）可以共存。
+- **段级编辑**：支持对语音段的插入、追加、修改、删除、交换位置和区间重排
+- **局部重推理**：系统自动计算受影响的最小集合，只重做必要部分，不整篇重跑
+- **段间衔接控制**：相邻段之间的停顿时长可逐条调节，支持 Latent Overlap 边界融合
+- **完整的参数覆盖**：语速、top_k、top_p、temperature、noise_scale 均为段级精度
+- **灵活的音色切换**：同一篇文档内可混合多种音色
+- **简洁美观的编辑器**：基于 Tiptap 构建，支持行内编辑和双视图切换
+- **完善的模型管理**：支持上传并储存自定义权重模型
 
 ## 系统要求
 
-### 使用整合包（普通用户）
+### 使用整合包
 
 - **操作系统**：Windows 10 / 11
-- **GPU**：NVIDIA GPU（8 GB 显存可运行 V2Pro；更大模型按显存需求自行评估）
-- **CUDA**：CUDA 11.8+（整合包内置）
+- **GPU**：NVIDIA GPU（至少 4GB 显存）
 
 ### 本地开发部署
 
 在上述基础要求之上，还需要：
 
 - **Python**：3.11（项目通过 [uv](https://docs.astral.sh/uv/) 管理依赖）
-- **PyTorch**：后端依赖当前绑定 CUDA 12.8 wheel 源；使用 NVIDIA GPU 推理时，Windows 驱动版本至少需满足 CUDA 12.x 运行时兼容线 `528.33`
+- **PyTorch**：后端依赖当前绑定 CUDA 12.8 wheel 源，Windows 驱动版本至少需满足 CUDA 12.x 运行时兼容线 `528.33`
 - **Node.js**：18+
 - **包管理**：uv（后端）、npm（前端）
 
@@ -62,7 +45,7 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 ### 整合包
 
-当前整合包流水线以 Electron 为正式产品入口。完整打包链路、runtime 分支、缓存、压缩、硬链接和验证细节见 [Windows 桌面打包指南](llmdoc/guides/windows-desktop-packaging.md)。
+**开箱即用**
 
 ### 本地开发部署
 
@@ -140,53 +123,24 @@ npm run dev
 
 ## 技术架构
 
-### 推理引擎与边界增强
+![](./assets/pic1.png)
 
-推理主线基于 PyTorch-first 的 GPT-SoVITS 运行时（支持 v2 / v2Pro），模型引擎按 `gpt_path + sovits_path` 组合键缓存，避免重复初始化。
+Neo TTS 当前围绕一条主链路组织：**输入稿 -> 编辑会话 -> 段级推理 -> Block 时间线 -> 播放 / 导出**。前端负责输入、编辑、播放和管理入口；后端负责正式会话状态、异步渲染作业、资产与时间线；推理层负责调用 GPT-SoVITS 生成段音频并处理段间衔接。
 
-每段推理完成后，音频被切分为 **left_margin / core / right_margin** 三段。margin 区域保留了 SoVITS decoder 的 latent frame，用于后续边界增强——这意味着边界重算不需要重推段本身。
+### 主流程
 
-**Latent Overlap 边界增强**（核心创新）：利用 SoVITS TextEncoder 已有的 overlap 原语，将左段的 right_margin latent frame 注入右段的解码前缀（`decode_boundary_prefix`），在声学层面实现跨段自然衔接，而非仅靠波形级交叉淡化。当左右段使用不同音色或不同模型时，系统自动降级为纯交叉淡化，避免 latent 空间不兼容。
+1. 用户在 `/text-input` 准备文本，前端通过后端标准化 preview 得到权威切分预览，再进入 `/workspace`。
+2. Workspace 初始化或修改 edit-session；每次会改变正式音频的操作都会创建 render job。
+3. render job 完成后提交新的 `DocumentSnapshot` 和 `TimelineManifest`。前端播放、导出和后续编辑都以这两个正式结果为准，而不是以本地草稿为准。
 
-### 编辑会话模型
+### 核心设计
 
-系统围绕 **Segment（段）+ Edge（边）** 双实体模型组织编辑状态：
-
-- **Segment** 维护文本、顺序、语言、版本号、音频资产引用和段级参数覆盖
-- **Edge** 描述相邻段之间的停顿时长（`pause_duration_seconds`）和边界策略（`boundary_strategy`）
-
-每次编辑提交产生新的 **DocumentSnapshot**（含段列表、边列表、版本号）。**RenderPlanner** 根据编辑类型（update / insert / delete / swap / reorder）对比前后快照，精确计算需要重做的 segment、edge 和 block 集合（`TargetedRenderPlan`），跳过未受影响的部分。
-
-### Block 分层组装
-
-长文档被 **BlockPlanner** 按时长（20-40 秒）和段数上限自动分块。**CompositionBuilder** 逐块组装段音频、边界音频和停顿静音，产出带有采样级标记的 `BlockCompositionAssetPayload`。**TimelineManifestService** 将所有块拼接为全局时间线（`TimelineManifest`），为前端播放器提供段/边界/块的绝对采样位置。
-
-这套三层结构（Segment → Block → Timeline）使得局部编辑只需重组装受影响的块，而非整条音频。
-
-### 参数与模型绑定
-
-**RenderProfile**（生成参数）和 **VoiceBinding**（音色/模型绑定）各自支持会话级 → 组级 → 段级三层覆盖。**RenderConfigResolver** 在渲染前逐段解析最终生效的参数和模型组合，并生成 fingerprint 用于缓存命中判断。
-
-### 文本处理
-
-段文本在生命周期内维护三层口径：
-
-- **stem**：段级持久化真相，只保存可编辑正文，不包含句尾 terminal capsule
-- **display_text**：面向前端显示的派生文本，运行时按 `stem + terminal capsule + 语言规则` 组装，不作为独立持久化字段
-- **render_text**：送入推理的最终文本（运行时按语言和句尾规则派生，不持久化）
-
-段实体会持久化最小句尾胶囊：`terminal_raw`、`terminal_closer_suffix`、`terminal_source`，用于晚绑定 display / render 口径；同时持久化 `detected_language`、`inference_exclusion_reason`，用于记录段级语言解析结果与是否排除出主推理路径。`DocumentSnapshot` 不再保存顶层全文 `raw_text / normalized_text`；需要全文时由 service 层按段 `display_text` 拼接。`source_text` 继续保留，但只用于全文布局对齐与输入回带，不再承担段级文本真相。`text_language=auto` 时，标准化器会复用 GPT-SoVITS 现有的 `LangSegmenter` / `fast_langdetect` 检测链。
-
-后端现已提供只读的文本标准化 preview 接口 `POST /v1/edit-session/standardization-preview`，它与 initialize / append / update / split / merge 复用同一标准化器，返回 `stem`、`display_text`、terminal capsule、文档级语言摘要与分页 preview 结果。前端输入页直接消费后端返回的 `display_text`；当输入达到 5000 字及以上时，preview 先走 `light` 快速分析并按 `next_cursor` 继续加载后续分段。
-
-切分策略支持 6 种模式（cut0 – cut5），覆盖按标点、按句号、按字符数等场景。
-
-### 前端架构
-
-- **编辑器**：基于 Tiptap 构建结构化编辑画布，段（`SegmentBlock`）和停顿（`PauseBoundary`）作为自定义 Node 内嵌，支持行内文本编辑、拖拽重排、右键菜单操作
-- **播放器**：基于 Web Audio API，按 Block 级 AudioBuffer 调度播放，Seek 时带交叉淡入淡出；`usePlayback` 以 sample 为真源，`useTimeline` 负责解析统一播放游标（segment / boundary / pause），驱动点击跳转、正文高亮、控制栏与波形图联动
-- **状态管理**：`useEditSession` 管理会话生命周期，`useWorkspaceLightEdit` 维护段级草稿状态，`useWorkspaceProcessing` 处理渲染作业提交与进度订阅
-- **进度流**：初始化和重推理全程通过 SSE 推送段级进度事件，前端实时展示进度条和段状态变更
+- **段与边建模**：长文本被拆成 `Segment`，相邻段之间由 `Edge` 描述停顿和边界策略。这样文本、音频、停顿和重排都可以按段管理。
+- **局部重推理**：后端对比前后快照，只找出受影响的段、边和 block。未变化的音频资产继续复用，避免整篇重跑。
+- **Block + Timeline**：系统把多个段组装为 block，再生成统一的 sample 级时间线。播放器、正文高亮、跳转和导出都消费同一份时间线，避免前后端各自推算位置。
+- **推理与边界增强**：推理运行时基于 PyTorch 版 GPT-SoVITS，并按模型组合缓存引擎。相邻段模型兼容时使用 Latent Overlap 改善衔接；不兼容时回退到普通音频拼接，保证结果可用。
+- **配置覆盖**：生成参数和音色绑定按会话、组、段逐层覆盖。渲染前统一解析最终配置，使同一篇文档可以混用不同参数和音色。
+- **前端工作区**：当前主入口是 `/text-input`、`/workspace` 和 `/voices`。前端通过 snapshot、timeline、render/export job 和 SSE 进度流同步正式状态。
 
 
 ## 技术栈
@@ -231,3 +185,7 @@ neo-tts/
 ## 开源协议
 
 本项目使用 [MIT License](LICENSE)。
+
+## 致谢
+
+- GPT-SoVITS 官方
