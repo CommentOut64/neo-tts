@@ -18,6 +18,11 @@ special = [
 ]
 
 
+def _prepend_comma_to_short_english_enabled():
+    value = os.environ.get("GPT_SOVITS_PREPEND_COMMA_TO_SHORT_ENGLISH", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def clean_text(text, language, version=None):
     if version is None:
         version = os.environ.get("version", "v2")
@@ -45,7 +50,7 @@ def clean_text(text, language, version=None):
         assert len(norm_text) == len(word2ph)
     elif language == "en":
         phones = language_module.g2p(norm_text)
-        if len(phones) < 4:
+        if _prepend_comma_to_short_english_enabled() and len(phones) < 4:
             phones = [","] + phones
         word2ph = None
     else:
