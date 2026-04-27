@@ -110,6 +110,53 @@ describe("packaging performance scripts", () => {
     expect(packageJson).toContain("-BuildCudaRuntimeVariants");
   });
 
+  it("keeps update layer archives behind an explicit update package switch", () => {
+    const integrated = readFileSync(path.join(process.cwd(), "scripts", "build-integrated-package.ps1"), "utf-8");
+    const packageJson = readFileSync(path.join(process.cwd(), "package.json"), "utf-8");
+    const scripts = JSON.parse(packageJson).scripts as Record<string, string>;
+
+    expect(integrated).toContain("[switch]$BuildUpdatePackages");
+    expect(integrated).toContain("if ($BuildUpdatePackages) {");
+    expect(integrated).toContain("Skipping layered release artifacts because -BuildUpdatePackages was not set.");
+    expect(integrated).toContain("-BuildUpdatePackages cannot be combined with -BuildCudaRuntimeVariants");
+
+    expect(scripts["package:update"]).toContain("-BuildUpdatePackages");
+    expect(scripts["package:update:cu118"]).toContain("-BuildUpdatePackages");
+    expect(scripts["package:update:cu118"]).toContain("-CudaRuntime cu118");
+    expect(scripts["package:portable"]).not.toContain("-BuildUpdatePackages");
+    expect(scripts["package:portable:dir"]).not.toContain("-BuildUpdatePackages");
+    expect(scripts["package:portable:cuda-variants"]).not.toContain("-BuildUpdatePackages");
+  });
+
+  it("allows fast portable builds to skip packaged Python compileall", () => {
+    const integrated = readFileSync(path.join(process.cwd(), "scripts", "build-integrated-package.ps1"), "utf-8");
+    const packageJson = readFileSync(path.join(process.cwd(), "package.json"), "utf-8");
+    const scripts = JSON.parse(packageJson).scripts as Record<string, string>;
+
+    expect(integrated).toContain("[switch]$SkipPackagedPythonCompile");
+    expect(integrated).toContain("if ($SkipPackagedPythonCompile)");
+    expect(integrated).toContain("Skipping packaged Python compile because -SkipPackagedPythonCompile was set.");
+    expect(integrated).toContain('$arguments += "-SkipPackagedPythonCompile"');
+
+    expect(scripts["package:portable:fast"]).toContain("-SkipPackagedPythonCompile");
+    expect(scripts["package:portable:cuda-variants:fast"]).toContain("-SkipPackagedPythonCompile");
+  });
+
+  it("validates concrete packaged model files before shipping artifacts", () => {
+    const integrated = readFileSync(path.join(process.cwd(), "scripts", "build-integrated-package.ps1"), "utf-8");
+    const portable = readFileSync(path.join(process.cwd(), "scripts", "assemble-portable.ps1"), "utf-8");
+
+    for (const source of [integrated, portable]) {
+      expect(source).toContain("chinese-hubert-base\\pytorch_model.bin");
+      expect(source).toContain("chinese-roberta-wwm-ext-large\\tokenizer.json");
+      expect(source).toContain("pretrained_models\\sv\\pretrained_eres2netv2w24s4ep4.ckpt");
+      expect(source).toContain("pretrained_models\\fast_langdetect\\lid.176.bin");
+      expect(source).toContain("models\\builtin\\neuro2\\neuro2-e4.ckpt");
+      expect(source).toContain("models\\builtin\\neuro2\\neuro2_e4_s424.pth");
+      expect(source).toContain("models\\builtin\\neuro2\\audio1.wav");
+    }
+  });
+
   it("auto-detects CUDA-suffixed portable roots for offline update acceptance", () => {
     const offlineUpdate = readFileSync(path.join(process.cwd(), "scripts", "test-portable-offline-update.ps1"), "utf-8");
 
