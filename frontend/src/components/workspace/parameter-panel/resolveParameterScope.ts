@@ -39,3 +39,13 @@ export function resolveParameterScope(input: {
     edgeId: null,
   };
 }
+
+export function shouldConfirmGlobalParameterSubmit(
+  context: ParameterPanelScopeContext,
+): boolean {
+  return (
+    context.scope === "session" &&
+    context.segmentIds.length === 0 &&
+    context.edgeId === null
+  );
+}

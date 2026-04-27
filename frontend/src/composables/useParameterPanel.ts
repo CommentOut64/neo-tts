@@ -59,6 +59,7 @@ const dirtyFieldSet = ref<Set<string>>(new Set());
 const isSubmitting = ref(false);
 const pendingScopeContext = ref<ParameterPanelScopeContext | null>(null);
 const pendingSelectionSnapshot = ref<SelectionSnapshot | null>(null);
+const pendingDraftContinuation = ref<(() => void) | null>(null);
 const confirmVisible = ref(false);
 const flashPulse = ref(0);
 const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
@@ -355,9 +356,11 @@ export function useParameterPanel() {
         return;
       }
 
-      pendingScopeContext.value = cloneScopeContext(nextScope);
-      pendingSelectionSnapshot.value = selection.captureSelection();
-      confirmVisible.value = true;
+      if (!pendingDraftContinuation.value) {
+        pendingScopeContext.value = null;
+        pendingSelectionSnapshot.value = null;
+        confirmVisible.value = false;
+      }
     },
     { deep: true, immediate: true },
   );
@@ -797,11 +800,21 @@ export function useParameterPanel() {
 
   function cancelPendingScopeChange() {
     if (confirmVisible.value) {
-      selection.restoreSelection(acceptedSelectionSnapshot.value);
+      if (pendingSelectionSnapshot.value) {
+        selection.restoreSelection(acceptedSelectionSnapshot.value);
+      }
       pendingScopeContext.value = null;
       pendingSelectionSnapshot.value = null;
+      pendingDraftContinuation.value = null;
       confirmVisible.value = false;
     }
+  }
+
+  function runPendingDraftContinuation() {
+    const continuation = pendingDraftContinuation.value;
+    pendingDraftContinuation.value = null;
+    confirmVisible.value = false;
+    continuation?.();
   }
 
   async function discardAndContinue() {
@@ -809,6 +822,7 @@ export function useParameterPanel() {
     if (pendingScopeContext.value && pendingSelectionSnapshot.value) {
       acceptDesiredScope();
     }
+    runPendingDraftContinuation();
   }
 
   async function submitAndContinue() {
@@ -816,6 +830,19 @@ export function useParameterPanel() {
     if (pendingScopeContext.value && pendingSelectionSnapshot.value) {
       acceptDesiredScope();
     }
+    runPendingDraftContinuation();
+  }
+
+  function requestDraftResolution(continuation: () => void): boolean {
+    if (!hasDirty.value) {
+      return true;
+    }
+
+    pendingScopeContext.value = null;
+    pendingSelectionSnapshot.value = null;
+    pendingDraftContinuation.value = continuation;
+    confirmVisible.value = true;
+    return false;
   }
 
   function triggerFlash() {
@@ -852,6 +879,7 @@ export function useParameterPanel() {
     cancelPendingScopeChange,
     discardAndContinue,
     submitAndContinue,
+    requestDraftResolution,
     triggerFlash,
   };
 }

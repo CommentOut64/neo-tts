@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
 import type { VoiceProfile } from "@/types/tts";
+import { shouldConfirmGlobalParameterSubmit } from "./parameter-panel/resolveParameterScope";
 
 import BatchParameterPanel from "./BatchParameterPanel.vue";
 import EdgeParameterPanel from "./EdgeParameterPanel.vue";
@@ -31,8 +32,35 @@ const isReorderLocked = computed(
   () => reorderDraft.hasDraft.value || reorderDraft.isSubmitting.value,
 );
 
+async function confirmGlobalParameterSubmitIfNeeded() {
+  if (!shouldConfirmGlobalParameterSubmit(panel.scopeContext.value)) {
+    return true;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      "您未选中任何段，是否对全局参数做出改动？",
+      "确认修改全局参数",
+      {
+        confirmButtonText: "确认提交",
+        cancelButtonText: "取消",
+        type: "warning",
+        closeOnClickModal: false,
+        closeOnPressEscape: false,
+        lockScroll: false,
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleSubmit() {
   try {
+    if (!(await confirmGlobalParameterSubmitIfNeeded())) {
+      return;
+    }
     await panel.submitDraft();
     if (scope.value !== "edge") {
       ElMessage.success("参数已提交");
@@ -46,6 +74,9 @@ async function handleSubmit() {
 
 async function handleSubmitAndContinue() {
   try {
+    if (!(await confirmGlobalParameterSubmitIfNeeded())) {
+      return;
+    }
     await panel.submitAndContinue();
     if (scope.value !== "edge") {
       ElMessage.success("参数已提交");

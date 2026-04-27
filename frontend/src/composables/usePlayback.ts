@@ -93,7 +93,10 @@ export function usePlayback() {
     cursorSyncInitialized = true;
     watch(
       timelineManifest,
-      () => {
+      (manifest) => {
+        if (!manifest) {
+          stopScheduledPlayback();
+        }
         syncCursorState();
       },
       { immediate: true, flush: "sync" },
