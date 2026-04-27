@@ -4,8 +4,11 @@ import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  APP_CHECK_UPDATE_CHANNEL,
   APP_OPEN_EXTERNAL_URL_CHANNEL,
   APP_REQUEST_EXIT_CHANNEL,
+  APP_RESTART_AND_APPLY_UPDATE_CHANNEL,
+  APP_START_UPDATE_DOWNLOAD_CHANNEL,
 } from "../src/ipc/channels";
 import { runMain } from "../src/main";
 import type { ProductPaths } from "../src/runtime/paths";
@@ -19,7 +22,7 @@ type AppStub = {
 };
 
 type IpcMainStub = {
-  handle: (channel: string, listener: () => Promise<void> | void) => void;
+  handle: (channel: string, listener: (...args: unknown[]) => Promise<unknown> | unknown) => void;
   on: (channel: string, listener: (event: { returnValue?: unknown }) => void) => void;
 };
 
@@ -40,6 +43,22 @@ type BackendOwnerStub = {
   prepareForExit: () => Promise<void>;
   stop: () => Promise<void>;
   exited: Promise<Error | null>;
+};
+
+type BootstrapControlClientStub = {
+  apiVersion: string;
+  bootstrapVersion: string;
+  sessionId: string;
+  checkForUpdate: (...args: unknown[]) => Promise<unknown>;
+  downloadUpdate: (...args: unknown[]) => Promise<unknown>;
+  restartAndApplyUpdate: (...args: unknown[]) => Promise<unknown>;
+  reportSessionReady: (...args: unknown[]) => Promise<unknown>;
+  reportSessionFailed: (...args: unknown[]) => Promise<unknown>;
+  reportRestartForUpdate: (...args: unknown[]) => Promise<unknown>;
+};
+
+type ProductPathsWithRoot = ProductPaths & {
+  productRoot: string;
 };
 
 function createDeferred<T>() {
@@ -76,32 +95,48 @@ function createWindowStub(overrides: Partial<WindowStub> = {}): WindowStub {
   };
 }
 
-function createProductPaths(distributionKind: "installed" | "portable"): ProductPaths {
+function createProductPaths(distributionKind: "installed" | "portable"): ProductPathsWithRoot {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "neo-tts-main-"));
-  const runtimeRoot =
+  const productRoot =
     distributionKind === "installed"
       ? path.join(workspace, "NeoTTS")
       : path.join(workspace, "NeoTTS-Portable");
-  const resourcesDir = path.join(runtimeRoot, "resources", "app-runtime");
+  const bootstrapRoot = path.join(productRoot, "packages", "bootstrap", "1.1.0");
+  const updateAgentRoot = path.join(productRoot, "packages", "update-agent", "1.1.0");
+  const shellRoot = path.join(productRoot, "packages", "shell", "v0.0.1");
+  const appCoreRoot = path.join(productRoot, "packages", "app-core", "v0.0.1");
+  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu128-v1");
+  const modelsRoot = path.join(productRoot, "packages", "models", "builtin-v1");
+  const pretrainedModelsRoot = path.join(productRoot, "packages", "pretrained-models", "support-v1");
   const userDataDir =
     distributionKind === "installed"
       ? path.join(workspace, "AppData", "Local", "NeoTTS")
-      : path.join(runtimeRoot, "data");
+      : path.join(productRoot, "data");
   const exportsDir =
     distributionKind === "installed"
       ? path.join(workspace, "Documents", "NeoTTS", "Exports")
-      : path.join(runtimeRoot, "exports");
+      : path.join(productRoot, "exports");
 
   return {
+    resolutionKind: "descriptor",
+    runtimeDescriptorPath: path.join(productRoot, "state", "current.json"),
     distributionKind,
-    runtimeRoot,
-    resourcesDir,
-    backendDir: path.join(resourcesDir, "backend"),
-    frontendDir: path.join(resourcesDir, "frontend-dist"),
-    gptSovitsDir: path.join(resourcesDir, "GPT_SoVITS"),
-    runtimePython: path.join(resourcesDir, "runtime", "python", "python.exe"),
-    builtinModelDir: path.join(resourcesDir, "models", "builtin"),
-    configDir: path.join(resourcesDir, "config"),
+    productRoot,
+    bootstrapRoot,
+    updateAgentRoot,
+    shellRoot,
+    appCoreRoot,
+    runtimeRoot: runtimeLayerRoot,
+    modelsRoot,
+    pretrainedModelsRoot,
+    resourcesDir: appCoreRoot,
+    backendDir: path.join(appCoreRoot, "backend"),
+    frontendDir: path.join(appCoreRoot, "frontend-dist"),
+    gptSovitsDir: path.join(appCoreRoot, "GPT_SoVITS"),
+    runtimePython: path.join(runtimeLayerRoot, "runtime", "python", "python.exe"),
+    builtinModelDir: path.join(modelsRoot, "models", "builtin"),
+    pretrainedModelsDir: path.join(pretrainedModelsRoot, "pretrained_models"),
+    configDir: path.join(appCoreRoot, "config"),
     userDataDir,
     logsDir: path.join(userDataDir, "logs"),
     exportsDir,
@@ -109,16 +144,65 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   };
 }
 
-function materializeRuntime(paths: ProductPaths, options?: { includeFrontend?: boolean }) {
+function materializeRuntime(
+  paths: ProductPathsWithRoot,
+  options?: {
+    includeFrontend?: boolean;
+    includeShell?: boolean;
+    includePretrainedModels?: boolean;
+    includeSvModel?: boolean;
+  },
+) {
   fs.mkdirSync(paths.backendDir, { recursive: true });
   fs.mkdirSync(paths.gptSovitsDir, { recursive: true });
   fs.mkdirSync(paths.builtinModelDir, { recursive: true });
+  fs.mkdirSync(paths.pretrainedModelsDir, { recursive: true });
   fs.mkdirSync(paths.configDir, { recursive: true });
   fs.mkdirSync(path.dirname(paths.runtimePython), { recursive: true });
   fs.writeFileSync(paths.runtimePython, "", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "chinese-hubert-base"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "preprocessor_config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-hubert-base", "pytorch_model.bin"), "", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "config.json"), "{}", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "pytorch_model.bin"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "tokenizer.json"), "{}", "utf-8");
+  fs.mkdirSync(path.join(paths.builtinModelDir, "neuro2"), { recursive: true });
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2-e4.ckpt"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2_e4_s424.pth"), "", "utf-8");
+  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "audio1.wav"), "", "utf-8");
+  fs.mkdirSync(path.join(paths.pretrainedModelsDir, "sv"), { recursive: true });
+  if (options?.includeSvModel !== false) {
+    fs.writeFileSync(
+      path.join(paths.pretrainedModelsDir, "sv", "pretrained_eres2netv2w24s4ep4.ckpt"),
+      "",
+      "utf-8",
+    );
+  }
+  fs.mkdirSync(path.join(paths.pretrainedModelsDir, "fast_langdetect"), { recursive: true });
+  fs.writeFileSync(path.join(paths.pretrainedModelsDir, "fast_langdetect", "lid.176.bin"), "", "utf-8");
+  fs.writeFileSync(
+    path.join(paths.configDir, "voices.json"),
+    JSON.stringify({
+      neuro2: {
+        gpt_path: "models/builtin/neuro2/neuro2-e4.ckpt",
+        sovits_path: "models/builtin/neuro2/neuro2_e4_s424.pth",
+        ref_audio: "models/builtin/neuro2/audio1.wav",
+      },
+    }),
+    "utf-8",
+  );
   if (paths.distributionKind === "portable") {
-    fs.mkdirSync(paths.runtimeRoot, { recursive: true });
-    fs.writeFileSync(path.join(paths.runtimeRoot, "portable.flag"), "", "utf-8");
+    fs.mkdirSync(paths.productRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.productRoot, "portable.flag"), "", "utf-8");
+  }
+  if (options?.includeShell !== false) {
+    fs.mkdirSync(paths.shellRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.shellRoot, "NeoTTSApp.exe"), "", "utf-8");
+  }
+  if (options?.includePretrainedModels === false) {
+    fs.rmSync(paths.pretrainedModelsDir, { recursive: true, force: true });
   }
   if (options?.includeFrontend !== false) {
     fs.mkdirSync(paths.frontendDir, { recursive: true });
@@ -532,6 +616,221 @@ describe("desktop main", () => {
     expect(openExternal).toHaveBeenCalledWith("https://github.com/CommentOut64/neo-tts");
   });
 
+  it("registers update IPC handlers that delegate to bootstrap control client", async () => {
+    const handled = new Map<string, (...args: unknown[]) => Promise<unknown> | unknown>();
+    const order: string[] = [];
+    const bootstrapClient: BootstrapControlClientStub = {
+      apiVersion: "v1",
+      bootstrapVersion: "1.1.0",
+      sessionId: "session-1",
+      checkForUpdate: vi.fn().mockResolvedValue({ status: "update-available" }),
+      downloadUpdate: vi.fn().mockResolvedValue({ status: "ready-to-restart" }),
+      restartAndApplyUpdate: vi.fn().mockResolvedValue({ status: "switching" }),
+      reportSessionReady: vi.fn().mockResolvedValue(undefined),
+      reportSessionFailed: vi.fn().mockResolvedValue(undefined),
+      reportRestartForUpdate: vi.fn().mockResolvedValue({ status: "restart-requested" }),
+    };
+
+    await runMain({
+      ipcMain: {
+        handle: (channel, listener) => {
+          handled.set(channel, listener);
+        },
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      productPaths: (() => {
+        const paths = createProductPaths("installed");
+        materializeRuntime(paths);
+        return paths;
+      })(),
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => bootstrapClient,
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {
+          order.push("prepareForExit");
+        },
+        stop: async () => {
+          order.push("stopBackend");
+        },
+        exited: createDeferred<Error | null>().promise,
+      }),
+      createMainWindow: () =>
+        createWindowStub({
+          close: () => {
+            order.push("closeWindow");
+          },
+        }),
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {
+          order.push("quit");
+        },
+      },
+    });
+
+    await expect(handled.get(APP_CHECK_UPDATE_CHANNEL)?.({}, { channel: "stable", automatic: false })).resolves.toEqual({
+      status: "update-available",
+    });
+    await expect(handled.get(APP_START_UPDATE_DOWNLOAD_CHANNEL)?.({}, { releaseId: "v0.0.2" })).resolves.toEqual({
+      status: "ready-to-restart",
+    });
+    await expect(handled.get(APP_RESTART_AND_APPLY_UPDATE_CHANNEL)?.({}, { releaseId: "v0.0.2" })).resolves.toEqual({
+      status: "switching",
+    });
+
+    expect(bootstrapClient.checkForUpdate).toHaveBeenCalledWith({ channel: "stable", automatic: false });
+    expect(bootstrapClient.downloadUpdate).toHaveBeenCalledWith({ releaseId: "v0.0.2" });
+    expect(bootstrapClient.restartAndApplyUpdate).toHaveBeenCalledWith({ releaseId: "v0.0.2" });
+    expect(bootstrapClient.reportRestartForUpdate).toHaveBeenCalledWith({ sessionId: "session-1" });
+    expect(order).toEqual(["prepareForExit", "stopBackend", "closeWindow", "quit"]);
+  });
+
+  it("reports session-ready to bootstrap after packaged renderer load succeeds", async () => {
+    const reportSessionReady = vi.fn().mockResolvedValue(undefined);
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady,
+        reportSessionFailed: vi.fn(),
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(reportSessionReady).toHaveBeenCalledWith({ sessionId: "session-1" });
+  });
+
+  it("reports startup-failed to bootstrap when backend startup fails", async () => {
+    const reportSessionFailed = vi.fn().mockResolvedValue(undefined);
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady: vi.fn(),
+        reportSessionFailed,
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => {
+        throw new Error("backend health check timed out");
+      },
+      createMainWindow: () => createWindowStub(),
+    });
+
+    expect(reportSessionFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        code: "startup-failed",
+      }),
+    );
+  });
+
+  it("reports backend-exit to bootstrap when backend exits unexpectedly", async () => {
+    const backendExit = createDeferred<Error | null>();
+    const reportSessionFailed = vi.fn().mockResolvedValue(undefined);
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit: () => {},
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: "F:/neo-tts",
+      environment: {
+        NEO_TTS_BOOTSTRAP_CONTROL_ORIGIN: "http://127.0.0.1:19090",
+        NEO_TTS_BOOTSTRAP_API_VERSION: "v1",
+      },
+      createBootstrapClient: async () => ({
+        apiVersion: "v1",
+        bootstrapVersion: "1.1.0",
+        sessionId: "session-1",
+        checkForUpdate: vi.fn(),
+        downloadUpdate: vi.fn(),
+        restartAndApplyUpdate: vi.fn(),
+        reportSessionReady: vi.fn(),
+        reportSessionFailed,
+        reportRestartForUpdate: vi.fn(),
+      }),
+      startBackend: async () => ({
+        origin: "http://127.0.0.1:18600",
+        prepareForExit: async () => {},
+        stop: async () => {},
+        exited: backendExit.promise,
+      }),
+      createMainWindow: () => createWindowStub(),
+    });
+
+    backendExit.resolve(new Error("backend exited unexpectedly"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reportSessionFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        code: "backend-exit",
+      }),
+    );
+  });
+
   it("backend exit moves the app into fatal state instead of silently hanging", async () => {
     const backendExit = createDeferred<Error | null>();
     const quit = vi.fn();
@@ -591,7 +890,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async (options) => {
         receivedOptions = options;
@@ -630,7 +929,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async (options) => {
         receivedOptions = options;
@@ -644,11 +943,44 @@ describe("desktop main", () => {
         onLogLine: expect.any(Function),
         environment: expect.objectContaining({
           NEO_TTS_DISTRIBUTION_KIND: "portable",
+          NEO_TTS_PROJECT_ROOT: productPaths.productRoot,
           NEO_TTS_USER_DATA_ROOT: productPaths.userDataDir,
           NEO_TTS_EXPORTS_ROOT: productPaths.exportsDir,
         }),
       }),
     );
+  });
+
+  it("portable runtime validation reads portable.flag from product root instead of bootstrap package root", async () => {
+    const productPaths = createProductPaths("portable");
+    materializeRuntime(productPaths);
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn().mockResolvedValue(
+      createBackendOwnerStub(createDeferred<Error | null>().promise),
+    );
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.productRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).toHaveBeenCalledOnce();
+    expect(onFatalState).not.toHaveBeenCalled();
+    expect(quit).not.toHaveBeenCalled();
   });
 
   it("reports fatal state when frontend dist is missing", async () => {
@@ -669,7 +1001,75 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(onFatalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "invalid-runtime",
+      }),
+    );
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("reports fatal state when pretrained-models layer is missing", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths, { includePretrainedModels: false });
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.bootstrapRoot,
+      productPaths,
+      startBackend,
+      createMainWindow: () => createWindowStub(),
+      onFatalState,
+    });
+
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(onFatalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "invalid-runtime",
+      }),
+    );
+    expect(quit).toHaveBeenCalledOnce();
+  });
+
+  it("reports fatal state when packaged support model files are missing", async () => {
+    const productPaths = createProductPaths("installed");
+    materializeRuntime(productPaths, { includeSvModel: false });
+    const quit = vi.fn();
+    const onFatalState = vi.fn();
+    const startBackend = vi.fn();
+
+    await runMain({
+      app: {
+        requestSingleInstanceLock: () => true,
+        whenReady: async () => {},
+        on: () => {},
+        quit,
+      },
+      ipcMain: {
+        handle: () => {},
+        on: () => {},
+      },
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend,
       createMainWindow: () => createWindowStub(),
@@ -702,7 +1102,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async () => createBackendOwnerStub(createDeferred<Error | null>().promise),
       createMainWindow: () => createWindowStub({
@@ -737,7 +1137,7 @@ describe("desktop main", () => {
         handle: () => {},
         on: () => {},
       },
-      projectRoot: productPaths.runtimeRoot,
+      projectRoot: productPaths.bootstrapRoot,
       productPaths,
       startBackend: async () => {
         order.push("startBackend");

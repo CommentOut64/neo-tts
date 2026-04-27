@@ -1,5 +1,6 @@
 appId: com.neo-tts.desktop
 productName: NeoTTS
+executableName: NeoTTSApp
 directories:
   output: release/${version}
 asar: true

@@ -15,6 +15,8 @@ import torchaudio
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 
 from backend.app.core.logging import get_logger
+from backend.app.core.path_resolution import resolve_runtime_path
+from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
@@ -555,7 +557,7 @@ class GPTSoVITSOptimizedInference:
         )
 
     def _resolve_reference_audio_path(self, value: str) -> str:
-        return str(Path(value).expanduser().resolve())
+        return str(resolve_runtime_path(value))
 
     def _extract_prompt_semantic(self, reference_audio_path: str, stage_reporter=None) -> torch.Tensor:
         zero_wav_16k = torch.zeros(
@@ -722,12 +724,22 @@ class GPTSoVITSOptimizedInference:
     ) -> ResolvedRenderContext:
         if isinstance(request_or_context, ResolvedRenderContext):
             return request_or_context
+        reference_scope = "session_override" if request_or_context.reference_source == "custom" else "voice_preset"
+        reference_identity = (
+            f"{request_or_context.voice_id}:{request_or_context.model_id}"
+            if request_or_context.reference_source == "custom"
+            else f"{request_or_context.voice_id}:preset"
+        )
+        reference_text = request_or_context.reference_text or ""
         return ResolvedRenderContext(
             voice_id=request_or_context.voice_id,
             model_key=request_or_context.model_id,
             reference_audio_path=request_or_context.reference_audio_path or "",
-            reference_text=request_or_context.reference_text or "",
+            reference_text=reference_text,
             reference_language=request_or_context.reference_language or "",
+            reference_scope=reference_scope,
+            reference_identity=reference_identity,
+            reference_text_fingerprint=fingerprint_text(reference_text),
             speed=request_or_context.speed,
             top_k=request_or_context.top_k,
             top_p=request_or_context.top_p,
@@ -757,6 +769,13 @@ class GPTSoVITSOptimizedInference:
 
         reference_audio_path = self._resolve_reference_audio_path(resolved_context.reference_audio_path)
         reference_text = ensure_sentence_end(resolved_context.reference_text, resolved_context.reference_language)
+        reference_scope = resolved_context.reference_scope or "voice_preset"
+        reference_identity = resolved_context.reference_identity or f"{resolved_context.voice_id}:preset"
+        reference_audio_fingerprint = self._resolve_reference_audio_fingerprint(
+            reference_audio_path,
+            explicit_fingerprint=resolved_context.reference_audio_fingerprint,
+        )
+        reference_text_fingerprint = resolved_context.reference_text_fingerprint or fingerprint_text(reference_text)
         inference_config = {
             "speed": resolved_context.speed,
             "top_k": resolved_context.top_k,
@@ -770,8 +789,12 @@ class GPTSoVITSOptimizedInference:
         }
         fingerprint = fingerprint_inference_config(inference_config)
         cache_key = PromptCacheKey(
+            reference_scope=reference_scope,
+            reference_identity=reference_identity,
             reference_audio_path=reference_audio_path,
+            reference_audio_fingerprint=reference_audio_fingerprint,
             reference_text=reference_text,
+            reference_text_fingerprint=reference_text_fingerprint,
             reference_language=resolved_context.reference_language,
             model_version=self.hps.model.version,
             inference_config_fingerprint=fingerprint,
@@ -892,7 +915,24 @@ class GPTSoVITSOptimizedInference:
             prompt_phones=cache_entry.prompt_phones,
             prompt_bert=prompt_bert,
             prompt_norm_text=cache_entry.prompt_norm_text,
+            reference_scope=reference_scope,
+            reference_identity=reference_identity,
+            reference_audio_fingerprint=reference_audio_fingerprint,
+            reference_text_fingerprint=reference_text_fingerprint,
         )
+
+    @staticmethod
+    def _resolve_reference_audio_fingerprint(
+        reference_audio_path: str,
+        *,
+        explicit_fingerprint: str = "",
+    ) -> str:
+        if explicit_fingerprint:
+            return explicit_fingerprint
+        try:
+            return fingerprint_file(reference_audio_path)
+        except FileNotFoundError:
+            return fingerprint_text(reference_audio_path)
 
     def _build_prompt_cache_entry(
         self,

@@ -5,7 +5,12 @@ param(
     [ValidateSet("installed", "portable")]
     [string]$Flavor = "installed",
 
+    [ValidateSet("cu128", "cu118")]
+    [string]$CudaRuntime = "cu128",
+
     [string]$StageRoot,
+
+    [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
 
     [switch]$Offline
 )
@@ -58,6 +63,43 @@ function Ensure-Directory {
     )
 
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Resolve-SevenZipPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfiguredPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath) -and (Test-Path -LiteralPath $ConfiguredPath)) {
+        return (Get-Item -LiteralPath $ConfiguredPath).FullName
+    }
+
+    $fromPath = Get-Command "7z.exe" -ErrorAction SilentlyContinue
+    if ($fromPath) {
+        return $fromPath.Source
+    }
+
+    throw "7-Zip executable not found. Configure -SevenZipPath or add 7z.exe to PATH."
+}
+
+function Expand-ZipWithSevenZip {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SevenZipExe
+    )
+
+    Ensure-Directory -Path $DestinationPath
+    & $SevenZipExe @("x", "-y", "-bso0", "-bsp0", "-o$DestinationPath", $ZipPath) | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "7-Zip extract failed with exit code $LASTEXITCODE for '$ZipPath'."
+    }
 }
 
 function Write-Utf8File {
@@ -163,6 +205,24 @@ function Get-RelativePathNormalized {
     return ([System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString())).Replace("\", "/")
 }
 
+function Resolve-LayerPackage {
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LayerPackage)) {
+        return $null
+    }
+
+    $normalized = $LayerPackage.Trim()
+    if ($normalized -notin @("app-core", "runtime", "models", "pretrained-models")) {
+        throw "Unsupported layerPackage '$normalized'."
+    }
+    return $normalized
+}
+
 function Add-LockEntry {
     param(
         [Parameter(Mandatory = $true)]
@@ -186,7 +246,11 @@ function Add-LockEntry {
 
         [Parameter()]
         [AllowEmptyCollection()]
-        [object[]]$ProfileTags
+        [object[]]$ProfileTags,
+
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage
     )
 
     $Entries.Add([ordered]@{
@@ -196,6 +260,7 @@ function Add-LockEntry {
             required        = $Required
             overwritePolicy = $OverwritePolicy
             profileTags     = $ProfileTags
+            layerPackage    = Resolve-LayerPackage -LayerPackage $LayerPackage
         }) | Out-Null
 }
 
@@ -247,6 +312,57 @@ function Get-FingerprintFromStrings {
     )
 
     return Get-TextSha256 -Text (($Values | Sort-Object) -join "`n")
+}
+
+function Get-CudaRuntimeMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("cu128", "cu118")]
+        [string]$Value
+    )
+
+    if ($Value -eq "cu118") {
+        return [ordered]@{
+            cudaRuntime  = "cu118"
+            runtimeVersion = "py311-cu118-v1"
+            pytorchIndex = "https://download.pytorch.org/whl/cu118"
+        }
+    }
+
+    return [ordered]@{
+        cudaRuntime  = "cu128"
+        runtimeVersion = "py311-cu128-v1"
+        pytorchIndex = "https://download.pytorch.org/whl/cu128"
+    }
+}
+
+function Update-RequirementsForCudaRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RequirementsPath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("cu128", "cu118")]
+        [string]$CudaRuntime
+    )
+
+    if ($CudaRuntime -eq "cu128") {
+        return
+    }
+
+    $content = Get-Content -LiteralPath $RequirementsPath
+    $updated = foreach ($line in $content) {
+        if ($line -match "^(torch==[0-9.]+)\+cu\d+(.*)$") {
+            "$($Matches[1])+$CudaRuntime$($Matches[2])"
+            continue
+        }
+        if ($line -match "^(torchaudio==[0-9.]+)\+cu\d+(.*)$") {
+            "$($Matches[1])+$CudaRuntime$($Matches[2])"
+            continue
+        }
+        $line
+    }
+    Write-Utf8File -Path $RequirementsPath -Content ($updated -join "`n")
 }
 
 function Get-PartitionMetadataPath {
@@ -355,6 +471,7 @@ function Get-ManifestEntriesFingerprint {
                 [string]$entry.source,
                 [string]$entry.destination,
                 [string]$entry.category,
+                [string]$entry.layerPackage,
                 [string]$entry.overwritePolicy,
                 [bool]$entry.required,
                 (Get-PathFingerprint -Path $sourcePath)
@@ -384,6 +501,10 @@ function Copy-StagedEntry {
         [AllowEmptyCollection()]
         [object[]]$ProfileTags,
 
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage,
+
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
 
@@ -396,7 +517,9 @@ function Copy-StagedEntry {
 
         [switch]$SkipLockEntries,
 
-        [switch]$SkipCopy
+        [switch]$SkipCopy,
+
+        [switch]$UseHardLinks
     )
 
     if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -421,7 +544,12 @@ function Copy-StagedEntry {
             $targetPath = Join-Path $DestinationPath $relativePath
             if (-not $SkipCopy) {
                 Ensure-Directory -Path (Split-Path -Parent $targetPath)
-                Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
+                if ($UseHardLinks) {
+                    New-HardLinkFile -SourcePath $file.FullName -DestinationPath $targetPath
+                }
+                else {
+                    Copy-Item -LiteralPath $file.FullName -Destination $targetPath -Force
+                }
             }
             if (-not $SkipLockEntries) {
                 $sourceLabel = Get-RelativePathNormalized -BasePath $ProjectRoot -TargetPath $file.FullName
@@ -432,7 +560,8 @@ function Copy-StagedEntry {
                     -Category $Category `
                     -Required $Required `
                     -OverwritePolicy $OverwritePolicy `
-                    -ProfileTags $ProfileTags
+                    -ProfileTags $ProfileTags `
+                    -LayerPackage $LayerPackage
             }
         }
         return
@@ -440,7 +569,12 @@ function Copy-StagedEntry {
 
     if (-not $SkipCopy) {
         Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
-        Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+        if ($UseHardLinks) {
+            New-HardLinkFile -SourcePath $SourcePath -DestinationPath $DestinationPath
+        }
+        else {
+            Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+        }
     }
     if (-not $SkipLockEntries) {
         Add-LockEntry -Entries $Entries `
@@ -449,7 +583,29 @@ function Copy-StagedEntry {
             -Category $Category `
             -Required $Required `
             -OverwritePolicy $OverwritePolicy `
-            -ProfileTags $ProfileTags
+            -ProfileTags $ProfileTags `
+            -LayerPackage $LayerPackage
+    }
+}
+
+function New-HardLinkFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Force
+    }
+
+    try {
+        New-Item -ItemType HardLink -Path $DestinationPath -Target $SourcePath | Out-Null
+    }
+    catch {
+        throw "Stage hard link failed from '$SourcePath' to '$DestinationPath': $($_.Exception.Message)"
     }
 }
 
@@ -523,6 +679,10 @@ $baseManifest = Load-JsonFile -Path $manifestPath
 $profileConfig = Load-JsonFile -Path $profilePath
 $flavorConfig = Load-JsonFile -Path $flavorPath
 $desktopPackage = Load-JsonFile -Path $desktopPackageJsonPath
+$sevenZipExe = Resolve-SevenZipPath -ConfiguredPath $SevenZipPath
+$cudaRuntimeMetadata = Get-CudaRuntimeMetadata -Value $CudaRuntime
+$runtimeVersion = [string]$cudaRuntimeMetadata.runtimeVersion
+$pytorchIndex = [string]$cudaRuntimeMetadata.pytorchIndex
 $pythonBlacklistEntries = Get-Content -LiteralPath $pythonBlacklistPath | ForEach-Object { $_.Trim() } | Where-Object {
     $_ -and -not $_.StartsWith("#")
 }
@@ -555,10 +715,10 @@ $runtimePythonDir = Join-Path $appRuntimeRoot "runtime\python"
 $builtinModelDir = Join-Path $appRuntimeRoot "models\builtin"
 $configDir = Join-Path $appRuntimeRoot "config"
 $cacheRoot = Join-Path $desktopRoot ".cache"
-$wheelhouseDir = Join-Path $cacheRoot "wheelhouse"
-$runtimePythonCacheRoot = Join-Path $cacheRoot "runtime-python"
-$requirementsCacheRoot = Join-Path $cacheRoot "requirements"
-$stagingMetadataRoot = Join-Path $cacheRoot "staging-metadata"
+$wheelhouseDir = Join-Path $cacheRoot (Join-Path "wheelhouse" $CudaRuntime)
+$runtimePythonCacheRoot = Join-Path $cacheRoot (Join-Path "runtime-python" $CudaRuntime)
+$requirementsCacheRoot = Join-Path $cacheRoot (Join-Path "requirements" $CudaRuntime)
+$stagingMetadataRoot = Join-Path $cacheRoot (Join-Path "staging-metadata" $CudaRuntime)
 $manifestLockPath = Join-Path $stageRootPath "manifest-lock.json"
 $wheelhouseMetadataPath = Join-Path $wheelhouseDir "wheelhouse-lock.json"
 $portableMarkerPath = Join-Path $stageRootPath "portable.flag"
@@ -609,10 +769,12 @@ Copy-StagedEntry -SourcePath $frontendDistPath `
     -Required $true `
     -OverwritePolicy "replace" `
     -ProfileTags @() `
+    -LayerPackage "app-core" `
     -ProjectRoot $projectRoot `
     -StageRoot $stageRootPath `
     -Entries $lockEntries `
-    -SkipCopy:$reuseFrontendPartition
+    -SkipCopy:$reuseFrontendPartition `
+    -UseHardLinks
 if (-not $reuseFrontendPartition) {
     Write-PartitionMetadata `
         -MetadataRoot $stagingMetadataRoot `
@@ -655,10 +817,12 @@ foreach ($entry in $manifestEntries) {
         -Required ([bool]$entry.required) `
         -OverwritePolicy $entry.overwritePolicy `
         -ProfileTags @($entry.profileTags) `
+        -LayerPackage ([string]$entry.layerPackage) `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
-        -SkipCopy:$reuseManifestPartition
+        -SkipCopy:$reuseManifestPartition `
+        -UseHardLinks
 }
 if (-not $reuseManifestPartition) {
     Write-PartitionMetadata `
@@ -694,10 +858,13 @@ else {
 }
 
 $uvLockHash = Get-FileSha256 -Path $uvLockPath
-$requirementsLockPath = Join-Path $requirementsCacheRoot ("python-requirements.{0}.{1}.{2}.txt" -f $Profile, $uvLockHash, $pythonRuntimePruneFingerprint)
+$requirementsLockPath = Join-Path $requirementsCacheRoot ("python-requirements.{0}.{1}.{2}.{3}.txt" -f $Profile, $CudaRuntime, $uvLockHash, $pythonRuntimePruneFingerprint)
 $nltkPayloadLayoutVersion = "nltk-payload-layout-v2"
 $pythonPartitionFingerprint = Get-FingerprintFromStrings -Values @(
     "runtime-python",
+    $CudaRuntime,
+    $runtimeVersion,
+    $pytorchIndex,
     $pythonVersion,
     $uvLockHash,
     $pythonRuntimePruneFingerprint,
@@ -735,6 +902,7 @@ if (-not (Test-Path -LiteralPath $requirementsLockPath)) {
     if ($LASTEXITCODE -ne 0) {
         throw "uv export failed with exit code $LASTEXITCODE."
     }
+    Update-RequirementsForCudaRuntime -RequirementsPath $requirementsLockPath -CudaRuntime $CudaRuntime
 }
 else {
     Write-Host "[stage-runtime] Reusing exported runtime requirements..."
@@ -744,6 +912,9 @@ if ($Offline -and (Test-Path -LiteralPath $wheelhouseMetadataPath)) {
     $wheelhouseMetadata = Load-JsonFile -Path $wheelhouseMetadataPath
     if ($wheelhouseMetadata.uvLockSha256 -ne $uvLockHash) {
         throw "Offline wheelhouse cache does not match current uv.lock."
+    }
+    if ([string]$wheelhouseMetadata.cudaRuntime -ne $CudaRuntime) {
+        throw "Offline wheelhouse cache does not match CUDA runtime '$CudaRuntime'."
     }
 }
 
@@ -789,7 +960,7 @@ if (-not $reusePythonCachePartition) {
         "--prefix", $runtimePythonCacheDir,
         "--requirements", $requirementsLockPath,
         "--cache-dir", $wheelhouseDir,
-        "--index", "https://download.pytorch.org/whl/cu124",
+        "--index", $pytorchIndex,
         "--index-strategy", "unsafe-best-match",
         "--python-version", "3.11",
         "--python-platform", "x86_64-pc-windows-msvc",
@@ -815,6 +986,8 @@ Write-Host "[stage-runtime] Recording installed dependency payload..."
 $wheelhouseMetadata = [ordered]@{
     schemaVersion = 1
     pythonVersion = $pythonVersion
+    cudaRuntime  = $CudaRuntime
+    runtimeVersion = $runtimeVersion
     uvLockSha256  = $uvLockHash
     generatedAt   = (Get-Date).ToString("o")
 }
@@ -854,7 +1027,8 @@ if (-not $reuseStagePythonPartition) {
         -ProjectRoot $runtimePythonCacheDir `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
-        -SkipLockEntries
+        -SkipLockEntries `
+        -UseHardLinks
 
     $runtimeNltkDataDir = Join-Path $runtimePythonDir "nltk_data"
     $runtimeNltkCorporaDir = Join-Path $runtimeNltkDataDir "corpora"
@@ -871,9 +1045,9 @@ if (-not $reuseStagePythonPartition) {
     Copy-Item -LiteralPath $averagedPerceptronTaggerEngPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerEngZipPath -Force
 
     Write-Host "[stage-runtime] Extracting bundled NLTK payload into staged runtime ..."
-    Expand-Archive -LiteralPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -Force
-    Expand-Archive -LiteralPath $averagedPerceptronTaggerPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
-    Expand-Archive -LiteralPath $averagedPerceptronTaggerEngPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
+    Expand-ZipWithSevenZip -ZipPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -SevenZipExe $sevenZipExe
+    Expand-ZipWithSevenZip -ZipPath $averagedPerceptronTaggerPayloadPath -DestinationPath $runtimeNltkTaggersDir -SevenZipExe $sevenZipExe
+    Expand-ZipWithSevenZip -ZipPath $averagedPerceptronTaggerEngPayloadPath -DestinationPath $runtimeNltkTaggersDir -SevenZipExe $sevenZipExe
 
     Write-PartitionMetadata `
         -MetadataRoot $stagingMetadataRoot `
@@ -901,7 +1075,8 @@ foreach ($file in $runtimeFiles) {
         -Category $category `
         -Required $true `
         -OverwritePolicy "replace" `
-        -ProfileTags @()
+        -ProfileTags @() `
+        -LayerPackage "runtime"
 }
 
 $builtinVoiceFingerprintValues = New-Object System.Collections.Generic.List[string]
@@ -961,6 +1136,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
     if ([string]::IsNullOrWhiteSpace($voiceId)) {
         throw "Builtin voice entry is missing voiceId."
     }
+    $voiceLayerPackage = if ([string]::IsNullOrWhiteSpace([string]$voice.layerPackage)) { "models" } else { [string]$voice.layerPackage }
 
     $voiceDestinationDir = Join-Path $appRuntimeRoot ([string]$voice.destinationDir)
     Ensure-Directory -Path $voiceDestinationDir
@@ -978,30 +1154,36 @@ foreach ($voice in $profileConfig.builtinVoices) {
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
-        -SkipCopy:$reuseBuiltinVoicePartition
+        -SkipCopy:$reuseBuiltinVoicePartition `
+        -UseHardLinks
     Copy-StagedEntry -SourcePath $sovitsSourcePath `
         -DestinationPath $sovitsDestinationPath `
         -Category "builtin-voice" `
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
-        -SkipCopy:$reuseBuiltinVoicePartition
+        -SkipCopy:$reuseBuiltinVoicePartition `
+        -UseHardLinks
     Copy-StagedEntry -SourcePath $refAudioSourcePath `
         -DestinationPath $refAudioDestinationPath `
         -Category "builtin-voice" `
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
-        -SkipCopy:$reuseBuiltinVoicePartition
+        -SkipCopy:$reuseBuiltinVoicePartition `
+        -UseHardLinks
 
     $builtinVoices[$voiceId] = [ordered]@{
         gpt_path    = Get-RelativePathNormalized -BasePath $appRuntimeRoot -TargetPath $gptDestinationPath
@@ -1037,13 +1219,16 @@ Add-LockEntry -Entries $lockEntries `
     -Category "config" `
     -Required $true `
     -OverwritePolicy "replace" `
-    -ProfileTags @($Profile)
+    -ProfileTags @($Profile) `
+    -LayerPackage "app-core"
 
 $manifestLock = [ordered]@{
     schemaVersion = 1
     buildVersion  = [string]$desktopPackage.version
     profile       = [string]$profileConfig.profileId
     flavor        = [string]$flavorConfig.flavorId
+    cudaRuntime   = $CudaRuntime
+    runtimeVersion = $runtimeVersion
     generatedAt   = (Get-Date).ToString("o")
     entries       = $lockEntries
 }

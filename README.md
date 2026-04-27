@@ -4,74 +4,145 @@
 
 传统的长文本语音合成工具往往以“整篇一次性生成”为主要运行模式，一旦需要修改其中的某句拼音或参数，往往需要对整篇内容重新推理，耗时且难以微调。Neo TTS 围绕这一痛点重新设计了底层架构：将长文本拆分为独立管理的语音段，每段可进行独立推理、编辑和局部重绘，并通过底层的边界融合算法保持段间声学特征的自然衔接，最终高效组装为完整的音频导出。
 
+<a href="https://www.bilibili.com/video/BV13Pd6BMEWh"><img src="https://img.shields.io/static/v1?label=%20&message=%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91&color=F37697&style=flat&logo=bilibili&logoColor=white&logoWidth=20" height="36"></a>
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Version](https://img.shields.io/badge/version-v0.0.1-brightgreen.svg)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
-[![GPT-SoVITS](https://img.shields.io/badge/GPT--SoVITS-v2%2Fv2Pro-6A5ACD)](https://github.com/RVC-Boss/GPT-SoVITS)
+![GPT-SoVITS](https://img.shields.io/badge/GPT--SoVITS-v2%20%2F%20v2Pro%20%2F%20v2ProPlus-8A2BE2)
+
 
 <p align="center">
   <img src="assets/main1.png" width="100%" />
 </p>
 
+## 核心功能
 
-## 产品特性
+- **段级编辑**：支持对语音段的插入、追加、修改、删除、交换位置和区间重排
+- **局部重推理**：系统自动计算受影响的最小集合，只重做必要部分，不整篇重跑
+- **段间衔接控制**：相邻段之间的停顿时长可逐条调节，支持 Latent Overlap 边界融合
+- **完整的参数覆盖**：语速、top_k、top_p、temperature、noise_scale 均为段级精度
+- **灵活的音色切换**：同一篇文档内可混合多种音色
+- **简洁美观的编辑器**：基于 Tiptap 构建，支持行内编辑和双视图切换
+- **完善的模型管理**：支持上传并储存自定义权重模型
 
-### 段级编辑与局部重推理
+## 系统要求
 
-像编辑文本一样编辑语音。支持对独立段落进行插入、修改、删除和位置重排。每次编辑仅重新渲染受影响的最小片段（目标段与相邻边界），从此告别漫长的整篇重推等待。
+### 使用整合包
 
-### 丝滑的段落衔接控制
+- **操作系统**：Windows 10 / 11
+- **GPU**：NVIDIA GPU（至少 4GB 显存）
 
-相邻段之间的停顿时长不仅可精准调节，系统还在底层支持声学特征的交叉融合，无需手动对齐音频波形，即可自动处理句子间的平滑过渡，确保听感自然不断层。
+### 本地开发部署
 
-### 多音色与参数混合编排
+在上述基础要求之上，还需要：
 
-在同一篇文档中，支持为不同的段落绑定不同的音色，并独立调控语速、参考和生成参数。复杂的角色对话场面也能在一个工程界面中轻松组织。
+- **Python**：3.11（项目通过 [uv](https://docs.astral.sh/uv/) 管理依赖）
+- **PyTorch**：后端依赖当前绑定 CUDA 12.8 wheel 源，Windows 驱动版本至少需满足 CUDA 12.x 运行时兼容线 `528.33`
+- **Node.js**：18+
+- **包管理**：uv（后端）、npm（前端）
 
-### 灵活的工作区双视图
+## 快速开始
 
-引入双视图协作模式。**列表视图**专注于单句的精细化修改与反复打磨；**组合视图**提供类似富文本的整体排版体验。工作区内置语法高亮与拖拽重排功能。
+### 整合包
 
-### 毫秒级视听反馈
+**开箱即用**
 
-内置高性能流媒体播放器，精准同步波形可视化与当前播放游标。支持点击段落直接跳转播放、拖拉进度条实时跟随，做到所见即所听。
+### 本地开发部署
 
-### 配音与字幕一键生成
+#### 1. 安装依赖
 
-完美适配解说与二创剪辑场景。只需将视频长文稿输入工作站，不仅能全自动生成 AI 配音，更能导出极高匹配度的段级关联字幕文件。简化后期打轴对齐工作，助力音视频管线效率最大化。
+```powershell
+# 后端
+uv sync --group dev
 
-## 快速上手
+# 前端
+Set-Location frontend
+npm install
+Set-Location ..
+```
 
-我们提供免配置的开箱即用版本。
-- **系统要求**：Windows 10 / 11
-- **硬件要求**：NVIDIA GPU（建议 8GB 显存以上以运行 V2Pro 模型）；至少 8GB 磁盘空间。
-- **获取方式**：请前往项目的 Release 页面使用链接下载对应的 `.zip` 便携包，解压后双击 `NeoTTS.exe` 即可运行。
+#### 2. 准备模型与音色配置
 
-## 重要提醒
+编辑 [config/voices.json](config/voices.json)，最小结构如下：
 
-- **仅专注推理与编辑**：Neo TTS 是一个专注声音推理生成、组合编辑与精修的后期工作站，**不包含**任何模型训练或微调模块。您可以使用打包好的内置模型，或自行导入符合规范的模型；如需训练或微调新的音色模型，请移步至 [GPT-SoVITS 官方仓库](https://github.com/RVC-Boss/GPT-SoVITS)。
-- **模型版本限制**：当前项目的底层推理引擎仅严格适配 **GPT-SoVITS v2 / v2Pro** 版本模型，暂不支持 v3 / v4 等新版模型。
+```json
+{
+  "voice_id": {
+    "gpt_path": "pretrained_models/GPT_weights/model.ckpt",
+    "sovits_path": "pretrained_models/SoVITS_weights/model.pth",
+    "ref_audio": "pretrained_models/reference.wav",
+    "ref_text": "参考音频对应文本",
+    "ref_lang": "zh",
+    "description": "音色描述",
+    "defaults": {
+      "speed": 1.0,
+      "top_k": 15,
+      "top_p": 1.0,
+      "temperature": 1.0,
+      "pause_length": 0.3
+    }
+  }
+}
+```
 
----
+- 手动维护的静态音色由 `config/voices.json` 管理
+- 上传到管理页的托管音色会写入 `storage/managed_voices/`
 
-## 核心技术
+#### 3. 启动
 
-Neo TTS 在工程实现层面进行了大量重构与创新，旨在解决超长文本 TTS 的调度困境与视听局部割裂感。
+```powershell
+# launcher 主入口（推荐）
+Set-Location launcher
+go run ./cmd/launcher --runtime-mode dev --frontend-mode web
 
-### Latent Overlap 边界增强
+# 兼容入口
+Set-Location ..
+.\start_dev.bat
 
-传统的音频拼接手段多采用波形级的交叉淡化（Cross-fade），但不同句子的波尾与波头强行叠加容易出现相位抵消或突兀的频率割裂。
-Neo TTS 深度定制了内部的推理管线，在 GPT-SoVITS 的解码阶段保留了左段音频的有效隐空间特征（Latent Frame），将其作为“声学上下文”注入下一段的前缀生成中。这使得在模型底层直接生成了带有自然过渡语气的波形。
+# 或分别启动
+uv run python -m backend.app.cli --port 18600
+Set-Location frontend
+$env:VITE_BACKEND_ORIGIN="http://127.0.0.1:18600"
+npm run dev
+```
 
-### 基于会话快照的最小化重绘机制
-Neo TTS 将整个文档抽象为由 **Segment（段）** 与 **Edge（边）** 构成的拓扑图结构。
-每次对文档的修改（如切分语句、更换参数）都会生成全新的数据快照。后端的 `RenderPlanner` 引擎会高频对比修改前后的快照差异，精准剥离出本次操作波及的“最小改动半径”（即被修改的语句本身以及受直接影响的相邻过渡带），仅对这部分发起热重载更新，极大地提升了二次编辑的响应速度。
+补充说明：
 
-### 分层音频组装与真源流媒体时间线
-如果将长达几十分钟的音频直接合成为单一超大文件或压入内存，不仅渲染阻塞，前端的进度条拖放操作也会变得迟缓卡顿。
-Neo TTS 创新出 `段落(Segment) -> 分块(Block) -> 全局时间线(Timeline)` 的三级数据级联架构。后端自动根据时间阈值将音频切片打包分块；前端则重构了基于 Web Audio API 的底层缓冲调度器，实现按需流式加载。统一的时间线管理器能够将底层混音调度时刻逆向映射回 DOM 树内的具体文本节点，实现复杂混排场景下的声画严格同步与毫秒级 Seek。
+- 当前配置优先级是：CLI > 进程环境变量 > `config/launch.json` > 默认值
+- 推荐把项目级启动配置写到 `config/launch.json`
+- `start_dev.bat` 只保留为源码联调兼容入口，不包含单实例、旧进程清理与守护逻辑
+- Go launcher 现在只接受 `dev/web`；`product/electron` 必须由 `desktop` 下的 Electron main 作为正式入口
+- `backend.mode=external` 时，launcher 只探活外部后端，不接管也不清理它
+- `dev/web` 下由 Go launcher 持有 owner 生命周期；产品态由 Electron main 持有 owner 生命周期
+- `runtime-state.json` 与 `exit-request.json` 若存在，也只作为调试快照，不再作为关键控制真相
+
+#### 4. 打开页面
+
+- 前端开发地址：`http://localhost:5175`
+- 后端接口文档：`http://127.0.0.1:18600/docs`
+
+## 技术架构
+
+![](./assets/pic1.png)
+
+Neo TTS 当前围绕一条主链路组织：**输入稿 -> 编辑会话 -> 段级推理 -> Block 时间线 -> 播放 / 导出**。前端负责输入、编辑、播放和管理入口；后端负责正式会话状态、异步渲染作业、资产与时间线；推理层负责调用 GPT-SoVITS 生成段音频并处理段间衔接。
+
+### 主流程
+
+1. 用户在 `/text-input` 准备文本，前端通过后端标准化 preview 得到权威切分预览，再进入 `/workspace`。
+2. Workspace 初始化或修改 edit-session；每次会改变正式音频的操作都会创建 render job。
+3. render job 完成后提交新的 `DocumentSnapshot` 和 `TimelineManifest`。前端播放、导出和后续编辑都以这两个正式结果为准，而不是以本地草稿为准。
+
+### 核心设计
+
+- **段与边建模**：长文本被拆成 `Segment`，相邻段之间由 `Edge` 描述停顿和边界策略。这样文本、音频、停顿和重排都可以按段管理。
+- **局部重推理**：后端对比前后快照，只找出受影响的段、边和 block。未变化的音频资产继续复用，避免整篇重跑。
+- **Block + Timeline**：系统把多个段组装为 block，再生成统一的 sample 级时间线。播放器、正文高亮、跳转和导出都消费同一份时间线，避免前后端各自推算位置。
+- **推理与边界增强**：推理运行时基于 PyTorch 版 GPT-SoVITS，并按模型组合缓存引擎。相邻段模型兼容时使用 Latent Overlap 改善衔接；不兼容时回退到普通音频拼接，保证结果可用。
+- **配置覆盖**：生成参数和音色绑定按会话、组、段逐层覆盖。渲染前统一解析最终配置，使同一篇文档可以混用不同参数和音色。
+- **前端工作区**：当前主入口是 `/text-input`、`/workspace` 和 `/voices`。前端通过 snapshot、timeline、render/export job 和 SSE 进度流同步正式状态。
+
 
 ## 技术栈
 
@@ -81,28 +152,6 @@ Neo TTS 创新出 `段落(Segment) -> 分块(Block) -> 全局时间线(Timeline)
 | 前端 | TypeScript、Vue 3、Vite、Tiptap、Element Plus、Nuxt UI |
 | 推理 | GPT-SoVITS（PyTorch）、CNHubert、BERT / transformers |
 | 多语言 | pypinyin、opencc、pyopenjtalk、g2p_en、g2pk2、ToJyutping |
-
-## 本地开发部署
-
-如果您希望基于源码进行二次开发，请确保已经准备好 Node.js (18+)、Python (3.11)、包管理器 `uv`，以及项目根目录下可用的 `launcher-dev.exe`。
-
-```powershell
-# 1. 安装后端依赖
-uv sync --group dev
-
-# 2. 安装前端依赖
-cd frontend
-npm install
-cd ..
-
-# 3. 启动本地开发全栈服务（在项目根目录执行）
-.\launcher-dev.exe --runtime-mode dev --frontend-mode web
-```
-启动成功后，您可以通过以下地址访问：
-- **开发界面**：`http://localhost:5175`
-- **接口文档**：`http://127.0.0.1:18600/docs`
-
-> **Note**: 首次本地启动前，需要预配基础声学模型权重，请参阅 `config/voices.json` 中的各路径指向结构进行存放。
 
 ## 开源协议
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import torch
 
 from backend.app.inference.text_processing import compute_effective_margin_frame_count
+
+if TYPE_CHECKING:
+    import numpy as np
+    import torch
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,10 @@ class ReferenceContext:
     prompt_bert: torch.Tensor | None = None
     prompt_norm_text: str = ""
     backend_cache_key: tuple[str, str] | None = None
+    reference_scope: str = ""
+    reference_identity: str = ""
+    reference_audio_fingerprint: str = ""
+    reference_text_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,10 @@ class ResolvedRenderContext:
     reference_audio_path: str
     reference_text: str
     reference_language: str
+    reference_scope: str = ""
+    reference_identity: str = ""
+    reference_audio_fingerprint: str = ""
+    reference_text_fingerprint: str = ""
     speed: float = 1.0
     top_k: int = 15
     top_p: float = 1.0
@@ -209,6 +219,8 @@ def split_segment_audio(
     generator_stride_samples: int,
     min_core_frame_count: int = 10,
 ) -> dict[str, Any]:
+    import numpy as np
+
     decoder_frame_count = int(encoder_frames.shape[-1])
     effective_margin_frame_count = compute_effective_margin_frame_count(
         decoder_frame_count=decoder_frame_count,

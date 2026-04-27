@@ -328,6 +328,8 @@ def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_
 def test_upload_reference_audio_returns_temporary_path(test_app_settings):
     app = create_app(settings=test_app_settings)
     with TestClient(app) as client:
+        _seed_ready_session(app, segment_count=1)
+
         response = client.post(
             "/v1/edit-session/reference-audio",
             files={
@@ -338,10 +340,18 @@ def test_upload_reference_audio_returns_temporary_path(test_app_settings):
     assert response.status_code == 200
     data = response.json()
     assert data["filename"] == "custom.wav"
+    assert data["reference_asset_id"]
+    assert data["reference_scope"] == "session_override"
+    assert data["reference_identity"].endswith(data["reference_asset_id"])
+    assert data["reference_audio_fingerprint"]
+    assert data["reference_text_fingerprint"] == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
     uploaded_path = Path(data["reference_audio_path"])
     assert uploaded_path.exists()
-    assert uploaded_path.name == "custom.wav"
-    assert "_temp_refs" in uploaded_path.parts
+    assert uploaded_path.name == "audio.wav"
+    assert uploaded_path.parent.name == data["reference_asset_id"]
+    assert "references" in uploaded_path.parts
+    metadata_path = uploaded_path.with_name("metadata.json")
+    assert metadata_path.exists()
 
 
 def test_upload_reference_audio_rejects_unsupported_extension(test_app_settings):

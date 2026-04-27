@@ -23,6 +23,7 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
       temperature: 0.85,
       topP: 0.9,
       topK: 12,
+      noiseScale: 0.48,
       pauseLength: 0.45,
       refSource: "preset",
       refText: "示例参考文本",
@@ -44,6 +45,7 @@ it("buildInitializeRequest maps workspace draft to edit-session initialize paylo
     temperature: 0.85,
     top_p: 0.9,
     top_k: 12,
+    noise_scale: 0.48,
     pause_duration_seconds: 0.45,
     segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
     reference_audio_path: "voices/demo/reference.wav",
@@ -61,6 +63,7 @@ it("buildInitializeRequest uses the fixed workspace strong-terminal segmentation
     temperature: 1,
     topP: 1,
     topK: 15,
+    noiseScale: 0.35,
     pauseLength: 0.3,
     refSource: "custom",
     refText: "",
@@ -81,6 +84,7 @@ it("buildInitializeRequest no longer accepts a user-provided segmentation mode",
     temperature: 1,
     topP: 1,
     topK: 15,
+    noiseScale: 0.35,
     pauseLength: 0.3,
     refSource: "custom",
     refText: "",
@@ -102,6 +106,7 @@ it("buildInitializeRequest uses uploaded custom reference path", () => {
     temperature: 1,
     topP: 1,
     topK: 15,
+    noiseScale: 0.35,
     pauseLength: 0.3,
     refSource: "custom",
     refText: "自定义参考文本",
@@ -296,7 +301,12 @@ it("resumeRenderJob unwraps accepted response payload", async () => {
 it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
   const post = vi.fn().mockResolvedValue({
     data: {
-      reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+      reference_asset_id: "session-ref-1",
+      reference_scope: "session_override",
+      reference_identity: "doc-1:session-ref-1",
+      reference_audio_fingerprint: "audio-fp-1",
+      reference_text_fingerprint: "text-fp-empty",
+      reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
       filename: "custom.wav",
     },
   });
@@ -321,7 +331,12 @@ it("uploadEditSessionReferenceAudio posts multipart form data", async () => {
   expect(body).toBeInstanceOf(FormData);
   expect(body.get("ref_audio_file")).toBe(file);
   expect(response).toEqual({
-    reference_audio_path: "managed_voices/_temp_refs/custom/custom.wav",
+    reference_asset_id: "session-ref-1",
+    reference_scope: "session_override",
+    reference_identity: "doc-1:session-ref-1",
+    reference_audio_fingerprint: "audio-fp-1",
+    reference_text_fingerprint: "text-fp-empty",
+    reference_audio_path: "storage/edit_session/assets/references/doc-1/session-ref-1/audio.wav",
     filename: "custom.wav",
   });
 });

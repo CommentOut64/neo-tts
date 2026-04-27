@@ -17,6 +17,10 @@ class AppSettings:
     owner_session_id: str | None = None
     distribution_kind: str = "development"
     resources_root: Path | None = None
+    app_core_root: Path | None = None
+    runtime_root: Path | None = None
+    models_root: Path | None = None
+    pretrained_models_root: Path | None = None
     user_data_root: Path | None = None
     logs_dir: Path | None = None
     builtin_voices_config_path: Path | None = None
@@ -39,10 +43,30 @@ class AppSettings:
     def __post_init__(self) -> None:
         resolved_project_root = self.project_root.resolve()
         distribution_kind = _normalize_distribution_kind(self.distribution_kind)
-        resources_root = (
-            self.resources_root.resolve()
-            if self.resources_root is not None
-            else resolved_project_root
+        app_core_root = (
+            self.app_core_root.resolve()
+            if self.app_core_root is not None
+            else (
+                self.resources_root.resolve()
+                if self.resources_root is not None
+                else resolved_project_root
+            )
+        )
+        resources_root = app_core_root
+        runtime_root = (
+            self.runtime_root.resolve()
+            if self.runtime_root is not None
+            else app_core_root
+        )
+        models_root = (
+            self.models_root.resolve()
+            if self.models_root is not None
+            else app_core_root
+        )
+        pretrained_models_root = (
+            self.pretrained_models_root.resolve()
+            if self.pretrained_models_root is not None
+            else app_core_root
         )
         user_data_root = (
             self.user_data_root.resolve()
@@ -70,6 +94,10 @@ class AppSettings:
         object.__setattr__(self, "distribution_kind", distribution_kind)
         object.__setattr__(self, "app_version", _normalize_app_version(self.app_version, project_root=resolved_project_root))
         object.__setattr__(self, "display_version", _normalize_display_version(self.display_version, self.app_version))
+        object.__setattr__(self, "app_core_root", app_core_root)
+        object.__setattr__(self, "runtime_root", runtime_root)
+        object.__setattr__(self, "models_root", models_root)
+        object.__setattr__(self, "pretrained_models_root", pretrained_models_root)
         object.__setattr__(self, "resources_root", resources_root)
         object.__setattr__(self, "user_data_root", user_data_root)
         object.__setattr__(self, "logs_dir", logs_dir)
@@ -177,6 +205,10 @@ def get_settings() -> AppSettings:
     distribution_kind = _normalize_distribution_kind(os.environ.get("NEO_TTS_DISTRIBUTION_KIND"))
     project_root_env = os.environ.get("NEO_TTS_PROJECT_ROOT")
     resources_root_env = os.environ.get("NEO_TTS_RESOURCES_ROOT")
+    app_core_root_env = os.environ.get("NEO_TTS_APP_CORE_ROOT")
+    runtime_root_env = os.environ.get("NEO_TTS_RUNTIME_ROOT")
+    models_root_env = os.environ.get("NEO_TTS_MODELS_ROOT")
+    pretrained_models_root_env = os.environ.get("NEO_TTS_PRETRAINED_MODELS_ROOT")
     user_data_root_env = os.environ.get("NEO_TTS_USER_DATA_ROOT")
     exports_root_env = os.environ.get("NEO_TTS_EXPORTS_ROOT")
     logs_root_env = os.environ.get("NEO_TTS_LOGS_ROOT")
@@ -205,10 +237,14 @@ def get_settings() -> AppSettings:
     display_version = _normalize_display_version(display_version_env, app_version)
 
     if distribution_kind == "development":
-        resources_root = _resolve_from_env(resources_root_env, default=project_root)
+        app_core_root = _resolve_from_env(app_core_root_env or resources_root_env, default=project_root)
+        resources_root = app_core_root
+        runtime_root = _resolve_from_env(runtime_root_env, default=project_root)
+        models_root = _resolve_from_env(models_root_env, default=project_root)
+        pretrained_models_root = _resolve_from_env(pretrained_models_root_env, default=project_root)
         user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "storage")
         logs_dir = _resolve_from_env(logs_root_env, default=project_root / "logs")
-        builtin_voices_config_path = resources_root / "config" / "voices.json"
+        builtin_voices_config_path = app_core_root / "config" / "voices.json"
         voices_config_path = Path(voices_config_env) if voices_config_env else project_root / "config" / "voices.json"
         managed_voices_dir = Path(managed_voices_dir_env) if managed_voices_dir_env else project_root / "storage" / "managed_voices"
         synthesis_results_dir = (
@@ -246,10 +282,20 @@ def get_settings() -> AppSettings:
             else project_root / "pretrained_models" / "chinese-roberta-wwm-ext-large"
         )
     else:
-        resources_root = _resolve_from_env(resources_root_env, default=project_root / "resources" / "app-runtime")
+        app_core_root = _resolve_from_env(
+            app_core_root_env or resources_root_env,
+            default=project_root / "resources" / "app-runtime",
+        )
+        resources_root = app_core_root
+        runtime_root = _resolve_from_env(runtime_root_env, default=app_core_root)
+        models_root = _resolve_from_env(models_root_env, default=app_core_root)
+        pretrained_models_root = _resolve_from_env(
+            pretrained_models_root_env,
+            default=app_core_root,
+        )
         user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "data")
         logs_dir = _resolve_from_env(logs_root_env, default=user_data_root / "logs")
-        builtin_voices_config_path = resources_root / "config" / "voices.json"
+        builtin_voices_config_path = app_core_root / "config" / "voices.json"
         voices_config_path = (
             Path(voices_config_env) if voices_config_env else user_data_root / "config" / "voices.json"
         )
@@ -276,12 +322,12 @@ def get_settings() -> AppSettings:
         cnhubert_base_path = (
             Path(cnhubert_path_env)
             if cnhubert_path_env
-            else resources_root / "models" / "builtin" / "chinese-hubert-base"
+            else models_root / "models" / "builtin" / "chinese-hubert-base"
         )
         bert_path = (
             Path(bert_path_env)
             if bert_path_env
-            else resources_root / "models" / "builtin" / "chinese-roberta-wwm-ext-large"
+            else models_root / "models" / "builtin" / "chinese-roberta-wwm-ext-large"
         )
 
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
@@ -303,6 +349,10 @@ def get_settings() -> AppSettings:
         owner_session_id=owner_session_id,
         distribution_kind=distribution_kind,
         resources_root=resources_root,
+        app_core_root=app_core_root,
+        runtime_root=runtime_root,
+        models_root=models_root,
+        pretrained_models_root=pretrained_models_root,
         user_data_root=user_data_root,
         logs_dir=logs_dir,
         builtin_voices_config_path=builtin_voices_config_path,

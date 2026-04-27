@@ -256,8 +256,12 @@ class SegmentGroupService:
             overrides_by_binding.pop(patch.reference_override.binding_key, None)
             return overrides_by_binding
         overrides_by_binding[patch.reference_override.binding_key] = ReferenceBindingOverride(
+            session_reference_asset_id=patch.reference_override.session_reference_asset_id,
+            reference_identity=patch.reference_override.reference_identity,
+            reference_audio_fingerprint=patch.reference_override.reference_audio_fingerprint,
             reference_audio_path=patch.reference_override.reference_audio_path,
             reference_text=patch.reference_override.reference_text,
+            reference_text_fingerprint=patch.reference_override.reference_text_fingerprint,
             reference_language=patch.reference_override.reference_language,
         )
         return overrides_by_binding

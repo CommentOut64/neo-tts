@@ -4,6 +4,11 @@
   "python": {
     "version": "3.11.14"
   },
+  "layeredPackages": {
+    "runtimeVersion": "py311-cu128-v1",
+    "modelsVersion": "builtin-v1",
+    "pretrainedModelsVersion": "support-v1"
+  },
   "builtinVoices": [
     {
       "voiceId": "neuro2",
@@ -17,6 +22,7 @@
         "temperature": 1.0,
         "pause_length": 0.3
       },
+      "layerPackage": "models",
       "destinationDir": "models/builtin/neuro2",
       "gptSource": "storage/managed_voices/neuro2/neuro2-e4.ckpt",
       "sovitsSource": "storage/managed_voices/neuro2/neuro2_e4_s424.pth",

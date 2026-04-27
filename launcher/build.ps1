@@ -11,6 +11,29 @@ $legacyResourcePath = Join-Path $scriptDir "launcher.syso"
 $targetGOOS = "windows"
 $targetGOARCH = "amd64"
 
+function Build-GoBinaryWithIcon {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackagePath,
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ResourceDir,
+        [string]$LegacyResourcePath = ""
+    )
+
+    $resourcePath = Join-Path $ResourceDir "launcher.syso"
+
+    New-Item -ItemType Directory -Force -Path $ResourceDir | Out-Null
+    & $rsrcCommand.Source -arch $targetGOARCH -ico $iconPath -o $resourcePath
+    if ($LegacyResourcePath -and (Test-Path -LiteralPath $LegacyResourcePath)) {
+        Remove-Item -LiteralPath $LegacyResourcePath -Force
+    }
+
+    go build -ldflags "-H windowsgui" -o $OutputPath $PackagePath
+    Write-Host "Built: $OutputPath"
+}
+
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
 $hadGOOS = Test-Path Env:GOOS
@@ -28,14 +51,7 @@ try {
     $env:GOARCH = $targetGOARCH
 
     $rsrcCommand = Get-Command "rsrc.exe" -ErrorAction Stop
-    New-Item -ItemType Directory -Force -Path $resourceDir | Out-Null
-    & $rsrcCommand.Source -arch $targetGOARCH -ico $iconPath -o $resourcePath
-    if (Test-Path -LiteralPath $legacyResourcePath) {
-        Remove-Item -LiteralPath $legacyResourcePath -Force
-    }
-
-    go build -o $outputPath ./cmd/launcher
-    Write-Host "Built: $outputPath"
+    Build-GoBinaryWithIcon -PackagePath "./cmd/launcher" -OutputPath $outputPath -ResourceDir $resourceDir -LegacyResourcePath $legacyResourcePath
 }
 finally {
     if ($hadGOOS) {

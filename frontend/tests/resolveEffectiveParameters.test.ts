@@ -116,8 +116,11 @@ function createProfiles(): RenderProfile[] {
           voiceId: "voice-a",
           modelKey: "voice-a",
         })]: {
+          reference_identity: "doc-1:session-ref-a",
+          reference_audio_fingerprint: "audio-fp-a",
           reference_audio_path: "voices/custom-a.wav",
           reference_text: "音色A自定义文本",
+          reference_text_fingerprint: "text-fp-a",
           reference_language: null,
         },
       },
@@ -362,9 +365,14 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.renderProfile.speed).toBe(1);
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
     expect(reference.source).toBe("preset");
+    expect(reference.reference_scope).toBe("voice_preset");
     expect(reference.binding_key).toBe("voice-default:voice-default");
+    expect(reference.reference_identity).toBe("voice-default:preset");
+    expect(reference.session_reference_asset_id).toBeNull();
+    expect(reference.reference_audio_fingerprint).toBeNull();
     expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
     expect(reference.reference_text).toBe("默认音色预设文本");
+    expect(reference.reference_text_fingerprint).toBeNull();
     expect(reference.reference_language).toBe("zh");
     expect(reference.preset_text).toBe("默认音色预设文本");
   });
@@ -388,9 +396,14 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.renderProfile.speed).toBe(1.1);
     expect(resolved.voiceBinding.voice_id).toBe("voice-a");
     expect(reference.source).toBe("custom");
+    expect(reference.reference_scope).toBe("session_override");
     expect(reference.binding_key).toBe("voice-a:voice-a");
+    expect(reference.reference_identity).toBe("doc-1:session-ref-a");
+    expect(reference.session_reference_asset_id).toBeNull();
+    expect(reference.reference_audio_fingerprint).toBe("audio-fp-a");
     expect(reference.reference_audio_path).toBe("voices/custom-a.wav");
     expect(reference.reference_text).toBe("音色A自定义文本");
+    expect(reference.reference_text_fingerprint).toBe("text-fp-a");
     expect(reference.reference_language).toBe("en");
     expect(reference.preset_audio_path).toBe("voices/a-preset.wav");
   });
@@ -414,6 +427,8 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.renderProfile.speed).toBe(1);
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
     expect(reference.source).toBe("preset");
+    expect(reference.reference_scope).toBe("voice_preset");
+    expect(reference.reference_identity).toBe("voice-default:preset");
     expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
     expect(reference.reference_text).toBe("默认音色预设文本");
   });
@@ -437,7 +452,9 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.renderProfile.speed).toBe(MIXED_VALUE);
     expect(resolved.voiceBinding.voice_id).toBe(MIXED_VALUE);
     expect(reference.source).toBe(MIXED_VALUE);
+    expect(reference.reference_scope).toBe(MIXED_VALUE);
     expect(reference.binding_key).toBe(MIXED_VALUE);
+    expect(reference.reference_identity).toBe(MIXED_VALUE);
     expect(reference.reference_text).toBe(MIXED_VALUE);
     expect(reference.reference_language).toBe(MIXED_VALUE);
   });

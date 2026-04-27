@@ -76,6 +76,10 @@ class EditAssetStore:
     def preview_asset_path(self, preview_asset_id: str) -> Path:
         return self._formal_root / "previews" / self._validate_leaf_name(preview_asset_id)
 
+    @property
+    def assets_root(self) -> Path:
+        return self._assets_dir
+
     def write_staging_bytes(self, job_id: str, relative_path: str, payload: bytes) -> Path:
         job_root = self._staging_root / self._validate_leaf_name(job_id)
         relative = self._validate_relative_path(relative_path)

@@ -16,6 +16,10 @@ class FolderSelectResponse(BaseModel):
     path: str | None
 
 
+class FileSelectResponse(BaseModel):
+    path: str | None
+
+
 def _build_result_store(request: Request) -> SynthesisResultStore:
     existing = getattr(request.app.state, "synthesis_result_store", None)
     if existing is not None:
@@ -63,6 +67,41 @@ def _open_folder_dialog(initial_dir: str | None = None) -> str | None:
     
     return selected_path if selected_path else None
 
+
+def _build_file_dialog_filetypes(accept: str | None) -> list[tuple[str, str]]:
+    if accept is None:
+        return [("所有文件", "*.*")]
+    extensions = []
+    for raw_item in accept.split(","):
+        normalized = raw_item.strip().lower()
+        if not normalized:
+            continue
+        if not normalized.startswith("."):
+            normalized = f".{normalized}"
+        extensions.append(normalized)
+    if not extensions:
+        return [("所有文件", "*.*")]
+    patterns = " ".join(f"*{extension}" for extension in extensions)
+    return [("支持的文件", patterns), ("所有文件", "*.*")]
+
+
+def _open_file_dialog(initial_dir: str | None = None, accept: str | None = None) -> str | None:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+
+    kwargs = {
+        "title": "请选择文件",
+        "filetypes": _build_file_dialog_filetypes(accept),
+    }
+    if initial_dir and Path(initial_dir).is_dir():
+        kwargs["initialdir"] = initial_dir
+
+    selected_path = filedialog.askopenfilename(**kwargs)
+    root.destroy()
+
+    return selected_path if selected_path else None
+
 @router.get("/dialog/folder", response_model=FolderSelectResponse)
 def open_folder_dialog(initial_dir: str | None = None):
     # Depending on how the server is run, `askdirectory` MUST be called in the main thread (or a dedicated thread that can init GUI).
@@ -79,6 +118,20 @@ def open_folder_dialog(initial_dir: str | None = None):
     t.join()
 
     return FolderSelectResponse(path=result["path"])
+
+
+@router.get("/dialog/file", response_model=FileSelectResponse)
+def open_file_dialog(initial_dir: str | None = None, accept: str | None = None):
+    result = {"path": None}
+
+    def run_gui():
+        result["path"] = _open_file_dialog(initial_dir, accept)
+
+    t = threading.Thread(target=run_gui)
+    t.start()
+    t.join()
+
+    return FileSelectResponse(path=result["path"])
 
 
 @router.post("/prepare-exit", response_model=PrepareExitResponse)

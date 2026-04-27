@@ -1,7 +1,19 @@
 import axios from "./http";
 import type { PrepareExitResponse } from "@/types/system";
+import type {
+  AppUpdateCheckRequest,
+  AppUpdateCheckResponse,
+  AppUpdateDownloadRequest,
+  AppUpdateDownloadResponse,
+  AppUpdateRestartRequest,
+  AppUpdateRestartResponse,
+} from "@/types/update";
 
 export interface FolderSelectResponse {
+  path: string | null;
+}
+
+export interface FileSelectResponse {
   path: string | null;
 }
 
@@ -17,6 +29,22 @@ export async function openFolderDialog(
   return data.path;
 }
 
+export async function openFileDialog(
+  accept: string,
+  initialDir?: string,
+): Promise<string | null> {
+  const { data } = await axios.get<FileSelectResponse>(
+    "/v1/system/dialog/file",
+    {
+      params: {
+        initial_dir: initialDir,
+        accept,
+      },
+    },
+  );
+  return data.path;
+}
+
 export async function prepareExit(): Promise<PrepareExitResponse> {
   const { data } = await axios.post<PrepareExitResponse>("/v1/system/prepare-exit");
   return data;
@@ -27,28 +55,58 @@ export interface SystemVersionInfo {
   build_date?: string;
 }
 
-export interface UpdateCheckResult {
-  has_update: boolean;
-  latest_version?: string;
-  release_notes?: string;
-  download_url?: string;
-}
-
 export async function getVersion(): Promise<SystemVersionInfo> {
   const { data } = await axios.get<SystemVersionInfo>("/v1/system/version");
   return data;
 }
 
-export async function checkUpdate(): Promise<UpdateCheckResult> {
-  // Mock endpoint behavior
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        has_update: false,
-        latest_version: "1.0.0-beta",
-        release_notes: "Minor updates and fixes.",
-        download_url: "https://github.com/CommentOut64/neo-tts/releases",
-      });
-    }, 1200);
-  });
+export async function checkForAppUpdate(
+  request: AppUpdateCheckRequest,
+): Promise<AppUpdateCheckResponse> {
+  const bridge = getElectronUpdateBridge();
+  if (!bridge) {
+    return { status: "up-to-date" };
+  }
+  return bridge.checkForAppUpdate(request);
+}
+
+export async function startAppUpdateDownload(
+  request: AppUpdateDownloadRequest,
+): Promise<AppUpdateDownloadResponse> {
+  const bridge = getElectronUpdateBridge();
+  if (!bridge) {
+    throw new Error("当前环境不支持下载桌面更新");
+  }
+  return bridge.startAppUpdateDownload(request);
+}
+
+export async function restartAndApplyAppUpdate(
+  request: AppUpdateRestartRequest,
+): Promise<AppUpdateRestartResponse> {
+  const bridge = getElectronUpdateBridge();
+  if (!bridge) {
+    throw new Error("当前环境不支持应用桌面更新");
+  }
+  return bridge.restartAndApplyAppUpdate(request);
+}
+
+function getElectronUpdateBridge() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const bridge = window.neoTTS;
+  if (!bridge || bridge.runtime !== "electron") {
+    return null;
+  }
+  if (typeof bridge.checkForAppUpdate !== "function") {
+    return null;
+  }
+  if (typeof bridge.startAppUpdateDownload !== "function") {
+    return null;
+  }
+  if (typeof bridge.restartAndApplyAppUpdate !== "function") {
+    return null;
+  }
+  return bridge;
 }

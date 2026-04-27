@@ -4,8 +4,11 @@ from fastapi.testclient import TestClient
 
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.main import create_app
+from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import RenderProfile, SegmentGroup, VoiceBinding
+from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.render_config_resolver import RenderConfigResolver
+from backend.app.services.voice_service import VoiceService
 from backend.tests.integration.test_edit_session_router import FakeEditableInferenceBackend
 
 
@@ -304,3 +307,72 @@ def test_segment_rerender_route_consumes_pending_configuration(test_app_settings
         resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=second_segment_id)
         assert resolved.voice_binding.voice_id == "voice-rerendered"
         assert resolved.voice_binding.model_key == "model-rerendered"
+
+
+def test_session_reference_override_remains_temporary_and_does_not_write_back_voice_preset(test_app_settings):
+    backend = FakeEditableInferenceBackend()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(backend)
+
+    with TestClient(app) as client:
+        repository = app.state.edit_session_repository
+        voice_service = VoiceService(VoiceRepository(config_path=test_app_settings.voices_config_path, settings=test_app_settings))
+        preset_before = voice_service.get_voice("demo")
+
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        upload = client.post(
+            "/v1/edit-session/reference-audio",
+            files={
+                "ref_audio_file": ("custom.wav", b"RIFFcustom", "audio/wav"),
+            },
+        )
+        assert upload.status_code == 200
+        uploaded = upload.json()
+
+        patch = client.patch(
+            "/v1/edit-session/session/render-profile/config",
+            json={
+                "reference_override": {
+                    "binding_key": "demo:gpt-sovits-v2",
+                    "operation": "upsert",
+                    "session_reference_asset_id": uploaded["reference_asset_id"],
+                    "reference_audio_path": uploaded["reference_audio_path"],
+                    "reference_text": "会话临时参考",
+                    "reference_language": "zh",
+                }
+            },
+        )
+        assert patch.status_code == 200
+
+        preset_after = voice_service.get_voice("demo")
+        assert preset_after.ref_audio == preset_before.ref_audio
+        assert preset_after.ref_text == preset_before.ref_text
+        assert preset_after.ref_lang == preset_before.ref_lang
+
+        active_session = repository.get_active_session()
+        assert active_session is not None
+        head_snapshot = repository.get_snapshot(active_session.head_snapshot_id)
+        assert head_snapshot is not None
+        session_service = EditSessionService(
+            repository=app.state.edit_session_repository,
+            asset_store=app.state.edit_asset_store,
+            runtime=app.state.edit_session_runtime,
+            voice_service=voice_service,
+        )
+        resolver = RenderConfigResolver(voice_service=session_service)
+        resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=head_snapshot.segments[0].segment_id)
+
+        assert resolved.resolved_reference is not None
+        assert resolved.resolved_reference.reference_scope == "session_override"
+        assert resolved.resolved_reference.reference_identity.endswith(uploaded["reference_asset_id"])
+        assert resolved.resolved_reference.reference_audio_path == uploaded["reference_audio_path"]
+        assert resolved.render_profile.reference_text == "会话临时参考"

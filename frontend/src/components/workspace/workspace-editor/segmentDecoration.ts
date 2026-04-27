@@ -1,4 +1,5 @@
 import { Extension } from '@tiptap/core'
+import type { JSONContent } from '@tiptap/vue-3'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { EditorState } from '@tiptap/pm/state'
@@ -6,6 +7,7 @@ import type { PlaybackCursor } from '@/types/editSession'
 
 import type { WorkspaceEditorLayoutMode, WorkspaceRenderMap } from './layoutTypes'
 import type { ListDropIntent } from './listReorderTypes'
+import { extractRenderMapFromDoc } from './extractRenderMapFromDoc'
 
 export const segmentDecorationKey = new PluginKey('segmentDecoration')
 
@@ -43,26 +45,46 @@ function resolvePlayingSegmentId(state: SegmentDecorationState) {
   return state.playingId
 }
 
-export function buildSegmentDecorationSpecs(
-  state: SegmentDecorationState | null,
+function resolveSegmentFragmentRole(
+  ranges: WorkspaceRenderMap["segmentRanges"],
+  index: number,
+) {
+  const current = ranges[index]
+  const previous = ranges[index - 1]
+  const next = ranges[index + 1]
+  const joinsPrevious =
+    previous?.segmentId === current.segmentId && previous.to === current.from
+  const joinsNext =
+    next?.segmentId === current.segmentId && current.to === next.from
+
+  if (!joinsPrevious && !joinsNext) {
+    return "single"
+  }
+  if (!joinsPrevious) {
+    return "start"
+  }
+  if (!joinsNext) {
+    return "end"
+  }
+  return "middle"
+}
+
+function buildCompositionSegmentDecorationSpecs(
+  state: SegmentDecorationState,
+  ranges: WorkspaceRenderMap["segmentRanges"],
 ): SegmentDecorationSpec[] {
-  if (!state?.renderMap) {
-    return []
-  }
-
-  if (state.layoutMode === "list") {
-    return []
-  }
-
-  const ranges = state.renderMap.segmentRanges
   const playingSegmentId = resolvePlayingSegmentId(state)
 
   if (ranges.length === 0) {
     return []
   }
 
-  return ranges.map((range) => {
-    const classes: string[] = ["segment-fragment"]
+  return ranges.map((range, index) => {
+    const fragmentRole = resolveSegmentFragmentRole(ranges, index)
+    const classes: string[] = [
+      "segment-fragment",
+      `segment-fragment-${fragmentRole}`,
+    ]
 
     const shouldHighlightDirty =
       state.dirtyIds.has(range.segmentId) &&
@@ -96,6 +118,40 @@ export function buildSegmentDecorationSpecs(
       },
     }
   })
+}
+
+export function buildSegmentDecorationSpecs(
+  state: SegmentDecorationState | null,
+): SegmentDecorationSpec[] {
+  if (!state?.renderMap) {
+    return []
+  }
+
+  if (state.layoutMode === "list") {
+    return []
+  }
+
+  const ranges = state.renderMap.segmentRanges
+  return buildCompositionSegmentDecorationSpecs(state, ranges)
+}
+
+export function buildLiveSegmentDecorationSpecsFromDoc(
+  doc: JSONContent,
+  state: SegmentDecorationState | null,
+): SegmentDecorationSpec[] {
+  if (!state?.renderMap || state.layoutMode === "list") {
+    return []
+  }
+
+  const liveRenderMap = extractRenderMapFromDoc(
+    doc,
+    state.renderMap.orderedSegmentIds,
+    state.layoutMode,
+  )
+  return buildCompositionSegmentDecorationSpecs(
+    state,
+    liveRenderMap.segmentRanges,
+  )
 }
 
 function buildListSegmentDecorationAttrs(
@@ -209,7 +265,10 @@ export const SegmentDecoration = Extension.create<Record<string, never>, { state
             const decorations =
               extensionStorage.state?.layoutMode === "list"
                 ? buildListSegmentDecorations(editorState, extensionStorage.state)
-                : buildSegmentDecorationSpecs(extensionStorage.state).map((spec) =>
+                : buildLiveSegmentDecorationSpecsFromDoc(
+                    editorState.doc.toJSON() as JSONContent,
+                    extensionStorage.state,
+                  ).map((spec) =>
                     spec.kind === "node"
                       ? Decoration.node(spec.from, spec.to, spec.attrs)
                       : Decoration.inline(spec.from, spec.to, spec.attrs),

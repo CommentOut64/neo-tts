@@ -121,10 +121,7 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
   isUploadingReferenceAudio.value = true;
   try {
     const response = await uploadEditSessionReferenceAudio(file.raw);
-    panel.updateReferenceField(
-      "reference_audio_path",
-      response.reference_audio_path,
-    );
+    panel.applyUploadedReferenceAudio(response);
     ElMessage.success(`参考音频已上传：${response.filename}`);
   } catch (error) {
     ElMessage.error(
@@ -214,17 +211,12 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
         >
         <el-input
           :model-value="asString(referenceState.reference_audio_path)"
+          :readonly="true"
           :disabled="inputsDisabled"
           :placeholder="
             isMixed(referenceState.reference_audio_path)
               ? '多个值'
               : '例如：voices/demo.wav'
-          "
-          @update:model-value="
-            panel.updateReferenceField(
-              'reference_audio_path',
-              $event || null,
-            )
           "
         />
       </div>

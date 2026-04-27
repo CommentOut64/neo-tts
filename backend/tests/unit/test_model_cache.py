@@ -90,11 +90,75 @@ def test_model_cache_exposes_model_handle_with_normalized_paths(tmp_path: pathli
         engine_factory=fake_factory,
     )
 
-    handle = cache.get_model_handle("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+    handle = cache.get_model_handle(
+        "pretrained_models/gpt.ckpt",
+        "pretrained_models/sovits.pth",
+        gpt_fingerprint="gpt-fp",
+        sovits_fingerprint="sovits-fp",
+    )
 
-    assert handle.cache_key.endswith("gpt.ckpt|%s" % str((tmp_path / "pretrained_models" / "sovits.pth").resolve()))
+    assert handle.cache_key.endswith("gpt.ckpt|gpt-fp|%s|sovits-fp" % str((tmp_path / "pretrained_models" / "sovits.pth").resolve()))
     assert handle.gpt_path == str((tmp_path / "pretrained_models" / "gpt.ckpt").resolve())
     assert handle.sovits_path == str((tmp_path / "pretrained_models" / "sovits.pth").resolve())
+    assert handle.gpt_fingerprint == "gpt-fp"
+    assert handle.sovits_fingerprint == "sovits-fp"
+
+
+def test_model_cache_creates_new_engine_for_same_paths_when_fingerprint_changes(tmp_path: pathlib.Path):
+    created = []
+
+    def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        created.append((gpt_path, sovits_path, cnhubert_path, bert_path))
+        return {"gpt": gpt_path, "sovits": sovits_path, "index": len(created)}
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+    )
+
+    first = cache.get_engine(
+        "pretrained_models/gpt.ckpt",
+        "pretrained_models/sovits.pth",
+        gpt_fingerprint="gpt-fp-a",
+        sovits_fingerprint="sovits-fp-a",
+    )
+    second = cache.get_engine(
+        "pretrained_models/gpt.ckpt",
+        "pretrained_models/sovits.pth",
+        gpt_fingerprint="gpt-fp-b",
+        sovits_fingerprint="sovits-fp-b",
+    )
+
+    assert first is not second
+    assert len(created) == 2
+
+
+def test_model_cache_resolves_managed_weight_paths_relative_to_user_data_root(tmp_path: pathlib.Path):
+    created = []
+
+    def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+        created.append((gpt_path, sovits_path, cnhubert_path, bert_path))
+        return {"gpt": gpt_path, "sovits": sovits_path}
+
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=fake_factory,
+    )
+
+    cache.get_engine("managed_voices/demo/weights/demo.ckpt", "managed_voices/demo/weights/demo.pth")
+
+    assert created == [
+        (
+            str((tmp_path / "storage" / "managed_voices" / "demo" / "weights" / "demo.ckpt").resolve()),
+            str((tmp_path / "storage" / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()),
+            str((tmp_path / "pretrained_models" / "chinese-hubert-base").resolve()),
+            str((tmp_path / "pretrained_models" / "chinese-roberta-wwm-ext-large").resolve()),
+        )
+    ]
 
 
 def test_model_cache_default_factory_uses_backend_runtime_module(tmp_path: pathlib.Path, monkeypatch):

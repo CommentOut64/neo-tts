@@ -10,6 +10,10 @@ const voices = ref<VoiceProfile[]>([])
 const loading = ref(false)
 const reloading = ref(false)
 
+function handleUploaderError(message: string) {
+  ElMessage.error(message)
+}
+
 // Detail drawer state
 const detailDrawerVisible = ref(false)
 const detailVoice = ref<VoiceProfile | null>(null)
@@ -39,8 +43,12 @@ const dialogMode = ref<'create' | 'edit'>('create')
 const uploadForm = ref({
   name: '',
   description: '',
+  initial_weight_storage_mode: null as 'external' | 'managed' | null,
+  copy_weights_into_project: false,
   ref_text: '',
   ref_lang: 'zh',
+  gpt_external_path: '',
+  sovits_external_path: '',
   gpt_file: null as File | null,
   sovits_file: null as File | null,
   ref_audio_file: null as File | null,
@@ -48,7 +56,8 @@ const uploadForm = ref({
 
 function resetUploadForm() {
   uploadForm.value = {
-    name: '', description: '', ref_text: '', ref_lang: 'zh',
+    name: '', description: '', initial_weight_storage_mode: null, copy_weights_into_project: false, ref_text: '', ref_lang: 'zh',
+    gpt_external_path: '', sovits_external_path: '',
     gpt_file: null, sovits_file: null, ref_audio_file: null,
   }
 }
@@ -66,8 +75,12 @@ async function handleEdit(voice: VoiceProfile) {
     uploadForm.value = {
       name: detail.name,
       description: detail.description ?? '',
+      initial_weight_storage_mode: detail.weight_storage_mode,
+      copy_weights_into_project: detail.weight_storage_mode === 'managed',
       ref_text: detail.ref_text,
       ref_lang: detail.ref_lang,
+      gpt_external_path: detail.weight_storage_mode === 'external' ? detail.gpt_path : '',
+      sovits_external_path: detail.weight_storage_mode === 'external' ? detail.sovits_path : '',
       gpt_file: null,
       sovits_file: null,
       ref_audio_file: null,
@@ -108,7 +121,17 @@ async function handleUploadSubmit() {
     ElMessage.warning('请填写所有必填项')
     return
   }
-  if (dialogMode.value === 'create' && (!f.gpt_file || !f.sovits_file || !f.ref_audio_file)) {
+  if (dialogMode.value === 'create' && !f.ref_audio_file) {
+    ElMessage.warning('请填写所有必填项')
+    return
+  }
+  if (f.copy_weights_into_project) {
+    const requiresManagedFiles = dialogMode.value === 'create' || f.initial_weight_storage_mode === 'external'
+    if (requiresManagedFiles && (!f.gpt_file || !f.sovits_file)) {
+      ElMessage.warning('请填写所有必填项')
+      return
+    }
+  } else if (!f.gpt_external_path || !f.sovits_external_path) {
     ElMessage.warning('请填写所有必填项')
     return
   }
@@ -118,22 +141,43 @@ async function handleUploadSubmit() {
       await uploadVoice({
         name: f.name,
         description: f.description,
+        copy_weights_into_project: f.copy_weights_into_project,
         ref_text: f.ref_text,
         ref_lang: f.ref_lang,
-        gpt_file: f.gpt_file as File,
-        sovits_file: f.sovits_file as File,
+        gpt_external_path: f.copy_weights_into_project ? undefined : f.gpt_external_path,
+        sovits_external_path: f.copy_weights_into_project ? undefined : f.sovits_external_path,
+        gpt_file: f.copy_weights_into_project ? f.gpt_file : null,
+        sovits_file: f.copy_weights_into_project ? f.sovits_file : null,
         ref_audio_file: f.ref_audio_file as File,
       })
       ElMessage.success(`上传成功: ${f.name}`)
     } else {
-      await updateVoice(f.name, {
+      const updatePayload = {
         description: f.description,
         ref_text: f.ref_text,
         ref_lang: f.ref_lang,
-        gpt_file: f.gpt_file,
-        sovits_file: f.sovits_file,
         ref_audio_file: f.ref_audio_file,
-      })
+      } as const
+      if (f.copy_weights_into_project) {
+        await updateVoice(f.name, {
+          ...updatePayload,
+          copy_weights_into_project:
+            f.initial_weight_storage_mode === 'external'
+              ? true
+              : undefined,
+          gpt_file: f.gpt_file,
+          sovits_file: f.sovits_file,
+        })
+      } else {
+        await updateVoice(f.name, {
+          ...updatePayload,
+          copy_weights_into_project: false,
+          gpt_external_path: f.gpt_external_path,
+          sovits_external_path: f.sovits_external_path,
+          gpt_file: null,
+          sovits_file: null,
+        })
+      }
       ElMessage.success(`更新成功: ${f.name}`)
     }
     uploadDialogVisible.value = false
@@ -148,6 +192,13 @@ async function handleUploadSubmit() {
   } finally {
     uploading.value = false
   }
+}
+
+function updateExternalWeightPath(
+  field: 'gpt_external_path' | 'sovits_external_path',
+  selection: { absolutePath: string } | null,
+) {
+  uploadForm.value[field] = selection?.absolutePath ?? ''
 }
 
 async function handleDelete(voice: VoiceProfile) {
@@ -243,29 +294,75 @@ onMounted(loadVoices)
           <el-input v-model="uploadForm.description" placeholder="模型描述（选填）" />
         </div>
         <div>
-          <label class="text-[13px] font-semibold text-foreground block mb-1.5">
-            GPT 权重 (.ckpt) {{ dialogMode === 'edit' ? '' : '*' }}
-          </label>
-          <FileUploader
-            accept=".ckpt"
-            :max-size="500 * 1024 * 1024"
-            :placeholder="dialogMode === 'edit' ? '选择新的 GPT 权重文件（留空则保留当前文件）' : '选择 GPT 权重文件'"
-            :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
-            @change="uploadForm.gpt_file = $event"
-          />
+          <el-checkbox v-model="uploadForm.copy_weights_into_project">复制权重到项目内</el-checkbox>
+          <p class="text-xs text-muted-fg mt-1">
+            默认直接引用外部绝对路径；勾选后会把 GPT 与 SoVITS 权重复制到项目内。
+          </p>
         </div>
-        <div>
-          <label class="text-[13px] font-semibold text-foreground block mb-1.5">
-            SoVITS 权重 (.pth) {{ dialogMode === 'edit' ? '' : '*' }}
-          </label>
-          <FileUploader
-            accept=".pth"
-            :max-size="500 * 1024 * 1024"
-            :placeholder="dialogMode === 'edit' ? '选择新的 SoVITS 权重文件（留空则保留当前文件）' : '选择 SoVITS 权重文件'"
-            :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
-            @change="uploadForm.sovits_file = $event"
-          />
-        </div>
+        <template v-if="uploadForm.copy_weights_into_project">
+          <div>
+            <label class="text-[13px] font-semibold text-foreground block mb-1.5">
+              GPT 权重 (.ckpt)
+              {{
+                dialogMode === 'create' || uploadForm.initial_weight_storage_mode === 'external'
+                  ? '*'
+                  : ''
+              }}
+            </label>
+            <FileUploader
+              accept=".ckpt"
+              :max-size="500 * 1024 * 1024"
+              :placeholder="dialogMode === 'edit' ? '选择新的 GPT 权重文件（留空则保留当前文件）' : '选择 GPT 权重文件'"
+              :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
+              @change="uploadForm.gpt_file = $event"
+              @error="handleUploaderError"
+            />
+          </div>
+          <div>
+            <label class="text-[13px] font-semibold text-foreground block mb-1.5">
+              SoVITS 权重 (.pth)
+              {{
+                dialogMode === 'create' || uploadForm.initial_weight_storage_mode === 'external'
+                  ? '*'
+                  : ''
+              }}
+            </label>
+            <FileUploader
+              accept=".pth"
+              :max-size="500 * 1024 * 1024"
+              :placeholder="dialogMode === 'edit' ? '选择新的 SoVITS 权重文件（留空则保留当前文件）' : '选择 SoVITS 权重文件'"
+              :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
+              @change="uploadForm.sovits_file = $event"
+              @error="handleUploaderError"
+            />
+          </div>
+        </template>
+        <template v-else>
+          <div>
+            <label class="text-[13px] font-semibold text-foreground block mb-1.5">GPT 权重 (.ckpt) *</label>
+            <FileUploader
+              selectionMode="path"
+              accept=".ckpt"
+              :max-size="500 * 1024 * 1024"
+              :placeholder="dialogMode === 'edit' ? '拖拽或点击选择新的外部 GPT 权重文件' : '拖拽或点击选择外部 GPT 权重文件'"
+              :hint="dialogMode === 'edit' ? '留空表示保留当前外部路径' : '不会复制文件，只记录该文件的绝对路径'"
+              @path-change="updateExternalWeightPath('gpt_external_path', $event)"
+              @error="handleUploaderError"
+            />
+          </div>
+          <div>
+            <label class="text-[13px] font-semibold text-foreground block mb-1.5">SoVITS 权重 (.pth) *</label>
+            <FileUploader
+              selectionMode="path"
+              accept=".pth"
+              :max-size="500 * 1024 * 1024"
+              :placeholder="dialogMode === 'edit' ? '拖拽或点击选择新的外部 SoVITS 权重文件' : '拖拽或点击选择外部 SoVITS 权重文件'"
+              :hint="dialogMode === 'edit' ? '留空表示保留当前外部路径' : '不会复制文件，只记录该文件的绝对路径'"
+              @path-change="updateExternalWeightPath('sovits_external_path', $event)"
+              @error="handleUploaderError"
+            />
+          </div>
+        </template>
         <div>
           <label class="text-[13px] font-semibold text-foreground block mb-1.5">
             参考音频 {{ dialogMode === 'edit' ? '' : '*' }}
@@ -276,6 +373,7 @@ onMounted(loadVoices)
             :placeholder="dialogMode === 'edit' ? '选择新的参考音频文件（留空则保留当前文件）' : '选择参考音频文件（< 30s）'"
             :hint="dialogMode === 'edit' ? '留空表示保留当前文件' : undefined"
             @change="uploadForm.ref_audio_file = $event"
+            @error="handleUploaderError"
           />
         </div>
         <div>
@@ -335,6 +433,10 @@ onMounted(loadVoices)
           <div>
             <label class="text-muted-fg text-xs block mb-1">语言</label>
             <p class="text-foreground">{{ detailVoice.ref_lang }}</p>
+          </div>
+          <div>
+            <label class="text-muted-fg text-xs block mb-1">权重模式</label>
+            <p class="text-foreground">{{ detailVoice.weight_storage_mode === 'managed' ? '项目内复制' : '外部路径' }}</p>
           </div>
           <div>
             <label class="text-muted-fg text-xs block mb-1">托管</label>

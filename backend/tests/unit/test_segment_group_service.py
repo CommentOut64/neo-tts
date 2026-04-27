@@ -58,6 +58,7 @@ def test_create_render_profile_upserts_reference_override_for_target_binding():
             reference_override=ReferenceBindingOverridePatchRequest(
                 binding_key="voice-b:model-b",
                 operation="upsert",
+                session_reference_asset_id="session-ref-b",
                 reference_audio_path="custom-b.wav",
                 reference_text="自定义-B",
                 reference_language="en",
@@ -68,6 +69,7 @@ def test_create_render_profile_upserts_reference_override_for_target_binding():
 
     assert next_snapshot.render_profiles[-1].reference_overrides_by_binding["voice-a:model-a"].reference_text == "自定义-A"
     assert profile.reference_overrides_by_binding["voice-b:model-b"].reference_audio_path == "custom-b.wav"
+    assert profile.reference_overrides_by_binding["voice-b:model-b"].session_reference_asset_id == "session-ref-b"
     assert profile.reference_audio_path is None
     assert profile.reference_text is None
     assert profile.reference_language is None

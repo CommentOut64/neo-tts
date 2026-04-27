@@ -3,6 +3,7 @@ export interface VoiceDefaults {
   top_k: number
   top_p: number
   temperature: number
+  noise_scale?: number
   pause_length: number
 }
 
@@ -10,6 +11,9 @@ export interface VoiceProfile {
   name: string
   gpt_path: string
   sovits_path: string
+  weight_storage_mode: 'external' | 'managed'
+  gpt_fingerprint: string
+  sovits_fingerprint: string
   ref_audio: string
   ref_text: string
   ref_lang: string
@@ -37,6 +41,7 @@ export interface InferenceParams {
   temperature: number
   top_p: number
   top_k: number
+  noise_scale: number
   pause_length: number
   text_lang: string
   text_split_method: string
@@ -116,6 +121,7 @@ export interface InferenceParamsCacheResponse {
 
 export interface ReferenceSelectionByBindingEntry {
   source: 'preset' | 'custom'
+  session_reference_asset_id?: string | null
   custom_ref_path: string | null
   ref_text: string
   ref_lang: string
@@ -129,6 +135,7 @@ export interface InferenceParamsCachePayloadV2 {
   temperature: number
   top_p: number
   top_k: number
+  noise_scale: number
   pause_length: number
   chunk_length: number
   text_lang: string

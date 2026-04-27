@@ -352,6 +352,13 @@ it("seekToSample 会先淡出旧 source，再淡入新 source", async () => {
         typeof call.when === "number" && call.when >= fadeOutEvent!.time,
     ),
   ).toBe(true);
+
+  const activeSource = ctx.sourceNodes[ctx.sourceNodes.length - 1];
+  setTimeline(null);
+  await flushMicrotasks();
+
+  expect(playback.isPlaying.value).toBe(false);
+  expect(activeSource.stopCalls.length).toBeGreaterThan(0);
 });
 
 it("warmAudioUrls 会提前拉取并解码 block 音频", async () => {
@@ -465,4 +472,5 @@ it("非法 timeline 会进入错误态，刷新为合法 timeline 后可恢复�
   playback.play();
   expect(playback.isPlaying.value).toBe(true);
 });
+
 });

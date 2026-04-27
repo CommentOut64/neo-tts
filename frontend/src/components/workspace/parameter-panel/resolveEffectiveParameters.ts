@@ -19,9 +19,14 @@ type MaybeMixed<T> = T | MixedValue | null;
 
 export interface ResolvedReferenceState {
   source: MaybeMixed<"preset" | "custom">;
+  reference_scope: MaybeMixed<"voice_preset" | "session_override">;
   binding_key: MaybeMixed<string>;
+  reference_identity: MaybeMixed<string>;
+  session_reference_asset_id: MaybeMixed<string>;
+  reference_audio_fingerprint: MaybeMixed<string>;
   reference_audio_path: MaybeMixed<string>;
   reference_text: MaybeMixed<string>;
+  reference_text_fingerprint: MaybeMixed<string>;
   reference_language: MaybeMixed<string>;
   preset_audio_path: MaybeMixed<string>;
   preset_text: MaybeMixed<string>;
@@ -60,9 +65,14 @@ function pickMixed<T>(values: T[]): T | MixedValue | null {
 function buildEmptyReferenceState(): ResolvedReferenceState {
   return {
     source: null,
+    reference_scope: null,
     binding_key: null,
+    reference_identity: null,
+    session_reference_asset_id: null,
+    reference_audio_fingerprint: null,
     reference_audio_path: null,
     reference_text: null,
+    reference_text_fingerprint: null,
     reference_language: null,
     preset_audio_path: null,
     preset_text: null,
@@ -109,9 +119,14 @@ function pickReferenceState(
 ): ResolvedReferenceState {
   return {
     source: pickMixed(states.map((state) => state.source)),
+    reference_scope: pickMixed(states.map((state) => state.reference_scope)),
     binding_key: pickMixed(states.map((state) => state.binding_key)),
+    reference_identity: pickMixed(states.map((state) => state.reference_identity)),
+    session_reference_asset_id: pickMixed(states.map((state) => state.session_reference_asset_id)),
+    reference_audio_fingerprint: pickMixed(states.map((state) => state.reference_audio_fingerprint)),
     reference_audio_path: pickMixed(states.map((state) => state.reference_audio_path)),
     reference_text: pickMixed(states.map((state) => state.reference_text)),
+    reference_text_fingerprint: pickMixed(states.map((state) => state.reference_text_fingerprint)),
     reference_language: pickMixed(states.map((state) => state.reference_language)),
     preset_audio_path: pickMixed(states.map((state) => state.preset_audio_path)),
     preset_text: pickMixed(states.map((state) => state.preset_text)),

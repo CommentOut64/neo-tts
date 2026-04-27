@@ -12,9 +12,14 @@ export const DEFAULT_REFERENCE_BINDING_MODEL_KEY = "gpt-sovits-v2";
 
 export interface ResolvedBindingReferenceState {
   source: "preset" | "custom" | null;
+  reference_scope: "voice_preset" | "session_override" | null;
   binding_key: string | null;
+  reference_identity: string | null;
+  session_reference_asset_id: string | null;
+  reference_audio_fingerprint: string | null;
   reference_audio_path: string | null;
   reference_text: string | null;
+  reference_text_fingerprint: string | null;
   reference_language: string | null;
   preset_audio_path: string | null;
   preset_text: string | null;
@@ -49,9 +54,19 @@ export function resolveBindingReferenceState(input: {
 
   return {
     source: override ? "custom" : "preset",
+    reference_scope: override ? "session_override" : "voice_preset",
     binding_key: bindingKey,
+    reference_identity: override
+      ? override.reference_identity
+        ?? (override.session_reference_asset_id
+          ? `session-override:${override.session_reference_asset_id}`
+          : bindingKey)
+      : `${input.binding.voice_id}:preset`,
+    session_reference_asset_id: override?.session_reference_asset_id ?? null,
+    reference_audio_fingerprint: override?.reference_audio_fingerprint ?? null,
     reference_audio_path: override?.reference_audio_path ?? voice?.ref_audio ?? null,
     reference_text: override?.reference_text ?? voice?.ref_text ?? null,
+    reference_text_fingerprint: override?.reference_text_fingerprint ?? null,
     reference_language: override?.reference_language ?? voice?.ref_lang ?? null,
     preset_audio_path: voice?.ref_audio ?? null,
     preset_text: voice?.ref_text ?? null,
@@ -61,12 +76,14 @@ export function resolveBindingReferenceState(input: {
 
 export function buildReferenceSelectionEntry(input: {
   source: "preset" | "custom";
+  sessionReferenceAssetId?: string | null;
   customRefPath: string | null;
   refText: string;
   refLang: string;
 }): ReferenceSelectionByBindingEntry {
   return {
     source: input.source,
+    session_reference_asset_id: input.sessionReferenceAssetId ?? null,
     custom_ref_path: input.customRefPath,
     ref_text: input.refText,
     ref_lang: input.refLang,
@@ -78,6 +95,7 @@ function buildPresetReferenceSelectionEntry(
 ): ReferenceSelectionByBindingEntry {
   return buildReferenceSelectionEntry({
     source: "preset",
+    sessionReferenceAssetId: null,
     customRefPath: null,
     refText: voice?.ref_text ?? "",
     refLang: voice?.ref_lang ?? "auto",
@@ -146,13 +164,14 @@ export function resolveReferenceSelectionBySource(input: {
     };
   }
 
-  return {
-    bindingKey,
-    selection: buildReferenceSelectionEntry({
-      source: "custom",
-      customRefPath: null,
-      refText: voice?.ref_text ?? "",
-      refLang: voice?.ref_lang ?? "auto",
+    return {
+      bindingKey,
+      selection: buildReferenceSelectionEntry({
+        source: "custom",
+        sessionReferenceAssetId: null,
+        customRefPath: null,
+        refText: voice?.ref_text ?? "",
+        refLang: voice?.ref_lang ?? "auto",
     }),
   };
 }
@@ -198,6 +217,7 @@ export function upgradeInferenceParamsCachePayload(
         })
       ] = {
         source: refSource,
+        session_reference_asset_id: null,
         custom_ref_path: customRefPath,
         ref_text: refText ?? "",
         ref_lang: refLang ?? "auto",
@@ -230,6 +250,9 @@ function normalizeReferenceSelectionsByBinding(
       bindingKey,
       {
         source,
+        session_reference_asset_id: readNullableString(
+          (value as Record<string, unknown>).session_reference_asset_id,
+        ),
         custom_ref_path: readNullableString(
           (value as Record<string, unknown>).custom_ref_path,
         ),
@@ -257,9 +280,14 @@ function readReferenceSource(value: unknown): "preset" | "custom" | null {
 function buildEmptyResolvedBindingReferenceState(): ResolvedBindingReferenceState {
   return {
     source: null,
+    reference_scope: null,
     binding_key: null,
+    reference_identity: null,
+    session_reference_asset_id: null,
+    reference_audio_fingerprint: null,
     reference_audio_path: null,
     reference_text: null,
+    reference_text_fingerprint: null,
     reference_language: null,
     preset_audio_path: null,
     preset_text: null,

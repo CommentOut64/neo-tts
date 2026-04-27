@@ -253,6 +253,9 @@ init()
 
 <template>
   <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6">
+    <section class="mb-4 rounded-card border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted-fg">
+      `/studio` 为 legacy 旧版页面，当前主链已迁移到新的 workspace / voices 流程；本页仅保留兼容，不再作为后续功能入口。
+    </section>
     <div class="flex flex-col md:flex-row gap-6">
       <!-- Left panel: config -->
       <aside class="

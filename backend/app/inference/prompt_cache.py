@@ -11,8 +11,12 @@ import torch
 
 @dataclass(frozen=True)
 class PromptCacheKey:
+    reference_scope: str
+    reference_identity: str
     reference_audio_path: str
+    reference_audio_fingerprint: str
     reference_text: str
+    reference_text_fingerprint: str
     reference_language: str
     model_version: str
     inference_config_fingerprint: str
@@ -20,8 +24,12 @@ class PromptCacheKey:
     def short(self) -> str:
         encoded = "|".join(
             [
+                self.reference_scope,
+                self.reference_identity,
                 self.reference_audio_path,
+                self.reference_audio_fingerprint,
                 self.reference_text,
+                self.reference_text_fingerprint,
                 self.reference_language,
                 self.model_version,
                 self.inference_config_fingerprint,
