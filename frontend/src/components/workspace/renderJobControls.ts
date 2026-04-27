@@ -22,6 +22,9 @@ export function getPrimaryRenderActionLabel(
   return getPrimaryRenderActionKind(status) === "resume" ? "恢复" : "暂停";
 }
 
+const INITIAL_INFERENCE_WAITING_HINT =
+  "加载中...（首次推理耗时可能较长，请耐心等待）";
+
 function isActiveInferenceStatus(
   status: InferenceProgressState["status"] | undefined,
 ): boolean {
@@ -58,7 +61,7 @@ export function resolveWorkspaceProgressState({
   if (renderJobPreparing || inferencePreparing) {
     return {
       percent: 0,
-      message: "加载中...",
+      message: INITIAL_INFERENCE_WAITING_HINT,
       source: "idle",
     };
   }
@@ -89,7 +92,7 @@ export function resolveWorkspaceProgressState({
 
   return {
     percent: 0,
-    message: "加载中...",
+    message: INITIAL_INFERENCE_WAITING_HINT,
     source: "idle",
   };
 }

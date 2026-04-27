@@ -94,7 +94,7 @@ describe("render job controls", () => {
     });
 
     expect(resolved.percent).toBe(0);
-    expect(resolved.message).toBe("加载中...");
+    expect(resolved.message).toBe("加载中...（首次推理耗时可能较长，请耐心等待）");
     expect(resolved.source).toBe("idle");
   });
 
@@ -121,7 +121,7 @@ describe("render job controls", () => {
     });
 
     expect(resolved.percent).toBe(0);
-    expect(resolved.message).toBe("加载中...");
+    expect(resolved.message).toBe("加载中...（首次推理耗时可能较长，请耐心等待）");
     expect(resolved.source).toBe("idle");
   });
 });
