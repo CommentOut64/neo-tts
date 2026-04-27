@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveParameterScope,
+  shouldConfirmGlobalParameterSubmit,
   type ParameterPanelScopeContext,
 } from "../src/components/workspace/parameter-panel/resolveParameterScope";
 
@@ -67,5 +68,31 @@ describe("resolveParameterScope", () => {
         edgeId: "edge-1",
       },
     );
+  });
+
+  it("未选中任何段时提交 session scope 前需要确认全局参数改动", () => {
+    expect(
+      shouldConfirmGlobalParameterSubmit({
+        scope: "session",
+        segmentIds: [],
+        edgeId: null,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldConfirmGlobalParameterSubmit({
+        scope: "segment",
+        segmentIds: ["seg-1"],
+        edgeId: null,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldConfirmGlobalParameterSubmit({
+        scope: "edge",
+        segmentIds: [],
+        edgeId: "edge-1",
+      }),
+    ).toBe(false);
   });
 });

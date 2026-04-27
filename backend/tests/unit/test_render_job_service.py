@@ -250,6 +250,20 @@ def test_build_default_configuration_writes_custom_reference_into_binding_overri
     assert render_profile.reference_language is None
 
 
+def test_initialize_request_noise_scale_enters_new_render_context():
+    request = InitializeEditSessionRequest(
+        raw_text="第一句。",
+        voice_id="demo",
+        noise_scale=0.48,
+    )
+
+    render_profile, _ = RenderJobService._build_default_configuration(request)  # noqa: SLF001
+    resolved_context = RenderJobService._build_resolved_context_from_request(request)  # noqa: SLF001
+
+    assert render_profile.noise_scale == 0.48
+    assert resolved_context.noise_scale == 0.48
+
+
 def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallback(tmp_path):
     service = _build_service(tmp_path)
     snapshot = DocumentSnapshot(

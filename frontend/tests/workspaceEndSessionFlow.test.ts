@@ -179,4 +179,24 @@ describe("workspace end session flow", () => {
     expect(workspaceEditorHostSource).toContain("await editSession.endSession(");
     expect(workspaceEditorHostSource).not.toContain("inputDraft.handoffFromWorkspace");
   });
+
+  it("离开 workspace 或确认结束会话时必须立即暂停播放", () => {
+    const unmountIndex = workspaceEditorHostSource.indexOf("onBeforeUnmount(() => {");
+    const endSessionIndex = workspaceEditorHostSource.indexOf("async function finalizeEndSession");
+    const editSessionEndIndex = workspaceEditorHostSource.indexOf(
+      "await editSession.endSession(",
+      endSessionIndex,
+    );
+    const pauseBeforeEndSessionIndex = workspaceEditorHostSource.indexOf(
+      "pause();",
+      endSessionIndex,
+    );
+
+    expect(unmountIndex).toBeGreaterThan(-1);
+    expect(workspaceEditorHostSource.slice(unmountIndex, unmountIndex + 500)).toContain(
+      "pause();",
+    );
+    expect(pauseBeforeEndSessionIndex).toBeGreaterThan(endSessionIndex);
+    expect(pauseBeforeEndSessionIndex).toBeLessThan(editSessionEndIndex);
+  });
 });

@@ -23,6 +23,15 @@ describe("workspace init form layout", () => {
     expect(workspaceInitFormSource).toContain(':show-text-split-method="false"');
   });
 
+  it("Workspace 初始化表单不会展示或缓存旧链路分段长度参数", () => {
+    expect(workspaceInitFormSource).toContain(':show-chunk-length="false"');
+    expect(workspaceInitFormSource).not.toContain("chunk_length: number");
+    expect(workspaceViewSource).not.toContain("chunk_length: number");
+    expect(workspaceViewSource).not.toContain("chunk_length: 24");
+    expect(workspaceViewSource).not.toContain("chunk_length: syncedParams.chunk_length");
+    expect(workspaceViewSource).not.toContain("nextParams.chunk_length = p.chunk_length");
+  });
+
   it("切换音色时会从按 binding 的 reference 记忆恢复，而不是硬重置成全局 preset", () => {
     expect(workspaceInitFormSource).toContain("referenceSelectionsByBinding");
     expect(workspaceInitFormSource).toContain("resolveReferenceSelectionForBinding");
