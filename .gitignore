@@ -27,6 +27,7 @@ desktop/node_modules/
 /desktop/main.js
 /desktop/.stage/
 /desktop/.cache/
+/desktop/.manual-offline-update/
 /desktop/release/
 /frontend/dist/
 /launcher/dist/

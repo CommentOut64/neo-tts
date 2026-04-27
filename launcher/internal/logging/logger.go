@@ -21,14 +21,14 @@ type Session struct {
 }
 
 func Bootstrap(projectRoot string, startup StartupContext) (Session, error) {
-	logDir := filepath.Join(projectRoot, "logs", "launcher")
+	logDir := filepath.Join(projectRoot, "data", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return Session{}, err
 	}
 
 	logFilePath := filepath.Join(
 		logDir,
-		fmt.Sprintf("launcher_%s_%d.log", time.Now().Format("20060102_150405"), os.Getpid()),
+		fmt.Sprintf("launcher_%s.log", time.Now().Format("20060102")),
 	)
 
 	startupLine := FormatLauncherLine(time.Now(), fmt.Sprintf(
@@ -40,7 +40,7 @@ func Bootstrap(projectRoot string, startup StartupContext) (Session, error) {
 		startup.StartupSource,
 	))
 
-	if err := os.WriteFile(logFilePath, []byte(startupLine), 0o644); err != nil {
+	if err := Append(logFilePath, startupLine); err != nil {
 		return Session{}, err
 	}
 

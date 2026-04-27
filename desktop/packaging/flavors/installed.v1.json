@@ -7,6 +7,11 @@
     "inno-setup"
   ],
   "resourcesRoot": "resources/app-runtime",
+  "installRoot": "%LOCALAPPDATA%/Programs/NeoTTS",
+  "runtimeLayout": {
+    "stateRoot": "state",
+    "packagesRoot": "packages"
+  },
   "userDataPolicy": {
     "userDataRoot": "%LOCALAPPDATA%/NeoTTS",
     "exportsRoot": "%USERPROFILE%/Documents/NeoTTS/Exports"

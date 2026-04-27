@@ -163,6 +163,24 @@ function Get-RelativePathNormalized {
     return ([System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString())).Replace("\", "/")
 }
 
+function Resolve-LayerPackage {
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LayerPackage)) {
+        return $null
+    }
+
+    $normalized = $LayerPackage.Trim()
+    if ($normalized -notin @("app-core", "runtime", "models", "pretrained-models")) {
+        throw "Unsupported layerPackage '$normalized'."
+    }
+    return $normalized
+}
+
 function Add-LockEntry {
     param(
         [Parameter(Mandatory = $true)]
@@ -186,7 +204,11 @@ function Add-LockEntry {
 
         [Parameter()]
         [AllowEmptyCollection()]
-        [object[]]$ProfileTags
+        [object[]]$ProfileTags,
+
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage
     )
 
     $Entries.Add([ordered]@{
@@ -196,6 +218,7 @@ function Add-LockEntry {
             required        = $Required
             overwritePolicy = $OverwritePolicy
             profileTags     = $ProfileTags
+            layerPackage    = Resolve-LayerPackage -LayerPackage $LayerPackage
         }) | Out-Null
 }
 
@@ -355,6 +378,7 @@ function Get-ManifestEntriesFingerprint {
                 [string]$entry.source,
                 [string]$entry.destination,
                 [string]$entry.category,
+                [string]$entry.layerPackage,
                 [string]$entry.overwritePolicy,
                 [bool]$entry.required,
                 (Get-PathFingerprint -Path $sourcePath)
@@ -383,6 +407,10 @@ function Copy-StagedEntry {
         [Parameter()]
         [AllowEmptyCollection()]
         [object[]]$ProfileTags,
+
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$LayerPackage,
 
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
@@ -432,7 +460,8 @@ function Copy-StagedEntry {
                     -Category $Category `
                     -Required $Required `
                     -OverwritePolicy $OverwritePolicy `
-                    -ProfileTags $ProfileTags
+                    -ProfileTags $ProfileTags `
+                    -LayerPackage $LayerPackage
             }
         }
         return
@@ -449,7 +478,8 @@ function Copy-StagedEntry {
             -Category $Category `
             -Required $Required `
             -OverwritePolicy $OverwritePolicy `
-            -ProfileTags $ProfileTags
+            -ProfileTags $ProfileTags `
+            -LayerPackage $LayerPackage
     }
 }
 
@@ -609,6 +639,7 @@ Copy-StagedEntry -SourcePath $frontendDistPath `
     -Required $true `
     -OverwritePolicy "replace" `
     -ProfileTags @() `
+    -LayerPackage "app-core" `
     -ProjectRoot $projectRoot `
     -StageRoot $stageRootPath `
     -Entries $lockEntries `
@@ -655,6 +686,7 @@ foreach ($entry in $manifestEntries) {
         -Required ([bool]$entry.required) `
         -OverwritePolicy $entry.overwritePolicy `
         -ProfileTags @($entry.profileTags) `
+        -LayerPackage ([string]$entry.layerPackage) `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
@@ -901,7 +933,8 @@ foreach ($file in $runtimeFiles) {
         -Category $category `
         -Required $true `
         -OverwritePolicy "replace" `
-        -ProfileTags @()
+        -ProfileTags @() `
+        -LayerPackage "runtime"
 }
 
 $builtinVoiceFingerprintValues = New-Object System.Collections.Generic.List[string]
@@ -961,6 +994,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
     if ([string]::IsNullOrWhiteSpace($voiceId)) {
         throw "Builtin voice entry is missing voiceId."
     }
+    $voiceLayerPackage = if ([string]::IsNullOrWhiteSpace([string]$voice.layerPackage)) { "models" } else { [string]$voice.layerPackage }
 
     $voiceDestinationDir = Join-Path $appRuntimeRoot ([string]$voice.destinationDir)
     Ensure-Directory -Path $voiceDestinationDir
@@ -978,6 +1012,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
@@ -988,6 +1023,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
@@ -998,6 +1034,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @($Profile) `
+        -LayerPackage $voiceLayerPackage `
         -ProjectRoot $projectRoot `
         -StageRoot $stageRootPath `
         -Entries $lockEntries `
@@ -1037,7 +1074,8 @@ Add-LockEntry -Entries $lockEntries `
     -Category "config" `
     -Required $true `
     -OverwritePolicy "replace" `
-    -ProfileTags @($Profile)
+    -ProfileTags @($Profile) `
+    -LayerPackage "app-core"
 
 $manifestLock = [ordered]@{
     schemaVersion = 1

@@ -11,7 +11,6 @@
     class="about-dialog"
   >
     <div class="about-content">
-      <!-- 图标占位 -->
       <div class="app-icon">
         <div
           class="icon-glyph"
@@ -26,15 +25,12 @@
         ></div>
       </div>
 
-      <!-- 应用名称 -->
       <h2 class="app-name">
         <span class="brand-name"> Neo TTS </span>
       </h2>
 
-      <!-- 版本号 -->
       <div class="version">版本 {{ displayVersion }}</div>
 
-      <!-- 检查更新按钮 -->
       <el-button
         class="check-update-btn"
         :loading="isCheckingUpdate"
@@ -45,7 +41,6 @@
         {{ isCheckingUpdate ? "检查中..." : "检查更新" }}
       </el-button>
 
-      <!-- 链接 -->
       <div class="links">
         <a
           href="https://github.com/CommentOut64/neo-tts"
@@ -75,17 +70,18 @@
       </div>
     </div>
 
-    <!-- 更新窗口 -->
     <UpdateDialog
       v-model:visible="showUpdateDialog"
-      :update-info="pendingUpdateInfo"
-      @ignore="handleUpdateIgnored"
+      :state="updateState"
+      @ignore="ignoreUpdate"
+      @start-download="startUpdateDownload"
+      @restart-now="restartAndApplyUpdate"
     />
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { watch, onMounted, computed } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useAppUpdate } from "@/composables/useAppUpdate";
 import UpdateDialog from "./UpdateDialog.vue";
 
@@ -94,29 +90,29 @@ const visible = defineModel<boolean>("visible", { default: false });
 const {
   version,
   isCheckingUpdate,
-  pendingUpdateInfo,
+  updateState,
+  isUpdateDialogVisible,
   fetchVersion,
   handleCheckUpdate,
+  startUpdateDownload,
+  restartAndApplyUpdate,
   ignoreUpdate,
+  dismissUpdateDialog,
 } = useAppUpdate();
 
 const displayVersion = computed(() => version.value);
 
 const showUpdateDialog = computed({
-  get: () => pendingUpdateInfo.value !== null,
-  set: (val) => {
-    if (!val) {
-      ignoreUpdate();
+  get: () => isUpdateDialogVisible.value,
+  set: (nextVisible) => {
+    if (!nextVisible) {
+      dismissUpdateDialog();
     }
   },
 });
 
 function triggerCheckUpdate() {
-  handleCheckUpdate(false);
-}
-
-function handleUpdateIgnored() {
-  ignoreUpdate();
+  void handleCheckUpdate(false);
 }
 
 async function handleOpenExternal(url: string) {
@@ -130,12 +126,12 @@ async function handleOpenExternal(url: string) {
 
 watch(visible, (newVal) => {
   if (newVal) {
-    fetchVersion();
+    void fetchVersion();
   }
 });
 
 onMounted(() => {
-  fetchVersion();
+  void fetchVersion();
 });
 </script>
 

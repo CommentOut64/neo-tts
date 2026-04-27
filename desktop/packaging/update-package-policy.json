@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "baseUrl": "https://cdn.example.com/neotts",
+  "notesUrlTemplate": "https://cdn.example.com/neotts/release-notes/{releaseId}.md",
+  "includePackages": {
+    "runtime": true,
+    "models": true,
+    "pretrained-models": true
+  }
+}
