@@ -42,8 +42,8 @@ function buildDescriptor(rootDir: string, distributionKind: "installed" | "porta
 				root: path.join(rootDir, "packages", "app-core", "v0.0.1"),
 			},
 			runtime: {
-				version: "py311-cu124-v1",
-				root: path.join(rootDir, "packages", "runtime", "py311-cu124-v1"),
+				version: "py311-cu128-v1",
+				root: path.join(rootDir, "packages", "runtime", "py311-cu128-v1"),
 			},
 			models: {
 				version: "builtin-v1",

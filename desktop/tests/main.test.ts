@@ -105,7 +105,7 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   const updateAgentRoot = path.join(productRoot, "packages", "update-agent", "1.1.0");
   const shellRoot = path.join(productRoot, "packages", "shell", "v0.0.1");
   const appCoreRoot = path.join(productRoot, "packages", "app-core", "v0.0.1");
-  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu124-v1");
+  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu128-v1");
   const modelsRoot = path.join(productRoot, "packages", "models", "builtin-v1");
   const pretrainedModelsRoot = path.join(productRoot, "packages", "pretrained-models", "support-v1");
   const userDataDir =

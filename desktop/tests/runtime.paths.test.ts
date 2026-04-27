@@ -103,7 +103,7 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0", root: path.join(installRoot, "packages", "update-agent", "1.1.0") },
 						shell: { version: "v0.0.1", root: path.join(installRoot, "packages", "shell", "v0.0.1") },
 						"app-core": { version: "v0.0.1", root: path.join(installRoot, "packages", "app-core", "v0.0.1") },
-						runtime: { version: "py311-cu124-v1", root: path.join(installRoot, "packages", "runtime", "py311-cu124-v1") },
+						runtime: { version: "py311-cu128-v1", root: path.join(installRoot, "packages", "runtime", "py311-cu128-v1") },
 						models: { version: "builtin-v1", root: path.join(installRoot, "packages", "models", "builtin-v1") },
 						"pretrained-models": { version: "support-v1", root: path.join(installRoot, "packages", "pretrained-models", "support-v1") },
 					},
@@ -132,7 +132,7 @@ describe("product runtime paths", () => {
 		expect(paths.bootstrapRoot).toBe(path.join(installRoot, "packages", "bootstrap", "1.1.0"));
 		expect(paths.shellRoot).toBe(path.join(installRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.appCoreRoot).toBe(path.join(installRoot, "packages", "app-core", "v0.0.1"));
-		expect(paths.runtimeRoot).toBe(path.join(installRoot, "packages", "runtime", "py311-cu124-v1"));
+		expect(paths.runtimeRoot).toBe(path.join(installRoot, "packages", "runtime", "py311-cu128-v1"));
 		expect(paths.modelsRoot).toBe(path.join(installRoot, "packages", "models", "builtin-v1"));
 		expect(paths.pretrainedModelsRoot).toBe(path.join(installRoot, "packages", "pretrained-models", "support-v1"));
 		expect(paths.backendDir).toBe(path.join(paths.appCoreRoot, "backend"));
@@ -162,7 +162,7 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0", root: path.join(portableRoot, "packages", "update-agent", "1.1.0") },
 						shell: { version: "v0.0.1", root: path.join(portableRoot, "packages", "shell", "v0.0.1") },
 						"app-core": { version: "v0.0.1", root: path.join(portableRoot, "packages", "app-core", "v0.0.1") },
-						runtime: { version: "py311-cu124-v1", root: path.join(portableRoot, "packages", "runtime", "py311-cu124-v1") },
+						runtime: { version: "py311-cu128-v1", root: path.join(portableRoot, "packages", "runtime", "py311-cu128-v1") },
 						models: { version: "builtin-v1", root: path.join(portableRoot, "packages", "models", "builtin-v1") },
 						"pretrained-models": { version: "support-v1", root: path.join(portableRoot, "packages", "pretrained-models", "support-v1") },
 					},
@@ -219,7 +219,7 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0" },
 						shell: { version: "v0.0.1" },
 						"app-core": { version: "v0.0.1" },
-						runtime: { version: "py311-cu124-v1" },
+						runtime: { version: "py311-cu128-v1" },
 						models: { version: "builtin-v1" },
 						"pretrained-models": { version: "support-v1" },
 					},
@@ -251,7 +251,7 @@ describe("product runtime paths", () => {
 		expect(paths.updateAgentRoot).toBe(path.join(portableRoot, "packages", "update-agent", "1.1.0"));
 		expect(paths.shellRoot).toBe(path.join(portableRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.appCoreRoot).toBe(path.join(portableRoot, "packages", "app-core", "v0.0.1"));
-		expect(paths.runtimeRoot).toBe(path.join(portableRoot, "packages", "runtime", "py311-cu124-v1"));
+		expect(paths.runtimeRoot).toBe(path.join(portableRoot, "packages", "runtime", "py311-cu128-v1"));
 		expect(paths.modelsRoot).toBe(path.join(portableRoot, "packages", "models", "builtin-v1"));
 		expect(paths.pretrainedModelsRoot).toBe(
 			path.join(portableRoot, "packages", "pretrained-models", "support-v1"),
