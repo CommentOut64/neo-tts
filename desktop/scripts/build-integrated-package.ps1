@@ -12,6 +12,10 @@ param(
 
     [switch]$SkipPortableZip,
 
+    [switch]$BuildUpdatePackages,
+
+    [switch]$SkipPackagedPythonCompile,
+
     [string]$InnoSetupCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
 
     [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
@@ -454,6 +458,9 @@ function Invoke-CudaRuntimeVariantBuild {
     if ($SkipPortableZip) {
         $arguments += "-SkipPortableZip"
     }
+    if ($SkipPackagedPythonCompile) {
+        $arguments += "-SkipPackagedPythonCompile"
+    }
     if ($KeepWinUnpacked) {
         $arguments += "-KeepWinUnpacked"
     }
@@ -868,6 +875,9 @@ if ($BuildCudaRuntimeVariants) {
     if ($Distribution -ne "portable") {
         throw "-BuildCudaRuntimeVariants only supports portable distribution."
     }
+    if ($BuildUpdatePackages) {
+        throw "-BuildUpdatePackages cannot be combined with -BuildCudaRuntimeVariants because the current update manifest path is not CUDA-runtime scoped."
+    }
     if (-not $SkipReleaseClean) {
         Write-Host "[build-integrated-package] Cleaning current version release outputs..."
         Remove-DirectoryIfExists -Path $releaseVersionRoot -AllowedRoot $releaseRoot
@@ -883,8 +893,14 @@ if ($BuildCudaRuntimeVariants) {
         (Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion-cu118.zip")
     )
     Write-Host "[build-integrated-package] CUDA runtime variant artifacts ready:"
-    Write-Host "  - cu128: $(Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion-cu128.zip")"
-    Write-Host "  - cu118: $(Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion-cu118.zip")"
+    if ($SkipPortableZip) {
+        Write-Host "  - cu128 root: $(Join-Path $releaseVersionRoot "NeoTTS-Portable-cu128")"
+        Write-Host "  - cu118 root: $(Join-Path $releaseVersionRoot "NeoTTS-Portable-cu118")"
+    }
+    else {
+        Write-Host "  - cu128 zip:  $(Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion-cu128.zip")"
+        Write-Host "  - cu118 zip:  $(Join-Path $releaseVersionRoot "NeoTTS-Portable-$packageVersion-cu118.zip")"
+    }
     return
 }
 
@@ -976,7 +992,8 @@ $stageRuntimeArgs = @(
     "-Profile", $Profile,
     "-Flavor", $Distribution,
     "-CudaRuntime", $CudaRuntime,
-    "-StageRoot", $cudaStageRoot
+    "-StageRoot", $cudaStageRoot,
+    "-SevenZipPath", $SevenZipPath
 )
 if ($Offline) {
     $stageRuntimeArgs += "-Offline"
@@ -1036,29 +1053,39 @@ if (-not (Test-Path -LiteralPath $tutorialTargetPath)) {
     throw "Integrated package validation failed after tutorial copy: missing $tutorialTargetPath"
 }
 
-Invoke-PackagedPythonCompile -WinUnpackedRoot $winUnpackedRoot -WorkingDirectory $desktopRoot
+if ($SkipPackagedPythonCompile) {
+    Write-Host "[build-integrated-package] Skipping packaged Python compile because -SkipPackagedPythonCompile was set."
+}
+else {
+    Invoke-PackagedPythonCompile -WinUnpackedRoot $winUnpackedRoot -WorkingDirectory $desktopRoot
+}
 
-Invoke-NativeStep -Label "Build layered release artifacts" `
-    -WorkingDirectory $desktopRoot `
-    -FilePath "powershell.exe" `
-    -Arguments @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $buildLayeredReleaseScript,
-        "-Profile", $Profile,
-        "-Distribution", $Distribution,
-        "-ReleaseRoot", $releaseVersionRoot,
-        "-StageRoot", $cudaStageRoot,
-        "-WinUnpackedRoot", $winUnpackedRoot,
-        "-BootstrapDistRoot", $launcherDistRoot,
-        "-RuntimeVersionOverride", $runtimeVersion,
-        "-SevenZipPath", $SevenZipPath,
-        "-ZipCompressionLevel", ([string]$ZipCompressionLevel),
-        "-KeepExistingPackages",
-        "-SkipStageRuntime",
-        "-SkipBootstrapBuild",
-        "-SkipShellBuild"
-    )
+if ($BuildUpdatePackages) {
+    Invoke-NativeStep -Label "Build layered release artifacts" `
+        -WorkingDirectory $desktopRoot `
+        -FilePath "powershell.exe" `
+        -Arguments @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $buildLayeredReleaseScript,
+            "-Profile", $Profile,
+            "-Distribution", $Distribution,
+            "-ReleaseRoot", $releaseVersionRoot,
+            "-StageRoot", $cudaStageRoot,
+            "-WinUnpackedRoot", $winUnpackedRoot,
+            "-BootstrapDistRoot", $launcherDistRoot,
+            "-RuntimeVersionOverride", $runtimeVersion,
+            "-SevenZipPath", $SevenZipPath,
+            "-ZipCompressionLevel", ([string]$ZipCompressionLevel),
+            "-KeepExistingPackages",
+            "-SkipStageRuntime",
+            "-SkipBootstrapBuild",
+            "-SkipShellBuild"
+        )
+}
+else {
+    Write-Host "[build-integrated-package] Skipping layered release artifacts because -BuildUpdatePackages was not set."
+}
 
 if ($Distribution -eq "portable") {
     $portableLabel = if ($SkipPortableZip) { "Assemble portable root (skip zip)" } else { "Assemble portable zip" }
@@ -1180,6 +1207,17 @@ else {
             (Join-Path $installedRootPath $installedStateRootName),
             (Join-Path $installedRootPath "$installedPackagesRootName\shell\$releaseId\NeoTTSApp.exe"),
             (Join-Path $installedRootPath "$installedPackagesRootName\app-core\$releaseId\backend"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\config.json"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\preprocessor_config.json"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\pytorch_model.bin"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\config.json"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\pytorch_model.bin"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\tokenizer.json"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\neuro2-e4.ckpt"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\neuro2_e4_s424.pth"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\audio1.wav"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\pretrained-models\$pretrainedModelsVersion\pretrained_models\sv\pretrained_eres2netv2w24s4ep4.ckpt"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\pretrained-models\$pretrainedModelsVersion\pretrained_models\fast_langdetect\lid.176.bin"),
             $installerPath
         )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {

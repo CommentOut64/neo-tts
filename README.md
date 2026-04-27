@@ -64,33 +64,6 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 
 当前整合包流水线以 Electron 为正式产品入口。完整打包链路、runtime 分支、缓存、压缩、硬链接和验证细节见 [Windows 桌面打包指南](llmdoc/guides/windows-desktop-packaging.md)。
 
-当前默认打包命令：
-
-```powershell
-Set-Location desktop
-npm run package
-```
-
-- 默认生成 `release/<version>/NeoTTS-Portable-<version>-cu128.zip`。
-
-显式附加命令：
-
-```powershell
-Set-Location desktop
-
-# 显式生成便携包（与默认链一致）
-npm run package:portable
-
-# 显式同时生成 cu128 标准包与 cu118 兼容包
-npm run package:portable:cuda-variants
-
-# 仅在需要时生成安装包
-npm run package:installed
-
-# 显式执行打包相关验证
-npm run package:verify
-```
-
 ### 本地开发部署
 
 #### 1. 安装依赖

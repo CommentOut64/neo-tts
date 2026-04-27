@@ -10,6 +10,8 @@ param(
 
     [string]$StageRoot,
 
+    [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
+
     [switch]$Offline
 )
 
@@ -61,6 +63,43 @@ function Ensure-Directory {
     )
 
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Resolve-SevenZipPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfiguredPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath) -and (Test-Path -LiteralPath $ConfiguredPath)) {
+        return (Get-Item -LiteralPath $ConfiguredPath).FullName
+    }
+
+    $fromPath = Get-Command "7z.exe" -ErrorAction SilentlyContinue
+    if ($fromPath) {
+        return $fromPath.Source
+    }
+
+    throw "7-Zip executable not found. Configure -SevenZipPath or add 7z.exe to PATH."
+}
+
+function Expand-ZipWithSevenZip {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SevenZipExe
+    )
+
+    Ensure-Directory -Path $DestinationPath
+    & $SevenZipExe @("x", "-y", "-bso0", "-bsp0", "-o$DestinationPath", $ZipPath) | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "7-Zip extract failed with exit code $LASTEXITCODE for '$ZipPath'."
+    }
 }
 
 function Write-Utf8File {
@@ -640,6 +679,7 @@ $baseManifest = Load-JsonFile -Path $manifestPath
 $profileConfig = Load-JsonFile -Path $profilePath
 $flavorConfig = Load-JsonFile -Path $flavorPath
 $desktopPackage = Load-JsonFile -Path $desktopPackageJsonPath
+$sevenZipExe = Resolve-SevenZipPath -ConfiguredPath $SevenZipPath
 $cudaRuntimeMetadata = Get-CudaRuntimeMetadata -Value $CudaRuntime
 $runtimeVersion = [string]$cudaRuntimeMetadata.runtimeVersion
 $pytorchIndex = [string]$cudaRuntimeMetadata.pytorchIndex
@@ -1005,9 +1045,9 @@ if (-not $reuseStagePythonPartition) {
     Copy-Item -LiteralPath $averagedPerceptronTaggerEngPayloadPath -Destination $runtimeNltkAveragedPerceptronTaggerEngZipPath -Force
 
     Write-Host "[stage-runtime] Extracting bundled NLTK payload into staged runtime ..."
-    Expand-Archive -LiteralPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -Force
-    Expand-Archive -LiteralPath $averagedPerceptronTaggerPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
-    Expand-Archive -LiteralPath $averagedPerceptronTaggerEngPayloadPath -DestinationPath $runtimeNltkTaggersDir -Force
+    Expand-ZipWithSevenZip -ZipPath $cmudictPayloadPath -DestinationPath $runtimeNltkCorporaDir -SevenZipExe $sevenZipExe
+    Expand-ZipWithSevenZip -ZipPath $averagedPerceptronTaggerPayloadPath -DestinationPath $runtimeNltkTaggersDir -SevenZipExe $sevenZipExe
+    Expand-ZipWithSevenZip -ZipPath $averagedPerceptronTaggerEngPayloadPath -DestinationPath $runtimeNltkTaggersDir -SevenZipExe $sevenZipExe
 
     Write-PartitionMetadata `
         -MetadataRoot $stagingMetadataRoot `

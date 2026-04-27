@@ -447,7 +447,18 @@ foreach ($requiredPath in @(
         (Join-Path $appCorePackageRoot "backend"),
         (Join-Path $runtimePackageRoot "runtime\python\python.exe"),
         (Join-Path $modelsPackageRoot "models\builtin"),
-        (Join-Path $pretrainedModelsPackageRoot "pretrained_models")
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\preprocessor_config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\pytorch_model.bin"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\config.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\pytorch_model.bin"),
+        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\tokenizer.json"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2-e4.ckpt"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2_e4_s424.pth"),
+        (Join-Path $modelsPackageRoot "models\builtin\neuro2\audio1.wav"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\sv\pretrained_eres2netv2w24s4ep4.ckpt"),
+        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\fast_langdetect\lid.176.bin")
     )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Portable assembly validation failed: missing $requiredPath"
