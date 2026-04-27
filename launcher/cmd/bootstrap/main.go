@@ -380,6 +380,8 @@ func main() {
 	})
 
 	for {
+		reportStartupGPUCompatibilityNotice(currentState, session.LogFilePath)
+
 		launchSpec, err := bootstrap.BuildShellLaunchSpec(bootstrap.BuildShellLaunchSpecOptions{
 			RootDir:       options.RootDir,
 			Current:       currentState,
@@ -482,6 +484,23 @@ func main() {
 			"status":    result.SessionStatus,
 		})
 		return
+	}
+}
+
+func reportStartupGPUCompatibilityNotice(currentState bootstrap.CurrentState, logFilePath string) {
+	notice := bootstrap.AssessStartupGPUCompatibility(
+		currentState,
+		bootstrap.ProbeNvidiaGPUWithTimeout(800*time.Millisecond),
+	)
+	if notice == nil {
+		return
+	}
+	appendBootstrapLog(logFilePath, "WARN", "startup gpu compatibility notice", map[string]any{
+		"reason":  notice.Reason,
+		"message": notice.Message,
+	})
+	if err := bootstrap.StartStartupCompatibilityNotice(notice.Message); err != nil {
+		appendBootstrapLog(logFilePath, "WARN", "failed to show startup gpu compatibility notice", map[string]any{"error": err.Error()})
 	}
 }
 
