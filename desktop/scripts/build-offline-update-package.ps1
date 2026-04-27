@@ -10,7 +10,15 @@ param(
 
     [string]$Channel = "stable",
 
-    [string]$OutputRoot
+    [string]$OutputRoot,
+
+    [string]$BaselinePortableRoot,
+
+    [string]$BaselineCurrentJson,
+
+    [string[]]$IncludePackages,
+
+    [switch]$Full
 )
 
 Set-StrictMode -Version Latest
@@ -57,6 +65,20 @@ function Load-JsonFile {
     return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
 }
 
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    Ensure-Directory -Path (Split-Path -Parent $Path)
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Get-FileSha256 {
     param(
         [Parameter(Mandatory = $true)]
@@ -96,6 +118,40 @@ function Copy-ReleaseObject {
     Copy-Item -LiteralPath $SourcePath -Destination $targetPath -Force
 }
 
+function Resolve-BaselineCurrentPath {
+    param(
+        [string]$PortableRoot,
+        [string]$CurrentJson
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($CurrentJson)) {
+        return Get-FullPath -Path $CurrentJson
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PortableRoot)) {
+        return Get-FullPath -Path (Join-Path $PortableRoot "state\current.json")
+    }
+    return ""
+}
+
+function Test-PackageSelected {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId,
+
+        [string[]]$AllowedPackages
+    )
+
+    if ($null -eq $AllowedPackages -or $AllowedPackages.Count -eq 0) {
+        return $true
+    }
+    foreach ($allowed in $AllowedPackages) {
+        if ([string]::Equals($PackageId, $allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 if ($ReleaseId -notmatch '^v\d+\.\d+\.\d+$') {
     throw "ReleaseId must use v<major>.<minor>.<patch> format: $ReleaseId"
 }
@@ -112,24 +168,45 @@ $latestPath = Join-Path $layeredRootPath ("channels\{0}\latest.json" -f $Channel
 $manifestPath = Join-Path $layeredRootPath ("releases\{0}\manifest.json" -f $ReleaseId)
 $packagesPath = Join-Path $layeredRootPath "packages"
 
-Assert-RequiredPath -Path $latestPath -Description "latest.json"
 Assert-RequiredPath -Path $manifestPath -Description "manifest.json"
 Assert-RequiredPath -Path $packagesPath -Description "packages directory"
 
-$latest = Load-JsonFile -Path $latestPath
 $manifest = Load-JsonFile -Path $manifestPath
-if ($latest.releaseId -ne $ReleaseId) {
-    throw "latest.releaseId must match ReleaseId. latest=$($latest.releaseId), expected=$ReleaseId"
-}
 if ($manifest.releaseId -ne $ReleaseId) {
     throw "manifest.releaseId must match ReleaseId. manifest=$($manifest.releaseId), expected=$ReleaseId"
 }
 $manifestSha256 = Get-FileSha256 -Path $manifestPath
+$latestPayload = [ordered]@{
+    schemaVersion       = 1
+    channel             = $Channel
+    enableDevRelease    = $false
+    releaseId           = $ReleaseId
+    releaseKind         = if ([string]::IsNullOrWhiteSpace([string]$manifest.releaseKind)) { "stable" } else { [string]$manifest.releaseKind }
+    manifestUrl         = "releases/$ReleaseId/manifest.json"
+    manifestSha256      = $manifestSha256
+    minBootstrapVersion = "0.0.0"
+    publishedAt         = (Get-Date).ToUniversalTime().ToString("o")
+}
+Write-Utf8NoBomFile -Path $latestPath -Content ($latestPayload | ConvertTo-Json -Depth 20)
+$latest = Load-JsonFile -Path $latestPath
+if ($latest.releaseId -ne $ReleaseId) {
+    throw "latest.releaseId must match ReleaseId. latest=$($latest.releaseId), expected=$ReleaseId"
+}
 if ([string]::IsNullOrWhiteSpace($latest.manifestSha256)) {
     throw "latest.manifestSha256 is required"
 }
 if ($latest.manifestSha256.ToLowerInvariant() -ne $manifestSha256) {
     throw "latest.manifestSha256 does not match manifest.json. latest=$($latest.manifestSha256), actual=$manifestSha256"
+}
+
+$baselineCurrentPath = Resolve-BaselineCurrentPath -PortableRoot $BaselinePortableRoot -CurrentJson $BaselineCurrentJson
+$baselinePackages = $null
+if (-not [string]::IsNullOrWhiteSpace($baselineCurrentPath)) {
+    Assert-RequiredPath -Path $baselineCurrentPath -Description "baseline current.json"
+    $baselineState = Load-JsonFile -Path $baselineCurrentPath
+    if ($null -ne $baselineState.packages) {
+        $baselinePackages = $baselineState.packages
+    }
 }
 
 Ensure-Directory -Path $outputRootPath
@@ -146,6 +223,7 @@ try {
     Copy-ReleaseObject -SourcePath $latestPath -TargetRoot $tempRoot -RelativePath ("channels\{0}\latest.json" -f $Channel)
     Copy-ReleaseObject -SourcePath $manifestPath -TargetRoot $tempRoot -RelativePath ("releases\{0}\manifest.json" -f $ReleaseId)
 
+    $copiedPackageCount = 0
     foreach ($packageProperty in $manifest.packages.PSObject.Properties) {
         $packageId = $packageProperty.Name
         $packageVersion = $packageProperty.Value.version
@@ -155,9 +233,22 @@ try {
         if ($packageId -match '[\\/]' -or $packageVersion -match '[\\/]') {
             throw "manifest package entry contains invalid path separator: $packageId $packageVersion"
         }
+        if (-not (Test-PackageSelected -PackageId $packageId -AllowedPackages $IncludePackages)) {
+            continue
+        }
+        if (-not $Full -and $null -ne $baselinePackages) {
+            $baselinePackage = $baselinePackages.PSObject.Properties[$packageId]
+            if ($null -ne $baselinePackage -and [string]$baselinePackage.Value.version -eq [string]$packageVersion) {
+                continue
+            }
+        }
         $packageArchivePath = Join-Path $packagesPath (Join-Path $packageId ("{0}.zip" -f $packageVersion))
         Assert-RequiredPath -Path $packageArchivePath -Description "package archive $packageId/$packageVersion"
         Copy-ReleaseObject -SourcePath $packageArchivePath -TargetRoot $tempRoot -RelativePath ("packages\{0}\{1}.zip" -f $packageId, $packageVersion)
+        $copiedPackageCount++
+    }
+    if ($copiedPackageCount -eq 0) {
+        throw "No package archives selected for offline update package."
     }
 
     Add-Type -AssemblyName System.IO.Compression
@@ -175,7 +266,12 @@ try {
                 $archive,
                 $_.FullName,
                 $relativePath,
-                [System.IO.Compression.CompressionLevel]::Optimal
+                $(if ([System.IO.Path]::GetExtension($_.FullName).Equals(".zip", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    [System.IO.Compression.CompressionLevel]::NoCompression
+                }
+                else {
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                })
             ) | Out-Null
         }
     }
