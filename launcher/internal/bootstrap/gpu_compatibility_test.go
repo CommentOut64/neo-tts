@@ -1,9 +1,11 @@
 package bootstrap
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAssessStartupGPUCompatibilityIsSilentForSupportedCU128Driver(t *testing.T) {
@@ -133,5 +135,39 @@ func TestStartupCompatibilityNoticeScriptShowsWarningMessage(t *testing.T) {
 	}
 	if !strings.Contains(script, "检测到驱动版本过低，请先更新显卡驱动") {
 		t.Fatalf("script missing message: %s", script)
+	}
+}
+
+func TestNewNvidiaSMIQueryCommandHidesWindow(t *testing.T) {
+	command := newNvidiaSMIQueryCommand(context.Background())
+
+	if command.SysProcAttr == nil || !command.SysProcAttr.HideWindow {
+		t.Fatal("nvidia-smi command HideWindow = false, want true")
+	}
+}
+
+func TestNewStartupCompatibilityNoticeCommandHidesWindow(t *testing.T) {
+	command := newStartupCompatibilityNoticeCommand("检测到驱动版本过低，请先更新显卡驱动")
+
+	if command.SysProcAttr == nil || !command.SysProcAttr.HideWindow {
+		t.Fatal("startup compatibility notice command HideWindow = false, want true")
+	}
+}
+
+func TestProbeNvidiaGPUWithTimeoutDoesNotRetryDeadline(t *testing.T) {
+	attempts := 0
+	result := probeNvidiaGPUWithTimeout(
+		time.Millisecond,
+		func(ctx context.Context) NvidiaGPUProbeResult {
+			attempts++
+			return NvidiaGPUProbeResult{Err: context.DeadlineExceeded}
+		},
+	)
+
+	if !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("Err = %v, want context deadline exceeded", result.Err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
