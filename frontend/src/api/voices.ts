@@ -11,6 +11,7 @@ type UploadVoiceParams = {
   top_k?: number
   top_p?: number
   temperature?: number
+  noise_scale?: number
   pause_length?: number
   gpt_external_path?: string
   sovits_external_path?: string
@@ -57,6 +58,7 @@ function buildUploadVoiceFormData(params: UploadVoiceParams): FormData {
   if (params.top_k !== undefined) form.append('top_k', String(params.top_k))
   if (params.top_p !== undefined) form.append('top_p', String(params.top_p))
   if (params.temperature !== undefined) form.append('temperature', String(params.temperature))
+  if (params.noise_scale !== undefined) form.append('noise_scale', String(params.noise_scale))
   if (params.pause_length !== undefined) form.append('pause_length', String(params.pause_length))
   if (params.gpt_external_path) form.append('gpt_external_path', params.gpt_external_path)
   if (params.sovits_external_path) form.append('sovits_external_path', params.sovits_external_path)

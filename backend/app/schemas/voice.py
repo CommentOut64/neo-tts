@@ -8,6 +8,7 @@ class VoiceDefaults(BaseModel):
     top_k: int = Field(default=15, description="默认采样 top_k。")
     top_p: float = Field(default=1.0, description="默认采样 top_p。")
     temperature: float = Field(default=1.0, description="默认采样温度。")
+    noise_scale: float = Field(default=0.35, description="默认 SoVITS 解码噪声系数。")
     pause_length: float = Field(default=0.3, description="默认句间停顿时长，单位秒。")
 
 

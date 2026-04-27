@@ -76,8 +76,8 @@ interface WorkspaceInitParams {
   temperature: number
   top_p: number
   top_k: number
+  noise_scale: number
   pause_length: number
-  chunk_length: number
   text_lang: string
   text_split_method: string
   ref_source: 'preset' | 'custom'
@@ -94,8 +94,8 @@ const initParams = ref<WorkspaceInitParams>({
   temperature: 1.0,
   top_p: 1.0,
   top_k: 15,
+  noise_scale: 0.35,
   pause_length: 0.3,
-  chunk_length: 24,
   text_lang: 'auto',
   text_split_method: 'cut5',
   ref_source: 'preset' as 'preset' | 'custom',
@@ -121,6 +121,7 @@ function applyVoiceDefaults(params: WorkspaceInitParams, voice: VoiceProfile | n
     temperature: voice.defaults.temperature,
     top_p: voice.defaults.top_p,
     top_k: voice.defaults.top_k,
+    noise_scale: voice.defaults.noise_scale ?? 0.35,
     pause_length: voice.defaults.pause_length,
   }
 }
@@ -179,8 +180,8 @@ function buildCachePayload(): Record<string, unknown> {
     temperature: syncedParams.temperature,
     top_p: syncedParams.top_p,
     top_k: syncedParams.top_k,
+    noise_scale: syncedParams.noise_scale,
     pause_length: syncedParams.pause_length,
-    chunk_length: syncedParams.chunk_length,
     text_lang: syncedParams.text_lang,
     text_split_method: syncedParams.text_split_method,
     referenceSelectionsByBinding: syncedParams.referenceSelectionsByBinding,
@@ -244,8 +245,8 @@ async function hydrateWorkspaceRoute() {
       if (typeof p.temperature === 'number') nextParams.temperature = p.temperature
       if (typeof p.top_p === 'number') nextParams.top_p = p.top_p
       if (typeof p.top_k === 'number') nextParams.top_k = p.top_k
+      if (typeof p.noise_scale === 'number') nextParams.noise_scale = p.noise_scale
       if (typeof p.pause_length === 'number') nextParams.pause_length = p.pause_length
-      if (typeof p.chunk_length === 'number') nextParams.chunk_length = p.chunk_length
       if (typeof p.text_split_method === 'string') nextParams.text_split_method = p.text_split_method
       if (typeof p.text_lang === 'string') nextParams.text_lang = p.text_lang
     }
@@ -423,6 +424,7 @@ const handleInit = async () => {
     temperature: initParams.value.temperature,
     topP: initParams.value.top_p,
     topK: initParams.value.top_k,
+    noiseScale: initParams.value.noise_scale,
     pauseLength: initParams.value.pause_length,
     refSource: effectiveReferenceSelection.source,
     refText: effectiveReferenceSelection.ref_text,

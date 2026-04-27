@@ -16,8 +16,8 @@ const props = defineProps<{
     temperature: number;
     top_p: number;
     top_k: number;
+    noise_scale: number;
     pause_length: number;
-    chunk_length: number;
     text_lang: string;
     text_split_method: string;
     ref_source: "preset" | "custom";
@@ -60,6 +60,7 @@ function handleVoiceChange(val: string) {
     newParams.temperature = v.defaults.temperature;
     newParams.top_p = v.defaults.top_p;
     newParams.top_k = v.defaults.top_k;
+    newParams.noise_scale = v.defaults.noise_scale ?? 0.35;
     newParams.pause_length = v.defaults.pause_length;
   }
 
@@ -210,6 +211,8 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
     <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
       <InferenceSettingsPanel
         :params="modelValue"
+        :show-noise-scale="true"
+        :show-chunk-length="false"
         :show-text-split-method="false"
         @update:params="handleInferenceParamsUpdate"
         @reset="emit('reset')"

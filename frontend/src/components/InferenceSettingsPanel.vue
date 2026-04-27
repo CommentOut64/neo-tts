@@ -4,18 +4,28 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import type { InferenceParams } from '@/types/tts'
 import ParameterSlider from './ParameterSlider.vue'
 
+type InferenceSettingsPanelParams = Omit<
+  InferenceParams,
+  'chunk_length' | 'text_split_method'
+> &
+  Partial<Pick<InferenceParams, 'chunk_length' | 'text_split_method'>>
+
 const props = withDefaults(
   defineProps<{
-    params: InferenceParams
+    params: InferenceSettingsPanelParams
     showTextSplitMethod?: boolean
+    showNoiseScale?: boolean
+    showChunkLength?: boolean
   }>(),
   {
     showTextSplitMethod: true,
+    showNoiseScale: false,
+    showChunkLength: true,
   },
 )
 
 const emit = defineEmits<{
-  'update:params': [value: InferenceParams]
+  'update:params': [value: InferenceSettingsPanelParams]
   reset: []
 }>()
 
@@ -25,7 +35,10 @@ onMounted(() => {
   if (window.innerWidth < 768) expanded.value = false
 })
 
-function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[K]) {
+function update<K extends keyof InferenceSettingsPanelParams>(
+  key: K,
+  value: InferenceSettingsPanelParams[K],
+) {
   emit('update:params', { ...props.params, [key]: value })
 }
 </script>
@@ -46,8 +59,9 @@ function update<K extends keyof InferenceParams>(key: K, value: InferenceParams[
           <ParameterSlider :model-value="params.temperature" label="温度" :min="0.1" :max="2.0" :step="0.05" tooltip="控制随机性" @update:model-value="update('temperature', $event)" />
           <ParameterSlider :model-value="params.top_p" label="Top P" :min="0.0" :max="1.0" :step="0.05" tooltip="核采样概率阈值" @update:model-value="update('top_p', $event)" />
           <ParameterSlider :model-value="params.top_k" label="Top K" :min="1" :max="50" :step="1" tooltip="候选 token 数量" @update:model-value="update('top_k', $event)" />
+          <ParameterSlider v-if="props.showNoiseScale" :model-value="params.noise_scale ?? 0.35" label="Noise Scale" :min="0.1" :max="1.0" :step="0.05" tooltip="控制 SoVITS 解码噪声" @update:model-value="update('noise_scale', $event)" />
           <ParameterSlider :model-value="params.pause_length" label="停顿时长" :min="0.0" :max="1.0" :step="0.05" unit="s" tooltip="分段间停顿秒数" @update:model-value="update('pause_length', $event)" />
-          <ParameterSlider :model-value="params.chunk_length" label="分段长度" :min="10" :max="100" :step="1" tooltip="文本分段字符数" @update:model-value="update('chunk_length', $event)" />
+          <ParameterSlider v-if="props.showChunkLength" :model-value="params.chunk_length" label="分段长度" :min="10" :max="100" :step="1" tooltip="文本分段字符数" @update:model-value="update('chunk_length', $event)" />
           <div class="flex flex-col gap-3">
             <label class="text-[13px] font-semibold text-foreground">文本语言</label>
             <el-select :model-value="params.text_lang" size="small" class="!w-min" style="min-width: 90px;" @update:model-value="update('text_lang', $event)">
