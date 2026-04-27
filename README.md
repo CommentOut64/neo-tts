@@ -54,6 +54,7 @@ GPT-SoVITS 原生 WebUI 以"整条文本一次性生成"为主要模式，修改
 在上述基础要求之上，还需要：
 
 - **Python**：3.11（项目通过 [uv](https://docs.astral.sh/uv/) 管理依赖）
+- **PyTorch**：后端依赖当前绑定 CUDA 12.8 wheel 源；使用 NVIDIA GPU 推理时，显卡驱动需支持 CUDA 12.8 运行时
 - **Node.js**：18+
 - **包管理**：uv（后端）、npm（前端）
 

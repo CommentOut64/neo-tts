@@ -821,7 +821,7 @@ if (-not $reusePythonCachePartition) {
         "--prefix", $runtimePythonCacheDir,
         "--requirements", $requirementsLockPath,
         "--cache-dir", $wheelhouseDir,
-        "--index", "https://download.pytorch.org/whl/cu124",
+        "--index", "https://download.pytorch.org/whl/cu128",
         "--index-strategy", "unsafe-best-match",
         "--python-version", "3.11",
         "--python-platform", "x86_64-pc-windows-msvc",
