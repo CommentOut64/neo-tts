@@ -492,6 +492,45 @@ describe("useParameterPanel", () => {
     expect(panel.resolvedValues.value.voiceBinding.voice_id).toBe("voice-a");
   });
 
+  it("存在未提交参数草稿时，点击段只更新选择，不弹确认也不切换参数作用域", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const { useSegmentSelection } = await import("../src/composables/useSegmentSelection");
+    const panel = useParameterPanel();
+    const selection = useSegmentSelection();
+
+    panel.updateRenderProfileField("speed", 1.15);
+    await nextTick();
+
+    selection.select("seg-1");
+    await nextTick();
+
+    expect(Array.from(selection.selectedSegmentIds.value)).toEqual(["seg-1"]);
+    expect(panel.confirmVisible.value).toBe(false);
+    expect(panel.pendingScopeContext.value).toBeNull();
+    expect(panel.scopeContext.value.scope).toBe("session");
+    expect(panel.hasDirty.value).toBe(true);
+  });
+
+  it("存在未提交参数草稿时，进入正文编辑需要先提交或放弃参数", async () => {
+    const { useParameterPanel } = await import("../src/composables/useParameterPanel");
+    const panel = useParameterPanel();
+    const continueAfterDraft = vi.fn();
+
+    panel.updateRenderProfileField("speed", 1.15);
+    await nextTick();
+
+    expect(panel.requestDraftResolution(continueAfterDraft)).toBe(false);
+    expect(continueAfterDraft).not.toHaveBeenCalled();
+    expect(panel.confirmVisible.value).toBe(true);
+
+    await panel.discardAndContinue();
+    await nextTick();
+
+    expect(panel.hasDirty.value).toBe(false);
+    expect(panel.confirmVisible.value).toBe(false);
+    expect(continueAfterDraft).toHaveBeenCalledTimes(1);
+  });
+
   it("更新字段后会记录脏字段，并在 discardDraft 时清空", async () => {
     const { useParameterPanel } = await import("../src/composables/useParameterPanel");
     const panel = useParameterPanel();
@@ -809,6 +848,41 @@ describe("useParameterPanel", () => {
     expect(editSessionMock.refreshFormalSessionState).toHaveBeenCalledTimes(1);
     expect(editSessionMock.refreshSnapshot).not.toHaveBeenCalled();
     expect(editSessionMock.refreshTimeline).not.toHaveBeenCalled();
+  });
+
+  it("前端参数提交入口会把空选择的 session scope 作为全局参数提交确认", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { dirname, resolve } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const parameterPanelHostSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/components/workspace/ParameterPanelHost.vue",
+      ),
+      "utf8",
+    );
+    const sessionParameterPanelSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/components/workspace/SessionParameterPanel.vue",
+      ),
+      "utf8",
+    );
+    const parameterDraftBarSource = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../src/components/workspace/ParameterDraftBar.vue",
+      ),
+      "utf8",
+    );
+
+    expect(parameterPanelHostSource).toContain("ElMessageBox.confirm");
+    expect(parameterPanelHostSource).toContain(
+      "您未选中任何段，是否对全局参数做出改动？",
+    );
+    expect(sessionParameterPanelSource).toContain('title="全局参数"');
+    expect(parameterDraftBarSource).toContain('return "全局参数";');
+    expect(parameterDraftBarSource).not.toContain('return "会话参数";');
   });
 
   it("影响脏段的 edge 提交会被拦截，并提示先重推理", async () => {

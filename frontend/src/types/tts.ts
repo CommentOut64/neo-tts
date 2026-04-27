@@ -3,6 +3,7 @@ export interface VoiceDefaults {
   top_k: number
   top_p: number
   temperature: number
+  noise_scale?: number
   pause_length: number
 }
 
@@ -40,6 +41,7 @@ export interface InferenceParams {
   temperature: number
   top_p: number
   top_k: number
+  noise_scale: number
   pause_length: number
   text_lang: string
   text_split_method: string
@@ -133,6 +135,7 @@ export interface InferenceParamsCachePayloadV2 {
   temperature: number
   top_p: number
   top_k: number
+  noise_scale: number
   pause_length: number
   chunk_length: number
   text_lang: string

@@ -14,6 +14,7 @@ export interface WorkspaceInitializeDraft {
   temperature: number;
   topP: number;
   topK: number;
+  noiseScale: number;
   pauseLength: number;
   refSource: "preset" | "custom";
   refText: string;
@@ -41,6 +42,7 @@ export function buildInitializeRequest(
     temperature: draft.temperature,
     top_p: draft.topP,
     top_k: draft.topK,
+    noise_scale: draft.noiseScale,
     pause_duration_seconds: draft.pauseLength,
     segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
   };

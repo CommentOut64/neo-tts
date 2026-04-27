@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { extractRenderMapFromDoc } from "../src/components/workspace/workspace-editor/extractRenderMapFromDoc";
 import {
+  buildLiveSegmentDecorationSpecsFromDoc,
   buildSegmentDecorationSpecs,
   type SegmentDecorationState,
 } from "../src/components/workspace/workspace-editor/segmentDecoration";
@@ -29,6 +30,13 @@ const layoutTypesSource = readFileSync(
   resolve(
     dirname(fileURLToPath(import.meta.url)),
     "../src/components/workspace/workspace-editor/layoutTypes.ts",
+  ),
+  "utf8",
+);
+const workspaceEditorHostSource = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../src/components/workspace/WorkspaceEditorHost.vue",
   ),
   "utf8",
 );
@@ -417,6 +425,117 @@ describe("workspace editor decoration", () => {
     expect(specs[0].attrs.class).toContain("segment-editing-playing");
     expect(specs[0].attrs.class).not.toContain("segment-playing");
     expect(specs[0].attrs.class).not.toContain("segment-dirty");
+  });
+
+  it("组合式高亮应从当前文档实时提取并合并同段 stem 与句末标点", () => {
+    const state = {
+      layoutMode: "composition",
+      renderMap: {
+        orderedSegmentIds: ["seg-1", "seg-2"],
+        segmentRanges: [
+          { segmentId: "seg-1", from: 1, to: 3 },
+          { segmentId: "seg-1", from: 3, to: 4 },
+          { segmentId: "seg-2", from: 4, to: 6 },
+        ],
+        edgeAnchors: [],
+      },
+      playingId: "seg-1",
+      selectedIds: new Set<string>(),
+      dirtyIds: new Set<string>(),
+      dirtyEdgeIds: new Set<string>(),
+      isEditing: false,
+    } as unknown as SegmentDecorationState;
+
+    const editedDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "新增正文",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-1" } }],
+            },
+            {
+              type: "text",
+              text: "。",
+              marks: [
+                { type: "segmentAnchor", attrs: { segmentId: "seg-1" } },
+                { type: "terminalCapsule", attrs: { segmentId: "seg-1" } },
+              ],
+            },
+            {
+              type: "text",
+              text: "第二段。",
+              marks: [{ type: "segmentAnchor", attrs: { segmentId: "seg-2" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const specs = buildLiveSegmentDecorationSpecsFromDoc(editedDoc, state);
+    const seg1Specs = specs.filter((spec) => spec.attrs["data-segment-id"] === "seg-1");
+    const seg2Spec = specs.find((spec) => spec.attrs["data-segment-id"] === "seg-2");
+
+    expect(specs).toHaveLength(3);
+    expect(seg1Specs).toHaveLength(2);
+    expect(seg1Specs[0]).toMatchObject({
+      from: 1,
+      to: 5,
+    });
+    expect(seg1Specs[0].attrs.class).toContain("segment-fragment-start");
+    expect(seg1Specs[0].attrs.class).toContain("segment-playing");
+    expect(seg1Specs[1]).toMatchObject({
+      from: 5,
+      to: 6,
+    });
+    expect(seg1Specs[1].attrs.class).toContain("segment-fragment-end");
+    expect(seg1Specs[1].attrs.class).toContain("segment-playing");
+    expect(seg2Spec).toMatchObject({
+      from: 6,
+      to: 10,
+    });
+    expect(seg2Spec?.attrs.class).toContain("segment-fragment-single");
+  });
+
+  it("组合式 inline 高亮样式应恢复整体圆角，并只在同段首尾保留外侧圆角", () => {
+    const segmentFragmentRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-fragment\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    const singleRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-fragment-single\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    const startRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-fragment-start\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    const endRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-fragment-end\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    const dirtyRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-dirty\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    const editingPlayingRule = workspaceEditorHostSource.match(
+      /:deep\(\.segment-editing-playing\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+
+    expect(segmentFragmentRule).toContain("border-radius: 0;");
+    expect(segmentFragmentRule).toContain("margin: 0;");
+    expect(segmentFragmentRule).toContain("padding: 1px 0;");
+    expect(singleRule).toContain("border-radius: 4px;");
+    expect(singleRule).toContain("margin: 0 -2px;");
+    expect(singleRule).toContain("padding: 1px 2px;");
+    expect(startRule).toContain("border-top-left-radius: 4px;");
+    expect(startRule).toContain("border-bottom-left-radius: 4px;");
+    expect(startRule).toContain("margin-left: -2px;");
+    expect(startRule).toContain("padding-left: 2px;");
+    expect(endRule).toContain("border-top-right-radius: 4px;");
+    expect(endRule).toContain("border-bottom-right-radius: 4px;");
+    expect(endRule).toContain("margin-right: -2px;");
+    expect(endRule).toContain("padding-right: 2px;");
+    expect(dirtyRule).toContain("--segment-fragment-shadow-color");
+    expect(editingPlayingRule).toContain("--segment-fragment-shadow-color");
   });
 
   it("列表式编辑态样式不再通过 buildSegmentDecorationSpecs 直接生成", () => {

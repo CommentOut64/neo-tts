@@ -20,6 +20,7 @@ describe("resolveMainActionButtonState", () => {
         sessionStatus: "empty",
         dirtyCount: 0,
         hasReorderDraft: false,
+        canRandomDraw: false,
         canInitialize: true,
         canMutate: true,
       }),
@@ -36,6 +37,7 @@ describe("resolveMainActionButtonState", () => {
         sessionStatus: "empty",
         dirtyCount: 0,
         hasReorderDraft: false,
+        canRandomDraw: false,
         canInitialize: false,
         canMutate: true,
       }),
@@ -52,6 +54,7 @@ describe("resolveMainActionButtonState", () => {
         sessionStatus: "ready",
         dirtyCount: 0,
         hasReorderDraft: false,
+        canRandomDraw: false,
         canInitialize: true,
         canMutate: true,
       }),
@@ -62,12 +65,30 @@ describe("resolveMainActionButtonState", () => {
     });
   });
 
+  it("ready 态无脏段且选中单段时应显示可用的重新抽卡", () => {
+    expect(
+      resolveMainActionButtonState({
+        sessionStatus: "ready",
+        dirtyCount: 0,
+        hasReorderDraft: false,
+        canRandomDraw: true,
+        canInitialize: true,
+        canMutate: true,
+      }),
+    ).toEqual({
+      mode: "random_draw",
+      label: "重新抽卡",
+      disabled: false,
+    });
+  });
+
   it("ready 态有脏段时应显示可用的重推理(n)", () => {
     expect(
       resolveMainActionButtonState({
         sessionStatus: "ready",
         dirtyCount: 3,
         hasReorderDraft: false,
+        canRandomDraw: true,
         canInitialize: true,
         canMutate: true,
       }),
@@ -84,6 +105,7 @@ describe("resolveMainActionButtonState", () => {
         sessionStatus: "ready",
         dirtyCount: 2,
         hasReorderDraft: false,
+        canRandomDraw: false,
         canInitialize: true,
         canMutate: false,
       }),
@@ -100,6 +122,7 @@ describe("resolveMainActionButtonState", () => {
         sessionStatus: "ready",
         dirtyCount: 3,
         hasReorderDraft: true,
+        canRandomDraw: true,
         canInitialize: true,
         canMutate: true,
       }),
@@ -113,5 +136,11 @@ describe("resolveMainActionButtonState", () => {
   it("主按钮的待重推理统计应排除删空段草稿", () => {
     expect(mainActionButtonSource).toContain("lightEdit.rerenderSegmentIds.value");
     expect(mainActionButtonSource).not.toContain("dirtyTextSegmentIds: lightEdit.dirtySegmentIds.value");
+  });
+
+  it("主按钮应从单段选择解析重新抽卡目标，并用独立处理路径触发", () => {
+    expect(mainActionButtonSource).toContain("useSegmentSelection");
+    expect(mainActionButtonSource).toContain("randomDrawSegmentId");
+    expect(mainActionButtonSource).toContain('buttonState.value.mode === "random_draw"');
   });
 });

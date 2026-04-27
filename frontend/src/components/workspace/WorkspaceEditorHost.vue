@@ -685,6 +685,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  pause();
   window.removeEventListener("keydown", handleGlobalKeyDown);
   clearPendingDraftPersist();
   hideEditorSelectionHint();
@@ -1030,7 +1031,7 @@ function onEditorCreate({ editor }: { editor: any }) {
   pushContentToEditor(editor, currentViewDoc.value, displayViewKey.value, true);
 }
 
-function enterEditMode(clickEvent?: MouseEvent) {
+function startEditMode(clickEvent?: MouseEvent) {
   if (isEditing.value) {
     return;
   }
@@ -1071,6 +1072,18 @@ function enterEditMode(clickEvent?: MouseEvent) {
 
     syncDecorationState(editor);
   });
+}
+
+function enterEditMode(clickEvent?: MouseEvent) {
+  if (
+    !parameterPanel.requestDraftResolution(() => {
+      startEditMode(clickEvent);
+    })
+  ) {
+    return;
+  }
+
+  startEditMode(clickEvent);
 }
 
 function commitEditWithDoc(editorDoc: JSONContent) {
@@ -1256,6 +1269,7 @@ async function finalizeEndSession(choice: EndSessionChoice) {
 
   try {
     isEndingSession.value = true;
+    pause();
     let endSessionTarget =
       result.nextInputSource !== null && result.nextInputText !== null
         ? {
@@ -1967,25 +1981,55 @@ html.dark :deep(.ProseMirror ::selection) {
 }
 
 :deep(.segment-fragment) {
-  border-radius: 4px;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
-  margin: 0 -2px;
-  padding: 1px 2px;
+  --segment-fragment-shadow-color: transparent;
+  --segment-fragment-left-shadow: 0 0 0 transparent;
+  --segment-fragment-right-shadow: 0 0 0 transparent;
+  border-radius: 0;
+  box-shadow:
+    inset 0 1px 0 var(--segment-fragment-shadow-color),
+    inset 0 -1px 0 var(--segment-fragment-shadow-color),
+    var(--segment-fragment-left-shadow),
+    var(--segment-fragment-right-shadow);
+  margin: 0;
+  padding: 1px 0;
   transition:
     background-color 0.15s ease,
     color 0.3s ease,
     box-shadow 0.15s ease;
 }
 
+:deep(.segment-fragment-single) {
+  --segment-fragment-left-shadow: inset 1px 0 0 var(--segment-fragment-shadow-color);
+  --segment-fragment-right-shadow: inset -1px 0 0 var(--segment-fragment-shadow-color);
+  border-radius: 4px;
+  margin: 0 -2px;
+  padding: 1px 2px;
+}
+
+:deep(.segment-fragment-start) {
+  --segment-fragment-left-shadow: inset 1px 0 0 var(--segment-fragment-shadow-color);
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+  margin-left: -2px;
+  padding-left: 2px;
+}
+
+:deep(.segment-fragment-end) {
+  --segment-fragment-right-shadow: inset -1px 0 0 var(--segment-fragment-shadow-color);
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+  margin-right: -2px;
+  padding-right: 2px;
+}
+
 :deep(.segment-dirty) {
+  --segment-fragment-shadow-color: rgba(245, 158, 11, 0.32);
   background: rgba(245, 158, 11, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.32);
 }
 
 html.dark :deep(.segment-dirty) {
+  --segment-fragment-shadow-color: rgba(251, 191, 36, 0.36);
   background: rgba(245, 158, 11, 0.2);
-  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.36);
 }
 
 :deep(.segment-playing) {
@@ -1994,13 +2038,13 @@ html.dark :deep(.segment-dirty) {
 }
 
 :deep(.segment-editing-playing) {
+  --segment-fragment-shadow-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
   background: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
 }
 
 html.dark :deep(.segment-editing-playing) {
+  --segment-fragment-shadow-color: color-mix(in srgb, var(--color-accent) 38%, transparent);
   background: color-mix(in srgb, var(--color-accent) 24%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 38%, transparent);
 }
 
 :deep(.segment-selected) {

@@ -21,7 +21,7 @@ const emit = defineEmits<{
     @close="emit('cancel')"
   >
     <p class="text-sm text-muted-fg leading-6">
-      当前参数栏有未提交的草稿。继续切换前，请选择提交、放弃，或取消本次切换。
+      当前参数栏有未提交的草稿。继续操作前，请选择提交、放弃，或取消本次操作。
     </p>
 
     <template #footer>
