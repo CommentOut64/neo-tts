@@ -29,21 +29,24 @@ type NvidiaGPUProbeResult struct {
 type StartupGPUCompatibilityNotice struct {
 	Message string
 	Reason  string
+	Detail  string
 }
 
 func ProbeNvidiaGPUWithTimeout(timeout time.Duration) NvidiaGPUProbeResult {
+	return probeNvidiaGPUWithTimeout(timeout, ProbeNvidiaGPU)
+}
+
+func probeNvidiaGPUWithTimeout(
+	timeout time.Duration,
+	probe func(context.Context) NvidiaGPUProbeResult,
+) NvidiaGPUProbeResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return ProbeNvidiaGPU(ctx)
+	return probe(ctx)
 }
 
 func ProbeNvidiaGPU(ctx context.Context) NvidiaGPUProbeResult {
-	command := exec.CommandContext(
-		ctx,
-		"nvidia-smi",
-		"--query-gpu=name,driver_version",
-		"--format=csv,noheader",
-	)
+	command := newNvidiaSMIQueryCommand(ctx)
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
 		return NvidiaGPUProbeResult{Err: ctx.Err()}
@@ -56,6 +59,17 @@ func ProbeNvidiaGPU(ctx context.Context) NvidiaGPUProbeResult {
 	}
 	gpus := ParseNvidiaSMIGPUQueryOutput(string(output))
 	return NvidiaGPUProbeResult{GPUs: gpus}
+}
+
+func newNvidiaSMIQueryCommand(ctx context.Context) *exec.Cmd {
+	command := exec.CommandContext(
+		ctx,
+		"nvidia-smi",
+		"--query-gpu=name,driver_version",
+		"--format=csv,noheader",
+	)
+	configureHiddenCommand(command)
+	return command
 }
 
 func isNvidiaSMINoDeviceOutput(output string) bool {
@@ -102,6 +116,7 @@ func AssessStartupGPUCompatibility(
 		return &StartupGPUCompatibilityNotice{
 			Reason:  "gpu-probe-failed",
 			Message: "无法检测显卡和驱动版本，请确认已安装 NVIDIA 显卡及可用驱动",
+			Detail:  probe.Err.Error(),
 		}
 	}
 	if len(probe.GPUs) == 0 {

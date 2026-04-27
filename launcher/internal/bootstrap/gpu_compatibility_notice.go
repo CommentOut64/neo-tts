@@ -10,6 +10,18 @@ func StartStartupCompatibilityNotice(message string) error {
 	if message == "" || runtime.GOOS != "windows" {
 		return nil
 	}
+	command := newStartupCompatibilityNoticeCommand(message)
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
+}
+
+func newStartupCompatibilityNoticeCommand(message string) *exec.Cmd {
+	return newHiddenPowerShellCommand(startupCompatibilityNoticePowerShellScript(message))
+}
+
+func newHiddenPowerShellCommand(script string) *exec.Cmd {
 	command := exec.Command(
 		"powershell",
 		"-NoProfile",
@@ -19,12 +31,10 @@ func StartStartupCompatibilityNotice(message string) error {
 		"-ExecutionPolicy",
 		"Bypass",
 		"-Command",
-		startupCompatibilityNoticePowerShellScript(message),
+		script,
 	)
-	if err := command.Start(); err != nil {
-		return err
-	}
-	return command.Process.Release()
+	configureHiddenCommand(command)
+	return command
 }
 
 func startupCompatibilityNoticePowerShellScript(message string) string {

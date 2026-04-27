@@ -20,6 +20,8 @@ type releaseMetadataCache struct {
 	manifest bootstrap.ReleaseManifest
 }
 
+const startupGPUProbeTimeout = 10 * time.Second
+
 func main() {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -490,15 +492,19 @@ func main() {
 func reportStartupGPUCompatibilityNotice(currentState bootstrap.CurrentState, logFilePath string) {
 	notice := bootstrap.AssessStartupGPUCompatibility(
 		currentState,
-		bootstrap.ProbeNvidiaGPUWithTimeout(800*time.Millisecond),
+		bootstrap.ProbeNvidiaGPUWithTimeout(startupGPUProbeTimeout),
 	)
 	if notice == nil {
 		return
 	}
-	appendBootstrapLog(logFilePath, "WARN", "startup gpu compatibility notice", map[string]any{
+	fields := map[string]any{
 		"reason":  notice.Reason,
 		"message": notice.Message,
-	})
+	}
+	if notice.Detail != "" {
+		fields["detail"] = notice.Detail
+	}
+	appendBootstrapLog(logFilePath, "WARN", "startup gpu compatibility notice", fields)
 	if err := bootstrap.StartStartupCompatibilityNotice(notice.Message); err != nil {
 		appendBootstrapLog(logFilePath, "WARN", "failed to show startup gpu compatibility notice", map[string]any{"error": err.Error()})
 	}

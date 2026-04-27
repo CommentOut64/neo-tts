@@ -19,21 +19,15 @@ func StartOfflineUpdateNotice(rootDir string, initialMessage string) error {
 		return nil
 	}
 
-	command := exec.Command(
-		"powershell",
-		"-NoProfile",
-		"-STA",
-		"-WindowStyle",
-		"Hidden",
-		"-ExecutionPolicy",
-		"Bypass",
-		"-Command",
-		offlineUpdateNoticePowerShellScript(paths.statusPath, paths.donePath),
-	)
+	command := newOfflineUpdateNoticeCommand(paths)
 	if err := command.Start(); err != nil {
 		return err
 	}
 	return command.Process.Release()
+}
+
+func newOfflineUpdateNoticeCommand(paths offlineUpdateNoticePathSet) *exec.Cmd {
+	return newHiddenPowerShellCommand(offlineUpdateNoticePowerShellScript(paths.statusPath, paths.donePath))
 }
 
 func WriteOfflineUpdateNoticeStatus(rootDir string, message string) error {
