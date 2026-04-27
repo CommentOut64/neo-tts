@@ -13,7 +13,22 @@ func TestAssessStartupGPUCompatibilityIsSilentForSupportedCU128Driver(t *testing
 		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
-				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "572.83"},
+				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "528.33"},
+			},
+		},
+	)
+
+	if notice != nil {
+		t.Fatalf("expected no notice, got %#v", notice)
+	}
+}
+
+func TestAssessStartupGPUCompatibilityIsSilentForRuntimeCompatibleCU128Driver(t *testing.T) {
+	notice := AssessStartupGPUCompatibility(
+		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		NvidiaGPUProbeResult{
+			GPUs: []NvidiaGPUInfo{
+				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "566.36"},
 			},
 		},
 	)
@@ -28,7 +43,7 @@ func TestAssessStartupGPUCompatibilityWarns50SeriesCU128OldDriver(t *testing.T) 
 		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
-				{Name: "NVIDIA GeForce RTX 5090", DriverVersion: "566.36"},
+				{Name: "NVIDIA GeForce RTX 5090", DriverVersion: "528.32"},
 			},
 		},
 	)
@@ -46,7 +61,7 @@ func TestAssessStartupGPUCompatibilityWarnsNon50SeriesCU128OldDriver(t *testing.
 		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
-				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "566.36"},
+				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "528.32"},
 			},
 		},
 	)

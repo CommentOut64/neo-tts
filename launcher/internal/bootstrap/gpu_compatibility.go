@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	cuda128MinimumDriverVersion = "570.65"
+	cuda128MinimumDriverVersion = "528.33"
 	cuda118MinimumDriverVersion = "522.06"
 )
 
