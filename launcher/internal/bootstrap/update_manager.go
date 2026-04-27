@@ -28,8 +28,11 @@ type StageReleaseRequest struct {
 	EstimatedDownloadBytes int64
 	TargetPackages         []string
 	RemotePackages         map[string]RemotePackage
+	PackageArchiveResolver PackageArchiveResolver
 	Progress               func(StageProgress)
 }
+
+type PackageArchiveResolver func(ctx context.Context, packageID string, remotePackage RemotePackage, targetPath string) error
 
 type StageProgress struct {
 	ReleaseID         string
@@ -49,6 +52,7 @@ type UpdateManagerOptions struct {
 	Now      func() time.Time
 	Download func(context.Context, *http.Client, string, string) error
 	Extract  func(string, string) error
+	Rename   func(string, string) error
 	Log      func(level string, message string, fields map[string]any)
 }
 
@@ -59,6 +63,7 @@ type UpdateManager struct {
 	now      func() time.Time
 	download func(context.Context, *http.Client, string, string) error
 	extract  func(string, string) error
+	rename   func(string, string) error
 	log      func(level string, message string, fields map[string]any)
 }
 
@@ -88,6 +93,10 @@ func NewUpdateManager(options UpdateManagerOptions) *UpdateManager {
 	manager.extract = options.Extract
 	if manager.extract == nil {
 		manager.extract = ExtractZip
+	}
+	manager.rename = options.Rename
+	if manager.rename == nil {
+		manager.rename = os.Rename
 	}
 	manager.log = options.Log
 	return manager
@@ -201,7 +210,13 @@ func (manager *UpdateManager) StageRelease(ctx context.Context, request StageRel
 			"packageUrl": remotePackage.URL,
 		})
 
-		if err := manager.download(ctx, manager.client, remotePackage.URL, archivePath); err != nil {
+		resolver := request.PackageArchiveResolver
+		if resolver == nil {
+			resolver = func(ctx context.Context, _ string, remotePackage RemotePackage, targetPath string) error {
+				return manager.download(ctx, manager.client, remotePackage.URL, targetPath)
+			}
+		}
+		if err := resolver(ctx, packageID, remotePackage, archivePath); err != nil {
 			manager.logEvent("ERROR", "package download failed", map[string]any{
 				"releaseId": request.ReleaseID,
 				"packageId": packageID,
@@ -274,7 +289,7 @@ func (manager *UpdateManager) StageRelease(ctx context.Context, request StageRel
 				return session, manager.failStageSession(session, err)
 			}
 		}
-		if err := os.Rename(stagingRoot, targetRoot); err != nil {
+		if err := manager.promotePackageDirectory(stagingRoot, targetRoot); err != nil {
 			_ = deletePathIfExists(archivePath)
 			_ = os.RemoveAll(stagingRoot)
 			return session, manager.failStageSession(session, NewBootstrapError(
@@ -540,6 +555,48 @@ func (manager *UpdateManager) failStageSession(session StageSessionState, err er
 
 func (manager *UpdateManager) packageVersionRoot(packageID string, version string) string {
 	return filepath.Clean(filepath.Join(manager.rootDir, "packages", packageID, version))
+}
+
+func (manager *UpdateManager) promotePackageDirectory(stagingRoot string, targetRoot string) error {
+	if err := manager.rename(stagingRoot, targetRoot); err == nil {
+		return nil
+	} else {
+		if copyErr := copyDirectoryTree(stagingRoot, targetRoot); copyErr != nil {
+			_ = os.RemoveAll(targetRoot)
+			return errors.Join(err, copyErr)
+		}
+		if removeErr := os.RemoveAll(stagingRoot); removeErr != nil {
+			_ = os.RemoveAll(targetRoot)
+			return errors.Join(err, removeErr)
+		}
+		return nil
+	}
+}
+
+func copyDirectoryTree(sourceRoot string, targetRoot string) error {
+	sourceRoot = filepath.Clean(sourceRoot)
+	targetRoot = filepath.Clean(targetRoot)
+	return filepath.WalkDir(sourceRoot, func(sourcePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relativePath, err := filepath.Rel(sourceRoot, sourcePath)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(targetRoot, relativePath)
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			return os.MkdirAll(targetPath, info.Mode())
+		}
+		if entry.Type()&os.ModeType != 0 {
+			return fmt.Errorf("unsupported package entry type: %s", sourcePath)
+		}
+		return copyFile(sourcePath, targetPath)
+	})
 }
 
 func verifyFileSHA256(path string, expected string) error {

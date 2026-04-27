@@ -80,17 +80,54 @@ func main() {
 		RootDir: options.RootDir,
 		Store:   store,
 	})
+	sessionID := buildBootstrapSessionID()
 	currentState, err := store.LoadCurrent()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	var pendingOfflineSource bootstrap.OfflineUpdateSource
+	if options.StartupSource != "update-agent" {
+		offlineResult, offlineErr := bootstrap.PrepareOfflineUpdateForStartup(context.Background(), bootstrap.OfflineStartupOptions{
+			RootDir: options.RootDir,
+			Current: currentState,
+		})
+		if offlineErr != nil {
+			appendBootstrapLog(session.LogFilePath, "ERROR", "failed to prepare offline update source", map[string]any{"error": offlineErr.Error()})
+		} else if offlineResult.Found {
+			candidate, stageErr := bootstrap.StageOfflineUpdateAndPrepareSwitch(context.Background(), bootstrap.OfflineSwitchOptions{
+				SessionID: sessionID,
+				Current:   currentState,
+				Source:    offlineResult.Source,
+				Manager:   updateManager,
+				Switcher:  switcher,
+			})
+			if stageErr != nil {
+				appendBootstrapLog(session.LogFilePath, "ERROR", "failed to stage offline update", map[string]any{
+					"releaseId": offlineResult.Source.ReleaseID,
+					"error":     stageErr.Error(),
+				})
+			} else {
+				previousState := currentState
+				currentState = candidate
+				pendingOfflineSource = offlineResult.Source
+				appendBootstrapLog(session.LogFilePath, "INFO", "offline update staged and pending switch prepared", map[string]any{"releaseId": candidate.ReleaseID})
+				if bootstrap.RequiresBootstrapSelfUpdate(previousState, candidate) {
+					if err := launchUpdateAgent(options.RootDir, previousState, candidate, session.LogFilePath); err != nil {
+						_, _ = fmt.Fprintln(os.Stderr, err)
+						os.Exit(1)
+					}
+					return
+				}
+			}
+		}
 	}
 	pendingSwitch, err := store.LoadPendingSwitch()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	awaitingCandidateValidation := options.StartupSource == "update-agent" && pendingSwitch.ReleaseID != ""
+	awaitingCandidateValidation := options.StartupSource == "update-agent" && pendingSwitch.ReleaseID != "" || pendingOfflineSource.ReleaseID != ""
 
 	initialUpdateState := bootstrap.CheckUpdateResponse{Status: bootstrap.UpdateStatusIdle}
 	if resumable, ok, err := updateManager.FindResumableStageSession(); err != nil {
@@ -125,7 +162,6 @@ func main() {
 	}
 
 	latestURL := resolveLatestURL(options.Channel)
-	sessionID := buildBootstrapSessionID()
 	var snapshotMu sync.Mutex
 	var cached releaseMetadataCache
 
@@ -232,7 +268,7 @@ func main() {
 				}
 				targetPackages := append([]string(nil), current.ChangedPackages...)
 				if len(targetPackages) == 0 {
-					targetPackages = calculateChangedPackages(currentState, manifest)
+					targetPackages = bootstrap.CalculateChangedPackages(currentState, manifest, bootstrap.DefaultPackageOrder())
 				}
 				stageSession, stageErr := updateManager.StageRelease(downloadCtx, bootstrap.StageReleaseRequest{
 					SessionID:              sessionID,
@@ -363,6 +399,10 @@ func main() {
 		}
 
 		if result.CandidateRolledBack {
+			if pendingOfflineSource.ReleaseID != "" {
+				_ = bootstrap.FailOfflineUpdateSource(pendingOfflineSource)
+				pendingOfflineSource = bootstrap.OfflineUpdateSource{}
+			}
 			currentState, err = store.LoadCurrent()
 			if err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, err)
@@ -374,6 +414,7 @@ func main() {
 		}
 
 		if result.SessionStatus == bootstrap.SessionStatusRestartRequested {
+			pendingOfflineSource = bootstrap.OfflineUpdateSource{}
 			releaseID := strings.TrimSpace(app.UpdateState().ReleaseID)
 			stageSession, err := store.LoadStageSession(releaseID)
 			if err != nil {
@@ -403,6 +444,14 @@ func main() {
 			app.ResetSessionStatus(bootstrap.SessionStatusBooting)
 			app.SetUpdateState(bootstrap.CheckUpdateResponse{Status: bootstrap.UpdateStatusIdle})
 			continue
+		}
+
+		if awaitingCandidateValidation && result.SessionStatus == bootstrap.SessionStatusReady {
+			if pendingOfflineSource.ReleaseID != "" {
+				_ = bootstrap.FinishOfflineUpdateSource(pendingOfflineSource)
+				pendingOfflineSource = bootstrap.OfflineUpdateSource{}
+			}
+			_ = bootstrap.FinishOfflineUpdateRelease(options.RootDir, currentState.ReleaseID)
 		}
 
 		if result.ExitErr != nil {
@@ -476,23 +525,6 @@ func rollbackPromptState(failed bootstrap.FailedReleaseState) bootstrap.CheckUpd
 		ErrorCode:    failed.Code,
 		ErrorMessage: "检测到上次切换失败，已回滚到当前稳定版本，可稍后重试。",
 	}
-}
-
-func calculateChangedPackages(current bootstrap.CurrentState, manifest bootstrap.ReleaseManifest) []string {
-	order := bootstrap.DefaultPackageOrder()
-	changed := make([]string, 0, len(order))
-	for _, packageID := range order {
-		remotePackage, ok := manifest.Packages[packageID]
-		if !ok {
-			continue
-		}
-		currentPackage, ok := current.Packages[packageID]
-		if ok && currentPackage.Version == remotePackage.Version {
-			continue
-		}
-		changed = append(changed, packageID)
-	}
-	return changed
 }
 
 func appOrIdleState(state bootstrap.CheckUpdateResponse) bootstrap.CheckUpdateResponse {

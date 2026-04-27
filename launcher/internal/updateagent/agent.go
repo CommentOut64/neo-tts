@@ -3,6 +3,7 @@ package updateagent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -134,13 +135,6 @@ func ExecutePlan(options ExecutePlanOptions, plan Plan, deps ExecutePlanDeps) er
 	if waitTimeout <= 0 {
 		waitTimeout = 30 * time.Second
 	}
-	if err := waitForProcessExit(options.BootstrapPID, waitTimeout); err != nil {
-		return fmt.Errorf("wait for bootstrap pid %d: %w", options.BootstrapPID, err)
-	}
-
-	if err := replaceFile(plan.BootstrapSourcePath, plan.BootstrapTargetPath); err != nil {
-		return fmt.Errorf("replace bootstrap executable: %w", err)
-	}
 
 	currentExecutablePath := filepath.Clean(strings.TrimSpace(options.CurrentExecutablePath))
 	if currentExecutablePath == "." || currentExecutablePath == "" {
@@ -149,6 +143,19 @@ func ExecutePlan(options ExecutePlanOptions, plan Plan, deps ExecutePlanDeps) er
 			return fmt.Errorf("resolve current update-agent executable: %w", err)
 		}
 		currentExecutablePath = filepath.Clean(executablePath)
+	}
+	isUpdateAgentSecondHop := plan.UpdateAgentSourcePath != "" &&
+		plan.UpdateAgentTargetPath != "" &&
+		samePath(currentExecutablePath, plan.UpdateAgentSourcePath)
+
+	if err := waitForProcessExit(options.BootstrapPID, waitTimeout); err != nil {
+		return fmt.Errorf("wait for bootstrap pid %d: %w", options.BootstrapPID, err)
+	}
+
+	if !isUpdateAgentSecondHop {
+		if err := replaceFile(plan.BootstrapSourcePath, plan.BootstrapTargetPath); err != nil {
+			return fmt.Errorf("replace bootstrap executable: %w", err)
+		}
 	}
 
 	if plan.UpdateAgentSourcePath != "" && plan.UpdateAgentTargetPath != "" {
@@ -214,8 +221,49 @@ func replaceFileAtomically(sourcePath string, targetPath string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	if _, err := os.Stat(source); err != nil {
+	sourceFile, err := os.Open(source)
+	if err != nil {
 		return err
 	}
-	return os.Rename(source, target)
+	defer sourceFile.Close()
+	sourceInfo, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	keepTemp := false
+	defer func() {
+		if !keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err := io.Copy(tempFile, sourceFile); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tempPath, sourceInfo.Mode()); err != nil {
+		return err
+	}
+	if err := replacePreparedFile(tempPath, target); err != nil {
+		return err
+	}
+	keepTemp = true
+	return nil
+}
+
+func replacePreparedFile(sourcePath string, targetPath string) error {
+	if err := os.Rename(sourcePath, targetPath); err == nil {
+		return nil
+	}
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(sourcePath, targetPath)
 }

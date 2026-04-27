@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"archive/zip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func ExtractZip(archivePath string, targetDir string) error {
@@ -18,8 +20,24 @@ func ExtractZip(archivePath string, targetDir string) error {
 		return err
 	}
 
+	cleanTargetDir, err := filepath.Abs(targetDir)
+	if err != nil {
+		return err
+	}
+
 	for _, file := range reader.File {
 		targetPath := filepath.Join(targetDir, file.Name)
+		cleanTargetPath, err := filepath.Abs(targetPath)
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(cleanTargetDir, cleanTargetPath)
+		if err != nil {
+			return err
+		}
+		if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) || filepath.IsAbs(relativePath) {
+			return fmt.Errorf("zip entry escapes target directory: %s", file.Name)
+		}
 		if file.FileInfo().IsDir() {
 			if err := os.MkdirAll(targetPath, file.Mode()); err != nil {
 				return err
