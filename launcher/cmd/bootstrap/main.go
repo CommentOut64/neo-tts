@@ -95,14 +95,22 @@ func main() {
 		if offlineErr != nil {
 			appendBootstrapLog(session.LogFilePath, "ERROR", "failed to prepare offline update source", map[string]any{"error": offlineErr.Error()})
 		} else if offlineResult.Found {
+			if err := bootstrap.StartOfflineUpdateNotice(options.RootDir, "正在验证离线更新包..."); err != nil {
+				appendBootstrapLog(session.LogFilePath, "WARN", "failed to show offline update notice", map[string]any{"error": err.Error()})
+			}
 			candidate, stageErr := bootstrap.StageOfflineUpdateAndPrepareSwitch(context.Background(), bootstrap.OfflineSwitchOptions{
 				SessionID: sessionID,
 				Current:   currentState,
 				Source:    offlineResult.Source,
 				Manager:   updateManager,
 				Switcher:  switcher,
+				Progress: func(progress bootstrap.StageProgress) {
+					_ = bootstrap.WriteOfflineUpdateNoticeStatus(options.RootDir, formatOfflineUpdateProgress(progress))
+				},
 			})
 			if stageErr != nil {
+				_ = bootstrap.WriteOfflineUpdateNoticeStatus(options.RootDir, "离线更新失败，将继续启动当前版本。")
+				_ = bootstrap.FinishOfflineUpdateNotice(options.RootDir)
 				appendBootstrapLog(session.LogFilePath, "ERROR", "failed to stage offline update", map[string]any{
 					"releaseId": offlineResult.Source.ReleaseID,
 					"error":     stageErr.Error(),
@@ -113,6 +121,7 @@ func main() {
 				pendingOfflineSource = offlineResult.Source
 				appendBootstrapLog(session.LogFilePath, "INFO", "offline update staged and pending switch prepared", map[string]any{"releaseId": candidate.ReleaseID})
 				if bootstrap.RequiresBootstrapSelfUpdate(previousState, candidate) {
+					_ = bootstrap.WriteOfflineUpdateNoticeStatus(options.RootDir, "正在应用启动器更新...")
 					if err := launchUpdateAgent(options.RootDir, previousState, candidate, session.LogFilePath); err != nil {
 						_, _ = fmt.Fprintln(os.Stderr, err)
 						os.Exit(1)
@@ -399,6 +408,8 @@ func main() {
 		}
 
 		if result.CandidateRolledBack {
+			_ = bootstrap.WriteOfflineUpdateNoticeStatus(options.RootDir, "离线更新失败，已回滚到当前版本。")
+			_ = bootstrap.FinishOfflineUpdateNotice(options.RootDir)
 			if pendingOfflineSource.ReleaseID != "" {
 				_ = bootstrap.FailOfflineUpdateSource(pendingOfflineSource)
 				pendingOfflineSource = bootstrap.OfflineUpdateSource{}
@@ -452,6 +463,7 @@ func main() {
 				pendingOfflineSource = bootstrap.OfflineUpdateSource{}
 			}
 			_ = bootstrap.FinishOfflineUpdateRelease(options.RootDir, currentState.ReleaseID)
+			_ = bootstrap.FinishOfflineUpdateNotice(options.RootDir)
 		}
 
 		if result.ExitErr != nil {
@@ -471,6 +483,23 @@ func main() {
 		})
 		return
 	}
+}
+
+func formatOfflineUpdateProgress(progress bootstrap.StageProgress) string {
+	if progress.TotalPackages > 0 && progress.PackageID != "" {
+		current := progress.CompletedPackages + 1
+		if progress.Status == "package-complete" {
+			current = progress.CompletedPackages
+		}
+		if current < 1 {
+			current = 1
+		}
+		if current > progress.TotalPackages {
+			current = progress.TotalPackages
+		}
+		return fmt.Sprintf("正在更新组件 %d/%d：%s", current, progress.TotalPackages, progress.PackageID)
+	}
+	return "正在准备离线更新..."
 }
 
 func appendBootstrapLog(logFilePath string, level string, message string, fields map[string]any) {

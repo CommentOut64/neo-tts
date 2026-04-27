@@ -46,6 +46,7 @@ type OfflineSwitchOptions struct {
 	Source    OfflineUpdateSource
 	Manager   *UpdateManager
 	Switcher  *Switcher
+	Progress  func(StageProgress)
 }
 
 var offlineUpdatePackagePattern = regexp.MustCompile(`^NeoTTS-Update-v(\d+)\.(\d+)\.(\d+)\.zip$`)
@@ -175,6 +176,7 @@ func StageOfflineUpdateAndPrepareSwitch(ctx context.Context, options OfflineSwit
 		TargetPackages:         targetPackages,
 		RemotePackages:         manifest.Packages,
 		PackageArchiveResolver: adapter.ResolvePackageArchive,
+		Progress:               options.Progress,
 	})
 	if err != nil {
 		_ = quarantineOfflineArchive(options.Source.RootDir, options.Source.ArchivePath, "failed")
