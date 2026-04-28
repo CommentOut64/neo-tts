@@ -7,6 +7,14 @@ from g2pk2 import G2p
 
 import importlib
 import os
+from pathlib import Path
+
+
+def _resolve_runtime_temp_dir(*parts: str) -> str:
+    user_data_root = os.environ.get("NEO_TTS_USER_DATA_ROOT", "").strip()
+    if user_data_root:
+        return str(Path(user_data_root).resolve() / "runtime_temp" / Path(*parts))
+    return os.path.join("TEMP", *parts)
 
 # 防止win下无法读取模型
 if os.name == "nt":
@@ -30,20 +38,20 @@ if os.name == "nt":
                                 import shutil
 
                                 python_dir = os.getcwd()
-                                if installpath[: len(python_dir)].upper() == python_dir.upper():
+                                runtime_temp_enabled = bool(os.environ.get("NEO_TTS_USER_DATA_ROOT", "").strip())
+                                if not runtime_temp_enabled and installpath[: len(python_dir)].upper() == python_dir.upper():
                                     dicpath = os.path.join(os.path.relpath(installpath, python_dir), "data", "mecabrc")
                                 else:
-                                    if not os.path.exists("TEMP"):
-                                        os.mkdir("TEMP")
-                                    if not os.path.exists(os.path.join("TEMP", "ko")):
-                                        os.mkdir(os.path.join("TEMP", "ko"))
-                                    if os.path.exists(os.path.join("TEMP", "ko", "ko_dict")):
-                                        shutil.rmtree(os.path.join("TEMP", "ko", "ko_dict"))
+                                    temp_ko_root = _resolve_runtime_temp_dir("ko")
+                                    os.makedirs(temp_ko_root, exist_ok=True)
+                                    target_dict_dir = os.path.join(temp_ko_root, "ko_dict")
+                                    if os.path.exists(target_dict_dir):
+                                        shutil.rmtree(target_dict_dir)
 
                                     shutil.copytree(
-                                        os.path.join(installpath, "data"), os.path.join("TEMP", "ko", "ko_dict")
+                                        os.path.join(installpath, "data"), target_dict_dir
                                     )
-                                    dicpath = os.path.join("TEMP", "ko", "ko_dict", "mecabrc")
+                                    dicpath = os.path.join(target_dict_dir, "mecabrc")
                             else:
                                 dicpath = os.path.abspath(os.path.join(installpath, "data/mecabrc"))
                             return dicpath

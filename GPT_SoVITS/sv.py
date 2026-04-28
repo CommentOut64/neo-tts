@@ -1,6 +1,5 @@
 import sys
 import os
-os.environ["PATH"] = fr'D:\SDK\c++\ffmpeg\bin:{os.environ["PATH"]}'
 import torch
 
 now_dir = os.path.dirname(os.path.abspath(__file__))
