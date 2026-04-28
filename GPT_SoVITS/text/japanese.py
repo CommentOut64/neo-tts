@@ -2,6 +2,14 @@
 import re
 import os
 import hashlib
+from pathlib import Path
+
+
+def _resolve_runtime_temp_dir(*parts: str) -> str:
+    user_data_root = os.environ.get("NEO_TTS_USER_DATA_ROOT", "").strip()
+    if user_data_root:
+        return str(Path(user_data_root).resolve() / "runtime_temp" / Path(*parts))
+    return os.path.join("TEMP", *parts)
 
 try:
     import pyopenjtalk
@@ -11,41 +19,40 @@ try:
     # 防止win下无法读取模型
     if os.name == "nt":
         python_dir = os.getcwd()
+        runtime_temp_enabled = bool(os.environ.get("NEO_TTS_USER_DATA_ROOT", "").strip())
         OPEN_JTALK_DICT_DIR = pyopenjtalk.OPEN_JTALK_DICT_DIR.decode("utf-8")
         if not (re.match(r"^[A-Za-z0-9_/\\:.\-]*$", OPEN_JTALK_DICT_DIR)):
-            if OPEN_JTALK_DICT_DIR[: len(python_dir)].upper() == python_dir.upper():
+            if not runtime_temp_enabled and OPEN_JTALK_DICT_DIR[: len(python_dir)].upper() == python_dir.upper():
                 OPEN_JTALK_DICT_DIR = os.path.join(os.path.relpath(OPEN_JTALK_DICT_DIR, python_dir))
             else:
                 import shutil
 
-                if not os.path.exists("TEMP"):
-                    os.mkdir("TEMP")
-                if not os.path.exists(os.path.join("TEMP", "ja")):
-                    os.mkdir(os.path.join("TEMP", "ja"))
-                if os.path.exists(os.path.join("TEMP", "ja", "open_jtalk_dic")):
-                    shutil.rmtree(os.path.join("TEMP", "ja", "open_jtalk_dic"))
+                temp_ja_root = _resolve_runtime_temp_dir("ja")
+                os.makedirs(temp_ja_root, exist_ok=True)
+                target_dict_dir = os.path.join(temp_ja_root, "open_jtalk_dic")
+                if os.path.exists(target_dict_dir):
+                    shutil.rmtree(target_dict_dir)
                 shutil.copytree(
                     pyopenjtalk.OPEN_JTALK_DICT_DIR.decode("utf-8"),
-                    os.path.join("TEMP", "ja", "open_jtalk_dic"),
+                    target_dict_dir,
                 )
-                OPEN_JTALK_DICT_DIR = os.path.join("TEMP", "ja", "open_jtalk_dic")
+                OPEN_JTALK_DICT_DIR = target_dict_dir
             pyopenjtalk.OPEN_JTALK_DICT_DIR = OPEN_JTALK_DICT_DIR.encode("utf-8")
 
         if not (re.match(r"^[A-Za-z0-9_/\\:.\-]*$", current_file_path)):
-            if current_file_path[: len(python_dir)].upper() == python_dir.upper():
+            if not runtime_temp_enabled and current_file_path[: len(python_dir)].upper() == python_dir.upper():
                 current_file_path = os.path.join(os.path.relpath(current_file_path, python_dir))
             else:
-                if not os.path.exists("TEMP"):
-                    os.mkdir("TEMP")
-                if not os.path.exists(os.path.join("TEMP", "ja")):
-                    os.mkdir(os.path.join("TEMP", "ja"))
-                if not os.path.exists(os.path.join("TEMP", "ja", "ja_userdic")):
-                    os.mkdir(os.path.join("TEMP", "ja", "ja_userdic"))
+                temp_ja_root = _resolve_runtime_temp_dir("ja")
+                target_userdic_dir = os.path.join(temp_ja_root, "ja_userdic")
+                os.makedirs(temp_ja_root, exist_ok=True)
+                if not os.path.exists(target_userdic_dir):
+                    os.mkdir(target_userdic_dir)
                     shutil.copyfile(
                         os.path.join(current_file_path, "ja_userdic", "userdict.csv"),
-                        os.path.join("TEMP", "ja", "ja_userdic", "userdict.csv"),
+                        os.path.join(target_userdic_dir, "userdict.csv"),
                     )
-                current_file_path = os.path.join("TEMP", "ja")
+                current_file_path = temp_ja_root
 
     def get_hash(fp: str) -> str:
         hash_md5 = hashlib.md5()

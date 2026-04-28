@@ -9,7 +9,22 @@ jieba.setLogLevel(logging.CRITICAL)
 # 更改fast_langdetect大模型位置
 from pathlib import Path
 import fast_langdetect
-fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector(fast_langdetect.infer.LangDetectConfig(cache_dir=str(Path(os.getcwd()) / "pretrained_models" / "fast_langdetect")))
+
+
+def _resolve_fast_langdetect_cache_dir() -> Path:
+    configured_root = os.environ.get("NEO_TTS_PRETRAINED_MODELS_ROOT", "").strip()
+    if configured_root:
+        base_path = Path(configured_root)
+        pretrained_models_dir = (
+            base_path if base_path.name == "pretrained_models" else base_path / "pretrained_models"
+        )
+        return pretrained_models_dir / "fast_langdetect"
+    return Path(os.getcwd()) / "pretrained_models" / "fast_langdetect"
+
+
+fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector(
+    fast_langdetect.infer.LangDetectConfig(cache_dir=str(_resolve_fast_langdetect_cache_dir()))
+)
 
 
 from split_lang import LangSplitter
