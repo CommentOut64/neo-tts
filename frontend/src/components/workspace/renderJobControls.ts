@@ -57,20 +57,24 @@ export function resolveWorkspaceProgressState({
     renderJob && ["queued", "preparing"].includes(renderJob.status),
   );
   const inferencePreparing = inferenceStatus === "preparing";
+  const inferenceHasVisibleProgress = Boolean(
+    inferenceProgress &&
+      (inferencePercent > 0 || (inferenceProgress.current_segment ?? 0) > 0),
+  );
+
+  if (inferenceActive || (inferencePreparing && inferenceHasVisibleProgress)) {
+    return {
+      percent: inferencePercent,
+      message: formatInferenceMessage(inferenceProgress!),
+      source: "tts",
+    };
+  }
 
   if (renderJobPreparing || inferencePreparing) {
     return {
       percent: 0,
       message: INITIAL_INFERENCE_WAITING_HINT,
       source: "idle",
-    };
-  }
-
-  if (inferenceProgress && isActiveInferenceStatus(inferenceProgress.status)) {
-    return {
-      percent: inferencePercent,
-      message: formatInferenceMessage(inferenceProgress),
-      source: "tts",
     };
   }
 
