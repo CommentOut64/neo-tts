@@ -573,6 +573,14 @@ class TimelineBlockEntry(BaseModel):
     end_sample: int = Field(description="block 在整条时间线中的结束 sample。")
     audio_sample_count: int = Field(description="block 音频 sample 数。")
     audio_url: str = Field(description="block 音频地址。")
+    segment_alignment_mode: Literal["exact", "estimated", "block_only"] | None = Field(
+        default=None,
+        description="该 block 提供的段定位精度。",
+    )
+    join_report_summary: dict[str, Any] | None = Field(
+        default=None,
+        description="供 timeline 消费的简化 join 摘要；不包含完整诊断细节。",
+    )
 
 
 class TimelineSegmentEntry(BaseModel):
@@ -584,6 +592,11 @@ class TimelineSegmentEntry(BaseModel):
     group_id: str | None = Field(default=None, description="若该段属于某个 group，则为 group ID。")
     render_profile_id: str | None = Field(default=None, description="生效的 render profile ID。")
     voice_binding_id: str | None = Field(default=None, description="生效的 voice binding ID。")
+    alignment_precision: Literal["exact", "estimated"] | None = Field(
+        default=None,
+        description="该段在当前 timeline 中的定位精度；block_only 时为 null。",
+    )
+    source: str | None = Field(default=None, description="该段定位或音频来源摘要。")
 
 
 class TimelineEdgeEntry(BaseModel):

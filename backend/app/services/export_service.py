@@ -223,13 +223,15 @@ class ExportService:
                 export_root_dir=export_root_dir,
                 staging_dir=staging_dir,
             )
-        return self._export_composition(
-            job=job,
-            snapshot=snapshot,
-            timeline=timeline,
-            export_root_dir=export_root_dir,
-            staging_dir=staging_dir,
-        )
+        if job.export_kind == "composition":
+            return self._export_composition(
+                job=job,
+                snapshot=snapshot,
+                timeline=timeline,
+                export_root_dir=export_root_dir,
+                staging_dir=staging_dir,
+            )
+        raise ValueError(f"Unsupported export kind: {job.export_kind}")
 
     def _export_segments(
         self,

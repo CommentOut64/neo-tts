@@ -43,6 +43,8 @@ class TimelineManifestService:
                     end_sample=block_end,
                     audio_sample_count=block.audio_sample_count,
                     audio_url=f"/v1/edit-session/assets/blocks/{block.block_asset_id}/audio",
+                    segment_alignment_mode=block.segment_alignment_mode,
+                    join_report_summary=block.join_report_summary,
                 )
             )
             for entry in block.segment_entries:
@@ -59,6 +61,8 @@ class TimelineManifestService:
                         group_id=segment.group_id if segment is not None else None,
                         render_profile_id=segment.render_profile_id if segment is not None else None,
                         voice_binding_id=segment.voice_binding_id if segment is not None else None,
+                        alignment_precision=entry.precision,
+                        source=entry.source,
                     )
                 )
                 playback_entries.append(

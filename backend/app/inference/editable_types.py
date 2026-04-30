@@ -118,6 +118,8 @@ class SegmentCompositionEntry:
     audio_sample_span: tuple[int, int]
     order_key: int = 0
     render_asset_id: str | None = None
+    precision: str | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,8 @@ class BlockCompositionAssetPayload:
     audio_sample_count: int
     segment_entries: list[SegmentCompositionEntry]
     block_asset_id: str = ""
+    segment_alignment_mode: str | None = None
+    join_report_summary: dict[str, Any] | None = None
     edge_entries: list[EdgeCompositionEntry] = field(default_factory=list)
     marker_entries: list[BlockMarkerEntry] = field(default_factory=list)
 
