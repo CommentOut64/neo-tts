@@ -8,6 +8,8 @@ from backend.app.schemas.edit_session import (
     CheckpointState,
     DocumentSnapshot,
     EditableSegment,
+    ExportJobRecord,
+    ExportOutputManifest,
     RenderJobRecord,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
@@ -237,3 +239,75 @@ def test_cleanup_cycle_keeps_timeline_assets_referenced_by_head_snapshot(tmp_pat
     assert keep_timeline.exists()
     assert not drop_timeline.exists()
     assert any("timelines/timeline-drop" in path.as_posix() for path in report.formal_gc_report.deleted_asset_paths)
+
+
+def test_cleanup_cycle_keeps_composition_assets_referenced_by_completed_export_job(tmp_path: Path):
+    repository = _build_repository(tmp_path)
+    store = _build_store(tmp_path)
+    runtime = EditSessionRuntime()
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=2,
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                stem="你好",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-1",
+            )
+        ],
+    )
+    repository.save_snapshot(snapshot)
+    repository.upsert_active_session(
+        ActiveDocumentState(
+            document_id="doc-1",
+            session_status="ready",
+            baseline_snapshot_id="head-1",
+            head_snapshot_id="head-1",
+            active_job_id=None,
+        )
+    )
+    repository.save_export_job(
+        ExportJobRecord(
+            export_job_id="export-comp-1",
+            document_id="doc-1",
+            document_version=2,
+            timeline_manifest_id="timeline-2",
+            export_kind="composition",
+            status="completed",
+            target_dir=str(tmp_path / "exports"),
+            overwrite_policy="fail",
+            progress=1.0,
+            message="done",
+            output_manifest=ExportOutputManifest(
+                export_kind="composition",
+                target_dir=str(tmp_path / "exports"),
+                files=[str(tmp_path / "exports" / "demo.wav")],
+                audio_files=[str(tmp_path / "exports" / "demo.wav")],
+                composition_file=str(tmp_path / "exports" / "demo.wav"),
+                composition_manifest_id="comp-keep",
+                manifest_file=str(tmp_path / "exports" / "manifest.json"),
+            ),
+        )
+    )
+    keep_comp = store.composition_asset_path("comp-keep")
+    drop_comp = store.composition_asset_path("comp-drop")
+    keep_comp.mkdir(parents=True, exist_ok=True)
+    drop_comp.mkdir(parents=True, exist_ok=True)
+    (keep_comp / "audio.wav").write_bytes(b"wav")
+    (drop_comp / "audio.wav").write_bytes(b"wav")
+    maintenance = EditSessionMaintenanceService(repository=repository, asset_store=store, runtime=runtime)
+
+    report = maintenance._run_cleanup_cycle(cleanup_orphan_previews=False)
+
+    assert keep_comp.exists()
+    assert not drop_comp.exists()
+    assert any("compositions/comp-drop" in path.as_posix() for path in report.formal_gc_report.deleted_asset_paths)

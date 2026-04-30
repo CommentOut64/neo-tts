@@ -87,18 +87,28 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
             sample_rate=4,
             audio=np.asarray([0.1] * 6, dtype=np.float32),
             audio_sample_count=6,
+            segment_alignment_mode="exact",
+            join_report_summary={
+                "requested_policy": "natural",
+                "applied_mode": "natural",
+                "enhancement_applied": True,
+            },
             segment_entries=[
                 SegmentCompositionEntry(
                     segment_id="seg-1",
                     audio_sample_span=(0, 2),
                     order_key=1,
                     render_asset_id="render-1",
+                    precision="exact",
+                    source="adapter_exact",
                 ),
                 SegmentCompositionEntry(
                     segment_id="seg-2",
                     audio_sample_span=(4, 6),
                     order_key=2,
                     render_asset_id="render-2",
+                    precision="exact",
+                    source="adapter_exact",
                 ),
             ],
             edge_entries=[
@@ -131,12 +141,15 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
             sample_rate=4,
             audio=np.asarray([0.2, 0.3], dtype=np.float32),
             audio_sample_count=2,
+            segment_alignment_mode="estimated",
             segment_entries=[
                 SegmentCompositionEntry(
                     segment_id="seg-3",
                     audio_sample_span=(0, 2),
                     order_key=3,
                     render_asset_id="render-3",
+                    precision="estimated",
+                    source="system_estimated",
                 )
             ],
             edge_entries=[],
@@ -158,12 +171,23 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
     assert [entry.block_asset_id for entry in timeline.block_entries] == ["block-asset-1", "block-asset-2"]
     assert timeline.block_entries[0].start_sample == 0
     assert timeline.block_entries[0].end_sample == 6
+    assert timeline.block_entries[0].segment_alignment_mode == "exact"
+    assert timeline.block_entries[0].join_report_summary == {
+        "requested_policy": "natural",
+        "applied_mode": "natural",
+        "enhancement_applied": True,
+    }
     assert timeline.block_entries[1].start_sample == 6
     assert timeline.block_entries[1].end_sample == 8
+    assert timeline.block_entries[1].segment_alignment_mode == "estimated"
     assert [entry.segment_id for entry in timeline.segment_entries] == ["seg-1", "seg-2", "seg-3"]
     assert timeline.segment_entries[0].start_sample == 0
+    assert timeline.segment_entries[0].alignment_precision == "exact"
+    assert timeline.segment_entries[0].source == "adapter_exact"
     assert timeline.segment_entries[1].start_sample == 4
     assert timeline.segment_entries[2].start_sample == 6
+    assert timeline.segment_entries[2].alignment_precision == "estimated"
+    assert timeline.segment_entries[2].source == "system_estimated"
     assert timeline.edge_entries[0].boundary_start_sample == 2
     assert timeline.edge_entries[0].boundary_end_sample == 3
     assert timeline.edge_entries[0].pause_start_sample == 3

@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 
+from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.services.edit_asset_store import EditAssetStore
 
 
@@ -157,3 +159,44 @@ def test_edit_asset_store_cleans_up_orphan_preview_assets(tmp_path: Path):
     assert removed == 1
     assert store.preview_asset_path("preview-keep").exists()
     assert not store.preview_asset_path("preview-delete").exists()
+
+
+def test_edit_asset_store_loads_exact_segment_asset_derived_from_block_metadata(tmp_path: Path):
+    store = _build_store(tmp_path)
+    asset_dir = store.segment_asset_path("seg-1-derived")
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    audio = build_wav_bytes(4, float_audio_chunk_to_pcm16_bytes([0.1, 0.2, 0.3]))
+    (asset_dir / "audio.wav").write_bytes(audio)
+    (asset_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "segment_asset_id": "seg-1-derived",
+                "render_asset_id": "seg-1-derived",
+                "segment_id": "seg-1",
+                "render_version": 0,
+                "parent_block_asset_id": "block-1",
+                "sample_span_in_block": [0, 3],
+                "source": "adapter_exact",
+                "alignment_mode": "exact",
+                "audio_sample_count": 3,
+                "left_margin_sample_count": 0,
+                "core_sample_count": 3,
+                "right_margin_sample_count": 0,
+                "semantic_tokens": [],
+                "phone_ids": [],
+                "decoder_frame_count": 0,
+                "trace": {"derived_from_block": True},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    asset = store.load_segment_asset("seg-1-derived")
+
+    assert asset.render_asset_id == "seg-1-derived"
+    assert asset.segment_id == "seg-1"
+    assert asset.left_margin_sample_count == 0
+    assert asset.core_sample_count == 3
+    assert asset.right_margin_sample_count == 0

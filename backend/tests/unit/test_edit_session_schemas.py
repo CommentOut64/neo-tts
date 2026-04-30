@@ -12,6 +12,7 @@ from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdgeResponse,
     EditableSegmentResponse,
+    ExportRequest,
     InitializeEditSessionRequest,
     PreviewRequest,
     PreviewResponse,
@@ -273,4 +274,16 @@ def test_checkpoint_state_rejects_running_partial_status():
             status="running_partial",
             resume_token=None,
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_export_request_does_not_expose_blocks_export_kind():
+    with pytest.raises(ValidationError, match="segments|composition"):
+        ExportRequest(
+            document_version=1,
+            target_dir="C:/exports",
+            audio={
+                "kind": "blocks",
+                "overwrite_policy": "fail",
+            },
         )
