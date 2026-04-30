@@ -118,9 +118,13 @@ class EditSessionMaintenanceService:
             if cleanup_orphan_previews
             else 0
         )
-        formal_gc_report = self._asset_store.collect_unreferenced_formal_assets(
-            referenced_graph.as_relative_asset_paths()
-        )
+        active_session = self._repository.get_active_session()
+        if active_session is not None and active_session.active_job_id is not None:
+            formal_gc_report = AssetGcReport(deleted_asset_paths=[], kept_asset_paths=[])
+        else:
+            formal_gc_report = self._asset_store.collect_unreferenced_formal_assets(
+                referenced_graph.as_relative_asset_paths()
+            )
         return MaintenanceReport(
             recovered_document_id=(
                 self._repository.get_active_session().document_id
