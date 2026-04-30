@@ -31,6 +31,8 @@ class CompositionBuilder:
         *,
         block_id: str | None = None,
         block_asset_id: str | None = None,
+        segment_alignment_mode: str | None = None,
+        join_report_summary: dict | None = None,
     ) -> BlockCompositionAssetPayload:
         if not segments:
             raise ValueError("compose_block requires at least one segment asset.")
@@ -66,6 +68,8 @@ class CompositionBuilder:
                 audio=audio,
                 audio_sample_count=int(audio.size),
                 segment_entries=segment_entries,
+                segment_alignment_mode=segment_alignment_mode,
+                join_report_summary=join_report_summary,
                 edge_entries=[],
                 marker_entries=marker_entries,
             )
@@ -172,6 +176,8 @@ class CompositionBuilder:
             audio=audio.astype(np.float32, copy=False),
             audio_sample_count=int(audio.size),
             segment_entries=segment_entries,
+            segment_alignment_mode=segment_alignment_mode,
+            join_report_summary=join_report_summary,
             edge_entries=edge_entries,
             marker_entries=marker_entries,
         )

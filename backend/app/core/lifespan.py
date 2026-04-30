@@ -36,6 +36,8 @@ def _resolve_runtime_voice_path(app: FastAPI, raw_path: str) -> str:
 
 def _preload_configured_voices(app: FastAPI, model_cache) -> None:
     settings = app.state.settings
+    if not getattr(settings, "gpt_sovits_adapter_installed", True):
+        return
     if not settings.preload_on_start or not settings.preload_voice_ids:
         return
 

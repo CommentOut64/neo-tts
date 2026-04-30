@@ -21,6 +21,8 @@ class AppSettings:
     runtime_root: Path | None = None
     models_root: Path | None = None
     pretrained_models_root: Path | None = None
+    gpt_sovits_root: Path | None = None
+    gpt_sovits_adapter_installed: bool | None = None
     user_data_root: Path | None = None
     tts_registry_root: Path | None = None
     cache_root: Path | None = None
@@ -70,6 +72,16 @@ class AppSettings:
             if self.pretrained_models_root is not None
             else app_core_root
         )
+        gpt_sovits_root = (
+            self.gpt_sovits_root.resolve()
+            if self.gpt_sovits_root is not None
+            else (resources_root / "GPT_SoVITS").resolve()
+        )
+        gpt_sovits_adapter_installed = (
+            self.gpt_sovits_adapter_installed
+            if self.gpt_sovits_adapter_installed is not None
+            else gpt_sovits_root.is_dir()
+        )
         user_data_root = (
             self.user_data_root.resolve()
             if self.user_data_root is not None
@@ -114,6 +126,8 @@ class AppSettings:
         object.__setattr__(self, "runtime_root", runtime_root)
         object.__setattr__(self, "models_root", models_root)
         object.__setattr__(self, "pretrained_models_root", pretrained_models_root)
+        object.__setattr__(self, "gpt_sovits_root", gpt_sovits_root)
+        object.__setattr__(self, "gpt_sovits_adapter_installed", bool(gpt_sovits_adapter_installed))
         object.__setattr__(self, "resources_root", resources_root)
         object.__setattr__(self, "user_data_root", user_data_root)
         object.__setattr__(self, "tts_registry_root", tts_registry_root)
@@ -260,6 +274,7 @@ def get_settings() -> AppSettings:
     runtime_root_env = os.environ.get("NEO_TTS_RUNTIME_ROOT")
     models_root_env = os.environ.get("NEO_TTS_MODELS_ROOT")
     pretrained_models_root_env = os.environ.get("NEO_TTS_PRETRAINED_MODELS_ROOT")
+    gpt_sovits_root_env = os.environ.get("NEO_TTS_GPT_SOVITS_ROOT")
     model_registry_root_env = os.environ.get("NEO_TTS_MODEL_REGISTRY_ROOT")
     support_assets_root_env = os.environ.get("NEO_TTS_SUPPORT_ASSETS_ROOT")
     user_data_root_env = os.environ.get("NEO_TTS_USER_DATA_ROOT")
@@ -295,6 +310,7 @@ def get_settings() -> AppSettings:
         runtime_root = _resolve_from_env(runtime_root_env, default=project_root)
         models_root = _resolve_from_env(models_root_env, default=project_root)
         pretrained_models_root = _resolve_from_env(pretrained_models_root_env, default=project_root)
+        gpt_sovits_root = Path(gpt_sovits_root_env) if gpt_sovits_root_env else app_core_root / "GPT_SoVITS"
         user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "storage")
         logs_dir = _resolve_from_env(logs_root_env, default=project_root / "logs")
         builtin_voices_config_path = app_core_root / "config" / "voices.json"
@@ -349,6 +365,7 @@ def get_settings() -> AppSettings:
             pretrained_models_root_env,
             default=support_assets_root / "support-assets" / "shared",
         )
+        gpt_sovits_root = Path(gpt_sovits_root_env) if gpt_sovits_root_env else app_core_root / "GPT_SoVITS"
         cache_root = user_data_root / "cache"
         logs_dir = _resolve_from_env(logs_root_env, default=user_data_root / "logs")
         builtin_voices_config_path = app_core_root / "config" / "voices.json"
@@ -409,6 +426,7 @@ def get_settings() -> AppSettings:
         runtime_root=runtime_root,
         models_root=models_root,
         pretrained_models_root=pretrained_models_root,
+        gpt_sovits_root=gpt_sovits_root,
         user_data_root=user_data_root,
         tts_registry_root=tts_registry_root if distribution_kind != "development" else None,
         cache_root=cache_root if distribution_kind != "development" else None,

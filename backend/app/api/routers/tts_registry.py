@@ -54,8 +54,10 @@ def _resolve_registry_root(request: Request):
     return (settings.tts_registry_root or (settings.user_data_root / "tts-registry")).resolve()
 
 
-def _build_adapter_store(_: Request) -> AdapterDefinitionStore:
-    return build_default_adapter_definition_store()
+def _build_adapter_store(request: Request) -> AdapterDefinitionStore:
+    return build_default_adapter_definition_store(
+        enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+    )
 
 
 def _build_model_registry(request: Request) -> ModelRegistry:

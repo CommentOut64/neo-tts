@@ -126,8 +126,10 @@ def _build_secret_store(request: Request) -> SecretStore:
     return SecretStore(registry_root)
 
 
-def _build_adapter_registry() -> AdapterRegistry:
-    store = build_default_adapter_definition_store()
+def _build_adapter_registry(request: Request) -> AdapterRegistry:
+    store = build_default_adapter_definition_store(
+        enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+    )
     registry = AdapterRegistry()
     for definition in store.list_definitions():
         registry.register(definition)
@@ -222,7 +224,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
         model_registry=_build_model_registry(request),
-        adapter_registry=_build_adapter_registry(),
+        adapter_registry=_build_adapter_registry(request),
         secret_store=_build_secret_store(request),
     )
 
@@ -240,7 +242,7 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),
         model_registry=_build_model_registry(request),
-        adapter_registry=_build_adapter_registry(),
+        adapter_registry=_build_adapter_registry(request),
         secret_store=_build_secret_store(request),
         run_jobs_in_background=False,
     )

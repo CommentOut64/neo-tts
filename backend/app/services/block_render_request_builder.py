@@ -191,6 +191,7 @@ class BlockRenderRequestBuilder:
                 terminal_punctuation=item.segment.terminal_raw,
                 voice_binding_id=item.resolved.voice_binding.voice_binding_id,
                 render_profile_id=item.resolved.render_profile.render_profile_id,
+                render_version=item.segment.render_version,
                 resolved_binding={
                     "voice_binding_id": item.resolved.voice_binding.voice_binding_id,
                     "voice_id": item.resolved.voice_binding.voice_id,
