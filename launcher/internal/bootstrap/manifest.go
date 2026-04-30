@@ -263,9 +263,10 @@ func DefaultPackageOrder() []string {
 		"update-agent",
 		"shell",
 		"app-core",
-		"runtime",
-		"models",
-		"pretrained-models",
+		"python-runtime",
+		"adapter-system",
+		"support-assets",
+		"seed-model-packages",
 	}
 }
 

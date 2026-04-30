@@ -113,13 +113,14 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 		ReleaseKind:   "stable",
 		NotesURL:      "https://cdn.example.com/notes/v0.0.2.md",
 		Packages: map[string]RemotePackage{
-			"shell":              {Version: "v0.0.2", URL: "https://cdn.example.com/shell.zip", SHA256: "shell", SizeBytes: 100},
-			"app-core":           {Version: "v0.0.2", URL: "https://cdn.example.com/app-core.zip", SHA256: "app-core", SizeBytes: 200},
-			"runtime":            {Version: "py311-cu128-v1", URL: "https://cdn.example.com/runtime.zip", SHA256: "runtime", SizeBytes: 300},
-			"models":             {Version: "builtin-v1", URL: "https://cdn.example.com/models.zip", SHA256: "models", SizeBytes: 400},
-			"pretrained-models":  {Version: "support-v2", URL: "https://cdn.example.com/pretrained.zip", SHA256: "pretrained", SizeBytes: 500},
-			"bootstrap":          {Version: "1.1.0", URL: "https://cdn.example.com/bootstrap.zip", SHA256: "bootstrap", SizeBytes: 10},
-			"update-agent":       {Version: "1.1.0", URL: "https://cdn.example.com/update-agent.zip", SHA256: "agent", SizeBytes: 20},
+			"shell":               {Version: "v0.0.2", URL: "https://cdn.example.com/shell.zip", SHA256: "shell", SizeBytes: 100},
+			"app-core":            {Version: "v0.0.2", URL: "https://cdn.example.com/app-core.zip", SHA256: "app-core", SizeBytes: 200},
+			"python-runtime":      {Version: "py311-cu128-v1", URL: "https://cdn.example.com/runtime.zip", SHA256: "runtime", SizeBytes: 300},
+			"adapter-system":      {Version: "gpt-sovits-v1", URL: "https://cdn.example.com/adapter-system.zip", SHA256: "adapter-system", SizeBytes: 400},
+			"support-assets":      {Version: "support-v2", URL: "https://cdn.example.com/support-assets.zip", SHA256: "support-assets", SizeBytes: 500},
+			"seed-model-packages": {Version: "seed-v1", URL: "https://cdn.example.com/seed-model-packages.zip", SHA256: "seed-model-packages", SizeBytes: 600},
+			"bootstrap":           {Version: "1.1.0", URL: "https://cdn.example.com/bootstrap.zip", SHA256: "bootstrap", SizeBytes: 10},
+			"update-agent":        {Version: "1.1.0", URL: "https://cdn.example.com/update-agent.zip", SHA256: "agent", SizeBytes: 20},
 		},
 	}
 	manifestBytes := mustJSON(t, manifest)
@@ -148,18 +149,19 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 	result, err := CheckForUpdate(
 		context.Background(),
 		UpdateCheckOptions{
-			Client:   server.Client(),
+			Client:    server.Client(),
 			LatestURL: server.URL + "/channels/stable/latest.json",
 			CurrentState: CurrentState{
 				ReleaseID: "v0.0.1",
 				Packages: map[string]PackageState{
-					"shell":             {Version: "v0.0.1"},
-					"app-core":          {Version: "v0.0.1"},
-					"runtime":           {Version: "py311-cu128-v1"},
-					"models":            {Version: "builtin-v1"},
-					"pretrained-models": {Version: "support-v1"},
-					"bootstrap":         {Version: "1.1.0"},
-					"update-agent":      {Version: "1.1.0"},
+					"shell":               {Version: "v0.0.1"},
+					"app-core":            {Version: "v0.0.1"},
+					"python-runtime":      {Version: "py311-cu128-v1"},
+					"adapter-system":      {Version: "gpt-sovits-v1"},
+					"support-assets":      {Version: "support-v1"},
+					"seed-model-packages": {Version: "seed-v1"},
+					"bootstrap":           {Version: "1.1.0"},
+					"update-agent":        {Version: "1.1.0"},
 				},
 			},
 			BootstrapVersion:    "1.1.0",
@@ -173,7 +175,7 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 	if result.Status != UpdateStatusUpdateAvailable {
 		t.Fatalf("Status = %q, want %q", result.Status, UpdateStatusUpdateAvailable)
 	}
-	wantChanged := []string{"shell", "app-core", "pretrained-models"}
+	wantChanged := []string{"shell", "app-core", "support-assets"}
 	if !equalStrings(result.ChangedPackages, wantChanged) {
 		t.Fatalf("ChangedPackages = %#v, want %#v", result.ChangedPackages, wantChanged)
 	}
@@ -182,6 +184,24 @@ func TestCheckForUpdateComparesLayerVersionsAndReturnsChangedPackages(t *testing
 	}
 	if result.NotesURL != manifest.NotesURL {
 		t.Fatalf("NotesURL = %q, want %q", result.NotesURL, manifest.NotesURL)
+	}
+}
+
+func TestDefaultPackageOrderReturnsPortableFirstPackageSequence(t *testing.T) {
+	want := []string{
+		"bootstrap",
+		"update-agent",
+		"shell",
+		"app-core",
+		"python-runtime",
+		"adapter-system",
+		"support-assets",
+		"seed-model-packages",
+	}
+
+	got := DefaultPackageOrder()
+	if !equalStrings(got, want) {
+		t.Fatalf("DefaultPackageOrder() = %#v, want %#v", got, want)
 	}
 }
 

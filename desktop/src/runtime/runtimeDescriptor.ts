@@ -10,9 +10,10 @@ export type RuntimePackageKey =
 	| "update-agent"
 	| "shell"
 	| "app-core"
-	| "runtime"
-	| "models"
-	| "pretrained-models";
+	| "python-runtime"
+	| "adapter-system"
+	| "support-assets"
+	| "seed-model-packages";
 
 export interface RuntimeDescriptorPackage {
 	version: string;
@@ -27,7 +28,11 @@ export interface RuntimeDescriptor {
 	packages: Record<RuntimePackageKey, RuntimeDescriptorPackage>;
 	paths: {
 		userDataRoot: string;
+		configRoot?: string;
+		ttsRegistryRoot?: string;
+		cacheRoot?: string;
 		exportsRoot: string;
+		logsRoot?: string;
 	};
 }
 

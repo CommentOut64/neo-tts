@@ -618,20 +618,34 @@ func verifyFileSHA256(path string, expected string) error {
 }
 
 func validateStagedPackage(packageID string, root string) error {
-	requiredPaths := map[string][]string{
-		"bootstrap":         {"NeoTTS.exe"},
-		"update-agent":      {"NeoTTSUpdateAgent.exe"},
-		"shell":             {"NeoTTSApp.exe"},
-		"app-core":          {"backend", filepath.Join("frontend-dist", "index.html"), "config"},
-		"runtime":           {filepath.Join("runtime", "python", "python.exe")},
-		"models":            {},
-		"pretrained-models": {},
-	}
-
-	paths, ok := requiredPaths[packageID]
+	paths, ok := packageValidationPaths(packageID)
 	if !ok {
 		return fmt.Errorf("unsupported package id %q", packageID)
 	}
+	return validatePackageRoot(root, paths)
+}
+
+func packageValidationPaths(packageID string) ([]string, bool) {
+	requiredPaths := map[string][]string{
+		"bootstrap":           {"NeoTTS.exe"},
+		"update-agent":        {"NeoTTSUpdateAgent.exe"},
+		"shell":               {"NeoTTSApp.exe"},
+		"app-core":            {"backend", filepath.Join("frontend-dist", "index.html"), "config"},
+		"python-runtime":      {filepath.Join("python-runtime", "python", "python.exe")},
+		"adapter-system":      {"adapter-system"},
+		"support-assets":      {"support-assets"},
+		"seed-model-packages": {"seed-model-packages"},
+	}
+	paths, ok := requiredPaths[packageID]
+	return paths, ok
+}
+
+func isValidatedPackageID(packageID string) bool {
+	_, ok := packageValidationPaths(packageID)
+	return ok
+}
+
+func validatePackageRoot(root string, paths []string) error {
 	if len(paths) == 0 {
 		entries, err := os.ReadDir(root)
 		if err != nil {

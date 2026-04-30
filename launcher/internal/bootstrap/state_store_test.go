@@ -79,6 +79,7 @@ func TestStateStoreRoundTripsAllFiles(t *testing.T) {
 	if _, err := store.SaveStageSession(session.ReleaseID, session); err != nil {
 		t.Fatalf("SaveStageSession returned error: %v", err)
 	}
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "packages", "shell", "v0.0.1", "NeoTTSApp.exe"), []byte("shell"))
 
 	currentPath := filepath.Join(rootDir, "state", "current.json")
 	if _, err := os.Stat(currentPath + ".tmp"); !os.IsNotExist(err) {
@@ -145,6 +146,73 @@ func TestSaveCurrentReplacesExistingFileAtomically(t *testing.T) {
 	currentPath := filepath.Join(rootDir, "state", "current.json")
 	if _, err := os.Stat(currentPath + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temporary current state file should not remain, got err=%v", err)
+	}
+}
+
+func TestLoadCurrentFallsBackToLastKnownGoodWhenCurrentJSONIsInvalid(t *testing.T) {
+	rootDir := t.TempDir()
+	store := NewStateStore(rootDir)
+	lastKnownGood := CurrentState{
+		SchemaVersion: 1,
+		ReleaseID:     "v0.0.1",
+		Packages: map[string]PackageState{
+			"shell": {
+				Root: filepath.Join(rootDir, "packages", "shell", "v0.0.1"),
+			},
+		},
+	}
+
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "packages", "shell", "v0.0.1", "NeoTTSApp.exe"), []byte("shell"))
+	if _, err := store.SaveLastKnownGood(lastKnownGood); err != nil {
+		t.Fatalf("SaveLastKnownGood returned error: %v", err)
+	}
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "state", "current.json"), []byte("{invalid-json"))
+
+	got, err := store.LoadCurrent()
+	if err != nil {
+		t.Fatalf("LoadCurrent returned error: %v", err)
+	}
+	if got.ReleaseID != lastKnownGood.ReleaseID {
+		t.Fatalf("ReleaseID = %q, want %q", got.ReleaseID, lastKnownGood.ReleaseID)
+	}
+}
+
+func TestLoadCurrentFallsBackToLastKnownGoodWhenCurrentPackageIsUnavailable(t *testing.T) {
+	rootDir := t.TempDir()
+	store := NewStateStore(rootDir)
+	current := CurrentState{
+		SchemaVersion: 1,
+		ReleaseID:     "v0.0.2",
+		Packages: map[string]PackageState{
+			"shell": {
+				Root: filepath.Join(rootDir, "packages", "shell", "v0.0.2"),
+			},
+		},
+	}
+	lastKnownGood := CurrentState{
+		SchemaVersion: 1,
+		ReleaseID:     "v0.0.1",
+		Packages: map[string]PackageState{
+			"shell": {
+				Root: filepath.Join(rootDir, "packages", "shell", "v0.0.1"),
+			},
+		},
+	}
+
+	if _, err := store.SaveCurrent(current); err != nil {
+		t.Fatalf("SaveCurrent returned error: %v", err)
+	}
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "packages", "shell", "v0.0.1", "NeoTTSApp.exe"), []byte("shell"))
+	if _, err := store.SaveLastKnownGood(lastKnownGood); err != nil {
+		t.Fatalf("SaveLastKnownGood returned error: %v", err)
+	}
+
+	got, err := store.LoadCurrent()
+	if err != nil {
+		t.Fatalf("LoadCurrent returned error: %v", err)
+	}
+	if got.ReleaseID != lastKnownGood.ReleaseID {
+		t.Fatalf("ReleaseID = %q, want %q", got.ReleaseID, lastKnownGood.ReleaseID)
 	}
 }
 
@@ -240,5 +308,15 @@ func TestTryAcquireUpdateLockWritesDiagnosticsAndIsExclusive(t *testing.T) {
 	}
 	if !acquired {
 		t.Fatal("third acquired = false, want true")
+	}
+}
+
+func writeBootstrapTestFile(t *testing.T, path string, payload []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) returned error: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) returned error: %v", path, err)
 	}
 }

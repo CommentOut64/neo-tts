@@ -25,8 +25,9 @@ export interface ProductPaths {
 	shellRoot: string;
 	appCoreRoot: string;
 	runtimeRoot: string;
-	modelsRoot: string;
-	pretrainedModelsRoot: string;
+	adapterSystemRoot: string;
+	supportAssetsRoot: string;
+	seedModelPackagesRoot: string;
 	resourcesDir: string;
 	backendDir: string;
 	frontendDir: string;
@@ -36,9 +37,11 @@ export interface ProductPaths {
 	pretrainedModelsDir: string;
 	configDir: string;
 	userDataDir: string;
+	configDataDir: string;
+	ttsRegistryDir: string;
+	cacheDir: string;
 	logsDir: string;
 	exportsDir: string;
-	userModelsDir: string;
 }
 
 export interface ResolveProductPathsOptions {
@@ -143,10 +146,14 @@ function buildLegacyFallbackProductPaths(options: {
 		shellRoot: options.productRoot,
 		appCoreRoot,
 		runtimeRoot: appCoreRoot,
-		modelsRoot: appCoreRoot,
-		pretrainedModelsRoot: appCoreRoot,
+		adapterSystemRoot: appCoreRoot,
+		supportAssetsRoot: appCoreRoot,
+		seedModelPackagesRoot: appCoreRoot,
 		userDataDir,
 		exportsDir,
+		gptSovitsDir: path.join(appCoreRoot, "GPT_SoVITS"),
+		builtinModelDir: path.join(appCoreRoot, "models", "builtin"),
+		pretrainedModelsDir: path.join(appCoreRoot, "pretrained_models"),
 	});
 }
 
@@ -172,15 +179,32 @@ function buildDescriptorProductPaths(options: {
 		),
 		shellRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "shell"),
 		appCoreRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "app-core"),
-		runtimeRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "runtime"),
-		modelsRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "models"),
-		pretrainedModelsRoot: resolveDescriptorPackageRoot(
+		runtimeRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "python-runtime"),
+		adapterSystemRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "adapter-system"),
+		supportAssetsRoot: resolveDescriptorPackageRoot(productRoot, options.descriptor, "support-assets"),
+		seedModelPackagesRoot: resolveDescriptorPackageRoot(
 			productRoot,
 			options.descriptor,
-			"pretrained-models",
+			"seed-model-packages",
 		),
 		userDataDir: resolveDescriptorPath(productRoot, options.descriptor.paths.userDataRoot),
 		exportsDir: resolveDescriptorPath(productRoot, options.descriptor.paths.exportsRoot),
+		configDataDir: resolveDescriptorPath(
+			productRoot,
+			options.descriptor.paths.configRoot ?? options.descriptor.paths.userDataRoot,
+		),
+		ttsRegistryDir: resolveDescriptorPath(
+			productRoot,
+			options.descriptor.paths.ttsRegistryRoot ?? path.join(options.descriptor.paths.userDataRoot, "tts-registry"),
+		),
+		cacheDir: resolveDescriptorPath(
+			productRoot,
+			options.descriptor.paths.cacheRoot ?? path.join(options.descriptor.paths.userDataRoot, "cache"),
+		),
+		logsDir: resolveDescriptorPath(
+			productRoot,
+			options.descriptor.paths.logsRoot ?? path.join(options.descriptor.paths.userDataRoot, "logs"),
+		),
 	});
 }
 
@@ -221,10 +245,18 @@ function buildProductPaths(options: {
 	shellRoot: string;
 	appCoreRoot: string;
 	runtimeRoot: string;
-	modelsRoot: string;
-	pretrainedModelsRoot: string;
+	adapterSystemRoot: string;
+	supportAssetsRoot: string;
+	seedModelPackagesRoot: string;
 	userDataDir: string;
 	exportsDir: string;
+	configDataDir?: string;
+	ttsRegistryDir?: string;
+	cacheDir?: string;
+	logsDir?: string;
+	gptSovitsDir?: string;
+	builtinModelDir?: string;
+	pretrainedModelsDir?: string;
 }): ProductPaths {
 	const productRoot = path.resolve(options.productRoot);
 	const bootstrapRoot = path.resolve(options.bootstrapRoot);
@@ -232,10 +264,27 @@ function buildProductPaths(options: {
 	const shellRoot = path.resolve(options.shellRoot);
 	const appCoreRoot = path.resolve(options.appCoreRoot);
 	const runtimeRoot = path.resolve(options.runtimeRoot);
-	const modelsRoot = path.resolve(options.modelsRoot);
-	const pretrainedModelsRoot = path.resolve(options.pretrainedModelsRoot);
+	const adapterSystemRoot = path.resolve(options.adapterSystemRoot);
+	const supportAssetsRoot = path.resolve(options.supportAssetsRoot);
+	const seedModelPackagesRoot = path.resolve(options.seedModelPackagesRoot);
 	const userDataDir = path.resolve(options.userDataDir);
 	const exportsDir = path.resolve(options.exportsDir);
+	const configDataDir = path.resolve(options.configDataDir ?? path.join(userDataDir, "config"));
+	const ttsRegistryDir = path.resolve(options.ttsRegistryDir ?? path.join(userDataDir, "tts-registry"));
+	const cacheDir = path.resolve(options.cacheDir ?? path.join(userDataDir, "cache"));
+	const logsDir = path.resolve(options.logsDir ?? path.join(userDataDir, "logs"));
+	const gptSovitsDir = path.resolve(
+		options.gptSovitsDir ??
+			path.join(adapterSystemRoot, "adapter-system", "gpt-sovits", "GPT_SoVITS"),
+	);
+	const builtinModelDir = path.resolve(
+		options.builtinModelDir ??
+			path.join(supportAssetsRoot, "support-assets", "gpt-sovits"),
+	);
+	const pretrainedModelsDir = path.resolve(
+		options.pretrainedModelsDir ??
+			path.join(supportAssetsRoot, "support-assets", "shared", "pretrained_models"),
+	);
 
 	return {
 		resolutionKind: options.resolutionKind,
@@ -247,19 +296,22 @@ function buildProductPaths(options: {
 		shellRoot,
 		appCoreRoot,
 		runtimeRoot,
-		modelsRoot,
-		pretrainedModelsRoot,
+		adapterSystemRoot,
+		supportAssetsRoot,
+		seedModelPackagesRoot,
 		resourcesDir: appCoreRoot,
 		backendDir: path.join(appCoreRoot, "backend"),
 		frontendDir: path.join(appCoreRoot, "frontend-dist"),
-		gptSovitsDir: path.join(appCoreRoot, "GPT_SoVITS"),
+		gptSovitsDir,
 		runtimePython: path.join(runtimeRoot, "runtime", "python", "python.exe"),
-		builtinModelDir: path.join(modelsRoot, "models", "builtin"),
-		pretrainedModelsDir: path.join(pretrainedModelsRoot, "pretrained_models"),
+		builtinModelDir,
+		pretrainedModelsDir,
 		configDir: path.join(appCoreRoot, "config"),
 		userDataDir,
-		logsDir: path.join(userDataDir, "logs"),
+		configDataDir,
+		ttsRegistryDir,
+		cacheDir,
+		logsDir,
 		exportsDir,
-		userModelsDir: path.join(userDataDir, "models"),
 	};
 }

@@ -105,9 +105,10 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   const updateAgentRoot = path.join(productRoot, "packages", "update-agent", "1.1.0");
   const shellRoot = path.join(productRoot, "packages", "shell", "v0.0.1");
   const appCoreRoot = path.join(productRoot, "packages", "app-core", "v0.0.1");
-  const runtimeLayerRoot = path.join(productRoot, "packages", "runtime", "py311-cu128-v1");
-  const modelsRoot = path.join(productRoot, "packages", "models", "builtin-v1");
-  const pretrainedModelsRoot = path.join(productRoot, "packages", "pretrained-models", "support-v1");
+  const runtimeLayerRoot = path.join(productRoot, "packages", "python-runtime", "py311-cu128-v1");
+  const adapterSystemRoot = path.join(productRoot, "packages", "adapter-system", "gpt-sovits-v1");
+  const supportAssetsRoot = path.join(productRoot, "packages", "support-assets", "support-v1");
+  const seedModelPackagesRoot = path.join(productRoot, "packages", "seed-model-packages", "seed-v1");
   const userDataDir =
     distributionKind === "installed"
       ? path.join(workspace, "AppData", "Local", "NeoTTS")
@@ -115,7 +116,11 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
   const exportsDir =
     distributionKind === "installed"
       ? path.join(workspace, "Documents", "NeoTTS", "Exports")
-      : path.join(productRoot, "exports");
+      : path.join(productRoot, "data", "exports");
+  const configDataDir = path.join(userDataDir, "config");
+  const ttsRegistryDir = path.join(userDataDir, "tts-registry");
+  const cacheDir = path.join(userDataDir, "cache");
+  const logsDir = path.join(userDataDir, "logs");
 
   return {
     resolutionKind: "descriptor",
@@ -127,20 +132,23 @@ function createProductPaths(distributionKind: "installed" | "portable"): Product
     shellRoot,
     appCoreRoot,
     runtimeRoot: runtimeLayerRoot,
-    modelsRoot,
-    pretrainedModelsRoot,
+    adapterSystemRoot,
+    supportAssetsRoot,
+    seedModelPackagesRoot,
     resourcesDir: appCoreRoot,
     backendDir: path.join(appCoreRoot, "backend"),
     frontendDir: path.join(appCoreRoot, "frontend-dist"),
-    gptSovitsDir: path.join(appCoreRoot, "GPT_SoVITS"),
+    gptSovitsDir: path.join(adapterSystemRoot, "adapter-system", "gpt-sovits", "GPT_SoVITS"),
     runtimePython: path.join(runtimeLayerRoot, "runtime", "python", "python.exe"),
-    builtinModelDir: path.join(modelsRoot, "models", "builtin"),
-    pretrainedModelsDir: path.join(pretrainedModelsRoot, "pretrained_models"),
+    builtinModelDir: path.join(supportAssetsRoot, "support-assets", "gpt-sovits"),
+    pretrainedModelsDir: path.join(supportAssetsRoot, "support-assets", "shared", "pretrained_models"),
     configDir: path.join(appCoreRoot, "config"),
     userDataDir,
-    logsDir: path.join(userDataDir, "logs"),
+    configDataDir,
+    ttsRegistryDir,
+    cacheDir,
+    logsDir,
     exportsDir,
-    userModelsDir: path.join(userDataDir, "models"),
   };
 }
 
@@ -168,10 +176,6 @@ function materializeRuntime(
   fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "config.json"), "{}", "utf-8");
   fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "pytorch_model.bin"), "", "utf-8");
   fs.writeFileSync(path.join(paths.builtinModelDir, "chinese-roberta-wwm-ext-large", "tokenizer.json"), "{}", "utf-8");
-  fs.mkdirSync(path.join(paths.builtinModelDir, "neuro2"), { recursive: true });
-  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2-e4.ckpt"), "", "utf-8");
-  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "neuro2_e4_s424.pth"), "", "utf-8");
-  fs.writeFileSync(path.join(paths.builtinModelDir, "neuro2", "audio1.wav"), "", "utf-8");
   fs.mkdirSync(path.join(paths.pretrainedModelsDir, "sv"), { recursive: true });
   if (options?.includeSvModel !== false) {
     fs.writeFileSync(
@@ -184,13 +188,7 @@ function materializeRuntime(
   fs.writeFileSync(path.join(paths.pretrainedModelsDir, "fast_langdetect", "lid.176.bin"), "", "utf-8");
   fs.writeFileSync(
     path.join(paths.configDir, "voices.json"),
-    JSON.stringify({
-      neuro2: {
-        gpt_path: "models/builtin/neuro2/neuro2-e4.ckpt",
-        sovits_path: "models/builtin/neuro2/neuro2_e4_s424.pth",
-        ref_audio: "models/builtin/neuro2/audio1.wav",
-      },
-    }),
+    JSON.stringify({}),
     "utf-8",
   );
   if (paths.distributionKind === "portable") {
@@ -1017,12 +1015,14 @@ describe("desktop main", () => {
     expect(quit).toHaveBeenCalledOnce();
   });
 
-  it("reports fatal state when pretrained-models layer is missing", async () => {
+  it("does not block startup when support-assets layer is absent", async () => {
     const productPaths = createProductPaths("installed");
     materializeRuntime(productPaths, { includePretrainedModels: false });
     const quit = vi.fn();
     const onFatalState = vi.fn();
-    const startBackend = vi.fn();
+    const startBackend = vi.fn().mockResolvedValue(
+      createBackendOwnerStub(createDeferred<Error | null>().promise),
+    );
 
     await runMain({
       app: {
@@ -1042,21 +1042,19 @@ describe("desktop main", () => {
       onFatalState,
     });
 
-    expect(startBackend).not.toHaveBeenCalled();
-    expect(onFatalState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reason: "invalid-runtime",
-      }),
-    );
-    expect(quit).toHaveBeenCalledOnce();
+    expect(startBackend).toHaveBeenCalledOnce();
+    expect(onFatalState).not.toHaveBeenCalled();
+    expect(quit).not.toHaveBeenCalled();
   });
 
-  it("reports fatal state when packaged support model files are missing", async () => {
+  it("does not block startup when packaged support model files are missing", async () => {
     const productPaths = createProductPaths("installed");
     materializeRuntime(productPaths, { includeSvModel: false });
     const quit = vi.fn();
     const onFatalState = vi.fn();
-    const startBackend = vi.fn();
+    const startBackend = vi.fn().mockResolvedValue(
+      createBackendOwnerStub(createDeferred<Error | null>().promise),
+    );
 
     await runMain({
       app: {
@@ -1076,13 +1074,9 @@ describe("desktop main", () => {
       onFatalState,
     });
 
-    expect(startBackend).not.toHaveBeenCalled();
-    expect(onFatalState).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reason: "invalid-runtime",
-      }),
-    );
-    expect(quit).toHaveBeenCalledOnce();
+    expect(startBackend).toHaveBeenCalledOnce();
+    expect(onFatalState).not.toHaveBeenCalled();
+    expect(quit).not.toHaveBeenCalled();
   });
 
   it("production mode loads frontend via loadURL from backend origin", async () => {

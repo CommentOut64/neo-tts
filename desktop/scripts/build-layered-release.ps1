@@ -480,17 +480,18 @@ if ([string]::IsNullOrWhiteSpace($NotesUrl)) {
 }
 
 $includePackagesConfig = $policyConfig.includePackages
-$includeRuntimePackage = [bool]($includePackagesConfig.runtime)
-$includeModelsPackage = [bool]($includePackagesConfig.models)
-$includePretrainedModelsPackage = [bool]($includePackagesConfig.'pretrained-models')
+$includeRuntimePackage = [bool]($includePackagesConfig.'python-runtime')
+$includeAdapterSystemPackage = [bool]($includePackagesConfig.'adapter-system')
+$includeSupportAssetsPackage = [bool]($includePackagesConfig.'support-assets')
+$includeSeedModelPackagesPackage = [bool]($includePackagesConfig.'seed-model-packages')
 if ($SkipRuntimePackage) {
     $includeRuntimePackage = $false
 }
 if ($SkipModelsPackage) {
-    $includeModelsPackage = $false
+    $includeSupportAssetsPackage = $false
 }
 if ($SkipPretrainedModelsPackage) {
-    $includePretrainedModelsPackage = $false
+    $includeSeedModelPackagesPackage = $false
 }
 
 if (-not $SkipStageRuntime) {
@@ -546,9 +547,10 @@ $launcherUpdateAgentExe = Join-Path $bootstrapDistRootPath "NeoTTSUpdateAgent.ex
 $shellExe = Join-Path $winUnpackedRootPath "NeoTTSApp.exe"
 $appRuntimeRoot = Join-Path $stageRootPath "app-runtime"
 $appCoreRoot = $appRuntimeRoot
-$runtimeRoot = Join-Path $appRuntimeRoot "runtime"
-$modelsRoot = Join-Path $appRuntimeRoot "models"
-$pretrainedModelsRoot = Join-Path $appRuntimeRoot "pretrained_models"
+$runtimeRoot = Join-Path $appRuntimeRoot "python-runtime"
+$adapterSystemRoot = Join-Path $appRuntimeRoot "adapter-system"
+$supportAssetsRoot = Join-Path $appRuntimeRoot "support-assets"
+$seedModelPackagesRoot = Join-Path $appRuntimeRoot "seed-model-packages"
 $manifestPath = Join-Path (Join-Path (Join-Path $releaseRootPath "releases") $releaseIdResolved) "manifest.json"
 $packagesRoot = Join-Path $releaseRootPath "packages"
 $temporaryRoot = Join-Path $releaseRootPath ".layered-temp"
@@ -559,9 +561,7 @@ foreach ($requiredPath in @(
         $shellExe,
         (Join-Path $appCoreRoot "backend"),
         (Join-Path $appCoreRoot "frontend-dist"),
-        (Join-Path $appCoreRoot "config"),
-        (Join-Path $appCoreRoot "GPT_SoVITS"),
-        (Join-Path $appCoreRoot "tools")
+        (Join-Path $appCoreRoot "config")
     )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Layered release prerequisite missing: $requiredPath"
@@ -570,11 +570,14 @@ foreach ($requiredPath in @(
 if ($includeRuntimePackage -and -not (Test-Path -LiteralPath $runtimeRoot)) {
     throw "Layered release prerequisite missing: $runtimeRoot"
 }
-if ($includeModelsPackage -and -not (Test-Path -LiteralPath $modelsRoot)) {
-    throw "Layered release prerequisite missing: $modelsRoot"
+if ($includeAdapterSystemPackage -and -not (Test-Path -LiteralPath $adapterSystemRoot)) {
+    throw "Layered release prerequisite missing: $adapterSystemRoot"
 }
-if ($includePretrainedModelsPackage -and -not (Test-Path -LiteralPath $pretrainedModelsRoot)) {
-    throw "Layered release prerequisite missing: $pretrainedModelsRoot"
+if ($includeSupportAssetsPackage -and -not (Test-Path -LiteralPath $supportAssetsRoot)) {
+    throw "Layered release prerequisite missing: $supportAssetsRoot"
+}
+if ($includeSeedModelPackagesPackage -and -not (Test-Path -LiteralPath $seedModelPackagesRoot)) {
+    throw "Layered release prerequisite missing: $seedModelPackagesRoot"
 }
 
 $sevenZipExe = Resolve-SevenZipPath -ConfiguredPath $SevenZipPath
@@ -588,21 +591,25 @@ Ensure-Directory -Path $packagesRoot
 Ensure-Directory -Path $temporaryRoot
 
 $runtimeVersion = if ([string]::IsNullOrWhiteSpace($RuntimeVersionOverride)) {
-    [string]$profileConfig.layeredPackages.runtimeVersion
+    [string]$profileConfig.layeredPackages.pythonRuntimeVersion
 }
 else {
     $RuntimeVersionOverride
 }
-$modelsVersion = [string]$profileConfig.layeredPackages.modelsVersion
-$pretrainedModelsVersion = [string]$profileConfig.layeredPackages.pretrainedModelsVersion
+$adapterSystemVersion = [string]$profileConfig.layeredPackages.adapterSystemVersion
+$supportAssetsVersion = [string]$profileConfig.layeredPackages.supportAssetsVersion
+$seedModelPackagesVersion = [string]$profileConfig.layeredPackages.seedModelPackagesVersion
 if ($includeRuntimePackage -and [string]::IsNullOrWhiteSpace($runtimeVersion)) {
-    throw "Profile '$Profile' must declare layeredPackages.runtimeVersion."
+    throw "Profile '$Profile' must declare layeredPackages.pythonRuntimeVersion."
 }
-if ($includeModelsPackage -and [string]::IsNullOrWhiteSpace($modelsVersion)) {
-    throw "Profile '$Profile' must declare layeredPackages.modelsVersion."
+if ($includeAdapterSystemPackage -and [string]::IsNullOrWhiteSpace($adapterSystemVersion)) {
+    throw "Profile '$Profile' must declare layeredPackages.adapterSystemVersion."
 }
-if ($includePretrainedModelsPackage -and [string]::IsNullOrWhiteSpace($pretrainedModelsVersion)) {
-    throw "Profile '$Profile' must declare layeredPackages.pretrainedModelsVersion."
+if ($includeSupportAssetsPackage -and [string]::IsNullOrWhiteSpace($supportAssetsVersion)) {
+    throw "Profile '$Profile' must declare layeredPackages.supportAssetsVersion."
+}
+if ($includeSeedModelPackagesPackage -and [string]::IsNullOrWhiteSpace($seedModelPackagesVersion)) {
+    throw "Profile '$Profile' must declare layeredPackages.seedModelPackagesVersion."
 }
 
 $packageEntries = New-Object System.Collections.Generic.List[object]
@@ -621,28 +628,34 @@ try {
             })) | Out-Null
     $packageEntries.Add((New-PackageArchive -PackageId "app-core" -Version $releaseIdResolved -Populate {
                 param($workspaceRoot)
-                foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
+                foreach ($directoryName in @("backend", "frontend-dist", "config")) {
                     $sourcePath = Join-Path $appCoreRoot $directoryName
                     Copy-DirectoryContents -SourcePath $sourcePath -DestinationPath (Join-Path $workspaceRoot $directoryName)
                 }
             })) | Out-Null
 
     if ($includeRuntimePackage) {
-        $packageEntries.Add((New-PackageArchive -PackageId "runtime" -Version $runtimeVersion -Populate {
+        $packageEntries.Add((New-PackageArchive -PackageId "python-runtime" -Version $runtimeVersion -Populate {
                     param($workspaceRoot)
-                    Copy-DirectoryContents -SourcePath $runtimeRoot -DestinationPath (Join-Path $workspaceRoot "runtime")
+                    Copy-DirectoryContents -SourcePath $runtimeRoot -DestinationPath (Join-Path $workspaceRoot "python-runtime")
                 })) | Out-Null
     }
-    if ($includeModelsPackage) {
-        $packageEntries.Add((New-PackageArchive -PackageId "models" -Version $modelsVersion -Populate {
+    if ($includeAdapterSystemPackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "adapter-system" -Version $adapterSystemVersion -Populate {
                     param($workspaceRoot)
-                    Copy-DirectoryContents -SourcePath $modelsRoot -DestinationPath (Join-Path $workspaceRoot "models")
+                    Copy-DirectoryContents -SourcePath $adapterSystemRoot -DestinationPath (Join-Path $workspaceRoot "adapter-system")
                 })) | Out-Null
     }
-    if ($includePretrainedModelsPackage) {
-        $packageEntries.Add((New-PackageArchive -PackageId "pretrained-models" -Version $pretrainedModelsVersion -Populate {
+    if ($includeSupportAssetsPackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "support-assets" -Version $supportAssetsVersion -Populate {
                     param($workspaceRoot)
-                    Copy-DirectoryContents -SourcePath $pretrainedModelsRoot -DestinationPath (Join-Path $workspaceRoot "pretrained_models")
+                    Copy-DirectoryContents -SourcePath $supportAssetsRoot -DestinationPath (Join-Path $workspaceRoot "support-assets")
+                })) | Out-Null
+    }
+    if ($includeSeedModelPackagesPackage) {
+        $packageEntries.Add((New-PackageArchive -PackageId "seed-model-packages" -Version $seedModelPackagesVersion -Populate {
+                    param($workspaceRoot)
+                    Copy-DirectoryContents -SourcePath $seedModelPackagesRoot -DestinationPath (Join-Path $workspaceRoot "seed-model-packages")
                 })) | Out-Null
     }
 

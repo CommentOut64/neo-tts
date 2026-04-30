@@ -41,17 +41,21 @@ function buildDescriptor(rootDir: string, distributionKind: "installed" | "porta
 				version: "v0.0.1",
 				root: path.join(rootDir, "packages", "app-core", "v0.0.1"),
 			},
-			runtime: {
+			"python-runtime": {
 				version: "py311-cu128-v1",
-				root: path.join(rootDir, "packages", "runtime", "py311-cu128-v1"),
+				root: path.join(rootDir, "packages", "python-runtime", "py311-cu128-v1"),
 			},
-			models: {
-				version: "builtin-v1",
-				root: path.join(rootDir, "packages", "models", "builtin-v1"),
+			"adapter-system": {
+				version: "adapter-v1",
+				root: path.join(rootDir, "packages", "adapter-system", "adapter-v1"),
 			},
-			"pretrained-models": {
+			"support-assets": {
 				version: "support-v1",
-				root: path.join(rootDir, "packages", "pretrained-models", "support-v1"),
+				root: path.join(rootDir, "packages", "support-assets", "support-v1"),
+			},
+			"seed-model-packages": {
+				version: "seed-v1",
+				root: path.join(rootDir, "packages", "seed-model-packages", "seed-v1"),
 			},
 		},
 		paths: {
@@ -88,6 +92,22 @@ describe("runtime descriptor", () => {
 		const loaded = readRuntimeDescriptor(descriptorPath);
 
 		expect(loaded).toEqual(descriptor);
+	});
+
+	it("uses portable-first package keys instead of legacy model packages", () => {
+		const rootDir = createTempDir("neo-tts-runtime-descriptor-packages-");
+		const descriptorPath = path.join(rootDir, "state", "current.json");
+		const descriptor = buildDescriptor(rootDir, "portable");
+		writeDescriptor(descriptorPath, descriptor);
+
+		const loaded = readRuntimeDescriptor(descriptorPath);
+
+		expect(loaded.packages["python-runtime"].root).toContain(path.join("packages", "python-runtime"));
+		expect(loaded.packages["adapter-system"].root).toContain(path.join("packages", "adapter-system"));
+		expect(loaded.packages["support-assets"].root).toContain(path.join("packages", "support-assets"));
+		expect(loaded.packages["seed-model-packages"].root).toContain(path.join("packages", "seed-model-packages"));
+		expect("models" in (loaded.packages as Record<string, unknown>)).toBe(false);
+		expect("pretrained-models" in (loaded.packages as Record<string, unknown>)).toBe(false);
 	});
 
 	it("prefers NEO_TTS_RUNTIME_DESCRIPTOR over bootstrap root state/current.json", () => {

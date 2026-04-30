@@ -217,7 +217,7 @@ function Resolve-LayerPackage {
     }
 
     $normalized = $LayerPackage.Trim()
-    if ($normalized -notin @("app-core", "runtime", "models", "pretrained-models")) {
+    if ($normalized -notin @("app-core", "python-runtime", "adapter-system", "support-assets", "seed-model-packages")) {
         throw "Unsupported layerPackage '$normalized'."
     }
     return $normalized
@@ -696,13 +696,6 @@ else {
     "none"
 }
 
-if ([string]$profileConfig.profileId -eq "default.v1") {
-    $defaultBuiltinVoiceIds = @($profileConfig.builtinVoices | ForEach-Object { [string]$_.voiceId })
-    if ($defaultBuiltinVoiceIds.Count -ne 1 -or $defaultBuiltinVoiceIds[0] -ne "neuro2") {
-        throw "Profile 'default.v1' must package exactly one builtin voice: neuro2."
-    }
-}
-
 if ($flavorConfig.distributionKind -ne $Flavor) {
     throw "Flavor metadata mismatch: expected '$Flavor', got '$($flavorConfig.distributionKind)'."
 }
@@ -710,9 +703,10 @@ if ($flavorConfig.distributionKind -ne $Flavor) {
 $appRuntimeRoot = Join-Path $stageRootPath "app-runtime"
 $frontendStagePath = Join-Path $appRuntimeRoot "frontend-dist"
 $backendStagePath = Join-Path $appRuntimeRoot "backend"
-$gptSovitsStagePath = Join-Path $appRuntimeRoot "GPT_SoVITS"
-$runtimePythonDir = Join-Path $appRuntimeRoot "runtime\python"
-$builtinModelDir = Join-Path $appRuntimeRoot "models\builtin"
+$gptSovitsStagePath = Join-Path $appRuntimeRoot "adapter-system\gpt-sovits\GPT_SoVITS"
+$runtimePythonDir = Join-Path $appRuntimeRoot "python-runtime\python"
+$builtinModelDir = Join-Path $appRuntimeRoot "support-assets\gpt-sovits"
+$seedModelPackagesDir = Join-Path $appRuntimeRoot "seed-model-packages"
 $configDir = Join-Path $appRuntimeRoot "config"
 $cacheRoot = Join-Path $desktopRoot ".cache"
 $wheelhouseDir = Join-Path $cacheRoot (Join-Path "wheelhouse" $CudaRuntime)
@@ -728,6 +722,7 @@ $null = @(
     $stageRootPath,
     $appRuntimeRoot,
     $builtinModelDir,
+    $seedModelPackagesDir,
     $configDir,
     $cacheRoot,
     $wheelhouseDir,
@@ -1076,7 +1071,7 @@ foreach ($file in $runtimeFiles) {
         -Required $true `
         -OverwritePolicy "replace" `
         -ProfileTags @() `
-        -LayerPackage "runtime"
+        -LayerPackage "python-runtime"
 }
 
 $builtinVoiceFingerprintValues = New-Object System.Collections.Generic.List[string]
@@ -1136,7 +1131,7 @@ foreach ($voice in $profileConfig.builtinVoices) {
     if ([string]::IsNullOrWhiteSpace($voiceId)) {
         throw "Builtin voice entry is missing voiceId."
     }
-    $voiceLayerPackage = if ([string]::IsNullOrWhiteSpace([string]$voice.layerPackage)) { "models" } else { [string]$voice.layerPackage }
+    $voiceLayerPackage = if ([string]::IsNullOrWhiteSpace([string]$voice.layerPackage)) { "seed-model-packages" } else { [string]$voice.layerPackage }
 
     $voiceDestinationDir = Join-Path $appRuntimeRoot ([string]$voice.destinationDir)
     Ensure-Directory -Path $voiceDestinationDir
@@ -1240,6 +1235,7 @@ Write-Host "  - $backendStagePath"
 Write-Host "  - $gptSovitsStagePath"
 Write-Host "  - $runtimePythonDir"
 Write-Host "  - $builtinModelDir"
+Write-Host "  - $seedModelPackagesDir"
 Write-Host "  - $configDir"
 Write-Host "  - $wheelhouseDir"
 Write-Host "  - $manifestLockPath"

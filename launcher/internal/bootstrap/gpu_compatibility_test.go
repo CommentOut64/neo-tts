@@ -10,7 +10,7 @@ import (
 
 func TestAssessStartupGPUCompatibilityIsSilentForSupportedCU128Driver(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
 				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "528.33"},
@@ -25,7 +25,7 @@ func TestAssessStartupGPUCompatibilityIsSilentForSupportedCU128Driver(t *testing
 
 func TestAssessStartupGPUCompatibilityIsSilentForRuntimeCompatibleCU128Driver(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
 				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "566.36"},
@@ -40,7 +40,7 @@ func TestAssessStartupGPUCompatibilityIsSilentForRuntimeCompatibleCU128Driver(t 
 
 func TestAssessStartupGPUCompatibilityWarns50SeriesCU128OldDriver(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
 				{Name: "NVIDIA GeForce RTX 5090", DriverVersion: "528.32"},
@@ -58,7 +58,7 @@ func TestAssessStartupGPUCompatibilityWarns50SeriesCU128OldDriver(t *testing.T) 
 
 func TestAssessStartupGPUCompatibilityWarnsNon50SeriesCU128OldDriver(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{
 			GPUs: []NvidiaGPUInfo{
 				{Name: "NVIDIA GeForce RTX 4090", DriverVersion: "528.32"},
@@ -76,7 +76,7 @@ func TestAssessStartupGPUCompatibilityWarnsNon50SeriesCU128OldDriver(t *testing.
 
 func TestAssessStartupGPUCompatibilityWarnsWhenProbeFails(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{Err: errors.New("nvidia-smi timed out")},
 	)
 
@@ -90,7 +90,7 @@ func TestAssessStartupGPUCompatibilityWarnsWhenProbeFails(t *testing.T) {
 
 func TestAssessStartupGPUCompatibilityIsSilentForUnknownRuntime(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cpu-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cpu-v1"}}},
 		NvidiaGPUProbeResult{Err: errors.New("nvidia-smi missing")},
 	)
 
@@ -101,7 +101,7 @@ func TestAssessStartupGPUCompatibilityIsSilentForUnknownRuntime(t *testing.T) {
 
 func TestAssessStartupGPUCompatibilityWarnsWhenNoNvidiaGPUIsReported(t *testing.T) {
 	notice := AssessStartupGPUCompatibility(
-		CurrentState{Packages: map[string]PackageState{"runtime": {Version: "py311-cu128-v1"}}},
+		CurrentState{Packages: map[string]PackageState{"python-runtime": {Version: "py311-cu128-v1"}}},
 		NvidiaGPUProbeResult{},
 	)
 
