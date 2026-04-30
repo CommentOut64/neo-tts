@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.app.inference.block_adapter_errors import BlockAdapterError, block_adapter_error_status_code
+
 
 class EditSessionNotFoundError(LookupError):
     pass
@@ -29,6 +31,13 @@ class InvalidRangeError(RuntimeError):
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(BlockAdapterError)
+    async def _block_adapter_error_handler(_: Request, exc: BlockAdapterError) -> JSONResponse:
+        return JSONResponse(
+            status_code=block_adapter_error_status_code(exc.error_code),
+            content=exc.to_payload().model_dump(mode="json"),
+        )
+
     @app.exception_handler(LookupError)
     async def _lookup_error_handler(_: Request, exc: LookupError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

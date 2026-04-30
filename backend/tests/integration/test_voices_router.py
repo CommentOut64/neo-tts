@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -156,6 +157,88 @@ def test_get_voice_detail_returns_profile(sample_voice_config):
     assert response.json()["weight_storage_mode"] == "external"
     assert response.json()["gpt_fingerprint"]
     assert response.json()["sovits_fingerprint"]
+
+
+def test_list_voices_migrates_legacy_profiles_into_registry_and_subsequent_reads_use_registry(sample_voice_config):
+    settings = AppSettings(
+        project_root=sample_voice_config.parent,
+        voices_config_path=sample_voice_config,
+        tts_registry_root=sample_voice_config.parent / "tts-registry",
+    )
+    client = TestClient(create_app(settings=settings))
+
+    first_list = client.get("/v1/voices")
+
+    assert first_list.status_code == 200
+    assert [voice["name"] for voice in first_list.json()] == ["demo"]
+    registry_payload = json.loads((settings.tts_registry_root / "registry.json").read_text(encoding="utf-8"))
+    assert [model["model_instance_id"] for model in registry_payload["models"]] == ["demo"]
+    assert registry_payload["models"][0]["presets"][0]["preset_id"] == "default"
+
+    sample_voice_config.write_text("{}", encoding="utf-8")
+
+    reload_response = client.post("/v1/voices/reload")
+    detail_response = client.get("/v1/voices/demo")
+
+    assert reload_response.status_code == 200
+    assert reload_response.json() == {"status": "success", "count": 1}
+    assert detail_response.status_code == 200
+    assert detail_response.json()["name"] == "demo"
+
+
+def test_upload_update_delete_voice_keep_registry_projection_in_sync(empty_voice_config):
+    managed_dir = empty_voice_config.parent / "managed_voices"
+    settings = AppSettings(
+        project_root=empty_voice_config.parent,
+        voices_config_path=empty_voice_config,
+        managed_voices_dir=managed_dir,
+        tts_registry_root=empty_voice_config.parent / "tts-registry",
+    )
+    client = TestClient(create_app(settings=settings))
+
+    upload_response = client.post(
+        "/v1/voices/upload",
+        data={
+            "name": "uploaded-demo",
+            "description": "uploaded voice",
+            "ref_text": "reference text",
+            "ref_lang": "en",
+            "copy_weights_into_project": "true",
+        },
+        files={
+            "gpt_file": ("demo.ckpt", b"fake-gpt", "application/octet-stream"),
+            "sovits_file": ("demo.pth", b"fake-sovits", "application/octet-stream"),
+            "ref_audio_file": ("demo.wav", b"RIFFfake", "audio/wav"),
+        },
+    )
+    assert upload_response.status_code == 201
+    registry_after_upload = _load_registry(settings.tts_registry_root)
+    assert [model["model_instance_id"] for model in registry_after_upload["models"]] == ["uploaded-demo"]
+
+    update_response = client.patch(
+        "/v1/voices/uploaded-demo",
+        data={
+            "description": "updated voice",
+            "ref_text": "updated reference text",
+            "ref_lang": "ja",
+        },
+    )
+
+    assert update_response.status_code == 200
+    detail_response = client.get("/v1/voices/uploaded-demo")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["description"] == "updated voice"
+    assert detail_response.json()["ref_text"] == "updated reference text"
+    assert detail_response.json()["ref_lang"] == "ja"
+
+    delete_response = client.delete("/v1/voices/uploaded-demo")
+
+    assert delete_response.status_code == 200
+    assert _load_registry(settings.tts_registry_root)["models"] == []
+
+
+def _load_registry(registry_root: Path) -> dict:
+    return json.loads((registry_root / "registry.json").read_text(encoding="utf-8"))
 
 
 def test_upload_voice_persists_files_and_updates_config(empty_voice_config):

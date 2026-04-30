@@ -3,6 +3,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, s
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.model_registry import ModelRegistry
 
 
 router = APIRouter(prefix="/v1/voices", tags=["voices"])
@@ -11,7 +12,13 @@ router = APIRouter(prefix="/v1/voices", tags=["voices"])
 def _build_service(request: Request) -> VoiceService:
     settings = request.app.state.settings
     repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
-    return VoiceService(repository)
+    return VoiceService(repository, _build_model_registry(request))
+
+
+def _build_model_registry(request: Request) -> ModelRegistry:
+    settings = request.app.state.settings
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return ModelRegistry(registry_root)
 
 
 @router.get(

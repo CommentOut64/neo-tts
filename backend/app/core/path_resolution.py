@@ -10,13 +10,15 @@ def resolve_runtime_path(
     project_root: Path | None = None,
     user_data_root: Path | None = None,
     resources_root: Path | None = None,
+    tts_registry_root: Path | None = None,
     managed_voices_dir: Path | None = None,
 ) -> Path:
-    resolved_project_root, resolved_user_data_root, resolved_resources_root, resolved_managed_voices_dir = (
+    resolved_project_root, resolved_user_data_root, resolved_resources_root, resolved_tts_registry_root, resolved_managed_voices_dir = (
         _resolve_runtime_roots(
             project_root=project_root,
             user_data_root=user_data_root,
             resources_root=resources_root,
+            tts_registry_root=tts_registry_root,
             managed_voices_dir=managed_voices_dir,
         )
     )
@@ -36,6 +38,8 @@ def resolve_runtime_path(
 
     if path.parts and path.parts[0] == resolved_managed_voices_dir.name:
         return (resolved_managed_voices_dir.parent / path).resolve()
+    if path.parts and path.parts[0] == resolved_tts_registry_root.name:
+        return (resolved_tts_registry_root.parent / path).resolve()
     return (resolved_project_root / path).resolve()
 
 
@@ -44,8 +48,9 @@ def _resolve_runtime_roots(
     project_root: Path | None,
     user_data_root: Path | None,
     resources_root: Path | None,
+    tts_registry_root: Path | None,
     managed_voices_dir: Path | None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path]:
     resolved_project_root = _resolve_optional_root(
         explicit=project_root,
         env_name="NEO_TTS_PROJECT_ROOT",
@@ -61,15 +66,21 @@ def _resolve_runtime_roots(
         env_name="NEO_TTS_RESOURCES_ROOT",
         default=resolved_project_root,
     )
+    resolved_tts_registry_root = _resolve_optional_root(
+        explicit=tts_registry_root,
+        env_name="NEO_TTS_MODEL_REGISTRY_ROOT",
+        default=resolved_user_data_root / "tts-registry",
+    )
     resolved_managed_voices_dir = _resolve_optional_root(
         explicit=managed_voices_dir,
         env_name="GPT_SOVITS_MANAGED_VOICES_DIR",
-        default=resolved_user_data_root / "managed_voices",
+        default=resolved_tts_registry_root / "managed_voices",
     )
     return (
         resolved_project_root,
         resolved_user_data_root,
         resolved_resources_root,
+        resolved_tts_registry_root,
         resolved_managed_voices_dir,
     )
 

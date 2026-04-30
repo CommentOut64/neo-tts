@@ -66,6 +66,7 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.export_service import ExportService
 from backend.app.services.render_job_service import RenderJobService
 from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.model_registry import ModelRegistry
 
 
 router = APIRouter(prefix="/v1/edit-session", tags=["edit-session"])
@@ -106,7 +107,8 @@ class _UnavailableEditableBackend:
 def _build_voice_service(request: Request) -> VoiceService:
     settings = request.app.state.settings
     repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
-    return VoiceService(repository)
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return VoiceService(repository, ModelRegistry(registry_root))
 
 
 def _resolve_runtime_model_path(request: Request, raw_path: str) -> str:

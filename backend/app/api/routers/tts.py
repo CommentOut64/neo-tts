@@ -35,6 +35,7 @@ from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
 from backend.app.services.tts_service import TtsService
 from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.model_registry import ModelRegistry
 
 
 router = APIRouter(prefix="/v1/audio", tags=["tts"])
@@ -87,7 +88,8 @@ def _speech_request_properties(*, include_binary_file: bool) -> dict[str, dict]:
 def _build_voice_service(request: Request) -> VoiceService:
     settings = request.app.state.settings
     repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
-    return VoiceService(repository)
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return VoiceService(repository, ModelRegistry(registry_root))
 
 
 def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
