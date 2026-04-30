@@ -39,16 +39,15 @@ def test_service_recovers_head_snapshot_after_restart(tmp_path: Path):
         document_id="doc-1",
         snapshot_kind="head",
         document_version=2,
-        raw_text="你好。",
-        normalized_text="你好。",
         segments=[
             EditableSegment(
                 segment_id="seg-1",
                 document_id="doc-1",
                 order_key=1,
-                raw_text="你好。",
-                normalized_text="你好。",
+                stem="你好",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
                 render_asset_id="render-1",
             )
         ],
@@ -166,3 +165,25 @@ def test_run_periodic_loop_executes_cleanup_cycle_once_before_cancel(tmp_path: P
 
     preview_purged_count = asyncio.run(_exercise())
     assert preview_purged_count >= 0
+
+
+def test_cleanup_cycle_skips_formal_gc_while_active_job_is_running(tmp_path: Path):
+    repository = _build_repository(tmp_path)
+    store = _build_store(tmp_path)
+    runtime = EditSessionRuntime()
+    repository.upsert_active_session(
+        ActiveDocumentState(
+            document_id="doc-1",
+            session_status="initializing",
+            active_job_id="job-1",
+        )
+    )
+    asset_dir = store.segment_asset_path("render-inflight")
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    (asset_dir / "audio.wav").write_bytes(b"wav")
+    maintenance = EditSessionMaintenanceService(repository=repository, asset_store=store, runtime=runtime)
+
+    report = maintenance._run_cleanup_cycle(cleanup_orphan_previews=False)
+
+    assert asset_dir.exists()
+    assert report.formal_gc_report.deleted_asset_paths == []
