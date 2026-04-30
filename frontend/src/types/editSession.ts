@@ -147,6 +147,8 @@ export interface VoiceBinding {
   scope: 'session' | 'group' | 'segment'
   voice_id: string
   model_key: string
+  model_instance_id: string | null
+  preset_id: string | null
   sovits_path: string | null
   gpt_path: string | null
   speaker_meta: Record<string, unknown>
@@ -273,6 +275,8 @@ export interface RenderProfilePatch {
 export interface VoiceBindingPatch {
   voice_id?: string | null
   model_key?: string | null
+  model_instance_id?: string | null
+  preset_id?: string | null
   sovits_path?: string | null
   gpt_path?: string | null
   speaker_meta?: Record<string, unknown> | null

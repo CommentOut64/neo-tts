@@ -18,6 +18,7 @@ from backend.app.inference.editable_gateway import (
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
 )
+from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -66,7 +67,9 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.export_service import ExportService
 from backend.app.services.render_job_service import RenderJobService
 from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
 from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 
 
 router = APIRouter(prefix="/v1/edit-session", tags=["edit-session"])
@@ -105,10 +108,30 @@ class _UnavailableEditableBackend:
 
 
 def _build_voice_service(request: Request) -> VoiceService:
+    model_registry = _build_model_registry(request)
     settings = request.app.state.settings
     repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
+    return VoiceService(repository, model_registry)
+
+
+def _build_model_registry(request: Request) -> ModelRegistry:
+    settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-    return VoiceService(repository, ModelRegistry(registry_root))
+    return ModelRegistry(registry_root)
+
+
+def _build_secret_store(request: Request) -> SecretStore:
+    settings = request.app.state.settings
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return SecretStore(registry_root)
+
+
+def _build_adapter_registry() -> AdapterRegistry:
+    store = build_default_adapter_definition_store()
+    registry = AdapterRegistry()
+    for definition in store.list_definitions():
+        registry.register(definition)
+    return registry
 
 
 def _resolve_runtime_model_path(request: Request, raw_path: str) -> str:
@@ -198,6 +221,9 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
+        model_registry=_build_model_registry(request),
+        adapter_registry=_build_adapter_registry(),
+        secret_store=_build_secret_store(request),
     )
 
 
@@ -213,6 +239,9 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         session_service=_build_edit_session_service(request),
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),
+        model_registry=_build_model_registry(request),
+        adapter_registry=_build_adapter_registry(),
+        secret_store=_build_secret_store(request),
         run_jobs_in_background=False,
     )
 

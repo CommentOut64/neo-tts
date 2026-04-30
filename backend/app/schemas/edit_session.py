@@ -124,6 +124,14 @@ class VoiceBinding(BaseModel):
     scope: Literal["session", "group", "segment"] = Field(description="binding 生效范围。")
     voice_id: str = Field(description="音色 ID。")
     model_key: str = Field(description="模型标识。")
+    model_instance_id: str | None = Field(
+        default=None,
+        description="标准模型注册表中的模型实例 ID；旧 session 兼容场景下可为空。",
+    )
+    preset_id: str | None = Field(
+        default=None,
+        description="标准模型注册表中的预设 ID；旧 session 兼容场景下可为空。",
+    )
     sovits_path: str | None = Field(default=None, description="可选的 SoVITS 模型路径。")
     gpt_path: str | None = Field(default=None, description="可选的 GPT 模型路径。")
     speaker_meta: dict[str, Any] = Field(default_factory=dict, description="可选的说话人附加元数据。")
@@ -249,6 +257,14 @@ class RenderProfilePatchRequest(BaseModel):
 class VoiceBindingPatchRequest(BaseModel):
     voice_id: str | None = Field(default=None, description="新的音色 ID。")
     model_key: str | None = Field(default=None, description="新的模型标识。")
+    model_instance_id: str | None = Field(
+        default=None,
+        description="新的标准模型实例 ID；未提供时保留当前值或回落到兼容投影。",
+    )
+    preset_id: str | None = Field(
+        default=None,
+        description="新的标准预设 ID；未提供时保留当前值或回落到兼容投影。",
+    )
     sovits_path: str | None = Field(default=None, description="新的 SoVITS 模型路径。")
     gpt_path: str | None = Field(default=None, description="新的 GPT 模型路径。")
     speaker_meta: dict[str, Any] | None = Field(default=None, description="新的说话人附加元数据。")
@@ -260,6 +276,8 @@ class VoiceBindingPatchRequest(BaseModel):
             for value in (
                 self.voice_id,
                 self.model_key,
+                self.model_instance_id,
+                self.preset_id,
                 self.sovits_path,
                 self.gpt_path,
                 self.speaker_meta,

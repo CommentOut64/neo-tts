@@ -104,6 +104,9 @@ from backend.app.text.segment_standardizer import (
     standardize_segment_text,
     standardize_segment_texts,
 )
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 
 render_job_logger = get_logger("render_job_service")
 
@@ -193,6 +196,9 @@ class RenderJobService:
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
         checkpoint_service: CheckpointService | None = None,
+        model_registry: ModelRegistry | None = None,
+        adapter_registry: AdapterRegistry | None = None,
+        secret_store: SecretStore | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -213,7 +219,12 @@ class RenderJobService:
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
-        self._render_config_resolver = RenderConfigResolver(voice_service=session_service)
+        self._render_config_resolver = RenderConfigResolver(
+            voice_service=session_service,
+            model_registry=model_registry,
+            adapter_registry=adapter_registry,
+            secret_store=secret_store,
+        )
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._checkpoint_service = checkpoint_service or CheckpointService(
             repository=repository,
@@ -222,6 +233,9 @@ class RenderJobService:
             block_planner=self._block_planner,
             composition_builder=self._composition_builder,
             timeline_manifest_service=self._timeline_manifest_service,
+            model_registry=model_registry,
+            adapter_registry=adapter_registry,
+            secret_store=secret_store,
         )
         self._run_jobs_in_background = run_jobs_in_background
         self._preview_ttl_seconds = preview_ttl_seconds
@@ -334,10 +348,18 @@ class RenderJobService:
                 snapshot=working_snapshot,
             ).snapshot
         if group_id is not None and body.group_voice_binding is not None:
+            base_binding = self._get_voice_binding(
+                working_snapshot,
+                self._resolve_group_assigned_voice_binding_id(working_snapshot, group_id),
+            )
             working_snapshot = self._segment_group_service.update_group_voice_binding(
                 group_id,
                 body.group_voice_binding,
                 snapshot=working_snapshot,
+                projected_voice=self._resolve_projected_voice_for_binding_patch(
+                    base_binding=base_binding,
+                    patch=body.group_voice_binding,
+                ),
             ).snapshot
 
         raw_segments = self._split_raw_segments(body.raw_text, segment_boundary_mode=body.segment_boundary_mode)
@@ -584,7 +606,12 @@ class RenderJobService:
 
     def create_patch_session_voice_binding_job(self, patch: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
-        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
+        after_snapshot = self._segment_group_service.update_session_voice_binding(
+            patch,
+            snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
+        )
         return self._enqueue_configuration_job(
             job_kind="session_voice_binding_patch",
             message="已创建会话级 voice/model 绑定更新作业。",
@@ -599,10 +626,15 @@ class RenderJobService:
         patch: VoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_group_assigned_voice_binding_id(before_snapshot, group_id),
+        )
         after_snapshot = self._segment_group_service.update_group_voice_binding(
             group_id,
             patch,
             snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         ).snapshot
         return self._enqueue_configuration_job(
             job_kind="group_voice_binding_patch",
@@ -618,11 +650,16 @@ class RenderJobService:
         patch: VoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=patch,
             base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         )
         after_snapshot = self._segment_service.update_segment_voice_binding(
             segment_id,
@@ -667,11 +704,16 @@ class RenderJobService:
         body: SegmentBatchVoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=body.patch,
             base_binding_id=before_snapshot.default_voice_binding_id,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(
+                base_binding=base_binding,
+                patch=body.patch,
+            ),
         )
         after_snapshot = self._segment_service.update_segments_voice_binding(
             body.segment_ids,
@@ -742,7 +784,12 @@ class RenderJobService:
     def commit_patch_session_voice_binding(self, patch: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
-        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
+        after_snapshot = self._segment_group_service.update_session_voice_binding(
+            patch,
+            snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
+        )
         changed_segment_ids = self._collect_changed_segment_ids(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
@@ -789,11 +836,16 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=patch,
             base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         )
         after_snapshot = self._segment_service.update_segment_voice_binding(
             segment_id,
@@ -844,11 +896,16 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=body.patch,
             base_binding_id=before_snapshot.default_voice_binding_id,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(
+                base_binding=base_binding,
+                patch=body.patch,
+            ),
         )
         after_snapshot = self._segment_service.update_segments_voice_binding(
             body.segment_ids,
@@ -1347,7 +1404,10 @@ class RenderJobService:
             progress=PREPARE_START_PROGRESS,
             message="正在准备参考上下文。",
         )
-        resolved_context = self._build_resolved_context_from_request(plan.request)
+        resolved_context = self._build_resolved_context_from_request(
+            plan.request,
+            projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+        )
         render_job_logger.info(
             "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
             resolved_context.voice_id,
@@ -1374,7 +1434,10 @@ class RenderJobService:
             plan.context.reference_context_id,
             (time.perf_counter() - context_started) * 1000,
         )
-        default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
+        default_render_profile, default_voice_binding = self._build_default_configuration(
+            plan.request,
+            projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+        )
         plan.render_profiles = [default_render_profile]
         plan.voice_bindings = [default_voice_binding]
         plan.default_render_profile_id = default_render_profile.render_profile_id
@@ -1484,7 +1547,10 @@ class RenderJobService:
         )
         if self._should_prepare_edit_reference_context(plan):
             plan.context = self._gateway.build_reference_context(
-                self._build_resolved_context_from_request(plan.request),
+                self._build_resolved_context_from_request(
+                    plan.request,
+                    projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+                ),
                 progress_callback=self._build_prepare_progress_callback(
                     job_id=plan.job_id,
                     default_message="正在准备编辑作业。",
@@ -2897,12 +2963,53 @@ class RenderJobService:
         ).voice_binding.voice_binding_id
 
     @staticmethod
-    def _build_default_configuration(request: InitializeEditSessionRequest) -> tuple[RenderProfile, VoiceBinding]:
+    def _get_voice_binding(snapshot: DocumentSnapshot, voice_binding_id: str | None) -> VoiceBinding:
+        if voice_binding_id is None:
+            raise EditSessionNotFoundError("Voice binding not found.")
+        binding = next((item for item in snapshot.voice_bindings if item.voice_binding_id == voice_binding_id), None)
+        if binding is None:
+            raise EditSessionNotFoundError(f"Voice binding '{voice_binding_id}' not found.")
+        return binding
+
+    @staticmethod
+    def _resolve_group_assigned_voice_binding_id(snapshot: DocumentSnapshot, group_id: str) -> str | None:
+        group = next((item for item in snapshot.groups if item.group_id == group_id), None)
+        if group is None:
+            raise EditSessionNotFoundError(f"Segment group '{group_id}' not found.")
+        return group.voice_binding_id or snapshot.default_voice_binding_id
+
+    def _resolve_projected_voice_for_binding_patch(
+        self,
+        *,
+        base_binding: VoiceBinding,
+        patch: VoiceBindingPatchRequest,
+    ):
+        refresh_projected_fields = (
+            (patch.voice_id is not None and patch.voice_id != base_binding.voice_id)
+            or (patch.model_key is not None and patch.model_key != base_binding.model_key)
+        )
+        if not refresh_projected_fields:
+            return None
+        effective_voice_id = patch.voice_id if patch.voice_id is not None else base_binding.voice_id
+        try:
+            return self._session_service.get_voice_profile(effective_voice_id)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _build_default_configuration(
+        request: InitializeEditSessionRequest,
+        projected_voice=None,
+    ) -> tuple[RenderProfile, VoiceBinding]:
         voice_binding = VoiceBinding(
             voice_binding_id=f"binding-session-{uuid4().hex}",
             scope="session",
             voice_id=request.voice_id,
             model_key=request.model_id,
+            model_instance_id=getattr(projected_voice, "model_instance_id", None),
+            preset_id=getattr(projected_voice, "preset_id", None),
+            gpt_path=getattr(projected_voice, "gpt_path", None),
+            sovits_path=getattr(projected_voice, "sovits_path", None),
         )
         reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
         if request.reference_source == "custom":
@@ -2987,6 +3094,26 @@ class RenderJobService:
                 voice_binding_id=resolved.voice_binding.voice_binding_id,
                 voice_id=resolved.voice_binding.voice_id,
                 model_key=resolved.voice_binding.model_key,
+                adapter_id=(
+                    resolved.resolved_model_binding.adapter_id
+                    if resolved.resolved_model_binding is not None
+                    else None
+                ),
+                model_instance_id=(
+                    resolved.resolved_model_binding.model_instance_id
+                    if resolved.resolved_model_binding is not None
+                    else resolved.voice_binding.model_instance_id
+                ),
+                preset_id=(
+                    resolved.resolved_model_binding.preset_id
+                    if resolved.resolved_model_binding is not None
+                    else resolved.voice_binding.preset_id
+                ),
+                binding_fingerprint=(
+                    resolved.resolved_model_binding.binding_fingerprint
+                    if resolved.resolved_model_binding is not None
+                    else resolved.model_cache_key
+                ),
                 gpt_path=resolved.voice_binding.gpt_path,
                 sovits_path=resolved.voice_binding.sovits_path,
                 speaker_meta=dict(resolved.voice_binding.speaker_meta),
@@ -3014,7 +3141,10 @@ class RenderJobService:
         return context
 
     @staticmethod
-    def _build_resolved_context_from_request(request: InitializeEditSessionRequest) -> ResolvedRenderContext:
+    def _build_resolved_context_from_request(
+        request: InitializeEditSessionRequest,
+        projected_voice=None,
+    ) -> ResolvedRenderContext:
         return ResolvedRenderContext(
             voice_id=request.voice_id,
             model_key=request.model_id,
@@ -3036,6 +3166,10 @@ class RenderJobService:
                 voice_binding_id="binding-session-default",
                 voice_id=request.voice_id,
                 model_key=request.model_id,
+                model_instance_id=getattr(projected_voice, "model_instance_id", None),
+                preset_id=getattr(projected_voice, "preset_id", None),
+                gpt_path=getattr(projected_voice, "gpt_path", None),
+                sovits_path=getattr(projected_voice, "sovits_path", None),
             ),
             render_profile_id="profile-session-default",
         )

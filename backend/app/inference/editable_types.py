@@ -41,6 +41,10 @@ class ResolvedVoiceBinding:
     voice_binding_id: str
     voice_id: str
     model_key: str
+    adapter_id: str | None = None
+    model_instance_id: str | None = None
+    preset_id: str | None = None
+    binding_fingerprint: str = ""
     gpt_path: str | None = None
     sovits_path: str | None = None
     speaker_meta: dict[str, Any] = field(default_factory=dict)

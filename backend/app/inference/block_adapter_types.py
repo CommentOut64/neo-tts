@@ -21,6 +21,7 @@ class BlockRequestSegment(BaseModel):
     terminal_punctuation: str = Field(default="", description="可选句尾标点。")
     voice_binding_id: str | None = Field(default=None, description="可选 voice binding ID。")
     render_profile_id: str | None = Field(default=None, description="可选 render profile ID。")
+    resolved_binding: dict[str, Any] | None = Field(default=None, description="段级兼容 binding 视图。")
     resolved_model_binding: dict[str, Any] | None = Field(default=None, description="段级解析模型绑定。")
     resolved_reference: dict[str, Any] | None = Field(default=None, description="段级解析参考。")
 
