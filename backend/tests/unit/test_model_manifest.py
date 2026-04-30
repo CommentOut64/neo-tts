@@ -12,7 +12,7 @@ from backend.app.inference.adapter_definition import (
 from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.block_adapter_types import AdapterCapabilities
-from backend.app.tts_registry.adapter_definition_store import AdapterDefinitionStore
+from backend.app.tts_registry.adapter_definition_store import AdapterDefinitionStore, build_default_adapter_definition_store
 from backend.app.tts_registry.model_manifest import load_model_manifest_from_package
 
 
@@ -159,6 +159,20 @@ def test_manifest_requires_installed_adapter(tmp_path: Path):
 
     assert exc_info.value.error_code == "adapter_not_installed"
     assert exc_info.value.details["adapter_id"] == "missing_adapter"
+
+
+def test_manifest_returns_adapter_not_installed_when_gpt_sovits_family_is_missing(tmp_path: Path):
+    package_root = tmp_path / "package"
+    _write_json(package_root / "neo-tts-model.json", _valid_manifest())
+
+    with pytest.raises(BlockAdapterError) as exc_info:
+        load_model_manifest_from_package(
+            package_root,
+            build_default_adapter_definition_store(enable_gpt_sovits_local=False),
+        )
+
+    assert exc_info.value.error_code == "adapter_not_installed"
+    assert exc_info.value.details["adapter_id"] == "gpt_sovits_local"
 
 
 def test_manifest_validates_schema_and_asset_topology(tmp_path: Path):

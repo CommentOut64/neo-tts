@@ -263,6 +263,8 @@ def _adapter_definition(
 def test_block_render_request_builder_sorts_segments_and_builds_stable_block_text():
     seg2 = _segment("seg-2", 2, "binding-a")
     seg1 = _segment("seg-1", 1, "binding-a", terminal_raw="！")
+    seg1.render_version = 4
+    seg2.render_version = 6
     binding = _binding(
         "binding-a",
         "voice-a",
@@ -313,6 +315,7 @@ def test_block_render_request_builder_sorts_segments_and_builds_stable_block_tex
         "model_instance_id": "model-1",
         "preset_id": "preset-1",
     }
+    assert [segment.render_version for segment in request.block.segments] == [4, 6]
     assert request.block.block_text == requests[0].block.block_text
 
 

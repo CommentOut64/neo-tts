@@ -107,3 +107,22 @@ def test_get_settings_product_mode_allows_empty_registry_without_builtin_models(
     assert settings.distribution_kind == "portable"
     assert settings.tts_registry_root == runtime_root.resolve() / "data" / "tts-registry"
     assert settings.builtin_voices_config_path == app_core_root.resolve() / "config" / "voices.json"
+    assert settings.gpt_sovits_adapter_installed is False
+
+
+def test_get_settings_marks_gpt_sovits_adapter_available_when_runtime_package_exists(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "NeoTTS-Portable"
+    app_core_root = runtime_root / "packages" / "app-core" / "v0.0.1"
+    python_root = runtime_root / "packages" / "python-runtime" / "py311-cu128-v1"
+    gpt_sovits_root = app_core_root / "GPT_SoVITS"
+    gpt_sovits_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("NEO_TTS_DISTRIBUTION_KIND", "portable")
+    monkeypatch.setenv("NEO_TTS_PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setenv("NEO_TTS_APP_CORE_ROOT", str(app_core_root))
+    monkeypatch.setenv("NEO_TTS_RUNTIME_ROOT", str(python_root))
+
+    settings = get_settings()
+
+    assert settings.gpt_sovits_root == gpt_sovits_root.resolve()
+    assert settings.gpt_sovits_adapter_installed is True
