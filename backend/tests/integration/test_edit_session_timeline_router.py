@@ -40,6 +40,7 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
         initial_timeline = client.get("/v1/edit-session/timeline")
         assert initial_timeline.status_code == 200
         initial_payload = initial_timeline.json()
+        snapshot_payload = client.get("/v1/edit-session/snapshot").json()
         assert initial_payload["timeline_manifest_id"]
         assert {marker["marker_type"] for marker in initial_payload["markers"]} >= {
             "segment_start",
@@ -49,6 +50,17 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
             "block_start",
             "block_end",
         }
+        assert [entry["order_key"] for entry in initial_payload["segment_entries"]] == sorted(
+            entry["order_key"] for entry in initial_payload["segment_entries"]
+        )
+        assert [entry["start_sample"] for entry in initial_payload["block_entries"]] == sorted(
+            entry["start_sample"] for entry in initial_payload["block_entries"]
+        )
+        snapshot_segment_ids = {segment["segment_id"] for segment in snapshot_payload["segments"]}
+        assert all(
+            set(block_entry["segment_ids"]).issubset(snapshot_segment_ids)
+            for block_entry in initial_payload["block_entries"]
+        )
 
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200

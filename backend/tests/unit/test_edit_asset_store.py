@@ -43,6 +43,17 @@ def test_edit_asset_store_cleans_up_expired_staging(tmp_path: Path):
     assert (tmp_path / "storage" / "edit_session" / "assets" / "staging" / "job-fresh").exists()
 
 
+def test_edit_asset_store_cleanup_staging_job_removes_partial_tree(tmp_path: Path):
+    store = _build_store(tmp_path)
+    staging_file = store.write_staging_bytes("job-partial", "segments/render-1/audio.wav", b"partial")
+
+    assert staging_file.exists()
+
+    store.cleanup_staging_job("job-partial")
+
+    assert not (tmp_path / "storage" / "edit_session" / "assets" / "staging" / "job-partial").exists()
+
+
 def test_edit_asset_store_resolves_segment_and_boundary_asset_paths(tmp_path: Path):
     store = _build_store(tmp_path)
 
@@ -81,6 +92,8 @@ def test_collect_unreferenced_formal_assets_keeps_head_and_baseline(tmp_path: Pa
     delete_boundary = store.boundary_asset_path("boundary-delete")
     keep_block = store.block_asset_path("block-keep")
     delete_block = store.block_asset_path("block-delete")
+    keep_timeline = store.timeline_manifest_path("timeline-keep")
+    delete_timeline = store.timeline_manifest_path("timeline-delete")
     keep_composition = store.composition_asset_path("comp-keep")
     delete_composition = store.composition_asset_path("comp-delete")
     for path in [
@@ -90,17 +103,21 @@ def test_collect_unreferenced_formal_assets_keeps_head_and_baseline(tmp_path: Pa
         delete_boundary,
         keep_block,
         delete_block,
+        keep_timeline,
+        delete_timeline,
         keep_composition,
         delete_composition,
     ]:
         path.mkdir(parents=True, exist_ok=True)
-        (path / "audio.wav").write_bytes(b"wav")
+        file_name = "manifest.json" if "timelines" in path.parts else "audio.wav"
+        (path / file_name).write_bytes(b"wav")
 
     report = store.collect_unreferenced_formal_assets(
         referenced_asset_ids={
             "segments/render-keep",
             "boundaries/boundary-keep",
             "blocks/block-keep",
+            "timelines/timeline-keep",
             "compositions/comp-keep",
         }
     )
@@ -109,10 +126,12 @@ def test_collect_unreferenced_formal_assets_keeps_head_and_baseline(tmp_path: Pa
     assert keep_segment.exists()
     assert keep_boundary.exists()
     assert keep_block.exists()
+    assert keep_timeline.exists()
     assert keep_composition.exists()
     assert not delete_segment.exists()
     assert not delete_boundary.exists()
     assert not delete_block.exists()
+    assert not delete_timeline.exists()
     assert not delete_composition.exists()
 
 

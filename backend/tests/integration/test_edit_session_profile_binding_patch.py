@@ -134,6 +134,7 @@ def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_bounda
         final_timeline = timeline.json()
         assert final_timeline["edge_entries"][0]["effective_boundary_strategy"] == "crossfade_only"
         assert tuple(final_timeline["playable_sample_span"]) != initial_playable_span
+        assert backend.boundary_calls[-1][2] == "crossfade_only"
 
 
 def test_segment_voice_binding_patch_route_rerenders_only_target_segment(test_app_settings):

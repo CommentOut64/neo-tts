@@ -229,6 +229,31 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     assert snapshot.composition_manifest_id is None
 
 
+def test_run_initialize_job_single_segment_commits_formal_assets_timeline_and_changed_blocks(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。",
+            voice_id="demo",
+        )
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)  # noqa: SLF001
+    job = service.get_job(accepted.job.job_id)
+
+    assert len(snapshot.segments) == 1
+    assert snapshot.segments[0].render_asset_id is not None
+    assert service._asset_store.segment_asset_path(snapshot.segments[0].render_asset_id).exists()  # noqa: SLF001
+    assert len(timeline.segment_entries) == 1
+    assert len(timeline.block_entries) == 1
+    assert job is not None
+    assert job.changed_block_asset_ids == [timeline.block_entries[0].block_asset_id]
+    assert service._asset_store.block_asset_path(job.changed_block_asset_ids[0]).exists()  # noqa: SLF001
+
+
 def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
     render_profile, voice_binding = RenderJobService._build_default_configuration(  # noqa: SLF001
         InitializeEditSessionRequest(
@@ -834,6 +859,7 @@ def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
     initial_snapshot = service.get_head_snapshot()
     target_segment_id = initial_snapshot.segments[0].segment_id
     untouched_block_id = initial_snapshot.block_ids[1]
+    initial_render_asset_ids = {segment.segment_id: segment.render_asset_id for segment in initial_snapshot.segments}
     composed_block_ids: list[str] = []
     original_compose_block = service._composition_builder.compose_block
 
@@ -855,9 +881,13 @@ def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
         ),
     )
     service.run_edit_job(edit_job.job.job_id)
+    updated_snapshot = service.get_head_snapshot()
 
     assert len(composed_block_ids) == 1
     assert untouched_block_id not in composed_block_ids
+    assert updated_snapshot.segments[0].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[0].segment_id]
+    assert updated_snapshot.segments[1].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[1].segment_id]
+    assert updated_snapshot.segments[2].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[2].segment_id]
 
 
 def test_edge_pause_update_timeline_commit_only_reports_newly_composed_block_assets(tmp_path):
@@ -898,6 +928,48 @@ def test_edge_pause_update_timeline_commit_only_reports_newly_composed_block_ass
     assert updated_snapshot.block_ids[0] != initial_snapshot.block_ids[0]
     assert updated_snapshot.block_ids[1] == initial_snapshot.block_ids[1]
     assert timeline_committed["changed_block_asset_ids"] == [updated_snapshot.block_ids[0]]
+
+
+def test_edge_pause_update_skips_segment_rerender_and_updates_timeline_sample_span(tmp_path, monkeypatch):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=100,
+            max_block_seconds=1000,
+            max_segment_count=2,
+        ),
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    initial_timeline = service._asset_store.load_timeline_manifest(initial_snapshot.timeline_manifest_id)  # noqa: SLF001
+    initial_render_asset_ids = {segment.segment_id: segment.render_asset_id for segment in initial_snapshot.segments}
+    edge_id = initial_snapshot.edges[0].edge_id
+
+    def _unexpected_segment_render(*args, **kwargs):
+        raise AssertionError("edge pause update should not rerender segment assets")
+
+    monkeypatch.setattr(service._gateway, "render_segment_base", _unexpected_segment_render)
+
+    edit_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(edit_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    updated_timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert [segment.render_asset_id for segment in updated_snapshot.segments] == [
+        initial_render_asset_ids[segment.segment_id] for segment in updated_snapshot.segments
+    ]
+    assert updated_timeline.playable_sample_span[1] > initial_timeline.playable_sample_span[1]
 
 
 def test_edge_pause_update_persists_committed_metadata_into_render_job_state(tmp_path):

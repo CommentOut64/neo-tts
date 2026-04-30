@@ -187,3 +187,53 @@ def test_cleanup_cycle_skips_formal_gc_while_active_job_is_running(tmp_path: Pat
 
     assert asset_dir.exists()
     assert report.formal_gc_report.deleted_asset_paths == []
+
+
+def test_cleanup_cycle_keeps_timeline_assets_referenced_by_head_snapshot(tmp_path: Path):
+    repository = _build_repository(tmp_path)
+    store = _build_store(tmp_path)
+    runtime = EditSessionRuntime()
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-1",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        timeline_manifest_id="timeline-keep",
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                stem="你好",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-1",
+            )
+        ],
+    )
+    repository.save_snapshot(snapshot)
+    repository.upsert_active_session(
+        ActiveDocumentState(
+            document_id="doc-1",
+            session_status="ready",
+            baseline_snapshot_id="head-1",
+            head_snapshot_id="head-1",
+            active_job_id=None,
+        )
+    )
+    keep_timeline = store.timeline_manifest_path("timeline-keep")
+    drop_timeline = store.timeline_manifest_path("timeline-drop")
+    keep_timeline.mkdir(parents=True, exist_ok=True)
+    drop_timeline.mkdir(parents=True, exist_ok=True)
+    (keep_timeline / "manifest.json").write_text("{}", encoding="utf-8")
+    (drop_timeline / "manifest.json").write_text("{}", encoding="utf-8")
+    maintenance = EditSessionMaintenanceService(repository=repository, asset_store=store, runtime=runtime)
+
+    report = maintenance._run_cleanup_cycle(cleanup_orphan_previews=False)
+
+    assert keep_timeline.exists()
+    assert not drop_timeline.exists()
+    assert any("timelines/timeline-drop" in path.as_posix() for path in report.formal_gc_report.deleted_asset_paths)

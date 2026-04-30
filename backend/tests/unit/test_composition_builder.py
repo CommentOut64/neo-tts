@@ -155,9 +155,12 @@ def test_block_planner_splits_once_block_reaches_min_duration_window():
                 segment_id=f"seg-{index}",
                 document_id="doc-1",
                 order_key=index,
-                raw_text=f"第{index}句。",
-                normalized_text=f"第{index}句。",
+                stem=f"第{index}句",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
                 assembled_audio_span=(0, 120),
             )
         )

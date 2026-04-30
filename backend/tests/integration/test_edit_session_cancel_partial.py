@@ -53,6 +53,7 @@ def test_edit_session_cancel_returns_partial_head_and_keeps_timeline_playable(te
         checkpoint_payload = checkpoint.json()["checkpoint"]
         assert checkpoint_payload["status"] == "cancelled_partial"
         assert checkpoint_payload["resume_token"] is None
+        assert not (app.state.edit_asset_store._staging_root / job_id).exists()  # noqa: SLF001
 
         timeline = client.get("/v1/edit-session/timeline")
         assert timeline.status_code == 200
@@ -112,6 +113,7 @@ def test_edit_session_edit_job_cancel_returns_partial_head_and_keeps_timeline_pl
         assert checkpoint_payload["status"] == "cancelled_partial"
         assert checkpoint_payload["resume_token"] is None
         assert len(checkpoint_payload["remaining_segment_ids"]) == 1
+        assert not (app.state.edit_asset_store._staging_root / edit_job_id).exists()  # noqa: SLF001
 
         timeline = client.get("/v1/edit-session/timeline")
         assert timeline.status_code == 200

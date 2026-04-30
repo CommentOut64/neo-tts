@@ -55,6 +55,9 @@ def test_edit_session_event_stream_replays_segment_progress_and_timeline_commit(
         assert "timeline_committed" in interesting
         assert interesting.index("segments_initialized") < interesting.index("segment_completed")
         assert interesting.index("segment_completed") < interesting.index("timeline_committed")
+        timeline_committed_payload = next(payload for event, payload in captured if event == "timeline_committed")
+        assert timeline_committed_payload["changed_block_asset_ids"]
+        assert timeline_committed_payload["playable_sample_span"][1] > 0
 
 
 def test_edit_session_edit_job_event_stream_replays_segment_and_block_progress_before_pause(test_app_settings):

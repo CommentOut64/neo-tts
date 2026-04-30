@@ -56,7 +56,9 @@ def test_edit_session_pause_resume_creates_partial_head_and_resumes_from_checkpo
 
         timeline = client.get("/v1/edit-session/timeline")
         assert timeline.status_code == 200
-        assert len(timeline.json()["segment_entries"]) == 1
+        paused_timeline = timeline.json()
+        assert len(paused_timeline["segment_entries"]) == 1
+        assert paused_snapshot["timeline_manifest_id"] == paused_timeline["timeline_manifest_id"]
 
         resume_response = client.post(f"/v1/edit-session/render-jobs/{job_id}/resume")
         assert resume_response.status_code == 202
@@ -65,10 +67,16 @@ def test_edit_session_pause_resume_creates_partial_head_and_resumes_from_checkpo
         _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{resumed_job_id}").json()["status"] == "completed")
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
 
+        resumed_job = client.get(f"/v1/edit-session/render-jobs/{resumed_job_id}").json()
         resumed_snapshot = client.get("/v1/edit-session/snapshot").json()
+        resumed_timeline = client.get("/v1/edit-session/timeline").json()
         assert resumed_snapshot["document_version"] == 2
         assert resumed_snapshot["total_segment_count"] == 3
         assert len(resumed_snapshot["segments"]) == 3
+        assert resumed_job["committed_document_version"] == resumed_snapshot["document_version"]
+        assert resumed_job["committed_timeline_manifest_id"] == resumed_snapshot["timeline_manifest_id"]
+        assert resumed_snapshot["timeline_manifest_id"] == resumed_timeline["timeline_manifest_id"]
+        assert resumed_timeline["document_version"] == resumed_snapshot["document_version"]
 
 
 def test_edit_session_edit_job_pause_resume_creates_partial_head_and_resumes_from_checkpoint(test_app_settings):
@@ -123,7 +131,9 @@ def test_edit_session_edit_job_pause_resume_creates_partial_head_and_resumes_fro
 
         timeline = client.get("/v1/edit-session/timeline")
         assert timeline.status_code == 200
-        assert len(timeline.json()["segment_entries"]) == 3
+        paused_timeline = timeline.json()
+        assert len(paused_timeline["segment_entries"]) == 3
+        assert paused_snapshot["timeline_manifest_id"] == paused_timeline["timeline_manifest_id"]
 
         fake_backend.gate = None
         fake_backend.wait_timeout = 2.0
@@ -134,7 +144,13 @@ def test_edit_session_edit_job_pause_resume_creates_partial_head_and_resumes_fro
         _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{resumed_job_id}").json()["status"] == "completed")
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 3)
 
+        resumed_job = client.get(f"/v1/edit-session/render-jobs/{resumed_job_id}").json()
         resumed_snapshot = client.get("/v1/edit-session/snapshot").json()
+        resumed_timeline = client.get("/v1/edit-session/timeline").json()
         assert resumed_snapshot["document_version"] == 3
         assert resumed_snapshot["total_segment_count"] == 4
         assert len(resumed_snapshot["segments"]) == 4
+        assert resumed_job["committed_document_version"] == resumed_snapshot["document_version"]
+        assert resumed_job["committed_timeline_manifest_id"] == resumed_snapshot["timeline_manifest_id"]
+        assert resumed_snapshot["timeline_manifest_id"] == resumed_timeline["timeline_manifest_id"]
+        assert resumed_timeline["document_version"] == resumed_snapshot["document_version"]

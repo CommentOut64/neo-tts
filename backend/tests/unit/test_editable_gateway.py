@@ -114,6 +114,10 @@ def test_build_reference_context_uses_resolved_render_context_fields():
         reference_audio_path="ref.wav",
         reference_text="参考文本",
         reference_language="zh",
+        reference_scope="session_override",
+        reference_identity="voice-demo:model-demo:asset-1",
+        reference_audio_fingerprint="audio-fp",
+        reference_text_fingerprint="text-fp",
         speed=1.1,
         top_k=20,
         top_p=0.9,
@@ -138,6 +142,10 @@ def test_build_reference_context_uses_resolved_render_context_fields():
     assert context.reference_semantic_tokens.tolist() == [7, 8, 9]
     assert context.inference_config["top_k"] == 20
     assert context.inference_config["noise_scale"] == 0.4
+    assert context.reference_scope == "session_override"
+    assert context.reference_identity == "voice-demo:model-demo:asset-1"
+    assert context.reference_audio_fingerprint == "audio-fp"
+    assert context.reference_text_fingerprint == "text-fp"
 
 
 def test_render_segment_base_shrinks_margin_when_segment_is_too_short():

@@ -267,6 +267,80 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert job_id
 
 
+def test_initialize_route_single_segment_commits_render_asset_and_changed_block_metadata(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+        job_id = initialize.json()["job"]["job_id"]
+
+        gate.set()
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        snapshot = client.get("/v1/edit-session/snapshot")
+        assert snapshot.status_code == 200
+        snapshot_payload = snapshot.json()
+        assert len(snapshot_payload["segments"]) == 1
+        assert snapshot_payload["segments"][0]["render_asset_id"] is not None
+
+        timeline = client.get("/v1/edit-session/timeline")
+        assert timeline.status_code == 200
+        timeline_payload = timeline.json()
+        assert len(timeline_payload["segment_entries"]) == 1
+        assert len(timeline_payload["block_entries"]) == 1
+
+        job = client.get(f"/v1/edit-session/render-jobs/{job_id}")
+        assert job.status_code == 200
+        job_payload = job.json()
+        assert job_payload["changed_block_asset_ids"] == [timeline_payload["block_entries"][0]["block_asset_id"]]
+
+
+def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_initialize(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+
+        gate.set()
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        snapshot = client.get("/v1/edit-session/snapshot").json()
+        timeline = client.get("/v1/edit-session/timeline").json()
+        segment_id = snapshot["segments"][0]["segment_id"]
+        edge_id = snapshot["edges"][0]["edge_id"]
+        block_id = timeline["block_entries"][0]["block_asset_id"]
+
+        segment_preview = client.get("/v1/edit-session/preview", params={"segment_id": segment_id})
+        edge_preview = client.get("/v1/edit-session/preview", params={"edge_id": edge_id})
+        block_preview = client.get("/v1/edit-session/preview", params={"block_id": block_id})
+
+        assert segment_preview.status_code == 200
+        assert edge_preview.status_code == 200
+        assert block_preview.status_code == 200
+        assert segment_preview.json()["preview_kind"] == "segment"
+        assert edge_preview.json()["preview_kind"] == "edge"
+        assert block_preview.json()["preview_kind"] == "block"
+        assert segment_preview.json()["audio_delivery"]["expires_at"] is not None
+        assert edge_preview.json()["audio_delivery"]["expires_at"] is not None
+        assert block_preview.json()["audio_delivery"]["expires_at"] is not None
+
+
 def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_settings):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
@@ -757,6 +831,12 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         assert len(backend.segment_calls) == 3
         assert len(backend.boundary_calls) == 2
 
+        segment_preview = client.get("/v1/edit-session/preview", params={"segment_id": segment_id})
+        assert segment_preview.status_code == 200
+        assert segment_preview.json()["preview_kind"] == "segment"
+        assert segment_preview.json()["audio_delivery"]["audio_url"].endswith("/audio")
+        assert segment_preview.json()["audio_delivery"]["expires_at"] is not None
+
         patch_strategy = client.patch(
             f"/v1/edit-session/edges/{edge_id}",
             json={"boundary_strategy": "crossfade_only"},
@@ -772,11 +852,6 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         list_edges = client.get("/v1/edit-session/edges")
         assert list_edges.status_code == 200
         assert list_edges.json()["items"][0]["pause_duration_seconds"] == 0.8
-
-        preview = client.get("/v1/edit-session/preview", params={"segment_id": segment_id})
-        assert preview.status_code == 200
-        assert preview.json()["preview_kind"] == "segment"
-        assert preview.json()["audio_delivery"]["audio_url"].endswith("/audio")
 
         restore = client.post("/v1/edit-session/restore-baseline")
         assert restore.status_code == 202

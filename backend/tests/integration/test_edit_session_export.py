@@ -120,6 +120,7 @@ def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings
         payload = export_job.json()
         assert payload["export_kind"] == "segments"
         assert payload["status"] == "completed"
+        assert payload["timeline_manifest_id"] == snapshot["timeline_manifest_id"]
         final_dir = Path(payload["output_manifest"]["target_dir"])
         segment_files = [Path(path) for path in payload["output_manifest"]["segment_files"]]
         subtitle_files = [Path(path) for path in payload["output_manifest"]["subtitle_files"]]
@@ -221,6 +222,7 @@ def test_composition_export_route_creates_only_composition_artifact(test_app_set
         payload = export_job.json()
         assert payload["export_kind"] == "composition"
         assert payload["status"] == "completed"
+        assert payload["timeline_manifest_id"] == snapshot["timeline_manifest_id"]
         assert payload["output_manifest"]["target_dir"] == str(export_root)
         composition_file = Path(payload["output_manifest"]["composition_file"])
         manifest_file = Path(payload["output_manifest"]["manifest_file"])
@@ -234,3 +236,26 @@ def test_composition_export_route_creates_only_composition_artifact(test_app_set
     assert len(wav_files) == 1
     assert list(export_root.glob("*.manifest.json")) == []
     assert not (export_root / "0001.wav").exists()
+
+
+def test_unified_export_route_rejects_unsupported_blocks_audio_kind(test_app_settings):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+
+    with TestClient(app) as client:
+        gate.set()
+        snapshot = _initialize_ready_document(client)
+
+        create_export = client.post(
+            "/v1/edit-session/exports",
+            json={
+                "document_version": snapshot["document_version"],
+                "target_dir": str(test_app_settings.edit_session_exports_dir / "blocks_exports"),
+                "audio": {"kind": "blocks", "overwrite_policy": "fail"},
+            },
+        )
+
+        assert create_export.status_code == 422
+        assert "segments" in create_export.text
+        assert "composition" in create_export.text
