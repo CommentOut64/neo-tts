@@ -6,9 +6,12 @@ from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.main import create_app
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import RenderProfile, SegmentGroup, VoiceBinding
+from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.types import ModelInstance, ModelPreset
 from backend.tests.integration.test_edit_session_router import FakeEditableInferenceBackend
 
 
@@ -56,6 +59,10 @@ def _seed_b2_profile_binding_state(app) -> tuple[str, str]:
                     scope="session",
                     voice_id="demo",
                     model_key="gpt-sovits-v2",
+                    model_instance_id="demo",
+                    preset_id="default",
+                    gpt_path="pretrained_models/demo.ckpt",
+                    sovits_path="pretrained_models/demo.pth",
                 )
             ],
             "default_render_profile_id": "profile-session",
@@ -66,7 +73,91 @@ def _seed_b2_profile_binding_state(app) -> tuple[str, str]:
     return first_segment.segment_id, second_segment.segment_id
 
 
+def _seed_demo_registry(settings) -> None:
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    registry = ModelRegistry(registry_root)
+    registry.replace_models(
+        [
+            ModelInstance(
+                model_instance_id="demo",
+                adapter_id="gpt_sovits_local",
+                source_type="local_package",
+                display_name="Demo Model",
+                status="ready",
+                storage_mode="managed",
+                instance_assets={
+                    "bert": {
+                        "path": "pretrained/bert.bin",
+                        "fingerprint": "bert-fp",
+                    }
+                },
+                endpoint=None,
+                account_binding=None,
+                presets=[
+                    ModelPreset(
+                        preset_id="default",
+                        display_name="Default",
+                        kind="imported",
+                        status="ready",
+                        fixed_fields={},
+                        defaults=VoiceDefaults().model_dump(mode="json")
+                        | {
+                            "reference_text": "hello world",
+                            "reference_language": "en",
+                        },
+                        preset_assets={
+                            "gpt_weight": {
+                                "path": "pretrained_models/demo.ckpt",
+                                "fingerprint": "gpt-fp",
+                            },
+                            "sovits_weight": {
+                                "path": "pretrained_models/demo.pth",
+                                "fingerprint": "sovits-fp",
+                            },
+                            "reference_audio": {
+                                "path": "pretrained_models/demo.wav",
+                                "fingerprint": "ref-fp",
+                            },
+                        },
+                        fingerprint="preset-fp",
+                    ),
+                    ModelPreset(
+                        preset_id="style-b",
+                        display_name="Style B",
+                        kind="imported",
+                        status="ready",
+                        fixed_fields={},
+                        defaults=VoiceDefaults().model_dump(mode="json")
+                        | {
+                            "reference_text": "hello world",
+                            "reference_language": "en",
+                            "speed": 0.9,
+                        },
+                        preset_assets={
+                            "gpt_weight": {
+                                "path": "pretrained_models/demo-style-b.ckpt",
+                                "fingerprint": "gpt-style-b-fp",
+                            },
+                            "sovits_weight": {
+                                "path": "pretrained_models/demo-style-b.pth",
+                                "fingerprint": "sovits-style-b-fp",
+                            },
+                            "reference_audio": {
+                                "path": "pretrained_models/demo.wav",
+                                "fingerprint": "ref-style-b-fp",
+                            },
+                        },
+                        fingerprint="preset-style-b-fp",
+                    )
+                ],
+                fingerprint="model-fp",
+            )
+        ]
+    )
+
+
 def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_boundary_fallback(test_app_settings):
+    _seed_demo_registry(test_app_settings)
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -101,11 +192,11 @@ def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_bounda
 
         group_binding_patch = client.patch(
             "/v1/edit-session/groups/group-1/voice-binding",
-            json={"voice_id": "voice-b", "model_key": "model-b"},
+            json={"voice_id": "demo", "model_key": "model-b"},
         )
         assert group_binding_patch.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 4)
-        assert len(backend.segment_calls) - baseline_calls == 4
+        assert len(backend.segment_calls) - baseline_calls == 3
 
         segment_profile_patch = client.patch(
             f"/v1/edit-session/segments/{second_segment_id}/render-profile",
@@ -113,7 +204,7 @@ def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_bounda
         )
         assert segment_profile_patch.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 5)
-        assert len(backend.segment_calls) - baseline_calls == 5
+        assert len(backend.segment_calls) - baseline_calls == 4
 
         active_session = repository.get_active_session()
         assert active_session is not None
@@ -126,7 +217,7 @@ def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_bounda
 
         assert first_resolved.render_profile.speed == 1.25
         assert second_resolved.render_profile.speed == 0.75
-        assert second_resolved.voice_binding.voice_id == "voice-b"
+        assert second_resolved.voice_binding.voice_id == "demo"
         assert second_resolved.voice_binding.model_key == "model-b"
 
         timeline = client.get("/v1/edit-session/timeline")
@@ -138,6 +229,7 @@ def test_profile_and_binding_patch_routes_apply_hierarchy_and_cross_model_bounda
 
 
 def test_segment_voice_binding_patch_route_rerenders_only_target_segment(test_app_settings):
+    _seed_demo_registry(test_app_settings)
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -159,7 +251,12 @@ def test_segment_voice_binding_patch_route_rerenders_only_target_segment(test_ap
 
         segment_binding_patch = client.patch(
             f"/v1/edit-session/segments/{second_segment_id}/voice-binding",
-            json={"voice_id": "voice-c", "model_key": "model-c"},
+            json={
+                "voice_id": "demo",
+                "model_key": "model-c",
+                "model_instance_id": "demo",
+                "preset_id": "style-b",
+            },
         )
         assert segment_binding_patch.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
@@ -174,11 +271,14 @@ def test_segment_voice_binding_patch_route_rerenders_only_target_segment(test_ap
         second_resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=second_segment_id)
 
         assert first_resolved.voice_binding.voice_id == "demo"
-        assert second_resolved.voice_binding.voice_id == "voice-c"
+        assert second_resolved.voice_binding.voice_id == "demo"
         assert second_resolved.voice_binding.model_key == "model-c"
+        assert second_resolved.voice_binding.model_instance_id == "demo"
+        assert second_resolved.voice_binding.preset_id == "style-b"
 
 
 def test_configuration_commit_routes_persist_changes_without_rerender(test_app_settings):
+    _seed_demo_registry(test_app_settings)
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -216,7 +316,12 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
 
         segment_binding_commit = client.patch(
             f"/v1/edit-session/segments/{second_segment_id}/voice-binding/config",
-            json={"voice_id": "voice-persisted", "model_key": "model-persisted"},
+            json={
+                "voice_id": "demo",
+                "model_key": "model-persisted",
+                "model_instance_id": "demo",
+                "preset_id": "style-b",
+            },
         )
         assert segment_binding_commit.status_code == 200
         assert segment_binding_commit.json()["document_version"] == 3
@@ -238,7 +343,10 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
 
         bindings = client.get("/v1/edit-session/voice-bindings")
         assert bindings.status_code == 200
-        assert any(item["voice_id"] == "voice-persisted" for item in bindings.json()["items"])
+        assert any(
+            item["model_key"] == "model-persisted" and item["preset_id"] == "style-b"
+            for item in bindings.json()["items"]
+        )
 
         active_session = repository.get_active_session()
         assert active_session is not None
@@ -247,7 +355,9 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
         resolver = RenderConfigResolver()
         resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=second_segment_id)
         assert resolved.render_profile.reference_audio_path == "voices/custom.wav"
-        assert resolved.voice_binding.voice_id == "voice-persisted"
+        assert resolved.voice_binding.voice_id == "demo"
+        assert resolved.voice_binding.model_instance_id == "demo"
+        assert resolved.voice_binding.preset_id == "style-b"
 
         timeline = client.get("/v1/edit-session/timeline")
         assert timeline.status_code == 200
@@ -261,6 +371,7 @@ def test_configuration_commit_routes_persist_changes_without_rerender(test_app_s
 
 
 def test_segment_rerender_route_consumes_pending_configuration(test_app_settings):
+    _seed_demo_registry(test_app_settings)
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -282,7 +393,12 @@ def test_segment_rerender_route_consumes_pending_configuration(test_app_settings
 
         segment_binding_commit = client.patch(
             f"/v1/edit-session/segments/{second_segment_id}/voice-binding/config",
-            json={"voice_id": "voice-rerendered", "model_key": "model-rerendered"},
+            json={
+                "voice_id": "demo",
+                "model_key": "model-rerendered",
+                "model_instance_id": "demo",
+                "preset_id": "style-b",
+            },
         )
         assert segment_binding_commit.status_code == 200
         assert len(backend.segment_calls) == baseline_calls
@@ -306,8 +422,10 @@ def test_segment_rerender_route_consumes_pending_configuration(test_app_settings
 
         resolver = RenderConfigResolver()
         resolved = resolver.resolve_segment(snapshot=head_snapshot, segment_id=second_segment_id)
-        assert resolved.voice_binding.voice_id == "voice-rerendered"
+        assert resolved.voice_binding.voice_id == "demo"
         assert resolved.voice_binding.model_key == "model-rerendered"
+        assert resolved.voice_binding.model_instance_id == "demo"
+        assert resolved.voice_binding.preset_id == "style-b"
 
 
 def test_session_reference_override_remains_temporary_and_does_not_write_back_voice_preset(test_app_settings):

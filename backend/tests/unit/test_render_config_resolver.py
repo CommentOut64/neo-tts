@@ -1,5 +1,14 @@
 from datetime import datetime, timezone
 
+import pytest
+
+from backend.app.inference.adapter_definition import (
+    AdapterBlockLimits,
+    AdapterDefinition,
+)
+from backend.app.inference.block_adapter_errors import BlockAdapterError
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.block_adapter_types import AdapterCapabilities
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableSegment,
@@ -12,6 +21,9 @@ from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.inference.asset_fingerprint import fingerprint_file
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.session_reference_asset_service import SessionReferenceAsset
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.types import ModelInstance, ModelPreset
 
 
 class _FakeVoiceService:
@@ -77,6 +89,90 @@ def _segment(segment_id: str, order_key: int, **overrides) -> EditableSegment:
 
 def _resolver(voice_service: _FakeVoiceService | None = None) -> RenderConfigResolver:
     return RenderConfigResolver(voice_service=voice_service or _FakeVoiceService())
+
+
+def _adapter_registry(*, adapter_id: str = "gpt_sovits_local") -> AdapterRegistry:
+    registry = AdapterRegistry()
+    registry.register(
+        AdapterDefinition(
+            adapter_id=adapter_id,
+            display_name=adapter_id,
+            adapter_family=adapter_id.split("_", 1)[0],
+            runtime_kind="local_in_process",
+            capabilities=AdapterCapabilities(
+                block_render=True,
+                exact_segment_output=True,
+                segment_level_voice_binding=True,
+            ),
+            block_limits=AdapterBlockLimits(
+                max_block_seconds=40,
+                max_block_chars=300,
+                max_segment_count=50,
+                max_payload_bytes=1024 * 1024,
+            ),
+        )
+    )
+    return registry
+
+
+def _model_registry(tmp_path, *, adapter_id: str = "gpt_sovits_local") -> tuple[ModelRegistry, SecretStore]:
+    root = tmp_path / "tts-registry"
+    registry = ModelRegistry(root)
+    registry.replace_models(
+        [
+            ModelInstance(
+                model_instance_id="model-demo",
+                adapter_id=adapter_id,
+                source_type="local_package",
+                display_name="Demo Model",
+                status="ready",
+                storage_mode="managed",
+                instance_assets={
+                    "bert": {
+                        "path": "pretrained/bert.bin",
+                        "fingerprint": "bert-fp",
+                    }
+                },
+                endpoint=None,
+                account_binding=None,
+                presets=[
+                    ModelPreset(
+                        preset_id="preset-default",
+                        display_name="Default",
+                        kind="imported",
+                        status="ready",
+                        fixed_fields={},
+                        defaults={
+                            "speed": 1.0,
+                            "top_k": 15,
+                            "top_p": 1.0,
+                            "temperature": 1.0,
+                            "noise_scale": 0.35,
+                            "reference_text": "测试参考文本",
+                            "reference_language": "zh",
+                        },
+                        preset_assets={
+                            "gpt_weight": {
+                                "path": "weights/demo.ckpt",
+                                "fingerprint": "gpt-fp",
+                            },
+                            "sovits_weight": {
+                                "path": "weights/demo.pth",
+                                "fingerprint": "sovits-fp",
+                            },
+                            "reference_audio": {
+                                "path": "refs/demo.wav",
+                                "fingerprint": "ref-fp",
+                            },
+                        },
+                        fingerprint="preset-fp",
+                    )
+                ],
+                fingerprint="model-fp",
+            )
+        ]
+    )
+    return registry, SecretStore(root)
 
 
 def test_render_config_resolver_prefers_segment_then_group_then_session_scope_and_resolves_binding_reference():
@@ -452,3 +548,217 @@ def test_render_config_resolver_session_reference_asset_identity_change_updates_
     assert before_resolved.resolved_reference.reference_identity == "doc-1:asset-a"
     assert after_resolved.resolved_reference.reference_identity == "doc-1:asset-b"
     assert before_resolved.render_context_fingerprint != after_resolved.render_context_fingerprint
+
+
+def test_render_config_resolver_resolves_standard_model_binding_from_binding_fields(tmp_path):
+    registry, secret_store = _model_registry(tmp_path)
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-model-binding",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(render_profile_id="profile-session", scope="session", name="session", speed=1.0)
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+                model_instance_id="model-demo",
+                preset_id="preset-default",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = RenderConfigResolver(
+        voice_service=_FakeVoiceService(),
+        model_registry=registry,
+        adapter_registry=_adapter_registry(),
+        secret_store=secret_store,
+    ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert resolved.resolved_model_binding is not None
+    assert resolved.resolved_model_binding.adapter_id == "gpt_sovits_local"
+    assert resolved.resolved_model_binding.model_instance_id == "model-demo"
+    assert resolved.resolved_model_binding.preset_id == "preset-default"
+    assert resolved.resolved_model_binding.resolved_assets["bert"]["fingerprint"] == "bert-fp"
+    assert resolved.resolved_model_binding.resolved_assets["gpt_weight"]["fingerprint"] == "gpt-fp"
+    assert resolved.resolved_model_binding.resolved_parameters["speed"] == 1.0
+    assert resolved.model_cache_key == resolved.resolved_model_binding.binding_fingerprint
+
+
+def test_render_config_resolver_projects_legacy_voice_binding_through_voice_profile(tmp_path):
+    registry, secret_store = _model_registry(tmp_path)
+    voice_service = _FakeVoiceService()
+    voice_service._voices["voice-a"] = voice_service._voices["voice-a"].model_copy(
+        update={
+            "model_instance_id": "model-demo",
+            "preset_id": "preset-default",
+        }
+    )
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-legacy-projection",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(render_profile_id="profile-session", scope="session", name="session", speed=1.0)
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = RenderConfigResolver(
+        voice_service=voice_service,
+        model_registry=registry,
+        adapter_registry=_adapter_registry(),
+        secret_store=secret_store,
+    ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert resolved.resolved_model_binding is not None
+    assert resolved.resolved_model_binding.model_instance_id == "model-demo"
+    assert resolved.resolved_model_binding.preset_id == "preset-default"
+
+
+def test_render_config_resolver_returns_model_required_when_registry_is_empty(tmp_path):
+    empty_registry = ModelRegistry(tmp_path / "empty-registry")
+    voice_service = _FakeVoiceService()
+    voice_service._voices["voice-a"] = voice_service._voices["voice-a"].model_copy(
+        update={
+            "model_instance_id": "model-demo",
+            "preset_id": "preset-default",
+        }
+    )
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-empty-registry",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[RenderProfile(render_profile_id="profile-session", scope="session", name="session")],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    with pytest.raises(BlockAdapterError, match="缺少可用模型绑定"):
+        RenderConfigResolver(
+            voice_service=voice_service,
+            model_registry=empty_registry,
+            adapter_registry=_adapter_registry(),
+            secret_store=SecretStore(tmp_path / "empty-registry"),
+        ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+
+def test_render_config_resolver_returns_adapter_not_installed_when_model_adapter_missing(tmp_path):
+    registry, secret_store = _model_registry(tmp_path, adapter_id="missing_adapter")
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-missing-adapter",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[RenderProfile(render_profile_id="profile-session", scope="session", name="session")],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+                model_instance_id="model-demo",
+                preset_id="preset-default",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    with pytest.raises(BlockAdapterError, match="missing_adapter"):
+        RenderConfigResolver(
+            voice_service=_FakeVoiceService(),
+            model_registry=registry,
+            adapter_registry=_adapter_registry(adapter_id="gpt_sovits_local"),
+            secret_store=secret_store,
+        ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+
+def test_render_config_resolver_derives_secret_handles_from_secret_store_when_registry_payload_has_no_handles(tmp_path):
+    registry, secret_store = _model_registry(tmp_path, adapter_id="external_http_tts")
+    model = registry.get_model("model-demo")
+    assert model is not None
+    registry.replace_model(
+        model.model_copy(
+            update={
+                "account_binding": {
+                    "provider": "example",
+                    "account_id": "acct-1",
+                    "required_secrets": ["api_key"],
+                    "secret_handles": {},
+                }
+            }
+        )
+    )
+    secret_store.put_model_secrets("model-demo", {"api_key": "top-secret"})
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-secret-handle",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[RenderProfile(render_profile_id="profile-session", scope="session", name="session")],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+                model_instance_id="model-demo",
+                preset_id="preset-default",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = RenderConfigResolver(
+        voice_service=_FakeVoiceService(),
+        model_registry=registry,
+        adapter_registry=_adapter_registry(adapter_id="external_http_tts"),
+        secret_store=secret_store,
+    ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert resolved.resolved_model_binding is not None
+    assert resolved.resolved_model_binding.secret_handles == {
+        "api_key": "secret://model-demo/api_key"
+    }

@@ -46,6 +46,8 @@ class _FakeVoiceService:
     def get_voice(self, voice_name: str) -> VoiceProfile:
         return VoiceProfile(
             name=voice_name,
+            model_instance_id=f"{voice_name}-model",
+            preset_id="default",
             gpt_path="fake.ckpt",
             sovits_path="fake.pth",
             ref_audio="fake.wav",
@@ -287,6 +289,36 @@ def test_initialize_request_noise_scale_enters_new_render_context():
 
     assert render_profile.noise_scale == 0.48
     assert resolved_context.noise_scale == 0.48
+
+
+def test_build_resolved_context_from_request_keeps_projected_model_binding_metadata():
+    request = InitializeEditSessionRequest(
+        raw_text="第一句。",
+        voice_id="demo",
+        model_id="legacy-model",
+    )
+    projected_voice = VoiceProfile(
+        name="demo",
+        model_instance_id="model-demo",
+        preset_id="preset-default",
+        gpt_path="demo.ckpt",
+        sovits_path="demo.pth",
+        ref_audio="fake.wav",
+        ref_text="参考文本",
+        ref_lang="zh",
+        defaults=VoiceDefaults(),
+    )
+
+    resolved_context = RenderJobService._build_resolved_context_from_request(  # noqa: SLF001
+        request,
+        projected_voice=projected_voice,
+    )
+
+    assert resolved_context.resolved_voice_binding is not None
+    assert resolved_context.resolved_voice_binding.model_instance_id == "model-demo"
+    assert resolved_context.resolved_voice_binding.preset_id == "preset-default"
+    assert resolved_context.resolved_voice_binding.gpt_path == "demo.ckpt"
+    assert resolved_context.resolved_voice_binding.sovits_path == "demo.pth"
 
 
 def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallback(tmp_path):
