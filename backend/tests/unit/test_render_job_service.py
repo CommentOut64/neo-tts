@@ -7,6 +7,9 @@ import numpy as np
 import pytest
 import torch
 
+from backend.app.inference.adapter_definition import AdapterBlockLimits, AdapterDefinition
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.block_adapter_types import AdapterCapabilities, BlockRenderResult, JoinReport, SegmentOutput, SegmentSpan
 from backend.app.schemas.edit_session import AppendSegmentsRequest, CheckpointState
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.inference.editable_types import (
@@ -33,6 +36,8 @@ from backend.app.schemas.edit_session import (
     VoiceBinding,
 )
 from backend.app.services.block_planner import BlockPlanner
+from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
+from backend.app.services.block_render_request_builder import BlockRenderRequestBuilder
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
@@ -40,6 +45,8 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.types import ModelInstance, ModelPreset
 
 
 class _FakeVoiceService:
@@ -156,6 +163,118 @@ class _FakeEditableBackend:
         )
 
 
+class _FakeBlockAdapter:
+    def render_block(self, request):
+        audio: list[float] = []
+        spans: list[SegmentSpan] = []
+        outputs: list[SegmentOutput] = []
+        cursor = 0
+        for index, segment in enumerate(request.block.segments, start=1):
+            audio.extend([index / 10.0, index / 10.0])
+            span = SegmentSpan(
+                segment_id=segment.segment_id,
+                sample_start=cursor,
+                sample_end=cursor + 2,
+                precision="exact",
+            )
+            spans.append(span)
+            outputs.append(
+                SegmentOutput(
+                    segment_id=segment.segment_id,
+                    sample_span=span,
+                    source="adapter_exact",
+                )
+            )
+            cursor += 2
+        return BlockRenderResult(
+            block_id=request.block.block_id,
+            segment_ids=[segment.segment_id for segment in request.block.segments],
+            sample_rate=32000,
+            audio=audio,
+            audio_sample_count=len(audio),
+            segment_alignment_mode="exact",
+            segment_outputs=outputs,
+            segment_spans=spans,
+            join_report=JoinReport(
+                requested_policy=request.join_policy,
+                applied_mode=request.join_policy,
+                enhancement_applied=False,
+                implementation="fake-block-adapter",
+            ),
+            adapter_trace={"request_id": request.request_id},
+        )
+
+
+def _build_block_first_adapter_registry() -> AdapterRegistry:
+    registry = AdapterRegistry()
+    registry.register(
+        AdapterDefinition(
+            adapter_id="gpt_sovits_local",
+            display_name="gpt_sovits_local",
+            adapter_family="gpt",
+            runtime_kind="local_in_process",
+            capabilities=AdapterCapabilities(
+                block_render=True,
+                exact_segment_output=True,
+                segment_level_voice_binding=True,
+            ),
+            block_limits=AdapterBlockLimits(
+                max_block_seconds=40,
+                max_block_chars=300,
+                max_segment_count=50,
+                max_payload_bytes=1024 * 1024,
+            ),
+        )
+    )
+    return registry
+
+
+def _build_block_first_model_registry(tmp_path):
+    registry_root = tmp_path / "tts-registry"
+    registry = ModelRegistry(registry_root)
+    registry.replace_models(
+        [
+            ModelInstance(
+                model_instance_id="demo-model",
+                adapter_id="gpt_sovits_local",
+                source_type="local_package",
+                display_name="Demo Model",
+                status="ready",
+                storage_mode="managed",
+                instance_assets={"bert": {"path": "pretrained/bert.bin", "fingerprint": "bert-fp"}},
+                endpoint=None,
+                account_binding=None,
+                presets=[
+                    ModelPreset(
+                        preset_id="default",
+                        display_name="Default",
+                        kind="imported",
+                        status="ready",
+                        fixed_fields={},
+                        defaults={
+                            "speed": 1.0,
+                            "top_k": 15,
+                            "top_p": 1.0,
+                            "temperature": 1.0,
+                            "noise_scale": 0.35,
+                            "reference_text": "测试参考文本",
+                            "reference_language": "zh",
+                        },
+                        preset_assets={
+                            "gpt_weight": {"path": "weights/demo.ckpt", "fingerprint": "gpt-fp"},
+                            "sovits_weight": {"path": "weights/demo.pth", "fingerprint": "sovits-fp"},
+                            "reference_audio": {"path": "refs/demo.wav", "fingerprint": "ref-fp"},
+                        },
+                        fingerprint="preset-fp",
+                    )
+                ],
+                fingerprint="model-fp",
+            )
+        ]
+    )
+    return registry
+
+
 def _build_service(
     tmp_path,
     *,
@@ -164,6 +283,7 @@ def _build_service(
     run_jobs_in_background: bool = False,
     gate=None,
     block_planner: BlockPlanner | None = None,
+    enable_block_first_pipeline: bool = False,
 ) -> RenderJobService:
     repository = EditSessionRepository(project_root=tmp_path, db_file=tmp_path / "session.db")
     repository.initialize_schema()
@@ -184,6 +304,17 @@ def _build_service(
     gateway = EditableInferenceGateway(
         _FakeEditableBackend(fail_render=fail_render, fail_boundary=fail_boundary, gate=gate)
     )
+    adapter_registry = None
+    model_registry = None
+    block_render_request_builder = None
+    block_render_asset_persister = None
+    block_adapter_selector = None
+    if enable_block_first_pipeline:
+        adapter_registry = _build_block_first_adapter_registry()
+        model_registry = _build_block_first_model_registry(tmp_path)
+        block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
+        block_render_asset_persister = BlockRenderAssetPersister(asset_store=asset_store)
+        block_adapter_selector = lambda adapter_id, **kwargs: _FakeBlockAdapter()
     return RenderJobService(
         repository=repository,
         asset_store=asset_store,
@@ -192,6 +323,11 @@ def _build_service(
         session_service=session_service,
         gateway=gateway,
         block_planner=block_planner,
+        model_registry=model_registry,
+        adapter_registry=adapter_registry,
+        block_render_request_builder=block_render_request_builder,
+        block_render_asset_persister=block_render_asset_persister,
+        block_adapter_selector=block_adapter_selector,
         run_jobs_in_background=run_jobs_in_background,
     )
 
@@ -209,6 +345,61 @@ def test_run_transaction_executes_prepare_render_compose_commit_in_order(tmp_pat
     service._run_transaction(plan)
 
     assert steps == [f"prepare:{id(plan)}", f"render:{id(plan)}", f"compose:{id(plan)}", f"commit:{id(plan)}"]
+
+
+def test_run_transaction_uses_block_first_initialize_pipeline_when_plan_requests_it(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    steps: list[str] = []
+    plan = RenderPlan(
+        job_id="job-block-first-init",
+        job_kind="initialize",
+        document_id="doc-1",
+        request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
+    )
+    setattr(plan, "execution_mode", "block_first")
+
+    monkeypatch.setattr(service, "_prepare", lambda value: steps.append(f"prepare:{id(value)}"))
+    monkeypatch.setattr(service, "_render", lambda value: steps.append(f"render:{id(value)}"))
+    monkeypatch.setattr(service, "_compose", lambda value: steps.append(f"compose:{id(value)}"))
+    monkeypatch.setattr(service, "_commit", lambda value: steps.append(f"commit:{id(value)}"))
+    monkeypatch.setattr(
+        service,
+        "_run_initialize_block_first",
+        lambda value: steps.append(f"block-first-initialize:{id(value)}"),
+        raising=False,
+    )
+
+    service._run_transaction(plan)
+
+    assert steps == [f"block-first-initialize:{id(plan)}"]
+
+
+def test_run_transaction_uses_block_first_edit_pipeline_when_plan_requests_it(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    steps: list[str] = []
+    plan = RenderPlan(
+        job_id="job-block-first-edit",
+        job_kind="segment_update",
+        document_id="doc-1",
+        request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
+        document_version=2,
+    )
+    setattr(plan, "execution_mode", "block_first")
+
+    monkeypatch.setattr(service, "_prepare_edit", lambda value: steps.append(f"prepare-edit:{id(value)}"))
+    monkeypatch.setattr(service, "_render_edit", lambda value: steps.append(f"render-edit:{id(value)}"))
+    monkeypatch.setattr(service, "_compose", lambda value: steps.append(f"compose:{id(value)}"))
+    monkeypatch.setattr(service, "_commit_edit", lambda value: steps.append(f"commit-edit:{id(value)}"))
+    monkeypatch.setattr(
+        service,
+        "_run_edit_block_first",
+        lambda value: steps.append(f"block-first-edit:{id(value)}"),
+        raising=False,
+    )
+
+    service._run_transaction(plan)
+
+    assert steps == [f"block-first-edit:{id(plan)}"]
 
 
 def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
@@ -1004,6 +1195,55 @@ def test_edge_pause_update_skips_segment_rerender_and_updates_timeline_sample_sp
     assert updated_timeline.playable_sample_span[1] > initial_timeline.playable_sample_span[1]
 
 
+def test_edge_pause_update_handles_previous_parent_block_without_exact_reuse_match(tmp_path, monkeypatch):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=3,
+            max_block_seconds=1000,
+            max_segment_count=50,
+        ),
+        enable_block_first_pipeline=True,
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+
+    initial_snapshot = service.get_head_snapshot()
+    initial_timeline = service._asset_store.load_timeline_manifest(initial_snapshot.timeline_manifest_id)  # noqa: SLF001
+    edge_id = initial_snapshot.edges[0].edge_id
+
+    assert [entry.segment_ids for entry in initial_timeline.block_entries] == [
+        [segment.segment_id for segment in initial_snapshot.segments]
+    ]
+
+    def _unexpected_segment_render(*args, **kwargs):
+        raise AssertionError("edge pause update should not rerender segment assets")
+
+    monkeypatch.setattr(service._gateway, "render_segment_base", _unexpected_segment_render)
+
+    edit_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+
+    service.run_edit_job(edit_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    updated_timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
+    assert [entry.segment_ids for entry in updated_timeline.block_entries] == [
+        [updated_snapshot.segments[0].segment_id, updated_snapshot.segments[1].segment_id],
+        [updated_snapshot.segments[2].segment_id],
+    ]
+
+
 def test_edge_pause_update_persists_committed_metadata_into_render_job_state(tmp_path):
     service = _build_service(
         tmp_path,
@@ -1307,6 +1547,47 @@ def test_build_preview_selects_segment_edge_and_block_after_commit(tmp_path):
     assert segment_preview.audio.size > 0
     assert edge_preview.audio.size > 0
     assert block_preview.audio.size > 0
+
+
+def test_build_preview_reads_edge_audio_from_block_when_formal_boundary_asset_is_missing(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+
+    snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)  # noqa: SLF001
+    edge_id = snapshot.edges[0].edge_id
+    block_id = snapshot.block_ids[0]
+    edge_entry = next(entry for entry in timeline.edge_entries if entry.edge_id == edge_id)
+    block_entry = next(
+        entry
+        for entry in timeline.block_entries
+        if entry.start_sample <= edge_entry.boundary_start_sample < entry.end_sample
+    )
+    block_asset = service._asset_store.load_block_asset(block_id)  # noqa: SLF001
+    boundary_asset_id = build_boundary_asset_id(
+        left_segment_id=snapshot.edges[0].left_segment_id,
+        left_render_version=snapshot.segments[0].render_version,
+        right_segment_id=snapshot.edges[0].right_segment_id,
+        right_render_version=snapshot.segments[1].render_version,
+        edge_version=snapshot.edges[0].edge_version,
+        boundary_strategy=snapshot.edges[0].boundary_strategy,
+    )
+    shutil.rmtree(service._asset_store.boundary_asset_path(boundary_asset_id))  # noqa: SLF001
+    expected_audio = block_asset.audio[
+        edge_entry.boundary_start_sample - block_entry.start_sample : edge_entry.boundary_end_sample - block_entry.start_sample
+    ]
+
+    preview = service.build_preview(PreviewRequest(edge_id=edge_id))
+
+    assert preview.preview_kind == "edge"
+    assert preview.audio.size > 0
+    assert np.allclose(preview.audio, expected_audio, atol=1e-4)
 
 
 def test_cancel_job_requests_runtime_cancel(tmp_path):

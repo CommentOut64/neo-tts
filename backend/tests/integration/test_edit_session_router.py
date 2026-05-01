@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import importlib
 import json
@@ -14,6 +15,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from backend.app.inference.editable_gateway import EditableInferenceGateway
+from backend.app.inference.block_adapter_types import BlockRenderResult, JoinReport, SegmentOutput, SegmentSpan
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
@@ -112,6 +114,52 @@ class FakeEditableInferenceBackend:
             boundary_sample_count=1,
             boundary_audio=np.asarray([0.9], dtype=np.float32),
             trace=None,
+        )
+
+
+class FakeBlockAdapter:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def render_block(self, request):
+        self.requests.append(request)
+        audio: list[float] = []
+        spans: list[SegmentSpan] = []
+        outputs: list[SegmentOutput] = []
+        cursor = 0
+        for index, segment in enumerate(request.block.segments, start=1):
+            audio.extend([index / 10.0, index / 10.0])
+            span = SegmentSpan(
+                segment_id=segment.segment_id,
+                sample_start=cursor,
+                sample_end=cursor + 2,
+                precision="exact",
+            )
+            spans.append(span)
+            outputs.append(
+                SegmentOutput(
+                    segment_id=segment.segment_id,
+                    sample_span=span,
+                    source="adapter_exact",
+                )
+            )
+            cursor += 2
+        return BlockRenderResult(
+            block_id=request.block.block_id,
+            segment_ids=[segment.segment_id for segment in request.block.segments],
+            sample_rate=32000,
+            audio=audio,
+            audio_sample_count=len(audio),
+            segment_alignment_mode="exact",
+            segment_outputs=outputs,
+            segment_spans=spans,
+            join_report=JoinReport(
+                requested_policy=request.join_policy,
+                applied_mode=request.join_policy,
+                enhancement_applied=False,
+                implementation="fake-block-adapter",
+            ),
+            adapter_trace={"request_id": request.request_id},
         )
 
 
@@ -303,9 +351,65 @@ def test_initialize_route_single_segment_commits_render_asset_and_changed_block_
         assert job_payload["changed_block_asset_ids"] == [timeline_payload["block_entries"][0]["block_asset_id"]]
 
 
+def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignment(test_app_settings):
+    gate = threading.Event()
+    settings = replace(test_app_settings, edit_session_block_first_enabled=True)
+    app = create_app(settings=settings)
+    fake_backend = FakeEditableInferenceBackend(gate=gate)
+    fake_adapter = FakeBlockAdapter()
+    app.state.editable_inference_gateway = EditableInferenceGateway(fake_backend)
+    app.state.block_adapter_selector = lambda adapter_id, **kwargs: fake_adapter
+
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+
+        gate.set()
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        timeline_payload = client.get("/v1/edit-session/timeline").json()
+
+        assert fake_backend.segment_calls == []
+        assert len(fake_adapter.requests) == 1
+        assert [entry["segment_alignment_mode"] for entry in timeline_payload["block_entries"]] == ["exact"]
+
+
+def test_initialize_route_rollback_switch_can_force_segment_first_for_new_job(test_app_settings):
+    gate = threading.Event()
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
+    fake_backend = FakeEditableInferenceBackend(gate=gate)
+    fake_adapter = FakeBlockAdapter()
+    app.state.editable_inference_gateway = EditableInferenceGateway(fake_backend)
+    app.state.block_adapter_selector = lambda adapter_id, **kwargs: fake_adapter
+
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "voice_id": "demo",
+            },
+        )
+        assert initialize.status_code == 202
+
+        gate.set()
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        assert len(fake_backend.segment_calls) == 2
+        assert fake_adapter.requests == []
+
+
 def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_initialize(test_app_settings):
     gate = threading.Event()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     with TestClient(app) as client:
         initialize = client.post(
@@ -557,7 +661,8 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
 
 def test_edit_session_segment_crud_and_read_models(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -621,7 +726,8 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
 
 def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -678,7 +784,8 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
 
 def test_edit_session_reorder_segments_reorders_without_rerendering_segments(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -776,7 +883,8 @@ def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_s
 
 def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -895,7 +1003,8 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
 
 def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    app = create_app(settings=test_app_settings)
+    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
+    app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(

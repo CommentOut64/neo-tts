@@ -125,6 +125,35 @@ describe("render job controls", () => {
     expect(resolved.source).toBe("idle");
   });
 
+  it("block-first 渲染阶段在没有 TTS 流式进度时回退到 render job 自身进度", () => {
+    const resolved = resolveWorkspaceProgressState({
+      inferenceProgress: {
+        task_id: null,
+        status: "idle",
+        progress: 0,
+        message: "",
+        cancel_requested: false,
+        current_segment: null,
+        total_segments: null,
+        result_id: null,
+        updated_at: "2026-04-30T00:00:00.000Z",
+      },
+      renderJob: {
+        job_id: "job-block-first",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.58,
+        message: "已完成第 2/4 个 block 渲染。",
+        current_block_index: 2,
+        total_block_count: 4,
+      },
+    });
+
+    expect(resolved.percent).toBe(58);
+    expect(resolved.message).toBe("已完成第 2/4 个 block 渲染。");
+    expect(resolved.source).toBe("render");
+  });
+
   it("inference runtime 在 0% preparing 时保持加载态", () => {
     const resolved = resolveWorkspaceProgressState({
       inferenceProgress: {

@@ -56,6 +56,7 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
         assert [entry["start_sample"] for entry in initial_payload["block_entries"]] == sorted(
             entry["start_sample"] for entry in initial_payload["block_entries"]
         )
+        assert {entry["segment_alignment_mode"] for entry in initial_payload["block_entries"]} == {"exact"}
         snapshot_segment_ids = {segment["segment_id"] for segment in snapshot_payload["segments"]}
         assert all(
             set(block_entry["segment_ids"]).issubset(snapshot_segment_ids)
@@ -85,3 +86,4 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
 
         assert updated_payload["timeline_version"] == initial_payload["timeline_version"] + 1
         assert updated_payload["block_entries"][1]["block_asset_id"] == second_block_asset_id
+        assert {entry["segment_alignment_mode"] for entry in updated_payload["block_entries"]} == {"exact"}

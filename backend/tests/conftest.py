@@ -117,6 +117,7 @@ def test_app_settings(sample_voice_config: Path) -> AppSettings:
     return AppSettings(
         project_root=project_root,
         voices_config_path=sample_voice_config,
+        gpt_sovits_adapter_installed=True,
         managed_voices_dir=project_root / "managed_voices",
         synthesis_results_dir=project_root / "synthesis_results",
         inference_params_cache_file=project_root / "state" / "params_cache.json",
