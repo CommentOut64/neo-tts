@@ -6,10 +6,15 @@ from typing import Any, Callable, Protocol
 
 from backend.app.inference.block_adapter_types import (
     AdapterCapabilities,
+    AudioResult,
     BlockRenderRequest,
     BlockRenderResult,
+    BoundaryResult,
+    DegradationReport,
     JoinReport,
     ResolvedModelBinding,
+    ScopeFeedback,
+    SegmentAlignmentResult,
     SegmentOutput,
     SegmentSpan,
 )
@@ -125,15 +130,27 @@ class GPTSoVITSLocalAdapter:
         boundaries: list[Any] = []
         adapter_trace_boundaries: dict[str, dict[str, Any] | None] = {}
         join_downgrade_reasons: dict[str, str] = {}
+        boundary_mode_by_edge_id: dict[str, str] = {}
         enhancement_applied = False
         requested_join_mode = request.requested_join_policy or request.join_policy
         applied_join_mode = request.effective_join_policy or request.join_policy
         segment_asset_by_id = {asset.segment_id: asset for asset in segment_assets}
+        boundary_context_by_edge_id = {
+            boundary_context.edge_id: boundary_context
+            for boundary_context in request.boundary_contexts
+        }
         for edge_control in request.edge_controls:
             self._raise_if_cancelled()
             left = next(item for item in prepared_segments if item.request_segment.segment_id == edge_control.left_segment_id)
             right = next(item for item in prepared_segments if item.request_segment.segment_id == edge_control.right_segment_id)
-            if self._should_render_enhanced_boundary(request=request, left=left, right=right, edge_control=edge_control):
+            boundary_context = boundary_context_by_edge_id.get(edge_control.edge_id)
+            if self._should_render_enhanced_boundary(
+                request=request,
+                left=left,
+                right=right,
+                edge_control=edge_control,
+                boundary_context=boundary_context,
+            ):
                 left_asset = segment_asset_by_id[left.request_segment.segment_id]
                 right_asset = segment_asset_by_id[right.request_segment.segment_id]
                 if not self._supports_enhanced_boundary_assets(left_asset=left_asset, right_asset=right_asset):
@@ -153,11 +170,15 @@ class GPTSoVITSLocalAdapter:
                 )
                 boundaries.append(boundary)
                 enhancement_applied = True
+                boundary_mode_by_edge_id[edge_control.edge_id] = "enhanced"
                 adapter_trace_boundaries[edge_control.edge_id] = getattr(boundary, "trace", None)
                 continue
             if request.join_policy == "prefer_enhanced" or edge_control.join_policy_override == "prefer_enhanced":
                 applied_join_mode = "preserve_pause"
                 join_downgrade_reasons[edge_control.edge_id] = "binding_or_reference_mismatch"
+                boundary_mode_by_edge_id[edge_control.edge_id] = "fallback"
+            else:
+                boundary_mode_by_edge_id[edge_control.edge_id] = "none"
 
         block_asset = self._composition_builder.compose_block(
             segments=segment_assets,
@@ -172,6 +193,18 @@ class GPTSoVITSLocalAdapter:
             },
         )
         segment_spans = self._build_exact_segment_spans(block_asset)
+        boundary_results = [
+            BoundaryResult(
+                edge_id=edge_control.edge_id,
+                mode=boundary_mode_by_edge_id.get(edge_control.edge_id, "none"),
+                sample_span=None,
+                diagnostics={
+                    "join_policy_override": edge_control.join_policy_override,
+                    "downgrade_reason": join_downgrade_reasons.get(edge_control.edge_id),
+                },
+            )
+            for edge_control in request.edge_controls
+        ]
         return BlockRenderResult(
             block_id=request.block.block_id,
             segment_ids=[segment.segment_id for segment in request.block.segments],
@@ -188,6 +221,27 @@ class GPTSoVITSLocalAdapter:
                 for span in segment_spans
             ],
             segment_spans=segment_spans,
+            audio_result=AudioResult(
+                sample_rate=block_asset.sample_rate,
+                audio=block_asset.audio.astype(float, copy=False).tolist(),
+                audio_sample_count=block_asset.audio_sample_count,
+            ),
+            segment_alignment_result=SegmentAlignmentResult(
+                mode="exact",
+                spans=segment_spans,
+                precision_reason="adapter_exact",
+            ),
+            boundary_results=boundary_results,
+            degradation_report=DegradationReport(
+                requested_mode=request.requested_alignment_mode,
+                delivered_mode="exact",
+                reasons=sorted(set(join_downgrade_reasons.values())),
+            ),
+            scope_feedback=ScopeFeedback(
+                requested_scope=request.render_scope,
+                actual_scope=request.render_scope,
+                escalated_from_scope=request.escalated_from_scope,
+            ),
             join_report=JoinReport(
                 requested_policy=requested_join_mode,
                 applied_mode=applied_join_mode,
@@ -396,8 +450,14 @@ class GPTSoVITSLocalAdapter:
         left: _PreparedSegment,
         right: _PreparedSegment,
         edge_control: Any,
+        boundary_context: Any | None,
     ) -> bool:
-        if request.join_policy != "prefer_enhanced" and edge_control.join_policy_override != "prefer_enhanced":
+        boundary_join_policy = getattr(boundary_context, "join_policy", None)
+        if (
+            request.join_policy != "prefer_enhanced"
+            and edge_control.join_policy_override != "prefer_enhanced"
+            and boundary_join_policy != "prefer_enhanced"
+        ):
             return False
         return (
             left.model_binding.binding_fingerprint == right.model_binding.binding_fingerprint

@@ -258,7 +258,6 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
         block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
         block_adapter_selector=_build_block_adapter_selector(request),
-        block_first_enabled=getattr(request.app.state.settings, "edit_session_block_first_enabled", True),
     )
 
 
@@ -280,7 +279,6 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
         block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
         block_adapter_selector=_build_block_adapter_selector(request),
-        block_first_enabled=getattr(request.app.state.settings, "edit_session_block_first_enabled", True),
         run_jobs_in_background=False,
     )
 

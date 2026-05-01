@@ -16,6 +16,11 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
+from backend.app.services.render_asset_lifecycle import (
+    EphemeralExecutionAssetRef,
+    PublishedAssetRef,
+    ReusableSourceAssetRef,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,9 @@ class PersistedBlockRenderAssets:
     block_asset: PersistedBlockAssetDescriptor
     segment_assets: list[PersistedSegmentAssetDescriptor]
     timeline_block: BlockCompositionAssetPayload
+    published_assets: list[PublishedAssetRef]
+    reusable_source_assets: list[ReusableSourceAssetRef]
+    ephemeral_execution_assets: list[EphemeralExecutionAssetRef]
 
 
 class BlockRenderAssetPersister:
@@ -134,7 +142,53 @@ class BlockRenderAssetPersister:
             ),
             segment_assets=segment_assets,
             timeline_block=timeline_block,
+            published_assets=self._build_published_asset_refs(
+                result=result,
+                block_asset_id=block_asset_id,
+                segment_assets=segment_assets,
+            ),
+            reusable_source_assets=self._build_reusable_source_asset_refs(base_render_assets),
+            ephemeral_execution_assets=[],
         )
+
+    @staticmethod
+    def _build_published_asset_refs(
+        *,
+        result: BlockRenderResult,
+        block_asset_id: str,
+        segment_assets: list[PersistedSegmentAssetDescriptor],
+    ) -> list[PublishedAssetRef]:
+        refs = [PublishedAssetRef(asset_kind="block", asset_id=block_asset_id, owner_id=result.block_id)]
+        refs.extend(
+            PublishedAssetRef(
+                asset_kind="segment",
+                asset_id=descriptor.segment_asset_id,
+                owner_id=descriptor.segment_id,
+            )
+            for descriptor in segment_assets
+        )
+        return refs
+
+    @staticmethod
+    def _build_reusable_source_asset_refs(
+        base_render_assets: dict[str, SegmentRenderAssetPayload] | None,
+    ) -> list[ReusableSourceAssetRef]:
+        if not base_render_assets:
+            return []
+        refs: list[ReusableSourceAssetRef] = []
+        seen_asset_ids: set[str] = set()
+        for segment_id, asset in base_render_assets.items():
+            if asset.render_asset_id in seen_asset_ids:
+                continue
+            refs.append(
+                ReusableSourceAssetRef(
+                    segment_id=segment_id,
+                    render_asset_id=asset.render_asset_id,
+                    owner_id=segment_id,
+                )
+            )
+            seen_asset_ids.add(asset.render_asset_id)
+        return refs
 
     def _write_base_render_assets(
         self,
