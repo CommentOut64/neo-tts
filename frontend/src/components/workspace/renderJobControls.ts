@@ -2,7 +2,7 @@ import type { RenderJobStatus, RenderJobResponse } from "@/types/editSession";
 import type { InferenceProgressState } from "@/types/tts";
 
 export type PrimaryRenderActionKind = "pause" | "resume";
-export type WorkspaceProgressSource = "tts" | "idle";
+export type WorkspaceProgressSource = "tts" | "render" | "idle";
 
 export interface WorkspaceProgressState {
   percent: number;
@@ -41,6 +41,15 @@ function formatInferenceMessage(progress: InferenceProgressState): string {
   return "正在生成语音...";
 }
 
+function hasVisibleRenderJobProgress(
+  renderJob: RenderJobResponse | null | undefined,
+): boolean {
+  return Boolean(
+    renderJob &&
+      ["rendering", "pause_requested", "paused", "cancel_requested", "cancelled_partial"].includes(renderJob.status),
+  );
+}
+
 export function resolveWorkspaceProgressState({
   inferenceProgress,
   renderJob,
@@ -67,6 +76,14 @@ export function resolveWorkspaceProgressState({
       percent: inferencePercent,
       message: formatInferenceMessage(inferenceProgress!),
       source: "tts",
+    };
+  }
+
+  if (hasVisibleRenderJobProgress(renderJob)) {
+    return {
+      percent: Math.round((renderJob?.progress ?? 0) * 100),
+      message: renderJob?.message || "正在处理 block 渲染...",
+      source: "render",
     };
   }
 

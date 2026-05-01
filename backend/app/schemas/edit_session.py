@@ -690,7 +690,7 @@ class CompositionExportRequest(ExportRequestBase):
 
 
 class ExportAudioRequest(BaseModel):
-    kind: Literal["segments", "composition"] = Field(description="要导出的音频类型。")
+    kind: Literal["segments", "composition", "blocks"] = Field(description="要导出的音频类型。")
     overwrite_policy: Literal["fail", "replace", "new_folder"] = Field(
         default="fail",
         description="自动命名后的最终导出产物发生重名时的处理策略。",
@@ -738,6 +738,18 @@ class ExportSubtitleManifest(BaseModel):
     )
 
 
+class ExportedBlockManifestEntry(BaseModel):
+    block_id: str = Field(description="导出的 block ID。")
+    block_asset_id: str = Field(description="对应正式 block 资产 ID。")
+    order_index: int = Field(ge=1, description="该 block 在本次导出中的顺序。")
+    sample_span: tuple[int, int] = Field(description="该 block 在权威 timeline 中的 sample 区间。")
+    segment_ids: list[str] = Field(default_factory=list, description="该 block 覆盖的段 ID 列表。")
+    segment_alignment_mode: Literal["exact", "estimated", "block_only"] | None = Field(
+        default=None,
+        description="该 block 提供的段级定位精度。",
+    )
+
+
 class SegmentBatchRenderProfilePatchRequest(BaseModel):
     segment_ids: list[str] = Field(min_length=1, description="要批量绑定 render profile 的段 ID 列表。")
     patch: RenderProfilePatchRequest = Field(description="要应用到这批段的新 profile patch。")
@@ -761,12 +773,17 @@ class SegmentBatchVoiceBindingPatchRequest(BaseModel):
 
 
 class ExportOutputManifest(BaseModel):
-    export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
+    export_kind: Literal["segments", "composition", "blocks"] = Field(description="导出类型。")
     target_dir: str = Field(description="最终导出落点所在目录；分段导出为自动创建的导出目录，整条导出为用户选择的导出根目录。")
     files: list[str] = Field(default_factory=list, description="本次导出的全部文件路径。")
     audio_files: list[str] = Field(default_factory=list, description="本次导出的全部音频文件路径。")
     subtitle_files: list[str] = Field(default_factory=list, description="本次导出的全部字幕文件路径。")
     segment_files: list[str] = Field(default_factory=list, description="分段导出的 wav 文件列表。")
+    block_files: list[str] = Field(default_factory=list, description="blocks 导出的 wav 文件列表。")
+    block_manifest_entries: list[ExportedBlockManifestEntry] = Field(
+        default_factory=list,
+        description="blocks 导出的逐 block 清单。",
+    )
     composition_file: str | None = Field(default=None, description="整条音频导出的 wav 文件路径。")
     composition_manifest_id: str | None = Field(default=None, description="若导出类型为 composition，则为对应正式资产 ID。")
     subtitle_manifest: ExportSubtitleManifest | None = Field(default=None, description="若导出了字幕，则为对应字幕元信息。")
@@ -779,7 +796,7 @@ class ExportJobResponse(BaseModel):
     document_id: str = Field(description="所属文档 ID。")
     document_version: int = Field(description="导出的文档版本。")
     timeline_manifest_id: str = Field(description="导出使用的 timeline manifest ID。")
-    export_kind: Literal["segments", "composition"] = Field(description="导出类型。")
+    export_kind: Literal["segments", "composition", "blocks"] = Field(description="导出类型。")
     subtitle: ExportSubtitleRequest = Field(
         default_factory=ExportSubtitleRequest,
         description="本次导出作业使用的字幕选项；未启用时保持默认值。",

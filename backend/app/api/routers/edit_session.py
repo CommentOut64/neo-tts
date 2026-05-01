@@ -18,6 +18,7 @@ from backend.app.inference.editable_gateway import (
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
 )
+from backend.app.inference.adapters import GPTSoVITSLocalAdapter
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
@@ -115,18 +116,27 @@ def _build_voice_service(request: Request) -> VoiceService:
 
 
 def _build_model_registry(request: Request) -> ModelRegistry:
+    shared = getattr(request.app.state, "model_registry", None)
+    if shared is not None:
+        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return ModelRegistry(registry_root)
 
 
 def _build_secret_store(request: Request) -> SecretStore:
+    shared = getattr(request.app.state, "secret_store", None)
+    if shared is not None:
+        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return SecretStore(registry_root)
 
 
 def _build_adapter_registry(request: Request) -> AdapterRegistry:
+    shared = getattr(request.app.state, "adapter_registry", None)
+    if shared is not None:
+        return shared
     store = build_default_adapter_definition_store(
         enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
     )
@@ -134,6 +144,25 @@ def _build_adapter_registry(request: Request) -> AdapterRegistry:
     for definition in store.list_definitions():
         registry.register(definition)
     return registry
+
+
+def _build_block_adapter_selector(request: Request):
+    shared = getattr(request.app.state, "block_adapter_selector", None)
+    if shared is not None:
+        return shared
+
+    def _select_adapter(adapter_id: str, **kwargs):
+        if adapter_id == "gpt_sovits_local":
+            return GPTSoVITSLocalAdapter(
+                editable_gateway=kwargs["gateway"],
+                composition_builder=kwargs.get("composition_builder"),
+                reusable_asset_accessor=kwargs.get("asset_store"),
+                cancellation_checker=kwargs.get("cancellation_checker"),
+                segment_asset_callback=kwargs.get("segment_asset_callback"),
+            )
+        raise AdapterRegistry.build_model_required_error(adapter_id=adapter_id)
+
+    return _select_adapter
 
 
 def _resolve_runtime_model_path(request: Request, raw_path: str) -> str:
@@ -226,6 +255,10 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         model_registry=_build_model_registry(request),
         adapter_registry=_build_adapter_registry(request),
         secret_store=_build_secret_store(request),
+        block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
+        block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
+        block_adapter_selector=_build_block_adapter_selector(request),
+        block_first_enabled=getattr(request.app.state.settings, "edit_session_block_first_enabled", True),
     )
 
 
@@ -244,6 +277,10 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         model_registry=_build_model_registry(request),
         adapter_registry=_build_adapter_registry(request),
         secret_store=_build_secret_store(request),
+        block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
+        block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
+        block_adapter_selector=_build_block_adapter_selector(request),
+        block_first_enabled=getattr(request.app.state.settings, "edit_session_block_first_enabled", True),
         run_jobs_in_background=False,
     )
 

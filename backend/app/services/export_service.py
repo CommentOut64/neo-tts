@@ -18,6 +18,7 @@ from backend.app.schemas.edit_session import (
     ExportJobAcceptedResponse,
     ExportJobRecord,
     ExportJobResponse,
+    ExportedBlockManifestEntry,
     ExportOutputManifest,
     ExportSubtitleManifest,
     ExportSubtitleRequest,
@@ -223,6 +224,14 @@ class ExportService:
                 export_root_dir=export_root_dir,
                 staging_dir=staging_dir,
             )
+        if job.export_kind == "blocks":
+            return self._export_blocks(
+                job=job,
+                snapshot=snapshot,
+                timeline=timeline,
+                export_root_dir=export_root_dir,
+                staging_dir=staging_dir,
+            )
         if job.export_kind == "composition":
             return self._export_composition(
                 job=job,
@@ -242,6 +251,7 @@ class ExportService:
         export_root_dir: Path,
         staging_dir: Path,
     ) -> ExportOutputManifest:
+        self._ensure_segment_export_supported(timeline)
         export_dir_name = self._build_export_name(job)
         segment_files: list[str] = []
         subtitle_file_name = f"{export_dir_name}.srt"
@@ -307,6 +317,96 @@ class ExportService:
             audio_files=final_segment_files,
             subtitle_files=final_subtitle_files,
             segment_files=final_segment_files,
+            subtitle_manifest=subtitle_manifest,
+            manifest_file=str(stored_manifest_path),
+        )
+
+    def _export_blocks(
+        self,
+        *,
+        job: ExportJobResponse,
+        snapshot,
+        timeline,
+        export_root_dir: Path,
+        staging_dir: Path,
+    ) -> ExportOutputManifest:
+        export_dir_name = self._build_export_name(job)
+        block_files: list[str] = []
+        block_manifest_entries: list[ExportedBlockManifestEntry] = []
+        subtitle_payload = self._build_subtitle_export_payload(job=job, snapshot=snapshot, timeline=timeline)
+        total_file_count = len(timeline.block_entries) + (1 if subtitle_payload is not None else 0) + 1
+        subtitle_file_name = f"{export_dir_name}.srt"
+
+        for index, entry in enumerate(timeline.block_entries, start=1):
+            block_asset = self._asset_store.load_block_asset(entry.block_asset_id)
+            destination = staging_dir / f"blocks-{index}.wav"
+            shutil.copy2(self._asset_store.block_asset_path(entry.block_asset_id) / "audio.wav", destination)
+            block_files.append(str(destination))
+            block_manifest_entries.append(
+                ExportedBlockManifestEntry(
+                    block_id=block_asset.block_id,
+                    block_asset_id=entry.block_asset_id,
+                    order_index=index,
+                    sample_span=(entry.start_sample, entry.end_sample),
+                    segment_ids=list(entry.segment_ids),
+                    segment_alignment_mode=entry.segment_alignment_mode,
+                )
+            )
+            self._emit_export_progress(
+                job=job,
+                completed_file_count=index,
+                total_file_count=total_file_count,
+                current_path=destination,
+            )
+
+        subtitle_files: list[str] = []
+        subtitle_manifest: ExportSubtitleManifest | None = None
+        if subtitle_payload is not None:
+            subtitle_path = staging_dir / subtitle_file_name
+            subtitle_path.write_text(subtitle_payload.payload, encoding="utf-8")
+            subtitle_files.append(str(subtitle_path))
+            subtitle_manifest = ExportSubtitleManifest(
+                format=subtitle_payload.format,
+                offset_seconds=subtitle_payload.offset_seconds,
+                strip_trailing_punctuation=subtitle_payload.strip_trailing_punctuation,
+            )
+            self._emit_export_progress(
+                job=job,
+                completed_file_count=len(timeline.block_entries) + 1,
+                total_file_count=total_file_count,
+                current_path=subtitle_path,
+            )
+
+        manifest_path = staging_dir / "manifest.json"
+        manifest_payload = {
+            "export_kind": "blocks",
+            "document_id": snapshot.document_id,
+            "document_version": snapshot.document_version,
+            "timeline_manifest_id": snapshot.timeline_manifest_id,
+            "block_files": [Path(path).name for path in block_files],
+            "audio_files": [Path(path).name for path in block_files],
+            "subtitle_files": [Path(path).name for path in subtitle_files],
+            "subtitle_manifest": subtitle_manifest.model_dump(mode="json") if subtitle_manifest is not None else None,
+            "block_manifest_entries": [entry.model_dump(mode="json") for entry in block_manifest_entries],
+        }
+        manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        stored_manifest_path = self._write_export_manifest(job.export_job_id, manifest_payload)
+        manifest_path.unlink(missing_ok=True)
+        final_dir = self._asset_store.finalize_export_staging_dir(
+            staging_dir=staging_dir,
+            target_dir=export_root_dir / export_dir_name,
+            overwrite_policy=job.overwrite_policy,
+        )
+        final_block_files = [str(final_dir / f"blocks-{index}.wav") for index in range(1, len(block_files) + 1)]
+        final_subtitle_files = [str(final_dir / subtitle_file_name)] if subtitle_files else []
+        return ExportOutputManifest(
+            export_kind="blocks",
+            target_dir=str(final_dir),
+            files=[*final_block_files, *final_subtitle_files],
+            audio_files=final_block_files,
+            subtitle_files=final_subtitle_files,
+            block_files=final_block_files,
+            block_manifest_entries=block_manifest_entries,
             subtitle_manifest=subtitle_manifest,
             manifest_file=str(stored_manifest_path),
         )
@@ -413,6 +513,17 @@ class ExportService:
             snapshot=snapshot,
             timeline=timeline,
         )
+
+    @staticmethod
+    def _ensure_segment_export_supported(timeline) -> None:
+        unsupported_modes = {
+            entry.segment_alignment_mode
+            for entry in timeline.block_entries
+            if entry.segment_alignment_mode in {"estimated", "block_only"}
+        }
+        if unsupported_modes:
+            ordered_modes = ",".join(sorted(unsupported_modes))
+            raise ValueError(f"Segment export requires exact segment alignment, got: {ordered_modes}")
 
     def _emit_export_progress(
         self,

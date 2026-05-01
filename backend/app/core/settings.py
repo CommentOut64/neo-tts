@@ -36,6 +36,7 @@ class AppSettings:
     edit_session_assets_dir: Path = Path("storage/edit_session/assets")
     edit_session_exports_dir: Path = Path("storage/edit_session/exports")
     edit_session_staging_ttl_seconds: int = 3600
+    edit_session_block_first_enabled: bool = True
     cnhubert_base_path: Path = Path("pretrained_models/chinese-hubert-base")
     bert_path: Path = Path("pretrained_models/chinese-roberta-wwm-ext-large")
     preload_on_start: bool = False
@@ -288,6 +289,7 @@ def get_settings() -> AppSettings:
     edit_session_assets_dir_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_ASSETS_DIR")
     edit_session_exports_dir_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_EXPORTS_DIR")
     edit_session_staging_ttl_env = os.environ.get("GPT_SOVITS_EDIT_SESSION_STAGING_TTL_SECONDS")
+    edit_session_block_first_enabled_env = os.environ.get("NEO_TTS_EDIT_SESSION_BLOCK_FIRST_ENABLED")
     cnhubert_path_env = os.environ.get("CNHUBERT_PATH") or os.environ.get("GPT_SOVITS_CNHUBERT_PATH")
     bert_path_env = os.environ.get("BERT_PATH") or os.environ.get("GPT_SOVITS_BERT_PATH")
     preload_on_start_env = os.environ.get("GPT_SOVITS_PRELOAD_ON_START")
@@ -404,6 +406,7 @@ def get_settings() -> AppSettings:
         )
 
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
+    edit_session_block_first_enabled = _parse_bool_env(edit_session_block_first_enabled_env, default=True)
     # 开发态默认预加载，打包态默认关闭（可通过环境变量显式开启），
     # 避免桌面应用启动阶段被模型导入/预热阻塞。
     preload_default = distribution_kind == "development"
@@ -440,6 +443,7 @@ def get_settings() -> AppSettings:
         edit_session_assets_dir=edit_session_assets_dir,
         edit_session_exports_dir=edit_session_exports_dir,
         edit_session_staging_ttl_seconds=edit_session_staging_ttl_seconds,
+        edit_session_block_first_enabled=edit_session_block_first_enabled,
         cnhubert_base_path=cnhubert_base_path,
         bert_path=bert_path,
         preload_on_start=preload_on_start,

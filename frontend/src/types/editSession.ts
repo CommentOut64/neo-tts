@@ -328,6 +328,8 @@ export interface RenderJobAcceptedResponse {
   job: RenderJobResponse
 }
 
+export type SegmentAlignmentMode = "exact" | "estimated" | "block_only";
+
 export interface TimelineBlockEntry {
   block_asset_id: string;
   segment_ids: string[];
@@ -335,6 +337,8 @@ export interface TimelineBlockEntry {
   end_sample: number;
   audio_sample_count: number;
   audio_url: string;
+  segment_alignment_mode?: SegmentAlignmentMode | null;
+  join_report_summary?: Record<string, unknown> | null;
 }
 
 export interface TimelineSegmentEntry {
@@ -346,6 +350,8 @@ export interface TimelineSegmentEntry {
   group_id: string | null;
   render_profile_id: string | null;
   voice_binding_id: string | null;
+  alignment_precision?: "exact" | "estimated" | null;
+  source?: string | null;
 }
 
 export interface TimelineEdgeEntry {

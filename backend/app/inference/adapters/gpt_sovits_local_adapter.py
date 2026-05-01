@@ -70,11 +70,13 @@ class GPTSoVITSLocalAdapter:
         composition_builder: CompositionBuilder | None = None,
         reusable_asset_accessor: ReusableAssetAccessorLike | None = None,
         cancellation_checker: Callable[[], bool] | None = None,
+        segment_asset_callback: Callable[[SegmentRenderAssetPayload, Any, bool], None] | None = None,
     ) -> None:
         self._editable_gateway = editable_gateway
         self._composition_builder = composition_builder or CompositionBuilder()
         self._reusable_asset_accessor = reusable_asset_accessor
         self._cancellation_checker = cancellation_checker
+        self._segment_asset_callback = segment_asset_callback
 
     @staticmethod
     def capabilities() -> AdapterCapabilities:
@@ -106,6 +108,7 @@ class GPTSoVITSLocalAdapter:
                 segment_assets.append(reused_asset)
                 reused_segment_ids.append(prepared.request_segment.segment_id)
                 adapter_trace_segments[prepared.request_segment.segment_id] = reused_asset.trace
+                self._notify_segment_asset(reused_asset, prepared.request_segment, reused=True)
                 continue
             context_key = self._build_context_cache_key(prepared)
             context = contexts.get(context_key)
@@ -121,6 +124,7 @@ class GPTSoVITSLocalAdapter:
             )
             segment_assets.append(asset)
             adapter_trace_segments[prepared.request_segment.segment_id] = asset.trace
+            self._notify_segment_asset(asset, prepared.request_segment, reused=False)
 
         boundaries: list[Any] = []
         adapter_trace_boundaries: dict[str, dict[str, Any] | None] = {}
@@ -318,10 +322,16 @@ class GPTSoVITSLocalAdapter:
             text_language=request_segment.language,
             terminal_raw=request_segment.terminal_punctuation or "",
             terminal_source="original",
-            detected_language=request_segment.language,
+            detected_language=GPTSoVITSLocalAdapter._resolve_detected_language(request_segment.language),
             inference_exclusion_reason="none",
             render_version=render_version,
         )
+
+    @staticmethod
+    def _resolve_detected_language(language: Any) -> str:
+        if language in {"zh", "ja", "en"}:
+            return language
+        return "unknown"
 
     @staticmethod
     def _build_editable_edge(
@@ -371,3 +381,7 @@ class GPTSoVITSLocalAdapter:
     def _raise_if_cancelled(self) -> None:
         if callable(self._cancellation_checker) and self._cancellation_checker():
             raise RuntimeError("Block rendering cancelled.")
+
+    def _notify_segment_asset(self, asset: SegmentRenderAssetPayload, request_segment: Any, *, reused: bool) -> None:
+        if callable(self._segment_asset_callback):
+            self._segment_asset_callback(asset, request_segment, reused)

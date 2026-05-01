@@ -8,7 +8,12 @@ import numpy as np
 
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.inference.block_adapter_types import BlockRenderRequest, BlockRenderResult, SegmentOutput, SegmentSpan
-from backend.app.inference.editable_types import BlockCompositionAssetPayload, SegmentCompositionEntry
+from backend.app.inference.editable_types import (
+    BlockCompositionAssetPayload,
+    BlockMarkerEntry,
+    EdgeCompositionEntry,
+    SegmentCompositionEntry,
+)
 from backend.app.services.edit_asset_store import EditAssetStore
 
 
@@ -158,6 +163,17 @@ class BlockRenderAssetPersister:
             result.sample_rate,
             float_audio_chunk_to_pcm16_bytes(audio.astype(np.float32, copy=False)),
         )
+        edge_entries = self._build_edge_entries(
+            request=request,
+            ordered_spans=ordered_spans,
+            sample_rate=result.sample_rate,
+        )
+        marker_entries = self._build_marker_entries(
+            block_id=result.block_id,
+            audio_sample_count=result.audio_sample_count,
+            ordered_spans=ordered_spans,
+            edge_entries=edge_entries,
+        )
         metadata = {
             "block_id": result.block_id,
             "block_asset_id": block_asset_id,
@@ -190,8 +206,8 @@ class BlockRenderAssetPersister:
             "diagnostics": result.diagnostics,
             "block_render_cache_key": block_render_cache_key,
             "block_policy_version": request.block_policy_version,
-            "edge_entries": [],
-            "marker_entries": [],
+            "edge_entries": [self._serialize_edge_entry(entry) for entry in edge_entries],
+            "marker_entries": [self._serialize_marker_entry(entry) for entry in marker_entries],
         }
         self._asset_store.write_staging_bytes(job_id, f"blocks/{block_asset_id}/audio.wav", wav_bytes)
         self._asset_store.write_staging_bytes(
@@ -308,7 +324,17 @@ class BlockRenderAssetPersister:
         ordered_spans: list[SegmentSpan],
         segment_entries: list[SegmentCompositionEntry],
     ) -> BlockCompositionAssetPayload:
-        del ordered_spans
+        edge_entries = self._build_edge_entries(
+            request=request,
+            ordered_spans=ordered_spans,
+            sample_rate=result.sample_rate,
+        )
+        marker_entries = self._build_marker_entries(
+            block_id=request.block.block_id,
+            audio_sample_count=result.audio_sample_count,
+            ordered_spans=ordered_spans,
+            edge_entries=edge_entries,
+        )
         return BlockCompositionAssetPayload(
             block_id=request.block.block_id,
             block_asset_id=block_asset_id,
@@ -327,9 +353,99 @@ class BlockRenderAssetPersister:
                 if result.join_report is not None
                 else None
             ),
-            edge_entries=[],
-            marker_entries=[],
+            edge_entries=edge_entries,
+            marker_entries=marker_entries,
         )
+
+    def _build_edge_entries(
+        self,
+        *,
+        request: BlockRenderRequest,
+        ordered_spans: list[SegmentSpan],
+        sample_rate: int,
+    ) -> list[EdgeCompositionEntry]:
+        if len(ordered_spans) < 2:
+            return []
+        span_by_segment_id = {span.segment_id: span for span in ordered_spans}
+        edge_entries: list[EdgeCompositionEntry] = []
+        for edge_control in request.edge_controls:
+            left_span = span_by_segment_id.get(edge_control.left_segment_id)
+            right_span = span_by_segment_id.get(edge_control.right_segment_id)
+            if left_span is None or right_span is None:
+                continue
+            boundary_start = left_span.sample_end
+            pause_end = right_span.sample_start
+            pause_sample_count = max(0, int(sample_rate * edge_control.pause_duration_seconds))
+            pause_start = max(boundary_start, pause_end - pause_sample_count)
+            boundary_end = pause_start
+            effective_boundary_strategy = "crossfade_only"
+            if boundary_end > boundary_start:
+                effective_boundary_strategy = "latent_overlap_then_equal_power_crossfade"
+            edge_entries.append(
+                EdgeCompositionEntry(
+                    edge_id=edge_control.edge_id,
+                    left_segment_id=edge_control.left_segment_id,
+                    right_segment_id=edge_control.right_segment_id,
+                    boundary_strategy="crossfade_only",
+                    effective_boundary_strategy=effective_boundary_strategy,
+                    pause_duration_seconds=edge_control.pause_duration_seconds,
+                    boundary_sample_span=(boundary_start, boundary_end),
+                    pause_sample_span=(pause_start, pause_end),
+                )
+            )
+        return edge_entries
+
+    @staticmethod
+    def _build_marker_entries(
+        *,
+        block_id: str,
+        audio_sample_count: int,
+        ordered_spans: list[SegmentSpan],
+        edge_entries: list[EdgeCompositionEntry],
+    ) -> list[BlockMarkerEntry]:
+        markers = [BlockMarkerEntry(marker_type="block_start", sample=0, related_id=block_id)]
+        for span in ordered_spans:
+            markers.append(BlockMarkerEntry(marker_type="segment_start", sample=span.sample_start, related_id=span.segment_id))
+            markers.append(BlockMarkerEntry(marker_type="segment_end", sample=span.sample_end, related_id=span.segment_id))
+        for edge in edge_entries:
+            if edge.pause_sample_span[1] > edge.pause_sample_span[0]:
+                markers.append(
+                    BlockMarkerEntry(
+                        marker_type="edge_gap_start",
+                        sample=edge.pause_sample_span[0],
+                        related_id=edge.edge_id,
+                    )
+                )
+                markers.append(
+                    BlockMarkerEntry(
+                        marker_type="edge_gap_end",
+                        sample=edge.pause_sample_span[1],
+                        related_id=edge.edge_id,
+                    )
+                )
+        markers.append(BlockMarkerEntry(marker_type="block_end", sample=audio_sample_count, related_id=block_id))
+        return markers
+
+    @staticmethod
+    def _serialize_edge_entry(entry: EdgeCompositionEntry) -> dict[str, object]:
+        return {
+            "edge_id": entry.edge_id,
+            "left_segment_id": entry.left_segment_id,
+            "right_segment_id": entry.right_segment_id,
+            "boundary_strategy": entry.boundary_strategy,
+            "effective_boundary_strategy": entry.effective_boundary_strategy,
+            "pause_duration_seconds": entry.pause_duration_seconds,
+            "boundary_sample_span": list(entry.boundary_sample_span),
+            "pause_sample_span": list(entry.pause_sample_span),
+        }
+
+    @staticmethod
+    def _serialize_marker_entry(entry: BlockMarkerEntry) -> dict[str, object]:
+        return {
+            "marker_type": entry.marker_type,
+            "sample": entry.sample,
+            "related_id": entry.related_id,
+        }
 
     def _validate_and_order_segment_spans(
         self,

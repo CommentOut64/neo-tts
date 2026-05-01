@@ -10,6 +10,11 @@ from backend.app.core.logging import get_logger
 from backend.app.core.path_resolution import resolve_runtime_path
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.repositories.voice_repository import VoiceRepository
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
+from backend.app.services.block_render_request_builder import BlockRenderRequestBuilder
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_maintenance_service import EditSessionMaintenanceService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
@@ -104,6 +109,15 @@ async def app_lifespan(app: FastAPI):
         export_root=settings.edit_session_exports_dir,
         staging_ttl_seconds=settings.edit_session_staging_ttl_seconds,
     )
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    model_registry = ModelRegistry(registry_root)
+    secret_store = SecretStore(registry_root)
+    adapter_definition_store = build_default_adapter_definition_store(
+        enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
+    )
+    adapter_registry = adapter_definition_store._registry  # noqa: SLF001
+    block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
+    block_render_asset_persister = BlockRenderAssetPersister(asset_store=edit_asset_store)
     edit_session_runtime = EditSessionRuntime()
     edit_session_export_service = ExportService(
         repository=edit_session_repository,
@@ -123,6 +137,11 @@ async def app_lifespan(app: FastAPI):
     app.state.inference_params_cache_store = inference_params_cache_store
     app.state.edit_session_repository = edit_session_repository
     app.state.edit_asset_store = edit_asset_store
+    app.state.model_registry = model_registry
+    app.state.secret_store = secret_store
+    app.state.adapter_registry = adapter_registry
+    app.state.block_render_request_builder = block_render_request_builder
+    app.state.block_render_asset_persister = block_render_asset_persister
     app.state.edit_session_runtime = edit_session_runtime
     app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service
