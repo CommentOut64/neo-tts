@@ -33,6 +33,8 @@ class CompositionBuilder:
         block_asset_id: str | None = None,
         segment_alignment_mode: str | None = None,
         join_report_summary: dict | None = None,
+        segment_entry_asset_ids: dict[str, str | None] | None = None,
+        segment_entry_base_asset_ids: dict[str, str | None] | None = None,
     ) -> BlockCompositionAssetPayload:
         if not segments:
             raise ValueError("compose_block requires at least one segment asset.")
@@ -45,7 +47,16 @@ class CompositionBuilder:
                 SegmentCompositionEntry(
                     segment_id=only_segment.segment_id,
                     audio_sample_span=(0, int(audio.size)),
-                    render_asset_id=only_segment.render_asset_id,
+                    render_asset_id=self._resolve_segment_entry_asset_id(
+                        only_segment.segment_id,
+                        only_segment.render_asset_id,
+                        segment_entry_asset_ids,
+                    ),
+                    base_render_asset_id=self._resolve_segment_entry_asset_id(
+                        only_segment.segment_id,
+                        only_segment.render_asset_id,
+                        segment_entry_base_asset_ids,
+                    ),
                 )
             ]
             marker_entries = [
@@ -92,7 +103,16 @@ class CompositionBuilder:
             SegmentCompositionEntry(
                 segment_id=first.segment_id,
                 audio_sample_span=(0, cursor),
-                render_asset_id=first.render_asset_id,
+                render_asset_id=self._resolve_segment_entry_asset_id(
+                    first.segment_id,
+                    first.render_asset_id,
+                    segment_entry_asset_ids,
+                ),
+                base_render_asset_id=self._resolve_segment_entry_asset_id(
+                    first.segment_id,
+                    first.render_asset_id,
+                    segment_entry_base_asset_ids,
+                ),
             )
         )
         marker_entries.append(BlockMarkerEntry(marker_type="segment_end", sample=cursor, related_id=first.segment_id))
@@ -151,7 +171,16 @@ class CompositionBuilder:
                 SegmentCompositionEntry(
                     segment_id=right_segment.segment_id,
                     audio_sample_span=(start, end),
-                    render_asset_id=right_segment.render_asset_id,
+                    render_asset_id=self._resolve_segment_entry_asset_id(
+                        right_segment.segment_id,
+                        right_segment.render_asset_id,
+                        segment_entry_asset_ids,
+                    ),
+                    base_render_asset_id=self._resolve_segment_entry_asset_id(
+                        right_segment.segment_id,
+                        right_segment.render_asset_id,
+                        segment_entry_base_asset_ids,
+                    ),
                 )
             )
             marker_entries.append(
@@ -210,6 +239,7 @@ class CompositionBuilder:
                             block_start + entry.audio_sample_span[1],
                         ),
                         render_asset_id=entry.render_asset_id,
+                        base_render_asset_id=entry.base_render_asset_id,
                     )
                 )
 
@@ -272,6 +302,16 @@ class CompositionBuilder:
         return np.zeros(int(self._sample_rate * pause_duration_seconds), dtype=np.float32)
 
     @staticmethod
+    def _resolve_segment_entry_asset_id(
+        segment_id: str,
+        fallback_asset_id: str | None,
+        overrides: dict[str, str | None] | None,
+    ) -> str | None:
+        if overrides is None:
+            return fallback_asset_id
+        return overrides.get(segment_id, fallback_asset_id)
+
+    @staticmethod
     def _build_block_asset_id(
         *,
         block_id: str,
@@ -287,6 +327,7 @@ class CompositionBuilder:
                     "segment_id": entry.segment_id,
                     "audio_sample_span": list(entry.audio_sample_span),
                     "render_asset_id": entry.render_asset_id,
+                    "base_render_asset_id": entry.base_render_asset_id,
                 }
                 for entry in segments
             ],

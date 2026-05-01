@@ -62,6 +62,7 @@ export interface EditableSegment {
   inference_exclusion_reason?: InferenceExclusionReason | null
   render_version: number
   render_asset_id: string | null
+  base_render_asset_id: string | null
   group_id: string | null
   render_profile_id: string | null
   voice_binding_id: string | null

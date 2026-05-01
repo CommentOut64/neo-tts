@@ -43,6 +43,7 @@ def build_default_adapter_definition_store(
                     block_render=True,
                     exact_segment_output=True,
                     segment_level_voice_binding=True,
+                    incremental_render=True,
                     local_gpu_runtime=True,
                 ),
                 block_limits=AdapterBlockLimits(

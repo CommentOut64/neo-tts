@@ -13,6 +13,7 @@ from backend.app.inference.editable_types import (
     BlockMarkerEntry,
     EdgeCompositionEntry,
     SegmentCompositionEntry,
+    SegmentRenderAssetPayload,
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 
@@ -54,6 +55,8 @@ class BlockRenderAssetPersister:
         result: BlockRenderResult,
         block_render_cache_key: str,
         terminal_status: str = "completed",
+        base_render_asset_ids: dict[str, str] | None = None,
+        base_render_assets: dict[str, SegmentRenderAssetPayload] | None = None,
     ) -> PersistedBlockRenderAssets | None:
         if terminal_status != "completed":
             self._asset_store.cleanup_staging_job(job_id)
@@ -82,6 +85,11 @@ class BlockRenderAssetPersister:
         )
 
         try:
+            self._write_base_render_assets(
+                job_id=job_id,
+                base_render_assets=base_render_assets,
+                sample_rate=result.sample_rate,
+            )
             self._write_block_asset(
                 job_id=job_id,
                 request=request,
@@ -91,6 +99,7 @@ class BlockRenderAssetPersister:
                 ordered_spans=ordered_spans,
                 output_by_segment_id=output_by_segment_id,
                 block_render_cache_key=block_render_cache_key,
+                base_render_asset_ids=base_render_asset_ids,
             )
             segment_assets, segment_entries = self._write_derived_segment_assets(
                 job_id=job_id,
@@ -100,6 +109,7 @@ class BlockRenderAssetPersister:
                 block_asset_id=block_asset_id,
                 ordered_spans=ordered_spans,
                 output_by_segment_id=output_by_segment_id,
+                base_render_asset_ids=base_render_asset_ids,
             )
             timeline_block = self._build_timeline_block(
                 request=request,
@@ -126,6 +136,48 @@ class BlockRenderAssetPersister:
             timeline_block=timeline_block,
         )
 
+    def _write_base_render_assets(
+        self,
+        *,
+        job_id: str,
+        base_render_assets: dict[str, SegmentRenderAssetPayload] | None,
+        sample_rate: int,
+    ) -> None:
+        if not base_render_assets:
+            return
+        written_asset_ids: set[str] = set()
+        for asset in base_render_assets.values():
+            if asset.render_asset_id in written_asset_ids:
+                continue
+            written_asset_ids.add(asset.render_asset_id)
+            audio = np.concatenate([asset.left_margin_audio, asset.core_audio, asset.right_margin_audio]).astype(
+                np.float32,
+                copy=False,
+            )
+            wav_bytes = build_wav_bytes(
+                sample_rate,
+                float_audio_chunk_to_pcm16_bytes(audio),
+            )
+            metadata = {
+                "render_asset_id": asset.render_asset_id,
+                "segment_id": asset.segment_id,
+                "render_version": asset.render_version,
+                "semantic_tokens": asset.semantic_tokens,
+                "phone_ids": asset.phone_ids,
+                "decoder_frame_count": asset.decoder_frame_count,
+                "audio_sample_count": asset.audio_sample_count,
+                "left_margin_sample_count": asset.left_margin_sample_count,
+                "core_sample_count": asset.core_sample_count,
+                "right_margin_sample_count": asset.right_margin_sample_count,
+                "trace": asset.trace,
+            }
+            self._asset_store.write_staging_bytes(job_id, f"segments/{asset.render_asset_id}/audio.wav", wav_bytes)
+            self._asset_store.write_staging_bytes(
+                job_id,
+                f"segments/{asset.render_asset_id}/metadata.json",
+                json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+
     def _write_block_asset(
         self,
         *,
@@ -137,6 +189,7 @@ class BlockRenderAssetPersister:
         ordered_spans: list[SegmentSpan],
         output_by_segment_id: dict[str, SegmentOutput],
         block_render_cache_key: str,
+        base_render_asset_ids: dict[str, str] | None,
     ) -> None:
         segment_entries = []
         for span in ordered_spans:
@@ -153,6 +206,9 @@ class BlockRenderAssetPersister:
                     "audio_sample_span": [span.sample_start, span.sample_end],
                     "order_key": self._find_order_key(request=request, segment_id=span.segment_id),
                     "render_asset_id": render_asset_id,
+                    "base_render_asset_id": (
+                        base_render_asset_ids.get(span.segment_id) if base_render_asset_ids is not None else render_asset_id
+                    ),
                     "precision": span.precision,
                     "source": output_by_segment_id.get(span.segment_id).source
                     if output_by_segment_id.get(span.segment_id) is not None
@@ -226,6 +282,7 @@ class BlockRenderAssetPersister:
         block_asset_id: str,
         ordered_spans: list[SegmentSpan],
         output_by_segment_id: dict[str, SegmentOutput],
+        base_render_asset_ids: dict[str, str] | None,
     ) -> tuple[list[PersistedSegmentAssetDescriptor], list[SegmentCompositionEntry]]:
         if result.segment_alignment_mode == "block_only":
             return [], []
@@ -241,6 +298,9 @@ class BlockRenderAssetPersister:
                         audio_sample_span=(span.sample_start, span.sample_end),
                         order_key=order_key,
                         render_asset_id=None,
+                        base_render_asset_id=(
+                            base_render_asset_ids.get(span.segment_id) if base_render_asset_ids is not None else None
+                        ),
                         precision=span.precision,
                         source=output_by_segment_id.get(span.segment_id).source
                         if output_by_segment_id.get(span.segment_id) is not None
@@ -308,6 +368,9 @@ class BlockRenderAssetPersister:
                     audio_sample_span=(span.sample_start, span.sample_end),
                     order_key=order_key,
                     render_asset_id=segment_asset_id,
+                    base_render_asset_id=(
+                        base_render_asset_ids.get(span.segment_id) if base_render_asset_ids is not None else None
+                    ),
                     precision=span.precision,
                     source=metadata["source"],
                 )

@@ -12,6 +12,7 @@ from backend.app.inference.block_adapter_types import (
     BlockRequestSegment,
     DirtyContext,
     EdgeControl,
+    RenderScope,
 )
 from backend.app.inference.editable_types import RenderBlock
 from backend.app.schemas.edit_session import DocumentSnapshot, EditableSegment, TimelineManifest
@@ -47,6 +48,7 @@ class BlockRenderRequestBuilder:
         target_edge_ids: set[str],
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
+        render_scope: RenderScope = "block",
     ) -> list[BlockRenderRequest]:
         requests: list[BlockRenderRequest] = []
         for block in blocks:
@@ -65,6 +67,7 @@ class BlockRenderRequestBuilder:
                     target_edge_ids=target_edge_ids,
                     previous_timeline=previous_timeline,
                     reuse_policy=reuse_policy,
+                    render_scope=render_scope,
                 )
             )
         return requests
@@ -80,64 +83,134 @@ class BlockRenderRequestBuilder:
         target_edge_ids: set[str],
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
+        render_scope: RenderScope,
     ) -> list[BlockRenderRequest]:
         requests: list[BlockRenderRequest] = []
         cursor = 0
         while cursor < len(ordered_segments):
             chunk = self._collect_chunk(ordered_segments, cursor)
             cursor += len(chunk)
-            first_binding = chunk[0].resolved.resolved_model_binding
-            if first_binding is None:
-                raise AdapterRegistry.build_model_required_error()
-            adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
-            chunk_segment_ids = [item.segment.segment_id for item in chunk]
-            request_block = self._build_request_block(chunk, block)
-            edge_controls = self._build_edge_controls(
+            scoped_windows = self._split_chunk_by_scope(
                 chunk=chunk,
                 snapshot=snapshot,
-                resolved_edges=resolved_edges,
-            )
-            join_policy = self._resolve_join_policy(edge_controls)
-            dirty_context = self._build_dirty_context(
-                chunk_segment_ids=chunk_segment_ids,
-                edge_controls=edge_controls,
                 target_segment_ids=target_segment_ids,
                 target_edge_ids=target_edge_ids,
-                previous_timeline=previous_timeline,
-                reuse_policy=reuse_policy,
-                adapter_definition=adapter_definition,
+                render_scope=render_scope,
             )
-            top_level_reference = first_binding.resolved_reference or {}
-            requests.append(
-                BlockRenderRequest(
-                    request_id=self._build_request_id(
-                        document_id=snapshot.document_id,
-                        block_id=request_block.block_id,
-                        binding_fingerprint=first_binding.binding_fingerprint,
-                    ),
-                    document_id=snapshot.document_id,
-                    block=request_block,
-                    model_binding=first_binding,
-                    voice={
-                        "voice_id": chunk[0].resolved.voice_binding.voice_id,
-                        "voice_binding_id": chunk[0].resolved.voice_binding.voice_binding_id,
-                    },
-                    model={
-                        "model_key": chunk[0].resolved.voice_binding.model_key,
-                        "model_instance_id": chunk[0].resolved.voice_binding.model_instance_id,
-                        "preset_id": chunk[0].resolved.voice_binding.preset_id,
-                    },
-                    reference={
-                        "reference_id": top_level_reference.get("reference_id", ""),
-                    },
-                    synthesis=dict(first_binding.resolved_parameters),
-                    join_policy=join_policy,
-                    edge_controls=edge_controls,
-                    dirty_context=dirty_context,
-                    block_policy=self._default_block_policy,
+            for scoped_chunk in scoped_windows:
+                first_binding = scoped_chunk[0].resolved.resolved_model_binding
+                if first_binding is None:
+                    raise AdapterRegistry.build_model_required_error()
+                adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
+                chunk_segment_ids = [item.segment.segment_id for item in scoped_chunk]
+                request_block = self._build_request_block(scoped_chunk, block)
+                edge_controls = self._build_edge_controls(
+                    chunk=scoped_chunk,
+                    snapshot=snapshot,
+                    resolved_edges=resolved_edges,
                 )
-            )
+                join_policy = self._resolve_join_policy(edge_controls)
+                dirty_context = self._build_dirty_context(
+                    chunk_segment_ids=chunk_segment_ids,
+                    edge_controls=edge_controls,
+                    target_segment_ids=target_segment_ids,
+                    target_edge_ids=target_edge_ids,
+                    previous_timeline=previous_timeline,
+                    reuse_policy=reuse_policy,
+                    adapter_definition=adapter_definition,
+                )
+                top_level_reference = first_binding.resolved_reference or {}
+                requests.append(
+                    BlockRenderRequest(
+                        request_id=self._build_request_id(
+                            document_id=snapshot.document_id,
+                            block_id=request_block.block_id,
+                            binding_fingerprint=first_binding.binding_fingerprint,
+                        ),
+                        document_id=snapshot.document_id,
+                        render_scope=render_scope,
+                        escalated_from_scope=None,
+                        block=request_block,
+                        model_binding=first_binding,
+                        voice={
+                            "voice_id": scoped_chunk[0].resolved.voice_binding.voice_id,
+                            "voice_binding_id": scoped_chunk[0].resolved.voice_binding.voice_binding_id,
+                        },
+                        model={
+                            "model_key": scoped_chunk[0].resolved.voice_binding.model_key,
+                            "model_instance_id": scoped_chunk[0].resolved.voice_binding.model_instance_id,
+                            "preset_id": scoped_chunk[0].resolved.voice_binding.preset_id,
+                        },
+                        reference={
+                            "reference_id": top_level_reference.get("reference_id", ""),
+                        },
+                        synthesis=dict(first_binding.resolved_parameters),
+                        join_policy=join_policy,
+                        requested_join_policy=join_policy,
+                        effective_join_policy=join_policy,
+                        edge_controls=edge_controls,
+                        dirty_context=dirty_context,
+                        block_policy=self._default_block_policy,
+                    )
+                )
         return requests
+
+    @staticmethod
+    def _split_chunk_by_scope(
+        *,
+        chunk: list[_PreparedSegment],
+        snapshot: DocumentSnapshot,
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+        render_scope: RenderScope,
+    ) -> list[list[_PreparedSegment]]:
+        if render_scope != "segment" or len(chunk) <= 1:
+            return [chunk]
+        index_by_segment_id = {
+            item.segment.segment_id: index
+            for index, item in enumerate(chunk)
+        }
+        dirty_ranges: list[tuple[int, int]] = []
+        for index, item in enumerate(chunk):
+            if item.segment.segment_id not in target_segment_ids:
+                continue
+            dirty_ranges.append((max(0, index - 1), min(len(chunk) - 1, index + 1)))
+        for edge in snapshot.edges:
+            if edge.edge_id not in target_edge_ids:
+                continue
+            left_index = index_by_segment_id.get(edge.left_segment_id)
+            right_index = index_by_segment_id.get(edge.right_segment_id)
+            if left_index is None or right_index is None:
+                continue
+            dirty_ranges.append((min(left_index, right_index), max(left_index, right_index)))
+        if not dirty_ranges:
+            return [chunk]
+        merged_ranges = BlockRenderRequestBuilder._merge_ranges(dirty_ranges)
+        windows: list[list[_PreparedSegment]] = []
+        cursor = 0
+        for start_index, end_index in merged_ranges:
+            if cursor < start_index:
+                windows.append(chunk[cursor:start_index])
+            windows.append(chunk[start_index : end_index + 1])
+            cursor = end_index + 1
+        if cursor < len(chunk):
+            windows.append(chunk[cursor:])
+        return [window for window in windows if window]
+
+    @staticmethod
+    def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        ordered = sorted(ranges)
+        merged: list[tuple[int, int]] = []
+        for start_index, end_index in ordered:
+            if not merged:
+                merged.append((start_index, end_index))
+                continue
+            previous_start, previous_end = merged[-1]
+            if start_index <= previous_end + 1:
+                merged[-1] = (previous_start, max(previous_end, end_index))
+                continue
+            merged.append((start_index, end_index))
+        return merged
 
     def _collect_chunk(self, ordered_segments: list[_PreparedSegment], start_index: int) -> list[_PreparedSegment]:
         first = ordered_segments[start_index]
@@ -152,6 +225,8 @@ class BlockRenderRequestBuilder:
             if candidate_binding is None:
                 raise AdapterRegistry.build_model_required_error(adapter_id=first_binding.adapter_id)
             if candidate_binding.adapter_id != first_binding.adapter_id and chunk:
+                break
+            if chunk and self._segment_identity_key(candidate) != self._segment_identity_key(first):
                 break
             if (
                 chunk
@@ -339,6 +414,13 @@ class BlockRenderRequestBuilder:
         if segment.assembled_audio_span is None:
             return 0
         return max(0, segment.assembled_audio_span[1] - segment.assembled_audio_span[0])
+
+    @staticmethod
+    def _segment_identity_key(prepared: _PreparedSegment) -> str:
+        model_binding = prepared.resolved.resolved_model_binding
+        if model_binding is None:
+            raise AdapterRegistry.build_model_required_error()
+        return model_binding.binding_fingerprint
 
     @staticmethod
     def _build_request_id(*, document_id: str, block_id: str, binding_fingerprint: str) -> str:

@@ -390,6 +390,7 @@ class EditAssetStore:
                 audio_sample_span=tuple(entry["audio_sample_span"]),
                 order_key=int(entry.get("order_key", 0)),
                 render_asset_id=entry.get("render_asset_id"),
+                base_render_asset_id=entry.get("base_render_asset_id"),
                 precision=entry.get("precision"),
                 source=entry.get("source"),
             )

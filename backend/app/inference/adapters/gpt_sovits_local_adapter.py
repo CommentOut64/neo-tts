@@ -110,11 +110,7 @@ class GPTSoVITSLocalAdapter:
                 adapter_trace_segments[prepared.request_segment.segment_id] = reused_asset.trace
                 self._notify_segment_asset(reused_asset, prepared.request_segment, reused=True)
                 continue
-            context_key = self._build_context_cache_key(prepared)
-            context = contexts.get(context_key)
-            if context is None:
-                context = self._editable_gateway.build_reference_context(self._build_resolved_render_context(prepared))
-                contexts[context_key] = context
+            context = self._get_or_build_context(prepared=prepared, contexts=contexts)
             asset = self._editable_gateway.render_segment_base(
                 self._build_editable_segment(
                     prepared.request_segment,
@@ -130,21 +126,28 @@ class GPTSoVITSLocalAdapter:
         adapter_trace_boundaries: dict[str, dict[str, Any] | None] = {}
         join_downgrade_reasons: dict[str, str] = {}
         enhancement_applied = False
-        applied_join_mode = request.join_policy
+        requested_join_mode = request.requested_join_policy or request.join_policy
+        applied_join_mode = request.effective_join_policy or request.join_policy
         segment_asset_by_id = {asset.segment_id: asset for asset in segment_assets}
         for edge_control in request.edge_controls:
             self._raise_if_cancelled()
             left = next(item for item in prepared_segments if item.request_segment.segment_id == edge_control.left_segment_id)
             right = next(item for item in prepared_segments if item.request_segment.segment_id == edge_control.right_segment_id)
             if self._should_render_enhanced_boundary(request=request, left=left, right=right, edge_control=edge_control):
-                context = contexts[self._build_context_cache_key(left)]
+                left_asset = segment_asset_by_id[left.request_segment.segment_id]
+                right_asset = segment_asset_by_id[right.request_segment.segment_id]
+                if not self._supports_enhanced_boundary_assets(left_asset=left_asset, right_asset=right_asset):
+                    applied_join_mode = "preserve_pause"
+                    join_downgrade_reasons[edge_control.edge_id] = "neighbor_asset_not_reusable"
+                    continue
+                context = self._get_or_build_context(prepared=left, contexts=contexts)
                 edge = self._build_editable_edge(
                     edge_control=edge_control,
                     boundary_strategy="latent_overlap_then_equal_power_crossfade",
                 )
                 boundary = self._editable_gateway.render_boundary_asset(
-                    segment_asset_by_id[left.request_segment.segment_id],
-                    segment_asset_by_id[right.request_segment.segment_id],
+                    left_asset,
+                    right_asset,
                     edge,
                     context,
                 )
@@ -186,7 +189,7 @@ class GPTSoVITSLocalAdapter:
             ],
             segment_spans=segment_spans,
             join_report=JoinReport(
-                requested_policy=request.join_policy,
+                requested_policy=requested_join_mode,
                 applied_mode=applied_join_mode,
                 enhancement_applied=enhancement_applied,
                 implementation="gpt_sovits_local_adapter",
@@ -226,9 +229,19 @@ class GPTSoVITSLocalAdapter:
             if segment_id in dirty_segment_ids:
                 continue
             entry = previous_entries.get(segment_id)
-            if entry is None or not entry.render_asset_id:
+            reusable_asset_id = None if entry is None else (entry.base_render_asset_id or entry.render_asset_id)
+            if not reusable_asset_id:
                 continue
-            reusable_assets[segment_id] = self._reusable_asset_accessor.load_segment_asset(entry.render_asset_id)
+            try:
+                reusable_assets[segment_id] = self._reusable_asset_accessor.load_segment_asset(reusable_asset_id)
+            except FileNotFoundError:
+                fallback_asset_id = None if entry is None else entry.render_asset_id
+                if not fallback_asset_id or fallback_asset_id == reusable_asset_id:
+                    continue
+                try:
+                    reusable_assets[segment_id] = self._reusable_asset_accessor.load_segment_asset(fallback_asset_id)
+                except FileNotFoundError:
+                    continue
         return reusable_assets
 
     @staticmethod
@@ -241,6 +254,23 @@ class GPTSoVITSLocalAdapter:
             for prepared in prepared_segments
         }
         return len(identity_keys) > 1
+
+    @staticmethod
+    def _supports_enhanced_boundary_reuse(asset: SegmentRenderAssetPayload) -> bool:
+        if asset.decoder_frame_count <= 0:
+            return False
+        if not asset.semantic_tokens or not asset.phone_ids:
+            return False
+        return True
+
+    @classmethod
+    def _supports_enhanced_boundary_assets(
+        cls,
+        *,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+    ) -> bool:
+        return cls._supports_enhanced_boundary_reuse(left_asset) and cls._supports_enhanced_boundary_reuse(right_asset)
 
     @staticmethod
     def _prepare_segment(segment: Any) -> _PreparedSegment:
@@ -263,6 +293,14 @@ class GPTSoVITSLocalAdapter:
             "parameters": prepared.model_binding.resolved_parameters,
         }
         return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+    def _get_or_build_context(self, *, prepared: _PreparedSegment, contexts: dict[str, Any]) -> Any:
+        context_key = self._build_context_cache_key(prepared)
+        context = contexts.get(context_key)
+        if context is None:
+            context = self._editable_gateway.build_reference_context(self._build_resolved_render_context(prepared))
+            contexts[context_key] = context
+        return context
 
     @staticmethod
     def _build_resolved_render_context(prepared: _PreparedSegment) -> ResolvedRenderContext:

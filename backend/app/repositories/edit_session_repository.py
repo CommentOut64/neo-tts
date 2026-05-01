@@ -554,6 +554,8 @@ class EditSessionRepository:
             for segment in snapshot.segments:
                 if segment.render_asset_id is not None:
                     graph.segment_asset_ids.add(segment.render_asset_id)
+                if segment.base_render_asset_id is not None:
+                    graph.segment_asset_ids.add(segment.base_render_asset_id)
 
             for edge in snapshot.edges:
                 left_segment = segments_by_id.get(edge.left_segment_id)

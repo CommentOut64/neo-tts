@@ -167,6 +167,10 @@ class EditableSegment(BaseModel):
     )
     render_version: int = Field(default=0, description="当前段正式渲染资产的版本号。")
     render_asset_id: str | None = Field(default=None, description="当前段正式渲染资产 ID；未生成时为 null。")
+    base_render_asset_id: str | None = Field(
+        default=None,
+        description="当前段可用于 enhanced boundary / reuse 的基础渲染资产 ID；未知时为 null。",
+    )
     group_id: str | None = Field(default=None, description="所属分组 ID；未分组时为 null。")
     render_profile_id: str | None = Field(default=None, description="当前段直接绑定的 render profile ID。")
     voice_binding_id: str | None = Field(default=None, description="当前段直接绑定的 voice/model binding ID。")

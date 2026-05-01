@@ -11,6 +11,52 @@ OutputPolicy = Literal["prefer_exact", "allow_estimated", "block_only"]
 JoinPolicy = Literal["natural", "preserve_pause", "prefer_enhanced"]
 SegmentOutputSource = Literal["adapter_exact", "system_estimated", "unavailable"]
 SpanPrecision = Literal["exact", "estimated"]
+RenderScope = Literal["segment", "block"]
+ScopeReasonCode = Literal[
+    "boundary_context_incomplete",
+    "neighbor_asset_not_reusable",
+    "segment_scope_identity_conflict",
+    "required_neighbor_missing",
+    "block_scope_not_supported",
+    "invalid_request_topology",
+]
+
+
+class ScopeUnsupported(RuntimeError):
+    def __init__(
+        self,
+        *,
+        scope: RenderScope,
+        reason_code: ScopeReasonCode,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scope = scope
+        self.reason_code = reason_code
+        self.details = details or {}
+
+
+class SegmentScopeUnsupported(ScopeUnsupported):
+    def __init__(
+        self,
+        *,
+        reason_code: ScopeReasonCode,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(scope="segment", reason_code=reason_code, message=message, details=details)
+
+
+class BlockScopeUnsupported(ScopeUnsupported):
+    def __init__(
+        self,
+        *,
+        reason_code: ScopeReasonCode,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(scope="block", reason_code=reason_code, message=message, details=details)
 
 
 class BlockRequestSegment(BaseModel):
@@ -147,6 +193,8 @@ class SegmentOutput(BaseModel):
 class BlockRenderRequest(BaseModel):
     request_id: str = Field(description="标准请求 ID。")
     document_id: str = Field(description="所属文档 ID。")
+    render_scope: RenderScope = Field(default="block", description="当前请求的渲染作用域。")
+    escalated_from_scope: RenderScope | None = Field(default=None, description="若当前请求由更小作用域升级而来，则记录来源。")
     block: BlockRequestBlock = Field(description="当前 block 结构。")
     model_binding: ResolvedModelBinding = Field(description="规范模型选择字段。")
     voice: dict[str, Any] = Field(default_factory=dict, description="迁移期兼容 voice 视图。")
@@ -155,11 +203,21 @@ class BlockRenderRequest(BaseModel):
     synthesis: dict[str, Any] = Field(default_factory=dict, description="跨模型稳定合成参数。")
     output_policy: OutputPolicy = Field(default="prefer_exact", description="上层期望的输出粒度。")
     join_policy: JoinPolicy = Field(default="natural", description="块内衔接意图。")
+    requested_join_policy: JoinPolicy | None = Field(default=None, description="调用方请求的 join policy。")
+    effective_join_policy: JoinPolicy | None = Field(default=None, description="当前 scope 实际执行的 join policy。")
     edge_controls: list[EdgeControl] = Field(default_factory=list, description="段间控制输入。")
     dirty_context: DirtyContext | None = Field(default=None, description="当前 block 的脏范围提示。")
     adapter_options: dict[str, dict[str, Any]] = Field(default_factory=dict, description="adapter 私有扩展区。")
     block_policy: BlockPolicy = Field(default_factory=BlockPolicy, description="当前 block policy。")
     block_policy_version: str = Field(default="v1", description="block policy 版本。")
+
+    @model_validator(mode="after")
+    def _hydrate_join_policy_protocol(self) -> "BlockRenderRequest":
+        if self.requested_join_policy is None:
+            self.requested_join_policy = self.join_policy
+        if self.effective_join_policy is None:
+            self.effective_join_policy = self.join_policy
+        return self
 
 
 class BlockRenderResult(BaseModel):

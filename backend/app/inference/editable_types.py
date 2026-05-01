@@ -118,6 +118,7 @@ class SegmentCompositionEntry:
     audio_sample_span: tuple[int, int]
     order_key: int = 0
     render_asset_id: str | None = None
+    base_render_asset_id: str | None = None
     precision: str | None = None
     source: str | None = None
 

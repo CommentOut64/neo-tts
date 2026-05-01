@@ -215,6 +215,7 @@ class SegmentService:
         if rerender_required:
             updated_segment.render_version = current_segment.render_version + 1
             updated_segment.render_asset_id = None
+            updated_segment.base_render_asset_id = None
             updated_segment.assembled_audio_span = None
 
         segments[target_index] = updated_segment
@@ -652,6 +653,7 @@ class SegmentService:
             inference_exclusion_reason=standardized.inference_exclusion_reason,
             render_version=1,
             render_asset_id=None,
+            base_render_asset_id=None,
             group_id=group_id,
             render_profile_id=render_profile_id,
             voice_binding_id=voice_binding_id,
