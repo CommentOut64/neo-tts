@@ -383,6 +383,97 @@ def test_block_render_request_builder_maps_edge_controls_join_policy_and_dirty_c
     assert request.dirty_context.reuse_policy == "prefer_reuse"
 
 
+def test_block_render_request_builder_prefers_segment_scope_window_for_dirty_middle_segment():
+    seg1 = _segment("seg-1", 1, "binding-a")
+    seg2 = _segment("seg-2", 2, "binding-a")
+    seg3 = _segment("seg-3", 3, "binding-a")
+    seg4 = _segment("seg-4", 4, "binding-a")
+    binding = _binding(
+        "binding-a",
+        "voice-a",
+        "model-a",
+        model_instance_id="model-1",
+        preset_id="preset-1",
+    )
+    edge12 = _edge("seg-1", "seg-2", strategy="latent_overlap_then_equal_power_crossfade")
+    edge23 = _edge("seg-2", "seg-3", strategy="latent_overlap_then_equal_power_crossfade")
+    edge34 = _edge("seg-3", "seg-4", strategy="crossfade_only")
+    snapshot = _snapshot(
+        segments=[seg1, seg2, seg3, seg4],
+        edges=[edge12, edge23, edge34],
+        voice_bindings=[binding],
+    )
+    builder = BlockRenderRequestBuilder(
+        adapter_registry=_adapter_registry(
+            _adapter_definition("gpt_sovits_local", incremental_render=True, segment_level_voice_binding=True),
+        )
+    )
+
+    requests = builder.build_requests(
+        snapshot=snapshot,
+        blocks=[_render_block(["seg-1", "seg-2", "seg-3", "seg-4"])],
+        resolved_segments={
+            "seg-1": _resolved_segment(
+                seg1,
+                binding,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-1",
+                preset_id="preset-1",
+                binding_fingerprint="binding-a",
+                reference_fingerprint="ref-a",
+            ),
+            "seg-2": _resolved_segment(
+                seg2,
+                binding,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-1",
+                preset_id="preset-1",
+                binding_fingerprint="binding-a",
+                reference_fingerprint="ref-a",
+            ),
+            "seg-3": _resolved_segment(
+                seg3,
+                binding,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-1",
+                preset_id="preset-1",
+                binding_fingerprint="binding-a",
+                reference_fingerprint="ref-a",
+            ),
+            "seg-4": _resolved_segment(
+                seg4,
+                binding,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-1",
+                preset_id="preset-1",
+                binding_fingerprint="binding-a",
+                reference_fingerprint="ref-a",
+            ),
+        },
+        resolved_edges={
+            edge12.edge_id: _resolved_edge(edge12, binding, binding, "latent_overlap_then_equal_power_crossfade"),
+            edge23.edge_id: _resolved_edge(edge23, binding, binding, "latent_overlap_then_equal_power_crossfade"),
+            edge34.edge_id: _resolved_edge(edge34, binding, binding, "crossfade_only"),
+        },
+        target_segment_ids={"seg-2"},
+        target_edge_ids={edge12.edge_id, edge23.edge_id},
+        previous_timeline=_timeline("block-asset-old", ["seg-1", "seg-2", "seg-3", "seg-4"]),
+        reuse_policy="prefer_reuse",
+        render_scope="segment",
+    )
+
+    assert [(request.render_scope, request.block.segment_ids) for request in requests] == [
+        ("segment", ["seg-1", "seg-2", "seg-3"]),
+        ("segment", ["seg-4"]),
+    ]
+    assert requests[0].dirty_context is not None
+    assert requests[0].dirty_context.dirty_segment_ids == ["seg-2"]
+    assert requests[0].dirty_context.dirty_edge_ids == [edge12.edge_id, edge23.edge_id]
+    assert requests[1].dirty_context is not None
+    assert requests[1].dirty_context.dirty_segment_ids == []
+    assert requests[1].dirty_context.dirty_edge_ids == []
+
+
 def test_block_render_request_builder_splits_block_by_adapter_and_binding_homogeneity():
     seg1 = _segment("seg-1", 1, "binding-a")
     seg2 = _segment("seg-2", 2, "binding-b")
@@ -502,6 +593,67 @@ def test_block_render_request_builder_downgrades_reuse_policy_when_adapter_disab
 
     assert requests[0].dirty_context is not None
     assert requests[0].dirty_context.reuse_policy == "adapter_default"
+
+
+def test_block_render_request_builder_splits_chunk_when_segment_level_binding_identity_changes():
+    seg1 = _segment("seg-1", 1, "binding-a")
+    seg2 = _segment("seg-2", 2, "binding-b")
+    binding_a = _binding(
+        "binding-a",
+        "voice-a",
+        "model-a",
+        model_instance_id="model-1",
+        preset_id="preset-1",
+    )
+    binding_b = _binding(
+        "binding-b",
+        "voice-b",
+        "model-b",
+        model_instance_id="model-2",
+        preset_id="preset-2",
+    )
+    snapshot = _snapshot(segments=[seg1, seg2], edges=[], voice_bindings=[binding_a, binding_b])
+    builder = BlockRenderRequestBuilder(
+        adapter_registry=_adapter_registry(
+            _adapter_definition("gpt_sovits_local", segment_level_voice_binding=True, incremental_render=True),
+        )
+    )
+
+    requests = builder.build_requests(
+        snapshot=snapshot,
+        blocks=[_render_block(["seg-1", "seg-2"])],
+        resolved_segments={
+            "seg-1": _resolved_segment(
+                seg1,
+                binding_a,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-1",
+                preset_id="preset-1",
+                binding_fingerprint="binding-a",
+                reference_fingerprint="ref-a",
+            ),
+            "seg-2": _resolved_segment(
+                seg2,
+                binding_b,
+                adapter_id="gpt_sovits_local",
+                model_instance_id="model-2",
+                preset_id="preset-2",
+                binding_fingerprint="binding-b",
+                reference_fingerprint="ref-b",
+            ),
+        },
+        resolved_edges={},
+        target_segment_ids={"seg-1", "seg-2"},
+        target_edge_ids=set(),
+        previous_timeline=_timeline("block-asset-old", ["seg-1", "seg-2"]),
+        reuse_policy="prefer_reuse",
+    )
+
+    assert [request.block.segment_ids for request in requests] == [["seg-1"], ["seg-2"]]
+    assert [request.dirty_context.previous_block_asset_id for request in requests] == [
+        "block-asset-old",
+        "block-asset-old",
+    ]
 
 
 def test_block_render_request_builder_rejects_single_segment_that_exceeds_adapter_limits():

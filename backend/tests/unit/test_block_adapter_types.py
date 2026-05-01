@@ -14,6 +14,7 @@ from backend.app.inference.block_adapter_types import (
     EdgeControl,
     JoinReport,
     ResolvedModelBinding,
+    SegmentScopeUnsupported,
     SegmentOutput,
     SegmentSpan,
 )
@@ -101,6 +102,24 @@ def test_block_render_request_is_json_serializable():
     assert payload["dirty_context"]["reuse_policy"] == "prefer_reuse"
     assert payload["adapter_options"]["gpt_sovits_local"]["noise_scale"] == 0.35
     assert payload["block_policy"]["max_segment_count"] == 50
+
+
+def test_block_render_request_serializes_scope_and_join_policy_protocol():
+    request = _build_request().model_copy(
+        update={
+            "render_scope": "segment",
+            "escalated_from_scope": None,
+            "requested_join_policy": "prefer_enhanced",
+            "effective_join_policy": "preserve_pause",
+        }
+    )
+
+    payload = request.model_dump(mode="json")
+
+    assert payload["render_scope"] == "segment"
+    assert payload["escalated_from_scope"] is None
+    assert payload["requested_join_policy"] == "prefer_enhanced"
+    assert payload["effective_join_policy"] == "preserve_pause"
 
 
 def test_adapter_capabilities_and_reuse_policy_are_serializable():
@@ -209,3 +228,16 @@ def test_block_adapter_error_payload_is_standardized():
         "message": "当前请求缺少可用模型绑定。",
         "details": {"document_id": "doc-1"},
     }
+
+
+def test_segment_scope_unsupported_carries_reason_code_and_details():
+    error = SegmentScopeUnsupported(
+        reason_code="neighbor_asset_not_reusable",
+        message="局部增强边界缺少可复用邻段资产。",
+        details={"segment_ids": ["seg-1", "seg-2"]},
+    )
+
+    assert str(error) == "局部增强边界缺少可复用邻段资产。"
+    assert error.reason_code == "neighbor_asset_not_reusable"
+    assert error.scope == "segment"
+    assert error.details == {"segment_ids": ["seg-1", "seg-2"]}

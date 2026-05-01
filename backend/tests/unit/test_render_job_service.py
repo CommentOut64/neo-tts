@@ -9,12 +9,21 @@ import torch
 
 from backend.app.inference.adapter_definition import AdapterBlockLimits, AdapterDefinition
 from backend.app.inference.block_adapter_registry import AdapterRegistry
-from backend.app.inference.block_adapter_types import AdapterCapabilities, BlockRenderResult, JoinReport, SegmentOutput, SegmentSpan
+from backend.app.inference.block_adapter_types import (
+    AdapterCapabilities,
+    BlockRenderResult,
+    BlockScopeUnsupported,
+    JoinReport,
+    SegmentOutput,
+    SegmentScopeUnsupported,
+    SegmentSpan,
+)
 from backend.app.schemas.edit_session import AppendSegmentsRequest, CheckpointState
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
+    RenderBlock,
     ResolvedRenderContext,
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
@@ -1244,6 +1253,57 @@ def test_edge_pause_update_handles_previous_parent_block_without_exact_reuse_mat
     ]
 
 
+def test_block_first_middle_segment_update_keeps_timeline_blocks_in_document_order(tmp_path):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=100,
+            max_block_seconds=1000,
+            max_segment_count=50,
+        ),
+        enable_block_first_pipeline=True,
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。第四句。第五句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+
+    initial_snapshot = service.get_head_snapshot()
+    initial_timeline = service._asset_store.load_timeline_manifest(initial_snapshot.timeline_manifest_id)  # noqa: SLF001
+    assert [entry.segment_ids for entry in initial_timeline.block_entries] == [
+        [segment.segment_id for segment in initial_snapshot.segments]
+    ]
+
+    rerender = service.create_update_segment_job(
+        initial_snapshot.segments[2].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第三句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    service.run_edit_job(rerender.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    updated_timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert [
+        segment_id
+        for entry in updated_timeline.block_entries
+        for segment_id in entry.segment_ids
+    ] == [segment.segment_id for segment in updated_snapshot.segments]
+    assert [entry.segment_id for entry in updated_timeline.segment_entries] == [
+        segment.segment_id for segment in updated_snapshot.segments
+    ]
+
+
 def test_edge_pause_update_persists_committed_metadata_into_render_job_state(tmp_path):
     service = _build_service(
         tmp_path,
@@ -1523,6 +1583,501 @@ def test_run_edit_job_restores_planner_metadata_into_render_plan(tmp_path, monke
     }
 
 
+def test_block_first_pause_only_update_recomposes_dirty_block_without_adapter_inference(tmp_path):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    edge_id = initial_snapshot.edges[0].edge_id
+    adapter_calls: list[list[str]] = []
+
+    class _CountingBlockAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            adapter_calls.append(list(request.block.segment_ids))
+            return super().render_block(request)
+
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _CountingBlockAdapter()  # noqa: SLF001
+
+    pause_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(pause_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert adapter_calls == []
+    assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
+    assert timeline.edge_entries[0].pause_duration_seconds == 0.8
+
+
+def test_block_first_pause_only_update_reuses_boundary_audio_from_previous_block_asset(tmp_path, monkeypatch):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    edge_id = initial_snapshot.edges[0].edge_id
+
+    monkeypatch.setattr(
+        service._gateway,  # noqa: SLF001
+        "render_boundary_asset",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("pause-only should not rebuild boundary asset")),
+    )
+
+    pause_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(pause_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
+    assert timeline.edge_entries[0].pause_duration_seconds == 0.8
+
+
+def test_block_first_pause_only_update_reuses_boundary_audio_when_block_repartitioned(tmp_path, monkeypatch):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。第四句。第五句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    initial_snapshot = service.get_head_snapshot()
+    edge_id = initial_snapshot.edges[0].edge_id
+    original_build_blocks = service._block_planner.build_blocks  # noqa: SLF001
+
+    def _split_into_four_plus_one(segments):
+        ordered = sorted(segments, key=lambda item: item.order_key)
+        if len(ordered) != 5:
+            return original_build_blocks(segments)
+        return [
+            RenderBlock(
+                block_id="block-first-four",
+                segment_ids=[segment.segment_id for segment in ordered[:4]],
+                start_order_key=ordered[0].order_key,
+                end_order_key=ordered[3].order_key,
+                estimated_sample_count=0,
+            ),
+            RenderBlock(
+                block_id="block-last-one",
+                segment_ids=[ordered[4].segment_id],
+                start_order_key=ordered[4].order_key,
+                end_order_key=ordered[4].order_key,
+                estimated_sample_count=0,
+            ),
+        ]
+
+    monkeypatch.setattr(service._block_planner, "build_blocks", _split_into_four_plus_one)  # noqa: SLF001
+    monkeypatch.setattr(
+        service._gateway,  # noqa: SLF001
+        "render_boundary_asset",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pause-only repartition should still reuse boundary audio from previous block asset")
+        ),
+    )
+
+    pause_job = service.create_update_edge_job(
+        edge_id,
+        UpdateEdgeRequest(pause_duration_seconds=0.8),
+    )
+    service.run_edit_job(pause_job.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+
+    assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
+    assert [entry.segment_ids for entry in timeline.block_entries] == [
+        [segment.segment_id for segment in updated_snapshot.segments[:4]],
+        [updated_snapshot.segments[4].segment_id],
+    ]
+
+
+def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_are_derived(tmp_path, monkeypatch):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+
+    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+
+    def _split_initialize_request(**kwargs):
+        requests = original_build_requests(**kwargs)
+        assert len(requests) == 1
+        original_request = requests[0]
+        split_requests = []
+        for segment in original_request.block.segments:
+            split_requests.append(
+                original_request.model_copy(
+                    update={
+                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
+                        "block": original_request.block.model_copy(
+                            update={
+                                "block_id": f"block-{segment.segment_id}",
+                                "segment_ids": [segment.segment_id],
+                                "start_order_key": segment.order_key,
+                                "end_order_key": segment.order_key,
+                                "segments": [segment],
+                                "block_text": segment.text,
+                            }
+                        ),
+                        "edge_controls": [],
+                    }
+                )
+            )
+        return split_requests
+
+    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+
+    class _BoundaryRebuildAdapter(_FakeBlockAdapter):
+        def __init__(self, *, segment_asset_callback):
+            self._segment_asset_callback = segment_asset_callback
+
+        def render_block(self, request):
+            for segment in request.block.segments:
+                base_asset = SegmentRenderAssetPayload(
+                    render_asset_id=f"base-{segment.segment_id}",
+                    segment_id=segment.segment_id,
+                    render_version=1,
+                    semantic_tokens=[1, 2, 3],
+                    phone_ids=[11, 12],
+                    decoder_frame_count=3,
+                    audio_sample_count=3,
+                    left_margin_sample_count=1,
+                    core_sample_count=1,
+                    right_margin_sample_count=1,
+                    left_margin_audio=np.asarray([0.1], dtype=np.float32),
+                    core_audio=np.asarray([0.2], dtype=np.float32),
+                    right_margin_audio=np.asarray([0.3], dtype=np.float32),
+                    trace={
+                        "left_margin_frames": [0.1],
+                        "right_margin_frames": [0.3],
+                    },
+                )
+                self._segment_asset_callback(base_asset, segment, False)
+            return super().render_block(request)
+
+    service._block_adapter_selector = (  # noqa: SLF001
+        lambda adapter_id, **kwargs: _BoundaryRebuildAdapter(segment_asset_callback=kwargs["segment_asset_callback"])
+    )
+
+    def _assert_boundary_rebuild_uses_base_assets(left_asset, right_asset, edge, context):
+        del edge, context
+        assert left_asset.render_asset_id == f"base-{left_asset.segment_id}"
+        assert right_asset.render_asset_id == f"base-{right_asset.segment_id}"
+        return BoundaryAssetPayload(
+            boundary_asset_id=build_boundary_asset_id(
+                left_segment_id=left_asset.segment_id,
+                left_render_version=left_asset.render_version,
+                right_segment_id=right_asset.segment_id,
+                right_render_version=right_asset.render_version,
+                edge_version=0,
+                boundary_strategy="latent_overlap_then_equal_power_crossfade",
+            ),
+            left_segment_id=left_asset.segment_id,
+            left_render_version=left_asset.render_version,
+            right_segment_id=right_asset.segment_id,
+            right_render_version=right_asset.render_version,
+            edge_version=0,
+            boundary_strategy="latent_overlap_then_equal_power_crossfade",
+            boundary_sample_count=1,
+            boundary_audio=np.asarray([0.9], dtype=np.float32),
+            trace={"rebuilt_from": "base_assets"},
+        )
+
+    monkeypatch.setattr(service._gateway, "render_boundary_asset", _assert_boundary_rebuild_uses_base_assets)  # noqa: SLF001
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    job = service.get_job(accepted.job.job_id)
+    assert job is not None
+    assert job.status == "completed"
+
+
+def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, monkeypatch):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+
+    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+
+    def _split_initialize_request(**kwargs):
+        requests = original_build_requests(**kwargs)
+        assert len(requests) == 1
+        original_request = requests[0]
+        split_requests = []
+        for segment in original_request.block.segments:
+            split_requests.append(
+                original_request.model_copy(
+                    update={
+                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
+                        "block": original_request.block.model_copy(
+                            update={
+                                "block_id": f"block-{segment.segment_id}",
+                                "segment_ids": [segment.segment_id],
+                                "start_order_key": segment.order_key,
+                                "end_order_key": segment.order_key,
+                                "segments": [segment],
+                                "block_text": segment.text,
+                            }
+                        ),
+                        "edge_controls": [],
+                    }
+                )
+            )
+        return split_requests
+
+    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+
+    class _PersistingBaseAssetAdapter(_FakeBlockAdapter):
+        def __init__(self, *, segment_asset_callback):
+            self._segment_asset_callback = segment_asset_callback
+
+        def render_block(self, request):
+            for segment in request.block.segments:
+                self._segment_asset_callback(
+                    SegmentRenderAssetPayload(
+                        render_asset_id=f"base-{segment.segment_id}",
+                        segment_id=segment.segment_id,
+                        render_version=1,
+                        semantic_tokens=[1, 2, 3],
+                        phone_ids=[11, 12],
+                        decoder_frame_count=3,
+                        audio_sample_count=3,
+                        left_margin_sample_count=1,
+                        core_sample_count=1,
+                        right_margin_sample_count=1,
+                        left_margin_audio=np.asarray([0.1], dtype=np.float32),
+                        core_audio=np.asarray([0.2], dtype=np.float32),
+                        right_margin_audio=np.asarray([0.3], dtype=np.float32),
+                        trace={"left_margin_frames": [0.1], "right_margin_frames": [0.3]},
+                    ),
+                    segment,
+                    False,
+                )
+            return super().render_block(request)
+
+    service._block_adapter_selector = (  # noqa: SLF001
+        lambda adapter_id, **kwargs: _PersistingBaseAssetAdapter(segment_asset_callback=kwargs["segment_asset_callback"])
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    snapshot = service.get_head_snapshot()
+    for segment in snapshot.segments:
+        assert segment.base_render_asset_id == f"base-{segment.segment_id}"
+        persisted_asset = service._asset_store.load_segment_asset(segment.base_render_asset_id)  # noqa: SLF001
+        assert persisted_asset.render_asset_id == segment.base_render_asset_id
+        assert persisted_asset.segment_id == segment.segment_id
+        assert persisted_asset.decoder_frame_count == 3
+
+
+def test_block_first_boundary_rebuild_downgrades_to_crossfade_only_when_only_exact_assets_exist(tmp_path, monkeypatch):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+
+    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+
+    def _split_initialize_request(**kwargs):
+        requests = original_build_requests(**kwargs)
+        assert len(requests) == 1
+        original_request = requests[0]
+        split_requests = []
+        for segment in original_request.block.segments:
+            split_requests.append(
+                original_request.model_copy(
+                    update={
+                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
+                        "block": original_request.block.model_copy(
+                            update={
+                                "block_id": f"block-{segment.segment_id}",
+                                "segment_ids": [segment.segment_id],
+                                "start_order_key": segment.order_key,
+                                "end_order_key": segment.order_key,
+                                "segments": [segment],
+                                "block_text": segment.text,
+                            }
+                        ),
+                        "edge_controls": [],
+                    }
+                )
+            )
+        return split_requests
+
+    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+
+    def _assert_boundary_rebuild_is_downgraded(left_asset, right_asset, edge, context):
+        del left_asset, right_asset, context
+        assert edge.boundary_strategy == "crossfade_only"
+        return BoundaryAssetPayload(
+            boundary_asset_id=build_boundary_asset_id(
+                left_segment_id=edge.left_segment_id,
+                left_render_version=0,
+                right_segment_id=edge.right_segment_id,
+                right_render_version=0,
+                edge_version=edge.edge_version,
+                boundary_strategy="crossfade_only",
+            ),
+            left_segment_id=edge.left_segment_id,
+            left_render_version=0,
+            right_segment_id=edge.right_segment_id,
+            right_render_version=0,
+            edge_version=edge.edge_version,
+            boundary_strategy="crossfade_only",
+            boundary_sample_count=1,
+            boundary_audio=np.asarray([0.9], dtype=np.float32),
+            trace={"boundary_kind": "crossfade_only"},
+        )
+
+    monkeypatch.setattr(service._gateway, "render_boundary_asset", _assert_boundary_rebuild_is_downgraded)  # noqa: SLF001
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    job = service.get_job(accepted.job.job_id)
+    assert job is not None
+    assert job.status == "completed"
+
+
+def test_block_first_segment_update_warns_and_escalates_from_segment_scope_to_block_scope(tmp_path, monkeypatch):
+    logged_warnings: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def warning(self, message, *args):
+            logged_warnings.append((message, args))
+
+        def exception(self, message, *args):
+            return None
+
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    attempted_scopes: list[tuple[str, list[str], str | None]] = []
+
+    class _EscalatingAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            attempted_scopes.append((request.render_scope, list(request.block.segment_ids), request.escalated_from_scope))
+            if request.render_scope == "segment":
+                raise SegmentScopeUnsupported(
+                    reason_code="neighbor_asset_not_reusable",
+                    message="局部窗口无法安全复用增强边界。",
+                    details={"segment_ids": list(request.block.segment_ids)},
+                )
+            return super().render_block(request)
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _EscalatingAdapter()  # noqa: SLF001
+
+    rerender = service.create_update_segment_job(
+        snapshot.segments[0].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    service.run_edit_job(rerender.job.job_id)
+
+    job = service.get_job(rerender.job.job_id)
+
+    assert attempted_scopes == [
+        ("segment", [snapshot.segments[0].segment_id, snapshot.segments[1].segment_id], None),
+        ("block", [snapshot.segments[0].segment_id, snapshot.segments[1].segment_id], "segment"),
+    ]
+    assert job is not None
+    assert job.status == "completed"
+    assert len(logged_warnings) == 1
+    assert logged_warnings[0][0] == (
+        "segment-scope render unsupported; escalating to block scope job_id={} block_id={} reason_code={} details={}"
+    )
+    assert logged_warnings[0][1][0] == rerender.job.job_id
+    assert isinstance(logged_warnings[0][1][1], str) and logged_warnings[0][1][1].startswith("block-")
+    assert logged_warnings[0][1][2] == "neighbor_asset_not_reusable"
+    assert logged_warnings[0][1][3] == {"segment_ids": attempted_scopes[0][1]}
+
+
+def test_block_first_segment_update_fails_when_block_scope_also_fails(tmp_path):
+    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    class _AlwaysFailingAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            if request.render_scope == "segment":
+                raise SegmentScopeUnsupported(
+                    reason_code="neighbor_asset_not_reusable",
+                    message="局部窗口无法安全复用增强边界。",
+                )
+            raise BlockScopeUnsupported(
+                reason_code="invalid_request_topology",
+                message="块级请求仍无法成立。",
+            )
+
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _AlwaysFailingAdapter()  # noqa: SLF001
+
+    rerender = service.create_update_segment_job(
+        snapshot.segments[0].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    service.run_edit_job(rerender.job.job_id)
+
+    job = service.get_job(rerender.job.job_id)
+
+    assert job is not None
+    assert job.status == "failed"
+    assert "块级请求仍无法成立" in (job.message or "")
+
+
 def test_build_preview_selects_segment_edge_and_block_after_commit(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
@@ -1576,7 +2131,7 @@ def test_build_preview_reads_edge_audio_from_block_when_formal_boundary_asset_is
         right_segment_id=snapshot.edges[0].right_segment_id,
         right_render_version=snapshot.segments[1].render_version,
         edge_version=snapshot.edges[0].edge_version,
-        boundary_strategy=snapshot.edges[0].boundary_strategy,
+        boundary_strategy=snapshot.edges[0].effective_boundary_strategy or snapshot.edges[0].boundary_strategy,
     )
     shutil.rmtree(service._asset_store.boundary_asset_path(boundary_asset_id))  # noqa: SLF001
     expected_audio = block_asset.audio[

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -448,6 +449,340 @@ def test_gpt_sovits_local_adapter_prefers_reuse_for_clean_segments_and_rerenders
         ("seg-1", 0, 3),
         ("seg-2", 6, 8),
     ]
+
+
+def test_gpt_sovits_local_adapter_downgrades_join_policy_when_reusable_segment_cannot_support_enhanced_boundary():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ],
+        dirty_context=DirtyContext(
+            dirty_segment_ids=["seg-2"],
+            dirty_edge_ids=["edge-seg-1-seg-2"],
+            previous_block_asset_id="block-asset-old",
+            reuse_policy="prefer_reuse",
+        ),
+    )
+    gateway = _FakeEditableGateway(
+        segment_assets={
+            "seg-1": _segment_asset(segment_id="seg-1", render_version=2, left=[0.1], core=[1.0], right=[1.1]),
+            "seg-2": _segment_asset(segment_id="seg-2", render_version=2, left=[0.2], core=[2.0], right=[2.1]),
+        },
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    derived_reusable_segment = replace(
+        _segment_asset(segment_id="seg-1", render_version=1, left=[], core=[0.2, 0.3], right=[]),
+        semantic_tokens=[],
+        phone_ids=[],
+        decoder_frame_count=0,
+        trace={"derived_from_block": True},
+    )
+    asset_accessor = _ReadonlyAssetAccessor(
+        block_asset=BlockCompositionAssetPayload(
+            block_id="block-1",
+            block_asset_id="block-asset-old",
+            segment_ids=["seg-1", "seg-2"],
+            sample_rate=32000,
+            audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
+            audio_sample_count=9,
+            segment_entries=[
+                SegmentCompositionEntry(
+                    segment_id="seg-1",
+                    audio_sample_span=(0, 3),
+                    render_asset_id=derived_reusable_segment.render_asset_id,
+                ),
+                SegmentCompositionEntry(segment_id="seg-2", audio_sample_span=(6, 9), render_asset_id="render-seg-2-v1"),
+            ],
+        ),
+        segment_assets={derived_reusable_segment.render_asset_id: derived_reusable_segment},
+    )
+
+    result = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+        reusable_asset_accessor=asset_accessor,
+    ).render_block(request)
+
+    assert asset_accessor.loaded_blocks == ["block-asset-old"]
+    assert asset_accessor.loaded_segments == [derived_reusable_segment.render_asset_id]
+    assert [segment_id for segment_id, _ in gateway.segment_calls] == ["seg-2"]
+    assert gateway.boundary_calls == []
+    assert result.join_report is not None
+    assert result.join_report.requested_policy == "prefer_enhanced"
+    assert result.join_report.applied_mode == "preserve_pause"
+    assert result.join_report.enhancement_applied is False
+    assert result.diagnostics["join_downgrade_reasons"] == {
+        "edge-seg-1-seg-2": "neighbor_asset_not_reusable"
+    }
+
+
+def test_gpt_sovits_local_adapter_prefers_base_render_asset_id_for_reuse():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ],
+        dirty_context=DirtyContext(
+            dirty_segment_ids=["seg-2"],
+            dirty_edge_ids=["edge-seg-1-seg-2"],
+            previous_block_asset_id="block-asset-old",
+            reuse_policy="prefer_reuse",
+        ),
+    )
+    gateway = _FakeEditableGateway(
+        segment_assets={
+            "seg-2": _segment_asset(segment_id="seg-2", render_version=2, left=[0.5], core=[2.0], right=[2.1]),
+        },
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    reusable_base_segment = _segment_asset(segment_id="seg-1", render_version=1, left=[0.1], core=[0.2, 0.3], right=[0.4])
+    derived_exact_segment = replace(
+        _segment_asset(segment_id="seg-1", render_version=1, left=[], core=[0.2, 0.3], right=[]),
+        render_asset_id="derived-seg-1",
+        semantic_tokens=[],
+        phone_ids=[],
+        decoder_frame_count=0,
+        trace={"derived_from_block": True},
+    )
+    asset_accessor = _ReadonlyAssetAccessor(
+        block_asset=BlockCompositionAssetPayload(
+            block_id="block-1",
+            block_asset_id="block-asset-old",
+            segment_ids=["seg-1", "seg-2"],
+            sample_rate=32000,
+            audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
+            audio_sample_count=9,
+            segment_entries=[
+                SegmentCompositionEntry(
+                    segment_id="seg-1",
+                    audio_sample_span=(0, 3),
+                    render_asset_id=derived_exact_segment.render_asset_id,
+                    base_render_asset_id=reusable_base_segment.render_asset_id,
+                ),
+                SegmentCompositionEntry(segment_id="seg-2", audio_sample_span=(6, 9), render_asset_id="render-seg-2-v1"),
+            ],
+        ),
+        segment_assets={
+            derived_exact_segment.render_asset_id: derived_exact_segment,
+            reusable_base_segment.render_asset_id: reusable_base_segment,
+        },
+    )
+
+    result = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+        reusable_asset_accessor=asset_accessor,
+    ).render_block(request)
+
+    assert asset_accessor.loaded_blocks == ["block-asset-old"]
+    assert asset_accessor.loaded_segments == [reusable_base_segment.render_asset_id]
+    assert gateway.boundary_calls == [("seg-1", "seg-2", "edge-seg-1-seg-2", gateway.built_contexts[0])]
+    assert result.join_report is not None
+    assert result.join_report.applied_mode == "prefer_enhanced"
+    assert result.join_report.enhancement_applied is True
+
+
+def test_gpt_sovits_local_adapter_falls_back_to_exact_asset_when_base_render_asset_is_missing():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ],
+        dirty_context=DirtyContext(
+            dirty_segment_ids=["seg-2"],
+            dirty_edge_ids=["edge-seg-1-seg-2"],
+            previous_block_asset_id="block-asset-old",
+            reuse_policy="prefer_reuse",
+        ),
+    )
+    gateway = _FakeEditableGateway(
+        segment_assets={
+            "seg-2": _segment_asset(segment_id="seg-2", render_version=2, left=[0.5], core=[2.0], right=[2.1]),
+        },
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    reusable_exact_segment = _segment_asset(segment_id="seg-1", render_version=1, left=[0.1], core=[0.2, 0.3], right=[0.4])
+
+    class _MissingBaseAssetAccessor(_ReadonlyAssetAccessor):
+        def load_segment_asset(self, render_asset_id: str) -> SegmentRenderAssetPayload:
+            if render_asset_id == "missing-base-seg-1":
+                self.loaded_segments.append(render_asset_id)
+                raise FileNotFoundError(render_asset_id)
+            return super().load_segment_asset(render_asset_id)
+
+    asset_accessor = _MissingBaseAssetAccessor(
+        block_asset=BlockCompositionAssetPayload(
+            block_id="block-1",
+            block_asset_id="block-asset-old",
+            segment_ids=["seg-1", "seg-2"],
+            sample_rate=32000,
+            audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
+            audio_sample_count=9,
+            segment_entries=[
+                SegmentCompositionEntry(
+                    segment_id="seg-1",
+                    audio_sample_span=(0, 3),
+                    render_asset_id=reusable_exact_segment.render_asset_id,
+                    base_render_asset_id="missing-base-seg-1",
+                ),
+                SegmentCompositionEntry(segment_id="seg-2", audio_sample_span=(6, 9), render_asset_id="render-seg-2-v1"),
+            ],
+        ),
+        segment_assets={reusable_exact_segment.render_asset_id: reusable_exact_segment},
+    )
+
+    result = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+        reusable_asset_accessor=asset_accessor,
+    ).render_block(request)
+
+    assert asset_accessor.loaded_blocks == ["block-asset-old"]
+    assert asset_accessor.loaded_segments == ["missing-base-seg-1", reusable_exact_segment.render_asset_id]
+    assert [segment_id for segment_id, _ in gateway.segment_calls] == ["seg-2"]
+    assert result.join_report is not None
+    assert result.join_report.applied_mode == "prefer_enhanced"
+    assert result.join_report.enhancement_applied is True
+
+
+def test_gpt_sovits_local_adapter_builds_boundary_context_when_enhanced_edge_uses_only_reused_segments():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ],
+        dirty_context=DirtyContext(
+            dirty_segment_ids=[],
+            dirty_edge_ids=["edge-seg-1-seg-2"],
+            previous_block_asset_id="block-asset-old",
+            reuse_policy="prefer_reuse",
+        ),
+    )
+    reusable_left = _segment_asset(segment_id="seg-1", render_version=1, left=[0.1], core=[0.2, 0.3], right=[0.4])
+    reusable_right = _segment_asset(segment_id="seg-2", render_version=1, left=[0.5], core=[0.6], right=[0.7, 0.8])
+    gateway = _FakeEditableGateway(
+        segment_assets={},
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    asset_accessor = _ReadonlyAssetAccessor(
+        block_asset=BlockCompositionAssetPayload(
+            block_id="block-1",
+            block_asset_id="block-asset-old",
+            segment_ids=["seg-1", "seg-2"],
+            sample_rate=32000,
+            audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
+            audio_sample_count=9,
+            segment_entries=[
+                SegmentCompositionEntry(segment_id="seg-1", audio_sample_span=(0, 3), render_asset_id=reusable_left.render_asset_id),
+                SegmentCompositionEntry(segment_id="seg-2", audio_sample_span=(6, 9), render_asset_id=reusable_right.render_asset_id),
+            ],
+        ),
+        segment_assets={
+            reusable_left.render_asset_id: reusable_left,
+            reusable_right.render_asset_id: reusable_right,
+        },
+    )
+
+    result = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+        reusable_asset_accessor=asset_accessor,
+    ).render_block(request)
+
+    assert gateway.segment_calls == []
+    assert len(gateway.context_calls) == 1
+    assert gateway.boundary_calls == [("seg-1", "seg-2", "edge-seg-1-seg-2", gateway.built_contexts[0])]
+    assert result.join_report is not None
+    assert result.join_report.enhancement_applied is True
 
 
 def test_gpt_sovits_local_adapter_passes_request_render_version_to_legacy_segment_render():

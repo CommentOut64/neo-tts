@@ -135,6 +135,12 @@ def test_default_adapter_definition_store_skips_gpt_sovits_when_family_is_not_in
     assert store.require("external_http_tts").adapter_id == "external_http_tts"
 
 
+def test_default_adapter_definition_store_marks_gpt_sovits_local_as_incremental_render_capable():
+    store = build_default_adapter_definition_store(enable_gpt_sovits_local=True)
+
+    assert store.require("gpt_sovits_local").capabilities.incremental_render is True
+
+
 def test_preload_configured_voices_skips_when_gpt_sovits_adapter_is_unavailable(tmp_path):
     settings = AppSettings(
         project_root=tmp_path,
