@@ -16,6 +16,7 @@ from backend.app.inference.block_adapter_types import (
     SegmentOutput,
     SegmentSpan,
 )
+from backend.app.inference.editable_types import SegmentRenderAssetPayload
 from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
 from backend.app.services.edit_asset_store import EditAssetStore
 
@@ -169,6 +170,43 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _build_base_render_assets() -> dict[str, SegmentRenderAssetPayload]:
+    return {
+        "seg-1": SegmentRenderAssetPayload(
+            render_asset_id="base-seg-1",
+            segment_id="seg-1",
+            render_version=1,
+            semantic_tokens=[1, 2],
+            phone_ids=[11, 12],
+            decoder_frame_count=2,
+            audio_sample_count=4,
+            left_margin_sample_count=1,
+            core_sample_count=2,
+            right_margin_sample_count=1,
+            left_margin_audio=np.asarray([0.01], dtype=np.float32),
+            core_audio=np.asarray([0.11, 0.12], dtype=np.float32),
+            right_margin_audio=np.asarray([0.13], dtype=np.float32),
+            trace={"kind": "base"},
+        ),
+        "seg-2": SegmentRenderAssetPayload(
+            render_asset_id="base-seg-2",
+            segment_id="seg-2",
+            render_version=1,
+            semantic_tokens=[3, 4],
+            phone_ids=[13, 14],
+            decoder_frame_count=2,
+            audio_sample_count=4,
+            left_margin_sample_count=1,
+            core_sample_count=2,
+            right_margin_sample_count=1,
+            left_margin_audio=np.asarray([0.21], dtype=np.float32),
+            core_audio=np.asarray([0.31, 0.32], dtype=np.float32),
+            right_margin_audio=np.asarray([0.33], dtype=np.float32),
+            trace={"kind": "base"},
+        ),
+    }
+
+
 def test_persister_persists_exact_block_and_segment_assets(tmp_path: Path):
     store = _build_store(tmp_path)
     persister = BlockRenderAssetPersister(asset_store=store)
@@ -185,6 +223,13 @@ def test_persister_persists_exact_block_and_segment_assets(tmp_path: Path):
     assert [entry.segment_id for entry in persisted.timeline_block.segment_entries] == ["seg-1", "seg-2"]
     assert persisted.timeline_block.segment_entries[0].audio_sample_span == (0, 3)
     assert persisted.timeline_block.segment_entries[1].audio_sample_span == (3, 8)
+    assert [(asset.asset_kind, asset.asset_id) for asset in persisted.published_assets] == [
+        ("block", persisted.block_asset.block_asset_id),
+        ("segment", persisted.segment_assets[0].segment_asset_id),
+        ("segment", persisted.segment_assets[1].segment_asset_id),
+    ]
+    assert persisted.reusable_source_assets == []
+    assert persisted.ephemeral_execution_assets == []
 
     block_dir = store.block_asset_path(persisted.block_asset.block_asset_id)
     assert (block_dir / "audio.wav").exists()
@@ -212,6 +257,44 @@ def test_persister_persists_exact_block_and_segment_assets(tmp_path: Path):
 
     _, first_segment_audio = store.load_wav_asset(first_segment_dir)
     assert np.allclose(first_segment_audio, np.asarray([0.1, 0.2, 0.3], dtype=np.float32), atol=1e-4)
+
+
+def test_persister_persists_reusable_base_assets_alongside_exact_formal_outputs(tmp_path: Path):
+    store = _build_store(tmp_path)
+    persister = BlockRenderAssetPersister(asset_store=store)
+    base_render_assets = _build_base_render_assets()
+    base_render_asset_ids = {
+        segment_id: asset.render_asset_id for segment_id, asset in base_render_assets.items()
+    }
+
+    persisted = persister.persist(
+        job_id="job-with-base-assets",
+        request=_build_request(),
+        result=_build_exact_result(),
+        block_render_cache_key="cache-base-assets",
+        base_render_asset_ids=base_render_asset_ids,
+        base_render_assets=base_render_assets,
+    )
+
+    block_metadata = _read_json(store.block_asset_path(persisted.block_asset.block_asset_id) / "metadata.json")
+    assert [entry["base_render_asset_id"] for entry in block_metadata["segment_entries"]] == [
+        "base-seg-1",
+        "base-seg-2",
+    ]
+
+    for segment_id, base_asset_id in base_render_asset_ids.items():
+        base_asset_dir = store.segment_asset_path(base_asset_id)
+        assert (base_asset_dir / "audio.wav").exists()
+        base_metadata = _read_json(base_asset_dir / "metadata.json")
+        assert base_metadata["render_asset_id"] == base_asset_id
+        assert base_metadata["segment_id"] == segment_id
+        assert base_metadata["core_sample_count"] == 2
+
+    assert [asset.segment_asset_id for asset in persisted.segment_assets] != list(base_render_asset_ids.values())
+    assert [(asset.segment_id, asset.render_asset_id) for asset in persisted.reusable_source_assets] == [
+        ("seg-1", "base-seg-1"),
+        ("seg-2", "base-seg-2"),
+    ]
 
 
 def test_persister_does_not_create_formal_segment_audio_for_estimated_or_block_only(tmp_path: Path):

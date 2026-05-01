@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.app.inference.block_adapter_types import BlockRenderResult, JoinReport
+from backend.app.inference.block_adapter_types import BlockRenderResult, JoinReport, SegmentSpan
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.main import create_app
 from backend.tests.integration.test_edit_session_router import FakeEditableInferenceBackend
@@ -322,6 +322,74 @@ def test_segment_export_fails_when_timeline_only_has_block_level_alignment(test_
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     app.state.block_adapter_selector = lambda adapter_id, **kwargs: _BlockOnlyAdapter()
     export_root = test_app_settings.edit_session_exports_dir / "block_only_segment_exports"
+
+    with TestClient(app) as client:
+        gate.set()
+        snapshot = _initialize_ready_document(client)
+
+        create_export = client.post(
+            "/v1/edit-session/exports",
+            json={
+                "document_version": snapshot["document_version"],
+                "target_dir": str(export_root),
+                "audio": {"kind": "segments", "overwrite_policy": "fail"},
+            },
+        )
+        assert create_export.status_code == 202
+        export_job_id = create_export.json()["job"]["export_job_id"]
+
+        _wait_until(lambda: client.get(f"/v1/edit-session/exports/{export_job_id}").json()["status"] == "failed")
+
+        export_job = client.get(f"/v1/edit-session/exports/{export_job_id}")
+        assert export_job.status_code == 200
+        payload = export_job.json()
+        assert payload["export_kind"] == "segments"
+        assert payload["status"] == "failed"
+        assert "exact segment alignment" in payload["message"]
+
+
+def test_segment_export_fails_when_timeline_only_has_estimated_alignment(test_app_settings):
+    class _EstimatedAdapter:
+        def render_block(self, request):
+            return BlockRenderResult(
+                block_id=request.block.block_id,
+                segment_ids=[segment.segment_id for segment in request.block.segments],
+                sample_rate=32000,
+                audio=[0.1, 0.2, 0.3, 0.4],
+                audio_sample_count=4,
+                segment_alignment_mode="estimated",
+                segment_outputs=[],
+                segment_spans=[
+                    SegmentSpan(
+                        segment_id=request.block.segments[0].segment_id,
+                        sample_start=0,
+                        sample_end=2,
+                        precision="estimated",
+                        confidence=0.8,
+                        source="system_estimated",
+                    ),
+                    SegmentSpan(
+                        segment_id=request.block.segments[1].segment_id,
+                        sample_start=2,
+                        sample_end=4,
+                        precision="estimated",
+                        confidence=0.7,
+                        source="system_estimated",
+                    ),
+                ],
+                join_report=JoinReport(
+                    requested_policy=request.join_policy,
+                    applied_mode=request.join_policy,
+                    enhancement_applied=False,
+                    implementation="estimated-test",
+                ),
+            )
+
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+    app.state.block_adapter_selector = lambda adapter_id, **kwargs: _EstimatedAdapter()
+    export_root = test_app_settings.edit_session_exports_dir / "estimated_segment_exports"
 
     with TestClient(app) as client:
         gate.set()

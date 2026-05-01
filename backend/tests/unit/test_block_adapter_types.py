@@ -118,8 +118,13 @@ def test_block_render_request_serializes_scope_and_join_policy_protocol():
 
     assert payload["render_scope"] == "segment"
     assert payload["escalated_from_scope"] is None
+    assert payload["execution_unit_id"] == "req-1"
+    assert payload["formal_block_id"] == "block-1"
     assert payload["requested_join_policy"] == "prefer_enhanced"
     assert payload["effective_join_policy"] == "preserve_pause"
+    assert payload["requested_alignment_mode"] == "exact"
+    assert payload["allowed_degradation"]["allowed_modes"] == ["exact"]
+    assert payload["allowed_scope_escalation"]["allowed_scopes"] == ["block"]
 
 
 def test_adapter_capabilities_and_reuse_policy_are_serializable():
@@ -140,6 +145,11 @@ def test_adapter_capabilities_and_reuse_policy_are_serializable():
     assert payload["segment_level_voice_binding"] is True
     assert payload["incremental_render"] is True
     assert payload["bounded_concurrency"] is True
+    assert payload["supports_exact_alignment"] is True
+    assert payload["supports_block_only_alignment"] is True
+    assert payload["supports_boundary_enhancement"] is True
+    assert payload["supports_incremental_render"] is True
+    assert payload["supports_segment_level_voice_binding"] is True
 
 
 def test_block_render_result_exact_requires_precise_spans_for_all_segments():
@@ -174,6 +184,10 @@ def test_block_render_result_exact_requires_precise_spans_for_all_segments():
 
     assert payload["segment_alignment_mode"] == "exact"
     assert payload["segment_spans"][0]["precision"] == "exact"
+    assert payload["audio_result"]["audio_sample_count"] == 5
+    assert payload["segment_alignment_result"]["mode"] == "exact"
+    assert payload["degradation_report"]["delivered_mode"] == "exact"
+    assert payload["scope_feedback"]["actual_scope"] == "block"
     assert payload["join_report"]["implementation"] == "gpt_sovits_latent_overlap"
 
 

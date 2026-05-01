@@ -585,6 +585,60 @@ describe("useRuntimeState", () => {
     });
   });
 
+  it("会稳定转发 block_completed 事件，并保留 block 级进度字段", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+    const listener = vi.fn();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-block-progress",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.4,
+        message: "rendering",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    runtimeState.onRenderJobEvent(listener);
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-block-progress",
+      document_id: "doc-1",
+      status: "rendering",
+      progress: 0.6,
+      message: "block 1 completed",
+      current_block_index: 1,
+      total_block_count: 3,
+    });
+    await handler.onEvent("block_completed", {
+      block_id: "block-1",
+      block_asset_id: "block-asset-1",
+      current_block_index: 1,
+      total_block_count: 3,
+      segment_ids: ["seg-1"],
+    });
+
+    expect(runtimeState.currentRenderJob.value).toMatchObject({
+      current_block_index: 1,
+      total_block_count: 3,
+      progress: 0.6,
+    });
+    expect(listener).toHaveBeenCalledWith({
+      type: "block_completed",
+      payload: {
+        block_id: "block-1",
+        block_asset_id: "block-asset-1",
+        current_block_index: 1,
+        total_block_count: 3,
+        segment_ids: ["seg-1"],
+      },
+      jobId: "job-block-progress",
+    });
+  });
+
   it("可以主动对账已跟踪 job 的终态，避免 terminal SSE 丢失后一直锁死", async () => {
     vi.doMock("../src/composables/useEditSession", () => ({
       useEditSession: () => ({

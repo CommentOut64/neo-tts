@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import importlib
 import json
@@ -353,8 +352,7 @@ def test_initialize_route_single_segment_commits_render_asset_and_changed_block_
 
 def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignment(test_app_settings):
     gate = threading.Event()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=True)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     fake_backend = FakeEditableInferenceBackend(gate=gate)
     fake_adapter = FakeBlockAdapter()
     app.state.editable_inference_gateway = EditableInferenceGateway(fake_backend)
@@ -379,37 +377,9 @@ def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignm
         assert len(fake_adapter.requests) == 1
         assert [entry["segment_alignment_mode"] for entry in timeline_payload["block_entries"]] == ["exact"]
 
-
-def test_initialize_route_rollback_switch_can_force_segment_first_for_new_job(test_app_settings):
-    gate = threading.Event()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
-    fake_backend = FakeEditableInferenceBackend(gate=gate)
-    fake_adapter = FakeBlockAdapter()
-    app.state.editable_inference_gateway = EditableInferenceGateway(fake_backend)
-    app.state.block_adapter_selector = lambda adapter_id, **kwargs: fake_adapter
-
-    with TestClient(app) as client:
-        initialize = client.post(
-            "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
-        )
-        assert initialize.status_code == 202
-
-        gate.set()
-        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
-
-        assert len(fake_backend.segment_calls) == 2
-        assert fake_adapter.requests == []
-
-
 def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_initialize(test_app_settings):
     gate = threading.Event()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     with TestClient(app) as client:
         initialize = client.post(
@@ -661,8 +631,7 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
 
 def test_edit_session_segment_crud_and_read_models(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -703,8 +672,6 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
             "第三句。",
         ]
         inserted_segment_id = inserted_snapshot["segments"][1]["segment_id"]
-        assert len(backend.segment_calls) == 3
-        assert len(backend.boundary_calls) == 3
 
         delete_response = client.delete(f"/v1/edit-session/segments/{inserted_segment_id}")
         assert delete_response.status_code == 202
@@ -712,8 +679,6 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
 
         deleted_snapshot = client.get("/v1/edit-session/snapshot").json()
         assert [_segment_display_text(item) for item in deleted_snapshot["segments"]] == ["第一句。", "第三句。"]
-        assert len(backend.segment_calls) == 3
-        assert len(backend.boundary_calls) == 4
 
         composition = client.get("/v1/edit-session/composition")
         assert composition.status_code == 404
@@ -724,10 +689,9 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
         assert len(playback_map.json()["entries"]) == 2
 
 
-def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_app_settings):
+def test_edit_session_swap_segments_reorders_and_updates_read_models(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -743,8 +707,6 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
         initial_snapshot = client.get("/v1/edit-session/snapshot").json()
         second_segment_id = initial_snapshot["segments"][1]["segment_id"]
         third_segment_id = initial_snapshot["segments"][2]["segment_id"]
-        baseline_segment_calls = len(backend.segment_calls)
-        baseline_boundary_calls = len(backend.boundary_calls)
 
         swap_response = client.post(
             "/v1/edit-session/segments/swap",
@@ -767,8 +729,6 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
             (swapped_snapshot["segments"][0]["segment_id"], swapped_snapshot["segments"][1]["segment_id"]),
             (swapped_snapshot["segments"][1]["segment_id"], swapped_snapshot["segments"][2]["segment_id"]),
         ]
-        assert len(backend.segment_calls) == baseline_segment_calls
-        assert len(backend.boundary_calls) == baseline_boundary_calls
 
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200
@@ -782,10 +742,9 @@ def test_edit_session_swap_segments_reorders_without_rerendering_segments(test_a
         assert composition.status_code == 404
 
 
-def test_edit_session_reorder_segments_reorders_without_rerendering_segments(test_app_settings):
+def test_edit_session_reorder_segments_reorders_and_updates_read_models(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -799,8 +758,6 @@ def test_edit_session_reorder_segments_reorders_without_rerendering_segments(tes
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
 
         initial_snapshot = client.get("/v1/edit-session/snapshot").json()
-        baseline_segment_calls = len(backend.segment_calls)
-        baseline_boundary_calls = len(backend.boundary_calls)
 
         reorder_response = client.post(
             "/v1/edit-session/segments/reorder",
@@ -831,8 +788,6 @@ def test_edit_session_reorder_segments_reorders_without_rerendering_segments(tes
         assert reordered_snapshot["edges"][0]["boundary_strategy_locked"] is True
         assert reordered_snapshot["edges"][1]["boundary_strategy"] == "latent_overlap_then_equal_power_crossfade"
         assert reordered_snapshot["edges"][1]["boundary_strategy_locked"] is False
-        assert len(backend.segment_calls) == baseline_segment_calls
-        assert len(backend.boundary_calls) == baseline_boundary_calls
 
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200
@@ -883,8 +838,7 @@ def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_s
 
 def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -937,7 +891,6 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         assert paused_timeline["playable_sample_span"][1] > timeline_before_pause["playable_sample_span"][1]
         assert paused_timeline["block_entries"][0]["audio_url"] != timeline_before_pause["block_entries"][0]["audio_url"]
         assert len(backend.segment_calls) == 3
-        assert len(backend.boundary_calls) == 2
 
         segment_preview = client.get("/v1/edit-session/preview", params={"segment_id": segment_id})
         assert segment_preview.status_code == 200
@@ -955,7 +908,6 @@ def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_setting
         strategy_snapshot = client.get("/v1/edit-session/snapshot").json()
         assert strategy_snapshot["edges"][0]["boundary_strategy"] == "crossfade_only"
         assert len(backend.segment_calls) == 3
-        assert len(backend.boundary_calls) == 3
 
         list_edges = client.get("/v1/edit-session/edges")
         assert list_edges.status_code == 200
@@ -1003,8 +955,7 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
 
 def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings):
     backend = FakeEditableInferenceBackend()
-    settings = replace(test_app_settings, edit_session_block_first_enabled=False)
-    app = create_app(settings=settings)
+    app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
@@ -1021,13 +972,16 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
         assert snapshot["composition_manifest_id"] is None
         first_segment = snapshot["segments"][0]
         first_edge = snapshot["edges"][0]
+        second_segment = next(
+            segment for segment in snapshot["segments"] if segment["segment_id"] == first_edge["right_segment_id"]
+        )
         boundary_asset_id = build_boundary_asset_id(
             left_segment_id=first_edge["left_segment_id"],
-            left_render_version=1,
+            left_render_version=first_segment["render_version"],
             right_segment_id=first_edge["right_segment_id"],
-            right_render_version=1,
+            right_render_version=second_segment["render_version"],
             edge_version=first_edge["edge_version"],
-            boundary_strategy=first_edge["boundary_strategy"],
+            boundary_strategy=first_edge.get("effective_boundary_strategy") or first_edge["boundary_strategy"],
         )
 
         composition_payload = _export_composition_for_current_snapshot(
@@ -1060,18 +1014,13 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
         assert segment_audio.headers["content-type"] == "audio/wav"
 
         boundary_asset = client.get(f"/v1/edit-session/assets/boundaries/{boundary_asset_id}")
-        assert boundary_asset.status_code == 200
-        assert boundary_asset.json()["boundary_asset_id"] == boundary_asset_id
-        assert boundary_asset.json()["audio_delivery"]["audio_url"].endswith(
-            f"/assets/boundaries/{boundary_asset_id}/audio"
-        )
+        assert boundary_asset.status_code == 404
 
         boundary_audio = client.get(
             f"/v1/edit-session/assets/boundaries/{boundary_asset_id}/audio",
             params={"download": 1},
         )
-        assert boundary_audio.status_code == 200
-        assert boundary_audio.headers["content-disposition"] == f'attachment; filename="{boundary_asset_id}.wav"'
+        assert boundary_audio.status_code == 404
 
 
 def test_preview_audio_returns_410_after_expiration(test_app_settings):
