@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from backend.app.schemas.edit_session import BindingReference
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.gpt_sovits_facade import GPTSoVITSRegistryFacade
+from backend.app.tts_registry.model_import_service import ModelImportService
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 
 if TYPE_CHECKING:
     from backend.app.tts_registry.workspace_service import WorkspaceService
@@ -54,47 +59,33 @@ class TtsRegistryMigrationService:
         if not isinstance(payload, dict) or not payload:
             return []
         self.backup_file(source)
-        created_bindings: list[dict[str, Any]] = []
         workspace = self._ensure_legacy_workspace(adapter_id=adapter_id, family_id=family_id)
         legacy_binding_map = self._load_legacy_binding_map()
-        for voice_name, raw_config in payload.items():
-            if not isinstance(raw_config, dict):
-                continue
-            main_model_id = _normalize_identifier(str(voice_name))
-            self._upsert_legacy_main_model(
-                workspace_id=workspace.workspace_id,
-                main_model_id=main_model_id,
-                voice_name=str(voice_name),
-            )
-            defaults = raw_config.get("defaults")
-            preset_defaults = dict(defaults) if isinstance(defaults, dict) else {}
-            if "reference_text" not in preset_defaults and raw_config.get("ref_text") is not None:
-                preset_defaults["reference_text"] = raw_config.get("ref_text")
-            if "reference_language" not in preset_defaults and raw_config.get("ref_lang") is not None:
-                preset_defaults["reference_language"] = raw_config.get("ref_lang")
-            preset_assets: dict[str, Any] = {}
-            if raw_config.get("ref_audio"):
-                preset_assets["reference_audio"] = {"path": str(raw_config.get("ref_audio"))}
-            self._workspace_service.update_submodel(
-                workspace_id=workspace.workspace_id,
-                main_model_id=main_model_id,
-                submodel_id="default",
-                instance_assets={
-                    "gpt_weight": {"path": str(raw_config.get("gpt_path") or "")},
-                    "sovits_weight": {"path": str(raw_config.get("sovits_path") or "")},
-                },
-            )
-            binding_ref = self._upsert_legacy_default_preset(
-                workspace_id=workspace.workspace_id,
-                main_model_id=main_model_id,
-                preset_defaults=preset_defaults,
-                preset_assets=preset_assets,
-            )
-            binding_payload = binding_ref.model_dump(mode="json")
-            legacy_binding_map[str(voice_name)] = binding_payload
+        facade = GPTSoVITSRegistryFacade(
+            workspace_service=self._workspace_service,
+            model_import_service=ModelImportService(
+                adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+                model_registry=ModelRegistry(self._registry_root),
+                secret_store=SecretStore(self._registry_root),
+            ),
+        )
+        imported = facade.import_legacy_voices_to_workspace(
+            workspace_id=workspace.workspace_id,
+            voices_by_name=payload,
+        )
+        created_bindings: list[dict[str, Any]] = []
+        for item in imported:
+            binding_payload = {
+                "workspace_id": item.main_model.workspace_id,
+                "main_model_id": item.main_model.main_model_id,
+                "submodel_id": item.submodels[0].submodel_id,
+                "preset_id": item.presets[0].preset_id,
+            }
+            legacy_voice_id = str(item.main_model.main_model_metadata.get("legacy_voice_id") or item.main_model.display_name)
+            legacy_binding_map[legacy_voice_id] = binding_payload
             created_bindings.append(
                 {
-                    "legacy_voice_id": str(voice_name),
+                    "legacy_voice_id": legacy_voice_id,
                     "binding_ref": binding_payload,
                 }
             )
@@ -151,76 +142,6 @@ class TtsRegistryMigrationService:
             family_id=family_id,
             display_name="Legacy GPT-SoVITS",
             slug="legacy-gpt-sovits",
-        )
-
-    def _upsert_legacy_main_model(self, *, workspace_id: str, main_model_id: str, voice_name: str) -> None:
-        existing = next(
-            (
-                item
-                for item in self._workspace_service.list_main_models(workspace_id)
-                if item.main_model_id == main_model_id
-            ),
-            None,
-        )
-        if existing is None:
-            self._workspace_service.create_main_model(
-                workspace_id=workspace_id,
-                main_model_id=main_model_id,
-                display_name=voice_name,
-                source_type="local_package",
-                main_model_metadata={"migration_source": "voices.json"},
-            )
-            return
-        self._workspace_service.update_main_model(
-            workspace_id=workspace_id,
-            main_model_id=main_model_id,
-            display_name=voice_name,
-            main_model_metadata={"migration_source": "voices.json"},
-        )
-
-    def _upsert_legacy_default_preset(
-        self,
-        *,
-        workspace_id: str,
-        main_model_id: str,
-        preset_defaults: dict[str, Any],
-        preset_assets: dict[str, Any],
-    ) -> BindingReference:
-        existing = next(
-            (
-                item
-                for item in self._workspace_service.list_presets(workspace_id, main_model_id, "default")
-                if item.preset_id == "default"
-            ),
-            None,
-        )
-        if existing is None:
-            self._workspace_service.create_preset(
-                workspace_id=workspace_id,
-                main_model_id=main_model_id,
-                submodel_id="default",
-                preset_id="default",
-                display_name="default",
-                kind="imported",
-                defaults=preset_defaults,
-                preset_assets=preset_assets,
-                is_hidden_singleton=True,
-            )
-        else:
-            self._workspace_service.update_preset(
-                workspace_id=workspace_id,
-                main_model_id=main_model_id,
-                submodel_id="default",
-                preset_id="default",
-                display_name="default",
-                defaults=preset_defaults,
-                preset_assets=preset_assets,
-            )
-        return BindingReference(
-            workspace_id=workspace_id,
-            main_model_id=main_model_id,
-            submodel_id="default",
-            preset_id="default",
         )
 
     def _load_legacy_binding_map(self) -> dict[str, dict[str, Any]]:

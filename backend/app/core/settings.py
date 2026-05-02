@@ -36,6 +36,7 @@ class AppSettings:
     edit_session_assets_dir: Path = Path("storage/edit_session/assets")
     edit_session_exports_dir: Path = Path("storage/edit_session/exports")
     edit_session_staging_ttl_seconds: int = 3600
+    auto_migrate_legacy_voices_on_start: bool = False
     cnhubert_base_path: Path = Path("pretrained_models/chinese-hubert-base")
     bert_path: Path = Path("pretrained_models/chinese-roberta-wwm-ext-large")
     preload_on_start: bool = False
@@ -300,6 +301,7 @@ def get_settings() -> AppSettings:
     bert_path_env = os.environ.get("BERT_PATH") or os.environ.get("GPT_SOVITS_BERT_PATH")
     preload_on_start_env = os.environ.get("GPT_SOVITS_PRELOAD_ON_START")
     preload_voices_env = os.environ.get("GPT_SOVITS_PRELOAD_VOICES")
+    auto_migrate_legacy_voices_on_start_env = os.environ.get("NEO_TTS_AUTO_MIGRATE_LEGACY_VOICES_ON_START")
     gpu_offload_enabled_env = os.environ.get("GPT_SOVITS_GPU_OFFLOAD_ENABLED")
     gpu_min_free_mb_env = os.environ.get("GPT_SOVITS_GPU_MIN_FREE_MB")
     gpu_reserve_mb_for_load_env = os.environ.get("GPT_SOVITS_GPU_RESERVE_MB_FOR_LOAD")
@@ -412,11 +414,14 @@ def get_settings() -> AppSettings:
         )
 
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
-    # 开发态默认预加载，打包态默认关闭（可通过环境变量显式开启），
-    # 避免桌面应用启动阶段被模型导入/预热阻塞。
-    preload_default = distribution_kind == "development"
+    # 正式模型链已切到 tts-registry，legacy voice 预加载只能显式开启。
+    preload_default = False
     preload_on_start = _parse_bool_env(preload_on_start_env, default=preload_default)
     preload_voice_ids = _parse_csv_env(preload_voices_env, default=("neuro2",))
+    auto_migrate_legacy_voices_on_start = _parse_bool_env(
+        auto_migrate_legacy_voices_on_start_env,
+        default=False,
+    )
     gpu_offload_enabled = _parse_bool_env(gpu_offload_enabled_env, default=True)
     gpu_min_free_mb = int(gpu_min_free_mb_env or 2048)
     gpu_reserve_mb_for_load = int(gpu_reserve_mb_for_load_env or 4096)
@@ -448,6 +453,7 @@ def get_settings() -> AppSettings:
         edit_session_assets_dir=edit_session_assets_dir,
         edit_session_exports_dir=edit_session_exports_dir,
         edit_session_staging_ttl_seconds=edit_session_staging_ttl_seconds,
+        auto_migrate_legacy_voices_on_start=auto_migrate_legacy_voices_on_start,
         cnhubert_base_path=cnhubert_base_path,
         bert_path=bert_path,
         preload_on_start=preload_on_start,

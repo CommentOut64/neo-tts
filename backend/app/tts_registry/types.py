@@ -72,6 +72,7 @@ class MainModelRecord(BaseModel):
     status: MainModelStatus = Field(default="ready", description="主模型状态。")
     source_type: ModelSourceType = Field(description="主模型来源。")
     main_model_metadata: dict[str, Any] = Field(default_factory=dict, description="主模型元数据。")
+    shared_assets: dict[str, Any] = Field(default_factory=dict, description="主模型共享资产。")
     default_submodel_id: str | None = Field(default=None, description="默认子模型 ID。")
     created_at: str = Field(description="创建时间。")
     updated_at: str = Field(description="更新时间。")

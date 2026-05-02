@@ -40,6 +40,7 @@ class CompositionBuilder:
             raise ValueError("compose_block requires at least one segment asset.")
 
         logical_block_id = block_id or f"block-{uuid4().hex}"
+        effective_alignment_mode = segment_alignment_mode or "exact"
         if len(segments) == 1:
             only_segment = segments[0]
             audio = self._full_segment_audio(only_segment)
@@ -57,6 +58,8 @@ class CompositionBuilder:
                         only_segment.render_asset_id,
                         segment_entry_base_asset_ids,
                     ),
+                    precision="exact",
+                    source="adapter_exact",
                 )
             ]
             marker_entries = [
@@ -79,7 +82,7 @@ class CompositionBuilder:
                 audio=audio,
                 audio_sample_count=int(audio.size),
                 segment_entries=segment_entries,
-                segment_alignment_mode=segment_alignment_mode,
+                segment_alignment_mode=effective_alignment_mode,
                 join_report_summary=join_report_summary,
                 edge_entries=[],
                 marker_entries=marker_entries,
@@ -113,6 +116,8 @@ class CompositionBuilder:
                     first.render_asset_id,
                     segment_entry_base_asset_ids,
                 ),
+                precision="exact",
+                source="adapter_exact",
             )
         )
         marker_entries.append(BlockMarkerEntry(marker_type="segment_end", sample=cursor, related_id=first.segment_id))
@@ -181,6 +186,8 @@ class CompositionBuilder:
                         right_segment.render_asset_id,
                         segment_entry_base_asset_ids,
                     ),
+                    precision="exact",
+                    source="adapter_exact",
                 )
             )
             marker_entries.append(
@@ -205,7 +212,7 @@ class CompositionBuilder:
             audio=audio.astype(np.float32, copy=False),
             audio_sample_count=int(audio.size),
             segment_entries=segment_entries,
-            segment_alignment_mode=segment_alignment_mode,
+            segment_alignment_mode=effective_alignment_mode,
             join_report_summary=join_report_summary,
             edge_entries=edge_entries,
             marker_entries=marker_entries,
