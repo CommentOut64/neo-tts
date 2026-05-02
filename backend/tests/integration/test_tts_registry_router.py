@@ -20,6 +20,7 @@ def _build_settings(tmp_path: Path) -> AppSettings:
         project_root=tmp_path,
         voices_config_path=tmp_path / "voices.json",
         tts_registry_root=tmp_path / "tts-registry",
+        gpt_sovits_adapter_installed=True,
         managed_voices_dir=tmp_path / "managed_voices",
         synthesis_results_dir=tmp_path / "synthesis_results",
         inference_params_cache_file=tmp_path / "state" / "params_cache.json",
@@ -172,6 +173,17 @@ def test_tts_registry_empty_state_and_health_are_valid(tmp_path: Path):
 
     assert adapters.status_code == 200
     assert sorted(item["adapter_id"] for item in adapters.json()) == ["external_http_tts", "gpt_sovits_local"]
+    external_adapter = next(item for item in adapters.json() if item["adapter_id"] == "external_http_tts")
+    assert sorted(external_adapter["option_schema"]["properties"].keys()) == [
+        "acquire_timeout_ms",
+        "default_retry_backoff_ms",
+        "max_concurrent_requests",
+        "max_retry_attempts",
+        "max_retry_backoff_ms",
+        "requests_per_minute",
+        "retry_on_429",
+        "tokens_per_minute",
+    ]
     assert models.status_code == 200
     assert models.json() == []
     assert voices.status_code == 200
@@ -281,6 +293,116 @@ def test_tts_registry_external_api_secret_flow_uses_standard_payload_without_pla
     assert after_secret.status_code == 200
     assert after_secret.json()["status"] == "ready"
     assert "top-secret" not in (settings.tts_registry_root / "registry.json").read_text(encoding="utf-8")
+
+
+def test_tts_registry_can_create_external_model_without_import_package(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    _write_json(settings.voices_config_path, {})
+
+    with TestClient(create_app(settings=settings)) as client:
+        created = client.post(
+            "/v1/tts-registry/models",
+            json={
+                "model_instance_id": "remote-direct",
+                "display_name": "Remote Direct",
+                "adapter_id": "external_http_tts",
+                "endpoint": {"url": "https://api.example.com/tts"},
+                "account_binding": {
+                    "provider": "example",
+                    "account_id": "acct-direct",
+                    "required_secrets": ["api_key"],
+                },
+                "adapter_options": {
+                    "max_concurrent_requests": 2,
+                    "requests_per_minute": 30,
+                },
+                "presets": [
+                    {
+                        "preset_id": "voice-a",
+                        "display_name": "Voice A",
+                        "kind": "remote",
+                        "fixed_fields": {"remote_voice_id": "voice_a"},
+                        "defaults": {
+                            "reference_text": "远端参考文本",
+                            "reference_language": "zh",
+                        },
+                    }
+                ],
+            },
+        )
+        detail = client.get("/v1/tts-registry/models/remote-direct")
+
+    assert created.status_code == 201
+    assert created.json()["model_instance_id"] == "remote-direct"
+    assert created.json()["source_type"] == "external_api"
+    assert created.json()["status"] == "needs_secret"
+    assert created.json()["endpoint"] == {"url": "https://api.example.com/tts"}
+    assert created.json()["account_binding"] == {
+        "provider": "example",
+        "account_id": "acct-direct",
+        "required_secrets": ["api_key"],
+        "secret_handles": {},
+    }
+    assert created.json()["adapter_options"] == {
+        "max_concurrent_requests": 2,
+        "requests_per_minute": 30,
+    }
+    assert created.json()["presets"][0]["fixed_fields"] == {"remote_voice_id": "voice_a"}
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "needs_secret"
+
+
+def test_tts_registry_external_model_preset_crud_routes_work_for_direct_create_flow(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    _write_json(settings.voices_config_path, {})
+
+    with TestClient(create_app(settings=settings)) as client:
+        created_model = client.post(
+            "/v1/tts-registry/models",
+            json={
+                "model_instance_id": "remote-direct",
+                "display_name": "Remote Direct",
+                "adapter_id": "external_http_tts",
+                "endpoint": {"url": "https://api.example.com/tts"},
+                "account_binding": {
+                    "provider": "example",
+                    "account_id": "acct-direct",
+                    "required_secrets": ["api_key"],
+                },
+                "presets": [],
+            },
+        )
+        created_preset = client.post(
+            "/v1/tts-registry/models/remote-direct/presets",
+            json={
+                "preset_id": "voice-a",
+                "display_name": "Voice A",
+                "kind": "remote",
+                "fixed_fields": {"remote_voice_id": "voice_a"},
+                "defaults": {"reference_text": "参考文本", "reference_language": "zh"},
+            },
+        )
+        patched_preset = client.patch(
+            "/v1/tts-registry/models/remote-direct/presets/voice-a",
+            json={"display_name": "Voice A Updated", "defaults": {"reference_text": "更新后的参考文本"}},
+        )
+        listed = client.get("/v1/tts-registry/models/remote-direct/presets")
+        deleted = client.delete("/v1/tts-registry/models/remote-direct/presets/voice-a")
+
+    assert created_model.status_code == 201
+    assert created_preset.status_code == 201
+    assert created_preset.json()["kind"] == "remote"
+    assert patched_preset.status_code == 200
+    assert patched_preset.json()["display_name"] == "Voice A Updated"
+    assert patched_preset.json()["defaults"] == {"reference_text": "更新后的参考文本"}
+    assert listed.status_code == 200
+    assert listed.json()[0]["preset_id"] == "voice-a"
+    assert deleted.status_code == 200
+    assert deleted.json() == {
+        "status": "deleted",
+        "model_instance_id": "remote-direct",
+        "preset_id": "voice-a",
+    }
 
 
 def test_delete_model_returns_conflict_when_active_job_uses_projected_voice(tmp_path: Path):

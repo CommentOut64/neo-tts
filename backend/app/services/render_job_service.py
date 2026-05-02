@@ -110,6 +110,7 @@ from backend.app.text.segment_standardizer import (
     standardize_segment_texts,
 )
 from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.block_adapter_types import SegmentScopeUnsupported
 from backend.app.tts_registry.model_registry import ModelRegistry
 from backend.app.tts_registry.secret_store import SecretStore
@@ -243,6 +244,7 @@ class RenderJobService:
             adapter_registry=adapter_registry,
             secret_store=secret_store,
         )
+        self._secret_store = secret_store
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._block_render_request_builder = block_render_request_builder
         self._block_render_asset_persister = block_render_asset_persister
@@ -1009,6 +1011,17 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
+        except BlockAdapterError as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_initialize_job",
+                exc=exc,
+            )
+            self._rollback_uncommitted_assets(job_id)
+            self._mark_terminal(job_id, status="failed", message=exc.message, adapter_error=exc.to_payload())
+            self._mark_session_failed(job.document_id)
         except _CancelledJobError:
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
@@ -1087,6 +1100,16 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
+        except BlockAdapterError as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_edit_job",
+                exc=exc,
+            )
+            self._rollback_uncommitted_assets(job_id)
+            self._mark_terminal(job_id, status="failed", message=exc.message, adapter_error=exc.to_payload())
         except _CancelledJobError:
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
@@ -2019,6 +2042,7 @@ class RenderJobService:
             gateway=self._gateway,
             asset_store=self._asset_store,
             composition_builder=self._composition_builder,
+            secret_store=self._secret_store,
             cancellation_checker=kwargs.get("cancellation_checker"),
             segment_asset_callback=kwargs.get("segment_asset_callback"),
         )
@@ -2980,14 +3004,21 @@ class RenderJobService:
             committed_timeline_manifest_id=job.committed_timeline_manifest_id,
             committed_playable_sample_span=job.committed_playable_sample_span,
             changed_block_asset_ids=list(job.changed_block_asset_ids),
+            adapter_error=job.adapter_error,
             checkpoint_id=job.checkpoint_id,
             resume_token=job.resume_token,
             updated_at=job.updated_at,
         )
         self._repository.save_render_job(record)
 
-    def _mark_terminal(self, job_id: str, *, status: str, message: str) -> None:
-        self._runtime.update_job(job_id, status=status, progress=1.0 if status == "completed" else 0.0, message=message)
+    def _mark_terminal(self, job_id: str, *, status: str, message: str, adapter_error=None) -> None:
+        self._runtime.update_job(
+            job_id,
+            status=status,
+            progress=1.0 if status == "completed" else 0.0,
+            message=message,
+            adapter_error=adapter_error,
+        )
         self._persist_runtime_job(job_id)
 
     @staticmethod

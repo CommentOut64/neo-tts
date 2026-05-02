@@ -119,6 +119,7 @@ def _build_model_fingerprint(model: ModelInstance) -> str:
             "instance_assets": model.instance_assets,
             "endpoint": model.endpoint,
             "account_binding": model.account_binding,
+            "adapter_options": model.adapter_options,
             "presets": [preset.model_dump(mode="json") for preset in model.presets],
         }
     )

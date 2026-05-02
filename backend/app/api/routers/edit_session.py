@@ -18,8 +18,10 @@ from backend.app.inference.editable_gateway import (
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
 )
+from backend.app.inference.adapters import ExternalHttpTtsAdapter
 from backend.app.inference.adapters import GPTSoVITSLocalAdapter
 from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.external_http_rate_limiter import ExternalHttpLimitConfig
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
@@ -116,21 +118,29 @@ def _build_voice_service(request: Request) -> VoiceService:
 
 
 def _build_model_registry(request: Request) -> ModelRegistry:
-    shared = getattr(request.app.state, "model_registry", None)
-    if shared is not None:
-        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return ModelRegistry(registry_root)
 
 
 def _build_secret_store(request: Request) -> SecretStore:
-    shared = getattr(request.app.state, "secret_store", None)
-    if shared is not None:
-        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return SecretStore(registry_root)
+
+
+def _build_external_http_default_limit_config(request: Request) -> ExternalHttpLimitConfig:
+    settings = request.app.state.settings
+    return ExternalHttpLimitConfig(
+        max_concurrent_requests=max(int(settings.external_http_default_max_concurrent_requests), 1),
+        requests_per_minute=settings.external_http_default_requests_per_minute,
+        tokens_per_minute=settings.external_http_default_tokens_per_minute,
+        retry_on_429=bool(settings.external_http_default_retry_on_429),
+        max_retry_attempts=max(int(settings.external_http_default_max_retry_attempts), 0),
+        default_retry_backoff_ms=max(int(settings.external_http_default_retry_backoff_ms), 0),
+        max_retry_backoff_ms=max(int(settings.external_http_default_max_retry_backoff_ms), 0),
+        acquire_timeout_ms=max(int(settings.external_http_default_acquire_timeout_ms), 1),
+    )
 
 
 def _build_adapter_registry(request: Request) -> AdapterRegistry:
@@ -159,6 +169,12 @@ def _build_block_adapter_selector(request: Request):
                 reusable_asset_accessor=kwargs.get("asset_store"),
                 cancellation_checker=kwargs.get("cancellation_checker"),
                 segment_asset_callback=kwargs.get("segment_asset_callback"),
+            )
+        if adapter_id == "external_http_tts":
+            return ExternalHttpTtsAdapter(
+                secret_store=kwargs["secret_store"],
+                rate_limiter=request.app.state.external_http_rate_limiter,
+                default_limit_config=_build_external_http_default_limit_config(request),
             )
         raise AdapterRegistry.build_model_required_error(adapter_id=adapter_id)
 

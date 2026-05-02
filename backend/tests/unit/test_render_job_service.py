@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.adapter_definition import AdapterBlockLimits, AdapterDefinition
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.block_adapter_types import (
@@ -2322,6 +2323,66 @@ def test_block_first_segment_update_fails_when_block_scope_also_fails(tmp_path):
     assert job is not None
     assert job.status == "failed"
     assert "块级请求仍无法成立" in (job.message or "")
+
+
+def test_block_first_segment_update_persists_adapter_error_payload_to_job_and_sse(tmp_path):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    class _AlwaysFailingAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            raise BlockAdapterError(
+                error_code="rate_limited",
+                message="远端 provider 触发限流。",
+                details={
+                    "provider_http_status": 429,
+                    "provider_message": "slow down",
+                    "provider_request_id": "req-429",
+                    "retryable": True,
+                    "retry_after_ms": 2000,
+                },
+            )
+
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _AlwaysFailingAdapter()  # noqa: SLF001
+
+    rerender = service.create_update_segment_job(
+        snapshot.segments[0].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    subscriber = service._runtime.subscribe(rerender.job.job_id)  # noqa: SLF001
+    service.run_edit_job(rerender.job.job_id)
+
+    job = service.get_job(rerender.job.job_id)
+    assert job is not None
+    assert job.status == "failed"
+    assert job.model_dump(mode="json")["adapter_error"]["error_code"] == "rate_limited"
+    assert job.model_dump(mode="json")["adapter_error"]["details"]["provider_http_status"] == 429
+
+    seen_terminal_payloads = []
+    while not subscriber.empty():
+        event = subscriber.get_nowait()
+        if event["event"] != "job_state_changed":
+            continue
+        if event["data"].get("status") != "failed":
+            continue
+        seen_terminal_payloads.append(event["data"])
+
+    assert seen_terminal_payloads
+    assert seen_terminal_payloads[-1]["adapter_error"]["details"]["provider_request_id"] == "req-429"
 
 
 def test_build_preview_selects_segment_edge_and_block_after_commit(tmp_path):

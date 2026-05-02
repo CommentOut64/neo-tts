@@ -19,6 +19,7 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_maintenance_service import EditSessionMaintenanceService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.export_service import ExportService
+from backend.app.inference.external_http_rate_limiter import ExternalHttpRateLimiter
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
@@ -118,6 +119,7 @@ async def app_lifespan(app: FastAPI):
     adapter_registry = adapter_definition_store._registry  # noqa: SLF001
     block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
     block_render_asset_persister = BlockRenderAssetPersister(asset_store=edit_asset_store)
+    external_http_rate_limiter = ExternalHttpRateLimiter()
     edit_session_runtime = EditSessionRuntime()
     edit_session_export_service = ExportService(
         repository=edit_session_repository,
@@ -142,6 +144,7 @@ async def app_lifespan(app: FastAPI):
     app.state.adapter_registry = adapter_registry
     app.state.block_render_request_builder = block_render_request_builder
     app.state.block_render_asset_persister = block_render_asset_persister
+    app.state.external_http_rate_limiter = external_http_rate_limiter
     app.state.edit_session_runtime = edit_session_runtime
     app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service

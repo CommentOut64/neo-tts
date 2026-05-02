@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.inference.block_adapter_errors import BlockAdapterErrorPayload
 from backend.app.text.segment_standardizer import build_segment_display_text
 
 
@@ -518,6 +519,7 @@ class RenderJobResponse(BaseModel):
         default_factory=list,
         description="本次提交中真正发生变化的 block asset ID 列表。",
     )
+    adapter_error: BlockAdapterErrorPayload | None = Field(default=None, description="标准化 adapter 失败载荷。")
     checkpoint_id: str | None = Field(default=None, description="若作业暂停或 partial commit，关联的 checkpoint ID。")
     resume_token: str | None = Field(default=None, description="可恢复作业的 resume token。")
     updated_at: datetime = Field(default_factory=_now_utc, description="作业最后更新时间。")

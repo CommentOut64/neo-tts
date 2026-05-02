@@ -43,6 +43,14 @@ class AppSettings:
     gpu_offload_enabled: bool = True
     gpu_min_free_mb: int = 2048
     gpu_reserve_mb_for_load: int = 4096
+    external_http_default_max_concurrent_requests: int = 1
+    external_http_default_requests_per_minute: int | None = None
+    external_http_default_tokens_per_minute: int | None = None
+    external_http_default_retry_on_429: bool = False
+    external_http_default_max_retry_attempts: int = 0
+    external_http_default_retry_backoff_ms: int = 500
+    external_http_default_max_retry_backoff_ms: int = 5_000
+    external_http_default_acquire_timeout_ms: int = 30_000
 
     def __post_init__(self) -> None:
         resolved_project_root = self.project_root.resolve()

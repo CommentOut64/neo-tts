@@ -501,6 +501,10 @@ class RenderConfigResolver:
             resolved_reference=resolved_reference_payload,
             resolved_parameters=resolved_parameters,
             secret_handles=secret_handles,
+            endpoint=dict(model_instance.endpoint) if isinstance(model_instance.endpoint, dict) else None,
+            account_binding=dict(model_instance.account_binding) if isinstance(model_instance.account_binding, dict) else {},
+            preset_fixed_fields=dict(preset.fixed_fields),
+            adapter_options=dict(model_instance.adapter_options),
             binding_fingerprint=binding_fingerprint,
         )
 

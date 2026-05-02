@@ -236,6 +236,7 @@ class VoiceService:
             },
             endpoint=None,
             account_binding=None,
+            adapter_options={},
             presets=[preset],
             fingerprint="pending",
         )

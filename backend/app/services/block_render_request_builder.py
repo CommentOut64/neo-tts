@@ -229,10 +229,43 @@ class BlockRenderRequestBuilder:
                             render_scope=render_scope,
                             allowed_scopes=["segment", "block"] if render_scope == "segment" else ["block"],
                         ),
+                        adapter_options=self._build_adapter_options(
+                            first_binding=first_binding,
+                            request_block=request_block,
+                            document_id=snapshot.document_id,
+                        ),
                         block_policy=self._default_block_policy,
                     )
                 )
         return requests
+
+    @staticmethod
+    def _build_adapter_options(
+        *,
+        first_binding,
+        request_block: BlockRequestBlock,
+        document_id: str,
+    ) -> dict[str, dict[str, object]]:
+        options: dict[str, dict[str, object]] = {}
+        if first_binding.adapter_id != "external_http_tts":
+            return options
+        account_binding = dict(first_binding.account_binding or {})
+        options["external_http_tts"] = {
+            "text": request_block.block_text,
+            "model_instance_id": first_binding.model_instance_id,
+            "preset_id": first_binding.preset_id,
+            "remote_voice_id": first_binding.preset_fixed_fields.get("remote_voice_id"),
+            "endpoint": dict(first_binding.endpoint or {}),
+            "reference": dict(first_binding.resolved_reference or {}),
+            "synthesis": dict(first_binding.resolved_parameters),
+            "metadata": {
+                "document_id": document_id,
+                "block_id": request_block.block_id,
+                "provider": account_binding.get("provider"),
+                "account_id": account_binding.get("account_id"),
+            },
+        }
+        return options
 
     @staticmethod
     def _split_chunk_by_scope(

@@ -108,7 +108,19 @@ def build_default_adapter_definition_store(
                 remote_runtime=True,
             ),
             block_limits=AdapterBlockLimits(max_payload_bytes=1024 * 1024),
-            option_schema={},
+            option_schema={
+                "type": "object",
+                "properties": {
+                    "max_concurrent_requests": {"type": "integer", "minimum": 1},
+                    "requests_per_minute": {"type": ["integer", "null"], "minimum": 1},
+                    "tokens_per_minute": {"type": ["integer", "null"], "minimum": 1},
+                    "retry_on_429": {"type": "boolean"},
+                    "max_retry_attempts": {"type": "integer", "minimum": 0},
+                    "default_retry_backoff_ms": {"type": "integer", "minimum": 0},
+                    "max_retry_backoff_ms": {"type": "integer", "minimum": 0},
+                    "acquire_timeout_ms": {"type": "integer", "minimum": 1},
+                },
+            },
             manifest_schema={
                 "type": "object",
                 "required": [

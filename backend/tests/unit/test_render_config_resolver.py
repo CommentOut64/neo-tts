@@ -762,3 +762,78 @@ def test_render_config_resolver_derives_secret_handles_from_secret_store_when_re
     assert resolved.resolved_model_binding.secret_handles == {
         "api_key": "secret://model-demo/api_key"
     }
+
+
+def test_render_config_resolver_exposes_external_http_endpoint_fixed_fields_and_adapter_options(tmp_path):
+    registry, secret_store = _model_registry(tmp_path, adapter_id="external_http_tts")
+    model = registry.get_model("model-demo")
+    assert model is not None
+    registry.replace_model(
+        model.model_copy(
+            update={
+                "endpoint": {"url": "https://api.example.com/tts"},
+                "account_binding": {
+                    "provider": "example",
+                    "account_id": "acct-1",
+                    "required_secrets": ["api_key"],
+                    "secret_handles": {},
+                },
+                "adapter_options": {
+                    "max_concurrent_requests": 2,
+                    "requests_per_minute": 30,
+                },
+                "presets": [
+                    model.presets[0].model_copy(
+                        update={
+                            "fixed_fields": {"remote_voice_id": "voice_a"},
+                        }
+                    )
+                ],
+            }
+        )
+    )
+    secret_store.put_model_secrets("model-demo", {"api_key": "top-secret"})
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-external-http",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[RenderProfile(render_profile_id="profile-session", scope="session", name="session")],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="legacy-model-a",
+                model_instance_id="model-demo",
+                preset_id="preset-default",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = RenderConfigResolver(
+        voice_service=_FakeVoiceService(),
+        model_registry=registry,
+        adapter_registry=_adapter_registry(adapter_id="external_http_tts"),
+        secret_store=secret_store,
+    ).resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert resolved.resolved_model_binding is not None
+    assert resolved.resolved_model_binding.endpoint == {"url": "https://api.example.com/tts"}
+    assert resolved.resolved_model_binding.account_binding == {
+        "provider": "example",
+        "account_id": "acct-1",
+        "required_secrets": ["api_key"],
+        "secret_handles": {},
+    }
+    assert resolved.resolved_model_binding.preset_fixed_fields == {"remote_voice_id": "voice_a"}
+    assert resolved.resolved_model_binding.adapter_options == {
+        "max_concurrent_requests": 2,
+        "requests_per_minute": 30,
+    }
+    assert resolved.resolved_model_binding.secret_handles == {"api_key": "secret://model-demo/api_key"}

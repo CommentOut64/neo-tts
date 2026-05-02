@@ -100,6 +100,10 @@ class ResolvedModelBinding(BaseModel):
     resolved_reference: dict[str, Any] | None = Field(default=None, description="解析后的最终参考。")
     resolved_parameters: dict[str, Any] = Field(default_factory=dict, description="解析后的稳定参数。")
     secret_handles: dict[str, str] = Field(default_factory=dict, description="secret store handle 映射。")
+    endpoint: dict[str, Any] | None = Field(default=None, description="外部 provider endpoint 配置。")
+    account_binding: dict[str, Any] = Field(default_factory=dict, description="外部 provider 非 secret 账号绑定。")
+    preset_fixed_fields: dict[str, Any] = Field(default_factory=dict, description="preset 固定字段。")
+    adapter_options: dict[str, Any] = Field(default_factory=dict, description="adapter 运行时选项。")
     binding_fingerprint: str = Field(description="模型绑定指纹。")
 
 

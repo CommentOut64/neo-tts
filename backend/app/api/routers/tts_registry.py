@@ -38,6 +38,26 @@ class CreatePresetRequest(BaseModel):
     preset_assets: dict[str, Any] = Field(default_factory=dict)
 
 
+class CreateExternalModelPresetRequest(BaseModel):
+    preset_id: str
+    display_name: str
+    kind: Literal["builtin", "imported", "remote", "user"] = "remote"
+    status: Literal["ready", "invalid", "disabled", "pending_delete"] = "ready"
+    base_preset_id: str | None = None
+    fixed_fields: dict[str, Any] = Field(default_factory=dict)
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateExternalModelRequest(BaseModel):
+    model_instance_id: str
+    display_name: str
+    adapter_id: Literal["external_http_tts"]
+    endpoint: dict[str, Any]
+    account_binding: dict[str, Any] = Field(default_factory=dict)
+    adapter_options: dict[str, Any] = Field(default_factory=dict)
+    presets: list[CreateExternalModelPresetRequest] = Field(default_factory=list)
+
+
 class UpdatePresetRequest(BaseModel):
     display_name: str | None = None
     status: Literal["ready", "invalid", "disabled", "pending_delete"] | None = None
@@ -162,6 +182,50 @@ def list_adapters(request: Request) -> list[dict[str, Any]]:
 @router.get("/models", response_model=list[ModelInstance])
 def list_models(request: Request) -> list[ModelInstance]:
     return _build_model_registry(request).list_models()
+
+
+@router.post("/models", response_model=ModelInstance, status_code=status.HTTP_201_CREATED)
+def create_model(request: Request, body: CreateExternalModelRequest) -> ModelInstance:
+    registry = _build_model_registry(request)
+    if registry.get_model(body.model_instance_id) is not None:
+        raise ValueError(f"Model '{body.model_instance_id}' already exists.")
+    definition = _build_adapter_store(request).require(body.adapter_id)
+    required_secrets = [str(item) for item in body.account_binding.get("required_secrets") or []]
+    normalized_account_binding = dict(body.account_binding)
+    normalized_account_binding["required_secrets"] = required_secrets
+    normalized_account_binding["secret_handles"] = dict(body.account_binding.get("secret_handles") or {})
+    status_value: Literal["ready", "needs_secret", "invalid", "disabled", "pending_delete"] = (
+        "needs_secret" if required_secrets and not normalized_account_binding["secret_handles"] else "ready"
+    )
+    model = ModelInstance(
+        model_instance_id=body.model_instance_id,
+        adapter_id=body.adapter_id,
+        source_type="external_api",
+        display_name=body.display_name,
+        status=status_value,
+        storage_mode="managed",
+        instance_assets={},
+        endpoint=dict(body.endpoint),
+        account_binding=normalized_account_binding,
+        adapter_options=dict(body.adapter_options),
+        presets=[
+            ModelPreset(
+                preset_id=preset.preset_id,
+                display_name=preset.display_name,
+                kind=preset.kind,
+                status=preset.status,
+                base_preset_id=preset.base_preset_id,
+                fixed_fields=dict(preset.fixed_fields),
+                defaults=dict(preset.defaults),
+                preset_assets={},
+                override_policy=definition.override_policy,
+                fingerprint="pending",
+            )
+            for preset in body.presets
+        ],
+        fingerprint="pending",
+    )
+    return registry.replace_model(model)
 
 
 @router.post("/models/import", response_model=ModelInstance, status_code=status.HTTP_201_CREATED)

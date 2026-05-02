@@ -38,6 +38,7 @@ class ModelInstance(BaseModel):
     instance_assets: dict[str, Any] = Field(default_factory=dict, description="实例级资产映射。")
     endpoint: dict[str, Any] | None = Field(default=None, description="外部 API endpoint 定义。")
     account_binding: dict[str, Any] | None = Field(default=None, description="账号绑定信息。")
+    adapter_options: dict[str, Any] = Field(default_factory=dict, description="adapter 运行时选项。")
     presets: list[ModelPreset] = Field(default_factory=list, description="实例下全部预设。")
     fingerprint: str = Field(description="模型实例稳定指纹。")
 

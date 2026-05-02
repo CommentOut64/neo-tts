@@ -666,6 +666,71 @@ def test_block_render_request_builder_downgrades_reuse_policy_when_adapter_disab
     assert requests[0].dirty_context.reuse_policy == "adapter_default"
 
 
+def test_block_render_request_builder_includes_external_http_adapter_payload_without_secret_plaintext():
+    seg1 = _segment("seg-1", 1, "binding-a", stem="远端第一句")
+    binding = _binding(
+        "binding-a",
+        "voice-a",
+        "model-a",
+        model_instance_id="model-1",
+        preset_id="preset-1",
+    )
+    snapshot = _snapshot(segments=[seg1], edges=[], voice_bindings=[binding])
+    builder = BlockRenderRequestBuilder(
+        adapter_registry=_adapter_registry(
+            _adapter_definition("external_http_tts", segment_level_voice_binding=True, max_segment_count=10),
+        )
+    )
+    resolved = _resolved_segment(
+        seg1,
+        binding,
+        adapter_id="external_http_tts",
+        model_instance_id="model-1",
+        preset_id="preset-1",
+        binding_fingerprint="binding-a",
+    )
+    resolved = ResolvedSegmentConfig(
+        segment=resolved.segment,
+        render_profile=resolved.render_profile,
+        voice_binding=resolved.voice_binding,
+        render_context_fingerprint=resolved.render_context_fingerprint,
+        model_cache_key=resolved.model_cache_key,
+        resolved_model_binding=resolved.resolved_model_binding.model_copy(
+            update={
+                "endpoint": {"url": "https://api.example.com/tts"},
+                "account_binding": {"provider": "example", "account_id": "acct-1"},
+                "preset_fixed_fields": {"remote_voice_id": "voice_a"},
+                "adapter_options": {"max_concurrent_requests": 2},
+                "secret_handles": {"api_key": "secret://model-1/api_key"},
+            }
+        ),
+        resolved_reference=resolved.resolved_reference,
+    )
+
+    requests = builder.build_requests(
+        snapshot=snapshot,
+        blocks=[_render_block(["seg-1"])],
+        resolved_segments={"seg-1": resolved},
+        resolved_edges={},
+        target_segment_ids={"seg-1"},
+        target_edge_ids=set(),
+        previous_timeline=None,
+        reuse_policy="adapter_default",
+    )
+
+    external_payload = requests[0].adapter_options["external_http_tts"]
+
+    assert external_payload["text"] == "远端第一句。"
+    assert external_payload["model_instance_id"] == "model-1"
+    assert external_payload["preset_id"] == "preset-1"
+    assert external_payload["remote_voice_id"] == "voice_a"
+    assert external_payload["endpoint"] == {"url": "https://api.example.com/tts"}
+    assert external_payload["metadata"]["provider"] == "example"
+    assert external_payload["reference"]["reference_id"] == "ref-preset-1"
+    assert external_payload["synthesis"] == {"speed": 1.0}
+    assert "top-secret" not in str(external_payload)
+
+
 def test_block_render_request_builder_splits_chunk_when_segment_level_binding_identity_changes():
     seg1 = _segment("seg-1", 1, "binding-a")
     seg2 = _segment("seg-2", 2, "binding-b")
