@@ -227,4 +227,19 @@ describe("ttsRegistry api", () => {
       "/v1/tts-registry/workspaces/ws_demo/main-models/main_demo/submodels/sub_demo/presets/voice_a",
     );
   });
+
+  it("gpt sovits import helper uses workspace scoped import route", async () => {
+    post.mockResolvedValue({ data: {} });
+    const { importRegistryWorkspaceModelPackage } = await import("../src/api/ttsRegistry");
+
+    await importRegistryWorkspaceModelPackage("ws_demo", {
+      source_path: "F:/models/demo-package",
+      storage_mode: "managed",
+    });
+
+    expect(post).toHaveBeenCalledWith("/v1/tts-registry/workspaces/ws_demo/imports/model-package", {
+      source_path: "F:/models/demo-package",
+      storage_mode: "managed",
+    });
+  });
 });

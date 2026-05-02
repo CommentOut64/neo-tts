@@ -71,4 +71,13 @@ describe("model workspace view", () => {
     expect(modelWorkspaceViewSource).not.toContain("ModelSchemaForm");
     expect(modelWorkspaceViewSource).not.toContain("workspaceSchema");
   });
+
+  it("workspace header and view expose a dedicated GPT-SoVITS package import entry", () => {
+    const modelWorkspaceViewSource = readFileSync(modelWorkspaceViewPath, "utf8");
+    const workspaceHeaderSource = readFileSync(workspaceHeaderPath, "utf8");
+
+    expect(modelWorkspaceViewSource).toContain("openImportModelPackageDialog");
+    expect(modelWorkspaceViewSource).toContain("@import-model-package");
+    expect(workspaceHeaderSource).toContain("importModelPackage");
+  });
 });
