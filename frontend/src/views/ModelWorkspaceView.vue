@@ -54,6 +54,7 @@ const {
   selectMainModel,
   selectSubmodel,
   openModelHub,
+  openImportModelPackageDialog,
   openWorkspaceEditDialog,
   closeWorkspaceDialog,
   submitWorkspaceDialog,
@@ -88,6 +89,7 @@ const {
       :workspace-summary="workspaceSummary"
       :family-definition="familyDefinition"
       @back="openModelHub"
+      @import-model-package="openImportModelPackageDialog"
       @edit-workspace="openWorkspaceEditDialog"
       @delete-workspace="openDeleteWorkspaceDialog"
     />
