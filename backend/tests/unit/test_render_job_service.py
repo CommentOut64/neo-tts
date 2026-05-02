@@ -32,6 +32,7 @@ from backend.app.inference.editable_types import (
 )
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
+    BindingReference,
     ReferenceBindingOverride,
     DocumentSnapshot,
     EditableEdge,
@@ -49,7 +50,6 @@ from backend.app.schemas.edit_session import (
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
 from backend.app.services.block_render_request_builder import BlockRenderRequestBuilder
-from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
@@ -58,22 +58,35 @@ from backend.app.services.render_execution_plan import ExecutionPlan, ExecutionU
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
 from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 from backend.app.tts_registry.types import ModelInstance, ModelPreset
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
 
 
-class _FakeVoiceService:
-    def get_voice(self, voice_name: str) -> VoiceProfile:
-        return VoiceProfile(
-            name=voice_name,
-            model_instance_id=f"{voice_name}-model",
-            preset_id="default",
-            gpt_path="fake.ckpt",
-            sovits_path="fake.pth",
-            ref_audio="fake.wav",
-            ref_text="参考文本",
-            ref_lang="zh",
-            defaults=VoiceDefaults(),
-        )
+def _binding_ref(*, main_model_id: str = "demo", preset_id: str = "default") -> BindingReference:
+    return BindingReference(
+        workspace_id="ws_demo",
+        main_model_id=main_model_id,
+        submodel_id="default",
+        preset_id=preset_id,
+    )
+
+
+def _initialize_request(
+    raw_text: str,
+    *,
+    main_model_id: str = "demo",
+    preset_id: str = "default",
+    **overrides,
+) -> InitializeEditSessionRequest:
+    payload = {
+        "raw_text": raw_text,
+        "binding_ref": _binding_ref(main_model_id=main_model_id, preset_id=preset_id),
+    }
+    payload.update(overrides)
+    return InitializeEditSessionRequest(**payload)
 
 
 class _FakeEditableBackend:
@@ -348,6 +361,93 @@ def _build_block_first_model_registry(tmp_path):
     return registry
 
 
+def _build_workspace_service(tmp_path) -> WorkspaceService:
+    root = tmp_path / "tts-registry-workspaces"
+    service = WorkspaceService(
+        adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+        workspace_store=WorkspaceStore(root),
+        secret_store=SecretStore(root),
+    )
+    service.create_workspace(
+        adapter_id="gpt_sovits_local",
+        family_id="gpt_sovits_local_default",
+        display_name="Demo Workspace",
+        slug="demo",
+    )
+    service.create_main_model(
+        workspace_id="ws_demo",
+        main_model_id="demo",
+        display_name="Demo",
+        source_type="local_package",
+    )
+    service.update_submodel(
+        workspace_id="ws_demo",
+        main_model_id="demo",
+        submodel_id="default",
+        instance_assets={
+            "bert": {"path": "pretrained/bert.bin", "fingerprint": "bert-fp"},
+        },
+    )
+    service.create_preset(
+        workspace_id="ws_demo",
+        main_model_id="demo",
+        submodel_id="default",
+        preset_id="default",
+        display_name="default",
+        kind="builtin",
+        defaults={
+            "reference_text": "参考文本",
+            "reference_language": "zh",
+        },
+        preset_assets={
+            "gpt_weight": {"path": "fake.ckpt", "fingerprint": "gpt-fp"},
+            "sovits_weight": {"path": "fake.pth", "fingerprint": "sovits-fp"},
+            "reference_audio": {"path": "fake.wav", "fingerprint": "ref-fp"},
+        },
+    )
+    original_resolve_binding_reference = service.resolve_binding_reference
+
+    def _resolve_binding_reference(binding_ref):
+        if isinstance(binding_ref, dict):
+            workspace_id = str(binding_ref["workspace_id"])
+            main_model_id = str(binding_ref["main_model_id"])
+            submodel_id = str(binding_ref["submodel_id"])
+            preset_id = str(binding_ref["preset_id"])
+        else:
+            workspace_id = binding_ref.workspace_id
+            main_model_id = binding_ref.main_model_id
+            submodel_id = binding_ref.submodel_id
+            preset_id = binding_ref.preset_id
+        if workspace_id == "legacy":
+            voice_id = main_model_id if preset_id == "default" else f"{main_model_id}__{preset_id}"
+            model_key = submodel_id
+            return {
+                "adapter_id": "gpt_sovits_local",
+                "voice_id": voice_id,
+                "model_key": model_key,
+                "model_instance_id": f"{main_model_id}-model",
+                "binding_key": f"legacy:{main_model_id}:{submodel_id}:{preset_id}",
+                "reference_audio_path": "fake.wav",
+                "reference_text": "参考文本",
+                "reference_language": "zh",
+                "resolved_assets": {
+                    "gpt_weight": {"path": "fake.ckpt", "fingerprint": "gpt-fp"},
+                    "sovits_weight": {"path": "fake.pth", "fingerprint": "sovits-fp"},
+                },
+                "gpt_path": "fake.ckpt",
+                "sovits_path": "fake.pth",
+                "endpoint": None,
+                "account_binding": {},
+                "adapter_options": {},
+                "preset_defaults": {"reference_text": "参考文本", "reference_language": "zh"},
+                "preset_fixed_fields": {},
+            }
+        return original_resolve_binding_reference(binding_ref)
+
+    service.resolve_binding_reference = _resolve_binding_reference  # type: ignore[method-assign]
+    return service
+
+
 def _build_service(
     tmp_path,
     *,
@@ -367,11 +467,12 @@ def _build_service(
     )
     runtime = EditSessionRuntime()
     inference_runtime = InferenceRuntimeController()
+    workspace_service = _build_workspace_service(tmp_path)
     session_service = EditSessionService(
         repository=repository,
         asset_store=asset_store,
         runtime=runtime,
-        voice_service=_FakeVoiceService(),
+        workspace_service=workspace_service,
     )
     gateway = EditableInferenceGateway(
         _FakeEditableBackend(fail_render=fail_render, fail_boundary=fail_boundary, gate=gate)
@@ -411,7 +512,7 @@ def test_run_transaction_routes_initialize_to_block_first_pipeline(tmp_path, mon
         job_id="job-block-first-init",
         job_kind="initialize",
         document_id="doc-1",
-        request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
+        request=_initialize_request("第一句。"),
     )
     monkeypatch.setattr(
         service,
@@ -432,7 +533,7 @@ def test_run_transaction_routes_edit_to_block_first_pipeline(tmp_path, monkeypat
         job_id="job-block-first-edit",
         job_kind="segment_update",
         document_id="doc-1",
-        request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
+        request=_initialize_request("第一句。"),
         document_version=2,
     )
     monkeypatch.setattr(
@@ -450,10 +551,7 @@ def test_run_transaction_routes_edit_to_block_first_pipeline(tmp_path, monkeypat
 def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="第一句。第二句。",
-            voice_id="demo",
-        )
+        _initialize_request("第一句。第二句。")
     )
 
     service.run_initialize_job(accepted.job.job_id)
@@ -470,10 +568,7 @@ def test_run_initialize_job_commits_ready_session_and_snapshots(tmp_path):
 def test_run_initialize_job_single_segment_commits_formal_assets_timeline_and_changed_blocks(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
-            voice_id="demo",
-        )
+        _initialize_request("第一句。")
     )
 
     service.run_initialize_job(accepted.job.job_id)
@@ -503,10 +598,7 @@ def test_block_first_initialize_commits_head_timeline_block_assets_and_reusable_
         ),
     )
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="第一句。第二句。第三句。",
-            voice_id="demo",
-        )
+        _initialize_request("第一句。第二句。第三句。")
     )
 
     class _PersistingBaseAssetAdapter(_FakeBlockAdapter):
@@ -564,10 +656,8 @@ def test_block_first_initialize_commits_head_timeline_block_assets_and_reusable_
 
 def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
     render_profile, voice_binding = RenderJobService._build_default_configuration(  # noqa: SLF001
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
-            voice_id="demo",
-            model_id="model-a",
+        _initialize_request(
+            "第一句。",
             reference_source="custom",
             reference_audio_path="custom.wav",
             reference_text="自定义参考",
@@ -575,7 +665,11 @@ def test_build_default_configuration_writes_custom_reference_into_binding_overri
         )
     )
 
-    binding_key = build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+    binding_key = build_binding_key(
+        binding_ref=voice_binding.binding_ref,
+        voice_id=voice_binding.voice_id,
+        model_key=voice_binding.model_key,
+    )
 
     assert render_profile.reference_overrides_by_binding[binding_key].reference_audio_path == "custom.wav"
     assert render_profile.reference_audio_path is None
@@ -584,11 +678,7 @@ def test_build_default_configuration_writes_custom_reference_into_binding_overri
 
 
 def test_initialize_request_noise_scale_enters_new_render_context():
-    request = InitializeEditSessionRequest(
-        raw_text="第一句。",
-        voice_id="demo",
-        noise_scale=0.48,
-    )
+    request = _initialize_request("第一句。", noise_scale=0.48)
 
     render_profile, _ = RenderJobService._build_default_configuration(request)  # noqa: SLF001
     resolved_context = RenderJobService._build_resolved_context_from_request(request)  # noqa: SLF001
@@ -598,21 +688,12 @@ def test_initialize_request_noise_scale_enters_new_render_context():
 
 
 def test_build_resolved_context_from_request_keeps_projected_model_binding_metadata():
-    request = InitializeEditSessionRequest(
-        raw_text="第一句。",
-        voice_id="demo",
-        model_id="legacy-model",
-    )
-    projected_voice = VoiceProfile(
-        name="demo",
+    request = _initialize_request("第一句。")
+    projected_voice = SimpleNamespace(
         model_instance_id="model-demo",
         preset_id="preset-default",
         gpt_path="demo.ckpt",
         sovits_path="demo.pth",
-        ref_audio="fake.wav",
-        ref_text="参考文本",
-        ref_lang="zh",
-        defaults=VoiceDefaults(),
     )
 
     resolved_context = RenderJobService._build_resolved_context_from_request(  # noqa: SLF001
@@ -660,8 +741,11 @@ def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallba
             VoiceBinding(
                 voice_binding_id="binding-session",
                 scope="session",
+                binding_ref=_binding_ref(),
                 voice_id="demo",
-                model_key="gpt-sovits-v2",
+                model_key="ws_demo:demo:default",
+                gpt_path="fake.ckpt",
+                sovits_path="fake.pth",
             )
         ],
         default_render_profile_id="profile-session",
@@ -673,7 +757,7 @@ def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallba
         document_id="doc-1",
         request=InitializeEditSessionRequest(
             raw_text="第一句。",
-            voice_id="demo",
+            binding_ref=_binding_ref(),
             reference_source="preset",
             reference_audio_path="request.wav",
             reference_text="请求参考",
@@ -695,10 +779,7 @@ def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallba
 def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="第一句。\n第二句。",
-            voice_id="demo",
-        )
+        _initialize_request("第一句。\n第二句。")
     )
 
     service.run_initialize_job(accepted.job.job_id)
@@ -711,14 +792,11 @@ def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
 def test_collect_changed_segment_ids_detects_session_reference_asset_switch(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
-            voice_id="demo",
-        )
+        _initialize_request("第一句。")
     )
     service.run_initialize_job(accepted.job.job_id)
     head_snapshot = service._session_service.get_head_snapshot()  # noqa: SLF001
-    binding_key = build_binding_key(voice_id="demo", model_key="gpt-sovits-v2")
+    binding_key = build_binding_key(binding_ref=_binding_ref())
     asset_a = service._session_service.create_session_reference_asset(  # noqa: SLF001
         filename="custom-a.wav",
         payload=b"RIFFcustom-a",
@@ -785,15 +863,14 @@ def test_collect_changed_segment_ids_detects_session_reference_asset_switch(tmp_
 def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text=(
+        _initialize_request(
+            (
                 "他急忙冲到马路对面，回到办公室，厉声吩咐秘书不要来打扰他，然后抓起话筒，刚要拨通家里的电话，临时又变了卦。"
                 "他放下话筒，摸着胡须，琢磨起来。"
                 "不，他太愚蠢了。"
                 "波特并不是一个稀有的姓，肯定有许多人姓波特，而且有儿子叫哈利。"
                 "想到这里，他甚至连自己的外甥是不是哈利波特都拿不定了。"
             ),
-            voice_id="demo",
             text_language="zh",
             segment_boundary_mode="zh_period",
         )
@@ -817,12 +894,7 @@ def test_run_initialize_job_supports_zh_period_segment_boundary_mode(tmp_path):
 def test_run_initialize_job_supports_english_period_in_zh_period_segment_boundary_mode(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text="Hello world.\nNext line.",
-            voice_id="demo",
-            text_language="en",
-            segment_boundary_mode="zh_period",
-        )
+        _initialize_request("Hello world.\nNext line.", text_language="en", segment_boundary_mode="zh_period")
     )
 
     service.run_initialize_job(accepted.job.job_id)
@@ -840,10 +912,7 @@ def test_run_initialize_job_supports_english_period_in_zh_period_segment_boundar
 def test_run_initialize_job_segments_initialized_event_includes_terminal_capsule_fields(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
-        InitializeEditSessionRequest(
-            raw_text='第一句？！\n第二句”',
-            voice_id="demo",
-        )
+        _initialize_request('第一句？！\n第二句”')
     )
 
     service.run_initialize_job(accepted.job.job_id)

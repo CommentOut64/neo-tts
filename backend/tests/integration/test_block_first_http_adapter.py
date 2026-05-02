@@ -153,41 +153,74 @@ def _create_external_model(
     *,
     endpoint_url: str = "https://api.example.com/tts",
     adapter_options: dict[str, object] | None = None,
-) -> None:
-    created = client.post(
-        "/v1/tts-registry/models",
+) -> dict[str, str]:
+    families = client.get("/v1/tts-registry/adapters/external_http_tts/families")
+    assert families.status_code == 200
+    family = families.json()[0]
+    created_workspace = client.post(
+        "/v1/tts-registry/workspaces",
         json={
-            "model_instance_id": "remote-direct",
-            "display_name": "Remote Direct",
             "adapter_id": "external_http_tts",
+            "family_id": family["family_id"],
+            "display_name": "Remote Workspace",
+            "slug": "remote-workspace",
+        },
+    )
+    assert created_workspace.status_code == 201
+    workspace_id = created_workspace.json()["workspace_id"]
+
+    created_main_model = client.post(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models",
+        json={
+            "main_model_id": "remote-direct",
+            "display_name": "Remote Direct",
+            "source_type": "external_api",
+        },
+    )
+    assert created_main_model.status_code == 201
+
+    updated_submodel = client.patch(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default",
+        json={
+            "display_name": "Remote Endpoint",
             "endpoint": {"url": endpoint_url},
             "account_binding": {
                 "provider": "example",
                 "account_id": "acct-direct",
                 "required_secrets": ["api_key"],
             },
-            "presets": [
-                {
-                    "preset_id": "voice-a",
-                    "display_name": "Voice A",
-                    "kind": "remote",
-                    "fixed_fields": {"remote_voice_id": "voice_a"},
-                    "defaults": {
-                        "reference_text": "远端参考文本",
-                        "reference_language": "zh",
-                    },
-                }
-            ],
             "adapter_options": adapter_options or {},
         },
     )
-    assert created.status_code == 201
+    assert updated_submodel.status_code == 200
+
+    created_preset = client.post(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default/presets",
+        json={
+            "preset_id": "voice-a",
+            "display_name": "Voice A",
+            "kind": "remote",
+            "fixed_fields": {"remote_voice_id": "voice_a"},
+            "defaults": {
+                "reference_text": "远端参考文本",
+                "reference_language": "zh",
+            },
+        },
+    )
+    assert created_preset.status_code == 201
+
     secret_response = client.put(
-        "/v1/tts-registry/models/remote-direct/secrets",
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default/secrets",
         json={"secrets": {"api_key": "top-secret"}},
     )
     assert secret_response.status_code == 200
     assert secret_response.json()["status"] == "ready"
+    return {
+        "workspace_id": workspace_id,
+        "main_model_id": "remote-direct",
+        "submodel_id": "default",
+        "preset_id": "voice-a",
+    }
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -243,16 +276,71 @@ def _create_local_package(package_root: Path) -> Path:
 
 def _initialize_local_session(client: TestClient, *, tmp_path: Path) -> str:
     package_root = _create_local_package(tmp_path / "local-package")
-    imported = client.post(
-        "/v1/tts-registry/models/import",
-        json={"package_path": str(package_root), "storage_mode": "managed"},
+    families = client.get("/v1/tts-registry/adapters/gpt_sovits_local/families")
+    assert families.status_code == 200
+    family = families.json()[0]
+    created_workspace = client.post(
+        "/v1/tts-registry/workspaces",
+        json={
+            "adapter_id": "gpt_sovits_local",
+            "family_id": family["family_id"],
+            "display_name": "Local Workspace",
+            "slug": "local-workspace",
+        },
     )
-    assert imported.status_code == 201
+    assert created_workspace.status_code == 201
+    workspace_id = created_workspace.json()["workspace_id"]
+
+    created_main_model = client.post(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models",
+        json={
+            "main_model_id": "demo-gpt-sovits",
+            "display_name": "Demo Voice",
+            "source_type": "local_package",
+        },
+    )
+    assert created_main_model.status_code == 201
+
+    updated_submodel = client.patch(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/demo-gpt-sovits/submodels/default",
+        json={
+            "instance_assets": {
+                "pretrained_base": {"path": str(package_root / "base"), "fingerprint": "base-fp"},
+                "bert": {"path": str(package_root / "pretrained" / "bert.bin"), "fingerprint": "bert-fp"},
+            },
+        },
+    )
+    assert updated_submodel.status_code == 200
+
+    updated_preset = client.post(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/demo-gpt-sovits/submodels/default/presets",
+        json={
+            "preset_id": "default",
+            "display_name": "Default",
+            "defaults": {
+                "reference_text": "测试参考文本",
+                "reference_language": "zh",
+                "speed": 1.0,
+            },
+            "preset_assets": {
+                "gpt_weight": {"path": str(package_root / "weights" / "demo.ckpt"), "fingerprint": "gpt-fp"},
+                "sovits_weight": {"path": str(package_root / "weights" / "demo.pth"), "fingerprint": "sovits-fp"},
+                "reference_audio": {"path": str(package_root / "refs" / "demo.wav"), "fingerprint": "ref-fp"},
+            },
+        },
+    )
+    assert updated_preset.status_code == 201
+
     initialize = client.post(
         "/v1/edit-session/initialize",
         json={
             "raw_text": "第一句。第二句。",
-            "voice_id": "demo-gpt-sovits",
+            "binding_ref": {
+                "workspace_id": workspace_id,
+                "main_model_id": "demo-gpt-sovits",
+                "submodel_id": "default",
+                "preset_id": "default",
+            },
         },
     )
     assert initialize.status_code == 202
@@ -317,15 +405,11 @@ def test_block_first_external_http_adapter_retries_429_using_settings_defaults_a
     app = create_app(settings=settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
     with TestClient(app) as client:
-        _create_external_model(client)
+        remote_binding_ref = _create_external_model(client)
         segment_id = _initialize_local_session(client, tmp_path=settings.project_root)
         patch_response = client.patch(
-            f"/v1/edit-session/segments/{segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert patch_response.status_code == 202
         job_id = patch_response.json()["job"]["job_id"]
@@ -380,15 +464,11 @@ def test_block_first_external_http_adapter_surfaces_provider_error_to_job_and_ss
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
     with TestClient(app) as client:
-        _create_external_model(client)
+        remote_binding_ref = _create_external_model(client)
         segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
         patch_response = client.patch(
-            f"/v1/edit-session/segments/{segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert patch_response.status_code == 202
         job_id = patch_response.json()["job"]["job_id"]
@@ -420,15 +500,11 @@ def test_block_first_external_http_adapter_surfaces_provider_timeout_to_job_and_
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
     with TestClient(app) as client:
-        _create_external_model(client)
+        remote_binding_ref = _create_external_model(client)
         segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
         patch_response = client.patch(
-            f"/v1/edit-session/segments/{segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert patch_response.status_code == 202
         job_id = patch_response.json()["job"]["job_id"]
@@ -462,15 +538,11 @@ def test_block_first_external_http_adapter_surfaces_invalid_wav_to_job_and_sse(t
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
     with TestClient(app) as client:
-        _create_external_model(client)
+        remote_binding_ref = _create_external_model(client)
         segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
         patch_response = client.patch(
-            f"/v1/edit-session/segments/{segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert patch_response.status_code == 202
         job_id = patch_response.json()["job"]["job_id"]
@@ -505,7 +577,7 @@ def test_block_first_external_http_adapter_surfaces_shared_rpm_limit_timeout_to_
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
     with TestClient(app) as client:
-        _create_external_model(
+        remote_binding_ref = _create_external_model(
             client,
             adapter_options={
                 "max_concurrent_requests": 1,
@@ -518,24 +590,16 @@ def test_block_first_external_http_adapter_surfaces_shared_rpm_limit_timeout_to_
         snapshot = client.get("/v1/edit-session/snapshot").json()
         second_segment_id = snapshot["segments"][1]["segment_id"]
         first_patch = client.patch(
-            f"/v1/edit-session/segments/{first_segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{first_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert first_patch.status_code == 202
         first_job_id = first_patch.json()["job"]["job_id"]
         _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{first_job_id}").json()["status"] == "completed")
 
         second_patch = client.patch(
-            f"/v1/edit-session/segments/{second_segment_id}/voice-binding",
-            json={
-                "model_key": "external-http",
-                "model_instance_id": "remote-direct",
-                "preset_id": "voice-a",
-            },
+            f"/v1/edit-session/segments/{second_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
         )
         assert second_patch.status_code == 202
         second_job_id = second_patch.json()["job"]["job_id"]

@@ -148,7 +148,7 @@ def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
             json={
                 "raw_text": real_model_env.tts_text,
                 "text_language": real_model_env.text_language,
-                "voice_id": real_model_env.voice_id,
+                "binding_ref": real_model_env.binding_ref,
                 "segment_boundary_mode": real_model_env.segment_boundary_mode,
             },
         )
@@ -200,7 +200,7 @@ def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
         voice_binding_commit = client.patch(
             f"/v1/edit-session/segments/{segment_id}/voice-binding/config",
             json={
-                "voice_id": real_model_env.voice_id,
+                "binding_ref": real_model_env.binding_ref,
                 "speaker_meta": {"e2e_scope": "segment_voice_binding"},
             },
         )

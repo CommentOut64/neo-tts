@@ -1,4 +1,5 @@
 from backend.app.schemas.edit_session import (
+    BindingReference,
     DocumentSnapshot,
     ReferenceBindingOverride,
     ReferenceBindingOverridePatchRequest,
@@ -8,7 +9,6 @@ from backend.app.schemas.edit_session import (
     VoiceBindingPatchRequest,
 )
 from backend.app.services.segment_group_service import SegmentGroupService
-from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 
 
 def _snapshot() -> DocumentSnapshot:
@@ -103,46 +103,65 @@ def test_create_voice_binding_projects_new_binding_metadata_when_voice_changes()
         snapshot=_snapshot(),
         scope="segment",
         patch=VoiceBindingPatchRequest(
-            voice_id="voice-b",
-            model_key="model-b",
+            binding_ref=BindingReference(
+                workspace_id="ws_demo",
+                main_model_id="voice-b",
+                submodel_id="default",
+                preset_id="preset-b",
+            ),
         ),
         base_binding_id="binding-session",
-        projected_voice=VoiceProfile(
-            name="voice-b",
-            model_instance_id="model-b-instance",
-            preset_id="preset-b",
-            gpt_path="weights/voice-b.ckpt",
-            sovits_path="weights/voice-b.pth",
-            ref_audio="refs/voice-b.wav",
-            ref_text="voice-b ref",
-            ref_lang="zh",
-            defaults=VoiceDefaults(),
-        ),
+        projected_voice=type(
+            "_ProjectedBinding",
+            (),
+            {
+                "model_instance_id": "model-b-instance",
+                "preset_id": "preset-b",
+                "gpt_path": "weights/voice-b.ckpt",
+                "sovits_path": "weights/voice-b.pth",
+            },
+        )(),
     )
 
     assert next_snapshot.voice_bindings[-1].voice_binding_id == binding.voice_binding_id
-    assert binding.voice_id == "voice-b"
-    assert binding.model_key == "model-b"
+    assert binding.binding_ref == BindingReference(
+        workspace_id="ws_demo",
+        main_model_id="voice-b",
+        submodel_id="default",
+        preset_id="preset-b",
+    )
+    assert binding.voice_id == "voice-b__preset-b"
+    assert binding.model_key == "ws_demo:voice-b:default"
     assert binding.model_instance_id == "model-b-instance"
     assert binding.preset_id == "preset-b"
     assert binding.gpt_path == "weights/voice-b.ckpt"
     assert binding.sovits_path == "weights/voice-b.pth"
 
 
-def test_create_voice_binding_clears_stale_projected_fields_when_voice_changes_without_projection():
+def test_create_voice_binding_clears_stale_projected_fields_when_binding_changes_without_projection():
     next_snapshot, binding = SegmentGroupService.create_voice_binding(
         snapshot=_snapshot(),
         scope="segment",
         patch=VoiceBindingPatchRequest(
-            voice_id="voice-c",
-            model_key="model-c",
+            binding_ref=BindingReference(
+                workspace_id="ws_demo",
+                main_model_id="voice-c",
+                submodel_id="default",
+                preset_id="preset-c",
+            ),
         ),
         base_binding_id="binding-session",
     )
 
     assert next_snapshot.voice_bindings[-1].voice_binding_id == binding.voice_binding_id
-    assert binding.voice_id == "voice-c"
-    assert binding.model_key == "model-c"
+    assert binding.binding_ref == BindingReference(
+        workspace_id="ws_demo",
+        main_model_id="voice-c",
+        submodel_id="default",
+        preset_id="preset-c",
+    )
+    assert binding.voice_id == "voice-c__preset-c"
+    assert binding.model_key == "ws_demo:voice-c:default"
     assert binding.model_instance_id is None
     assert binding.preset_id is None
     assert binding.gpt_path is None

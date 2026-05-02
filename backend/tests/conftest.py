@@ -11,11 +11,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.core.settings import AppSettings, get_settings
-from backend.app.repositories.voice_repository import VoiceRepository
-from backend.app.services.voice_service import VoiceService
+from backend.app.schemas.edit_session import BindingReference
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
 
 
 REAL_MODEL_VOICE_ID = "neuro2"
+REAL_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
+TEST_MODEL_VOICE_ID = "demo"
+TEST_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
 REAL_MODEL_SEGMENT_BOUNDARY_MODE = "zh_period"
 REAL_MODEL_TEXT_LANGUAGE = "zh"
 REAL_MODEL_TTS_TEXT = (
@@ -40,7 +47,7 @@ REAL_MODEL_UPDATED_FIRST_SEGMENT = (
 @dataclass(frozen=True)
 class RealModelEnv:
     enabled: bool
-    voice_id: str
+    binding_ref: dict[str, str]
     reference_audio_path: Path
     reference_text: str
     tts_text: str
@@ -50,33 +57,111 @@ class RealModelEnv:
     segment_boundary_mode: str
 
 
-def require_real_model_env() -> RealModelEnv:
+def _build_workspace_service(settings: AppSettings) -> WorkspaceService:
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return WorkspaceService(
+        adapter_store=build_default_adapter_definition_store(
+            enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
+        ),
+        workspace_store=WorkspaceStore(registry_root),
+        secret_store=SecretStore(registry_root),
+    )
+
+
+def _ensure_real_model_binding(settings: AppSettings) -> tuple[WorkspaceService, BindingReference, dict[str, object]]:
+    workspace_service = _build_workspace_service(settings)
+    binding_ref = BindingReference(
+        workspace_id=REAL_MODEL_WORKSPACE_ID,
+        main_model_id=REAL_MODEL_VOICE_ID,
+        submodel_id="default",
+        preset_id="default",
+    )
+    try:
+        resolved = workspace_service.resolve_binding_reference(binding_ref)
+    except LookupError:
+        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+        migration_service = TtsRegistryMigrationService(
+            workspace_service=workspace_service,
+            registry_root=registry_root,
+        )
+        created = migration_service.migrate_legacy_voices_file(
+            voices_config_path=settings.voices_config_path,
+        )
+        if not any(item.get("legacy_voice_id") == REAL_MODEL_VOICE_ID for item in created):
+            raise LookupError(f"真实模型 E2E 缺少 legacy voice '{REAL_MODEL_VOICE_ID}'。")
+        resolved = workspace_service.resolve_binding_reference(binding_ref)
+    return workspace_service, binding_ref, resolved
+
+
+def _ensure_legacy_voice_binding(
+    settings: AppSettings,
+    *,
+    workspace_id: str,
+    voice_id: str,
+) -> BindingReference:
+    workspace_service = _build_workspace_service(settings)
+    binding_ref = BindingReference(
+        workspace_id=workspace_id,
+        main_model_id=voice_id,
+        submodel_id="default",
+        preset_id="default",
+    )
+    try:
+        workspace_service.resolve_binding_reference(binding_ref)
+        return binding_ref
+    except LookupError:
+        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+        migration_service = TtsRegistryMigrationService(
+            workspace_service=workspace_service,
+            registry_root=registry_root,
+        )
+        created = migration_service.migrate_legacy_voices_file(
+            voices_config_path=settings.voices_config_path,
+        )
+        if not any(item.get("legacy_voice_id") == voice_id for item in created):
+            raise LookupError(f"缺少 legacy voice '{voice_id}'。")
+        workspace_service.resolve_binding_reference(binding_ref)
+        return binding_ref
+
+
+def require_real_model_env(*, settings: AppSettings | None = None) -> RealModelEnv:
     enabled = os.getenv("GPT_SOVITS_E2E") == "1"
     if not enabled:
         pytest.skip("未启用真实模型 E2E，请设置 GPT_SOVITS_E2E=1。")
 
-    settings = get_settings()
+    resolved_settings = settings or get_settings()
     try:
-        voice = VoiceService(VoiceRepository(settings=settings)).get_voice(REAL_MODEL_VOICE_ID)
+        _, binding_ref, resolved_binding = _ensure_real_model_binding(resolved_settings)
     except LookupError as exc:
-        pytest.skip(f"真实模型 E2E 缺少预设 voice '{REAL_MODEL_VOICE_ID}': {exc}")
+        pytest.skip(f"真实模型 E2E 缺少正式 binding_ref '{REAL_MODEL_VOICE_ID}': {exc}")
 
-    reference_audio_path = Path(voice.ref_audio)
+    reference_audio_raw = str(resolved_binding.get("reference_audio_path") or "")
+    if not reference_audio_raw:
+        pytest.skip(f"真实模型 binding_ref '{REAL_MODEL_VOICE_ID}' 缺少 reference_audio_path。")
+    reference_audio_path = Path(reference_audio_raw)
     if not reference_audio_path.is_absolute():
-        reference_audio_path = (settings.project_root / reference_audio_path).resolve()
+        reference_audio_path = (resolved_settings.project_root / reference_audio_path).resolve()
     if not reference_audio_path.exists():
         pytest.skip(f"真实模型参考音频不存在: {reference_audio_path}")
 
     return RealModelEnv(
         enabled=True,
-        voice_id=REAL_MODEL_VOICE_ID,
+        binding_ref=binding_ref.model_dump(mode="json"),
         reference_audio_path=reference_audio_path,
-        reference_text=voice.ref_text,
+        reference_text=str(resolved_binding.get("reference_text") or ""),
         tts_text=REAL_MODEL_TTS_TEXT,
         expected_segments=list(REAL_MODEL_EXPECTED_SEGMENTS),
         updated_first_segment_text=REAL_MODEL_UPDATED_FIRST_SEGMENT,
         text_language=REAL_MODEL_TEXT_LANGUAGE,
         segment_boundary_mode=REAL_MODEL_SEGMENT_BOUNDARY_MODE,
+    )
+
+
+def _ensure_test_binding(settings: AppSettings, *, voice_id: str = TEST_MODEL_VOICE_ID) -> BindingReference:
+    return _ensure_legacy_voice_binding(
+        settings,
+        workspace_id=TEST_MODEL_WORKSPACE_ID,
+        voice_id=voice_id,
     )
 
 
@@ -114,9 +199,11 @@ def empty_voice_config(tmp_path: Path) -> Path:
 @pytest.fixture()
 def test_app_settings(sample_voice_config: Path) -> AppSettings:
     project_root = sample_voice_config.parent
-    return AppSettings(
+    settings = AppSettings(
         project_root=project_root,
         voices_config_path=sample_voice_config,
+        user_data_root=project_root / "storage",
+        tts_registry_root=project_root / "storage" / "tts-registry",
         gpt_sovits_adapter_installed=True,
         managed_voices_dir=project_root / "managed_voices",
         synthesis_results_dir=project_root / "synthesis_results",
@@ -126,19 +213,29 @@ def test_app_settings(sample_voice_config: Path) -> AppSettings:
         edit_session_exports_dir=project_root / "storage" / "edit_session" / "exports",
         edit_session_staging_ttl_seconds=60,
     )
+    _ensure_test_binding(settings, voice_id=TEST_MODEL_VOICE_ID)
+    return settings
 
 
 @pytest.fixture()
-def real_model_env() -> RealModelEnv:
-    return require_real_model_env()
+def real_model_env(real_model_app_settings: AppSettings) -> RealModelEnv:
+    return require_real_model_env(settings=real_model_app_settings)
+
+
+@pytest.fixture()
+def demo_binding_ref(test_app_settings: AppSettings) -> dict[str, str]:
+    binding_ref = _ensure_test_binding(test_app_settings, voice_id=TEST_MODEL_VOICE_ID)
+    return binding_ref.model_dump(mode="json")
 
 
 @pytest.fixture()
 def real_model_app_settings(tmp_path: Path) -> AppSettings:
     base_settings = get_settings()
-    return AppSettings(
+    settings = AppSettings(
         project_root=base_settings.project_root,
         voices_config_path=base_settings.voices_config_path,
+        user_data_root=tmp_path,
+        tts_registry_root=tmp_path / "tts-registry",
         managed_voices_dir=base_settings.managed_voices_dir,
         synthesis_results_dir=tmp_path / "synthesis_results",
         inference_params_cache_file=tmp_path / "state" / "params_cache.json",
@@ -149,3 +246,5 @@ def real_model_app_settings(tmp_path: Path) -> AppSettings:
         cnhubert_base_path=base_settings.cnhubert_base_path,
         bert_path=base_settings.bert_path,
     )
+    _ensure_real_model_binding(settings)
+    return settings

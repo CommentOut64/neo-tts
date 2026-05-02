@@ -19,12 +19,12 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
-def _initialize_ready_document(client: TestClient) -> dict:
+def _initialize_ready_document(client: TestClient, *, demo_binding_ref: dict[str, str]) -> dict:
     initialize = client.post(
         "/v1/edit-session/initialize",
         json={
             "raw_text": "第一句。第二句。",
-            "voice_id": "demo",
+            "binding_ref": demo_binding_ref,
         },
     )
     assert initialize.status_code == 202
@@ -32,7 +32,7 @@ def _initialize_ready_document(client: TestClient) -> dict:
     return client.get("/v1/edit-session/snapshot").json()
 
 
-def test_unified_export_route_can_emit_composition_and_srt(test_app_settings):
+def test_unified_export_route_can_emit_composition_and_srt(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -40,7 +40,7 @@ def test_unified_export_route_can_emit_composition_and_srt(test_app_settings):
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports",
@@ -87,7 +87,7 @@ def test_unified_export_route_can_emit_composition_and_srt(test_app_settings):
     assert srt_files[0].stem == wav_files[0].stem
 
 
-def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings):
+def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -95,7 +95,7 @@ def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports",
@@ -142,7 +142,7 @@ def test_unified_export_route_can_emit_segments_and_shared_srt(test_app_settings
     assert (export_dirs[0] / f"{export_dirs[0].name}.srt").exists()
 
 
-def test_segment_export_route_creates_numbered_wavs_without_composition_file(test_app_settings):
+def test_segment_export_route_creates_numbered_wavs_without_composition_file(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -150,7 +150,7 @@ def test_segment_export_route_creates_numbered_wavs_without_composition_file(tes
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports/segments",
@@ -195,7 +195,7 @@ def test_segment_export_route_creates_numbered_wavs_without_composition_file(tes
     assert not (export_dirs[0] / "composition.wav").exists()
 
 
-def test_composition_export_route_creates_only_composition_artifact(test_app_settings):
+def test_composition_export_route_creates_only_composition_artifact(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -203,7 +203,7 @@ def test_composition_export_route_creates_only_composition_artifact(test_app_set
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports/composition",
@@ -239,7 +239,7 @@ def test_composition_export_route_creates_only_composition_artifact(test_app_set
     assert not (export_root / "0001.wav").exists()
 
 
-def test_unified_export_route_can_emit_blocks_and_shared_srt(test_app_settings):
+def test_unified_export_route_can_emit_blocks_and_shared_srt(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -247,7 +247,7 @@ def test_unified_export_route_can_emit_blocks_and_shared_srt(test_app_settings):
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports",
@@ -297,7 +297,7 @@ def test_unified_export_route_can_emit_blocks_and_shared_srt(test_app_settings):
     assert (export_dirs[0] / f"{export_dirs[0].name}.srt").exists()
 
 
-def test_segment_export_fails_when_timeline_only_has_block_level_alignment(test_app_settings):
+def test_segment_export_fails_when_timeline_only_has_block_level_alignment(test_app_settings, demo_binding_ref):
     class _BlockOnlyAdapter:
         def render_block(self, request):
             return BlockRenderResult(
@@ -325,7 +325,7 @@ def test_segment_export_fails_when_timeline_only_has_block_level_alignment(test_
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports",
@@ -348,7 +348,7 @@ def test_segment_export_fails_when_timeline_only_has_block_level_alignment(test_
         assert "exact segment alignment" in payload["message"]
 
 
-def test_segment_export_fails_when_timeline_only_has_estimated_alignment(test_app_settings):
+def test_segment_export_fails_when_timeline_only_has_estimated_alignment(test_app_settings, demo_binding_ref):
     class _EstimatedAdapter:
         def render_block(self, request):
             return BlockRenderResult(
@@ -393,7 +393,7 @@ def test_segment_export_fails_when_timeline_only_has_estimated_alignment(test_ap
 
     with TestClient(app) as client:
         gate.set()
-        snapshot = _initialize_ready_document(client)
+        snapshot = _initialize_ready_document(client, demo_binding_ref=demo_binding_ref)
 
         create_export = client.post(
             "/v1/edit-session/exports",

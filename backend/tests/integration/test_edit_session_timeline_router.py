@@ -21,7 +21,7 @@ def _build_long_text(segment_count: int) -> str:
     return "".join(f"第{i}句。" for i in range(1, segment_count + 1))
 
 
-def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_settings):
+def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -30,7 +30,7 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
             "/v1/edit-session/initialize",
             json={
                 "raw_text": _build_long_text(51),
-                "voice_id": "demo",
+                "binding_ref": demo_binding_ref,
             },
         )
         assert initialize.status_code == 202

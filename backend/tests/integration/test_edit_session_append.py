@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.main import create_app
 from backend.app.schemas.edit_session import RenderProfile, SegmentGroup, VoiceBinding
+from backend.app.text.segment_standardizer import build_segment_display_text
 from backend.tests.integration.test_edit_session_router import FakeEditableInferenceBackend
 
 
@@ -17,7 +18,17 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
-def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
+def _segment_display_text(segment) -> str:
+    return build_segment_display_text(
+        stem=segment.stem,
+        text_language=segment.text_language,
+        terminal_raw=segment.terminal_raw,
+        terminal_closer_suffix=segment.terminal_closer_suffix,
+        terminal_source=segment.terminal_source,
+    )
+
+
+def test_append_creates_new_tail_segments_and_auto_group(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -28,7 +39,7 @@ def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
             "/v1/edit-session/initialize",
             json={
                 "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
+                "binding_ref": demo_binding_ref,
             },
         )
         assert initialize.status_code == 202
@@ -50,8 +61,7 @@ def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
                     "temperature": 0.85,
                 },
                 "group_voice_binding": {
-                    "voice_id": "voice-b",
-                    "model_key": "model-b",
+                    "binding_ref": demo_binding_ref,
                 },
             },
         )
@@ -66,7 +76,12 @@ def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
 
         assert after_snapshot.document_id == before_snapshot.document_id
         assert after_snapshot.document_version == 2
-        assert [segment.raw_text for segment in after_snapshot.segments] == ["第一句。", "第二句。", "第三句。", "第四句。"]
+        assert [_segment_display_text(segment) for segment in after_snapshot.segments] == [
+            "第一句。",
+            "第二句。",
+            "第三句。",
+            "第四句。",
+        ]
         assert [segment.render_asset_id for segment in after_snapshot.segments[:2]] == before_render_asset_ids
         assert len(backend.segment_calls) - before_call_count == 2
 
@@ -89,7 +104,7 @@ def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
         ]
 
 
-def test_append_into_existing_group_with_group_patch_rerenders_existing_group_members(test_app_settings):
+def test_append_into_existing_group_with_group_patch_rerenders_existing_group_members(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
@@ -100,7 +115,7 @@ def test_append_into_existing_group_with_group_patch_rerenders_existing_group_me
             "/v1/edit-session/initialize",
             json={
                 "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
+                "binding_ref": demo_binding_ref,
             },
         )
         assert initialize.status_code == 202
@@ -134,12 +149,14 @@ def test_append_into_existing_group_with_group_patch_rerenders_existing_group_me
                     VoiceBinding(
                         voice_binding_id="binding-session",
                         scope="session",
+                        binding_ref=demo_binding_ref,
                         voice_id="demo",
                         model_key="gpt-sovits-v2",
                     ),
                     VoiceBinding(
                         voice_binding_id="binding-group",
                         scope="group",
+                        binding_ref=demo_binding_ref,
                         voice_id="demo",
                         model_key="gpt-sovits-v2",
                     ),

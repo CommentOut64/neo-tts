@@ -1,5 +1,4 @@
 from backend.app.schemas.edit_session import ReferenceBindingOverride
-from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
 from backend.app.services.reference_binding import (
     build_binding_key,
     merge_reference_override,
@@ -11,21 +10,27 @@ def test_build_binding_key_uses_voice_id_and_model_key():
     assert build_binding_key(voice_id="voice-a", model_key="model-b") == "voice-a:model-b"
 
 
-def test_merge_reference_override_prefers_override_and_falls_back_to_preset_per_field():
-    preset = VoiceProfile(
-        name="voice-a",
-        gpt_path="demo.ckpt",
-        sovits_path="demo.pth",
-        ref_audio="preset.wav",
-        ref_text="预设文本",
-        ref_lang="zh",
-        description="",
-        defaults=VoiceDefaults(),
-        managed=True,
+def test_build_binding_key_uses_binding_ref_quadruple_for_formal_registry_binding():
+    assert (
+        build_binding_key(
+            binding_ref={
+                "workspace_id": "ws_qwen3",
+                "main_model_id": "qwen3_tts_1_7b",
+                "submodel_id": "default",
+                "preset_id": "speaker_vivian",
+            }
+        )
+        == "ws_qwen3:qwen3_tts_1_7b:default:speaker_vivian"
     )
 
+
+def test_merge_reference_override_prefers_override_and_falls_back_to_preset_per_field():
     merged = merge_reference_override(
-        preset_voice=preset,
+        preset_reference={
+            "reference_audio_path": "preset.wav",
+            "reference_text": "预设文本",
+            "reference_language": "zh",
+        },
         override=ReferenceBindingOverride(
             reference_audio_path="custom.wav",
             reference_text=None,
@@ -37,6 +42,27 @@ def test_merge_reference_override_prefers_override_and_falls_back_to_preset_per_
         "reference_audio_path": "custom.wav",
         "reference_text": "预设文本",
         "reference_language": "ja",
+    }
+
+
+def test_merge_reference_override_supports_registry_preset_reference_payload():
+    merged = merge_reference_override(
+        preset_reference={
+            "reference_audio_path": "refs/registry.wav",
+            "reference_text": "registry preset text",
+            "reference_language": "en",
+        },
+        override=ReferenceBindingOverride(
+            reference_audio_path=None,
+            reference_text="custom text",
+            reference_language=None,
+        ),
+    )
+
+    assert merged == {
+        "reference_audio_path": "refs/registry.wav",
+        "reference_text": "custom text",
+        "reference_language": "en",
     }
 
 

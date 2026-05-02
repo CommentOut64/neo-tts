@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from backend.app.api.routers.edit_session import _build_editable_gateway
+from backend.app.schemas.edit_session import BindingReference
 from backend.app.inference.editable_types import ReferenceContext, ResolvedRenderContext, ResolvedVoiceBinding
 
 
@@ -60,8 +61,23 @@ def test_build_editable_gateway_reuses_app_model_cache(test_app_settings):
             )
         )
     )
+    request.app.state.edit_session_repository = SimpleNamespace(get_active_session=lambda: None)
+    request.app.state.secret_store = None
+    request.app.state.model_registry = SimpleNamespace(root_dir=test_app_settings.tts_registry_root or (test_app_settings.user_data_root / "tts-registry"))
 
-    gateway = _build_editable_gateway(request, voice_id="demo")
+    binding_ref = BindingReference(
+        workspace_id="ws_demo",
+        main_model_id="demo",
+        submodel_id="default",
+        preset_id="default",
+    )
+    request.app.state.workspace_service = SimpleNamespace(
+        resolve_binding_reference=lambda value: {
+            "gpt_path": "pretrained_models/demo.ckpt",
+            "sovits_path": "pretrained_models/demo.pth",
+        }
+    )
+    gateway = _build_editable_gateway(request, binding_ref=binding_ref)
     context = ResolvedRenderContext(
         voice_id="demo",
         model_key="gpt-sovits-v2",
@@ -113,17 +129,34 @@ def test_build_editable_gateway_resolves_managed_weight_paths_relative_to_user_d
             )
         )
     )
+    request.app.state.edit_session_repository = SimpleNamespace(get_active_session=lambda: None)
+    request.app.state.secret_store = None
+    request.app.state.model_registry = SimpleNamespace(root_dir=managed_settings.tts_registry_root or (managed_settings.user_data_root / "tts-registry"))
+    request.app.state.workspace_service = SimpleNamespace(
+        resolve_binding_reference=lambda binding_ref: {
+            "gpt_path": managed_gpt_path,
+            "sovits_path": managed_sovits_path,
+        }
+    )
     monkeypatch.setattr(
-        "backend.app.api.routers.edit_session._build_voice_service",
+        "backend.app.api.routers.edit_session._build_workspace_service",
         lambda request: SimpleNamespace(
-            get_voice=lambda voice_id: SimpleNamespace(
-                gpt_path=managed_gpt_path,
-                sovits_path=managed_sovits_path,
-            )
+            resolve_binding_reference=lambda binding_ref: {
+                "gpt_path": managed_gpt_path,
+                "sovits_path": managed_sovits_path,
+            }
         ),
     )
 
-    gateway = _build_editable_gateway(request, voice_id="demo")
+    gateway = _build_editable_gateway(
+        request,
+        binding_ref=BindingReference(
+            workspace_id="ws_demo",
+            main_model_id="demo",
+            submodel_id="default",
+            preset_id="default",
+        ),
+    )
     context = ResolvedRenderContext(
         voice_id="demo",
         model_key="gpt-sovits-v2",
