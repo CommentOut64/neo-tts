@@ -2,71 +2,91 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Request, status
+from fastapi import APIRouter, Query, Request, status
 from pydantic import BaseModel, Field
 
-from backend.app.inference.block_adapter_errors import BlockAdapterError
-from backend.app.services.voice_service import VoiceService
 from backend.app.tts_registry.adapter_definition_store import AdapterDefinitionStore, build_default_adapter_definition_store
-from backend.app.tts_registry.model_import_service import ModelImportService
-from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.binding_catalog_service import BindingCatalogService
 from backend.app.tts_registry.secret_store import SecretStore
-from backend.app.tts_registry.types import ModelInstance, ModelPreset
+from backend.app.tts_registry.types import BindingCatalogResponse, WorkspaceSummaryView
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
 
 
 router = APIRouter(prefix="/v1/tts-registry", tags=["tts-registry"])
 
 
-class ImportModelRequest(BaseModel):
-    package_path: str = Field(description="待导入模型包路径。")
-    storage_mode: Literal["managed", "external"] = Field(default="managed", description="导入后的存储模式。")
+class PutSecretsRequest(BaseModel):
+    secrets: dict[str, str] = Field(default_factory=dict)
 
 
-class UpdateModelRequest(BaseModel):
+class CreateWorkspaceRequest(BaseModel):
+    adapter_id: str
+    family_id: str
+    display_name: str
+    slug: str
+
+
+class UpdateWorkspaceRequest(BaseModel):
+    display_name: str | None = None
+    slug: str | None = None
+    status: Literal["ready", "disabled", "invalid", "pending_delete"] | None = None
+    ui_order: int | None = None
+
+
+class CreateMainModelRequest(BaseModel):
+    main_model_id: str
+    display_name: str
+    source_type: Literal["local_package", "external_api", "builtin"] = "builtin"
+    main_model_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateMainModelRequest(BaseModel):
+    display_name: str | None = None
+    status: Literal["ready", "disabled", "invalid", "pending_delete"] | None = None
+    main_model_metadata: dict[str, Any] | None = None
+    default_submodel_id: str | None = None
+
+
+class CreateSubmodelRequest(BaseModel):
+    submodel_id: str
+    display_name: str
+    status: Literal["ready", "needs_secret", "invalid", "disabled", "pending_delete"] = "ready"
+    instance_assets: dict[str, Any] = Field(default_factory=dict)
+    endpoint: dict[str, Any] | None = None
+    account_binding: dict[str, Any] | None = None
+    adapter_options: dict[str, Any] = Field(default_factory=dict)
+    runtime_profile: dict[str, Any] = Field(default_factory=dict)
+    is_hidden_singleton: bool = False
+
+
+class UpdateSubmodelRequest(BaseModel):
     display_name: str | None = None
     status: Literal["ready", "needs_secret", "invalid", "disabled", "pending_delete"] | None = None
+    instance_assets: dict[str, Any] | None = None
+    endpoint: dict[str, Any] | None = None
+    account_binding: dict[str, Any] | None = None
+    adapter_options: dict[str, Any] | None = None
+    runtime_profile: dict[str, Any] | None = None
 
 
-class CreatePresetRequest(BaseModel):
+class CreateWorkspacePresetRequest(BaseModel):
     preset_id: str
     display_name: str
     kind: Literal["builtin", "imported", "remote", "user"] = "user"
     status: Literal["ready", "invalid", "disabled", "pending_delete"] = "ready"
-    base_preset_id: str | None = None
-    fixed_fields: dict[str, Any] = Field(default_factory=dict)
     defaults: dict[str, Any] = Field(default_factory=dict)
+    fixed_fields: dict[str, Any] = Field(default_factory=dict)
     preset_assets: dict[str, Any] = Field(default_factory=dict)
+    is_hidden_singleton: bool = False
 
 
-class CreateExternalModelPresetRequest(BaseModel):
-    preset_id: str
-    display_name: str
-    kind: Literal["builtin", "imported", "remote", "user"] = "remote"
-    status: Literal["ready", "invalid", "disabled", "pending_delete"] = "ready"
-    base_preset_id: str | None = None
-    fixed_fields: dict[str, Any] = Field(default_factory=dict)
-    defaults: dict[str, Any] = Field(default_factory=dict)
-
-
-class CreateExternalModelRequest(BaseModel):
-    model_instance_id: str
-    display_name: str
-    adapter_id: Literal["external_http_tts"]
-    endpoint: dict[str, Any]
-    account_binding: dict[str, Any] = Field(default_factory=dict)
-    adapter_options: dict[str, Any] = Field(default_factory=dict)
-    presets: list[CreateExternalModelPresetRequest] = Field(default_factory=list)
-
-
-class UpdatePresetRequest(BaseModel):
+class UpdateWorkspacePresetRequest(BaseModel):
     display_name: str | None = None
     status: Literal["ready", "invalid", "disabled", "pending_delete"] | None = None
-    fixed_fields: dict[str, Any] | None = None
     defaults: dict[str, Any] | None = None
-
-
-class PutSecretsRequest(BaseModel):
-    secrets: dict[str, str] = Field(default_factory=dict)
+    fixed_fields: dict[str, Any] | None = None
+    preset_assets: dict[str, Any] | None = None
 
 
 def _resolve_registry_root(request: Request):
@@ -80,95 +100,23 @@ def _build_adapter_store(request: Request) -> AdapterDefinitionStore:
     )
 
 
-def _build_model_registry(request: Request) -> ModelRegistry:
-    return ModelRegistry(_resolve_registry_root(request))
-
-
 def _build_secret_store(request: Request) -> SecretStore:
+    shared = getattr(request.app.state, "secret_store", None)
+    if shared is not None:
+        return shared
     return SecretStore(_resolve_registry_root(request))
 
 
-def _build_import_service(request: Request) -> ModelImportService:
-    return ModelImportService(
+def _build_workspace_service(request: Request) -> WorkspaceService:
+    return WorkspaceService(
         adapter_store=_build_adapter_store(request),
-        model_registry=_build_model_registry(request),
+        workspace_store=WorkspaceStore(_resolve_registry_root(request)),
         secret_store=_build_secret_store(request),
     )
 
 
-def _collect_active_voice_ids(request: Request) -> tuple[str | None, set[str]]:
-    repository = getattr(request.app.state, "edit_session_repository", None)
-    if repository is None:
-        return None, set()
-    active_session = repository.get_active_session()
-    if active_session is None or active_session.active_job_id is None:
-        return None, set()
-
-    active_voice_ids: set[str] = set()
-    if active_session.initialize_request is not None and active_session.initialize_request.voice_id:
-        active_voice_ids.add(active_session.initialize_request.voice_id)
-    if active_session.head_snapshot_id is not None:
-        snapshot = repository.get_snapshot(active_session.head_snapshot_id)
-        if snapshot is not None:
-            active_voice_ids.update(
-                binding.voice_id
-                for binding in snapshot.voice_bindings
-                if binding.voice_id
-            )
-    return active_session.active_job_id, active_voice_ids
-
-
-def _projected_voice_name(*, model_instance_id: str, preset_id: str) -> str:
-    if preset_id == "default":
-        return model_instance_id
-    return f"{model_instance_id}__{preset_id}"
-
-
-def _assert_model_not_in_use(request: Request, model: ModelInstance) -> None:
-    active_job_id, active_voice_ids = _collect_active_voice_ids(request)
-    if active_job_id is None:
-        return
-    projected_voice_ids = {
-        _projected_voice_name(
-            model_instance_id=model.model_instance_id,
-            preset_id=preset.preset_id,
-        )
-        for preset in model.presets
-    }
-    used_voice_ids = sorted(projected_voice_ids & active_voice_ids)
-    if not used_voice_ids:
-        return
-    raise BlockAdapterError(
-        error_code="model_in_use",
-        message=f"模型实例 '{model.model_instance_id}' 正被活动作业使用，暂时不能删除。",
-        details={
-            "model_instance_id": model.model_instance_id,
-            "active_job_id": active_job_id,
-            "voice_ids": used_voice_ids,
-        },
-    )
-
-
-def _assert_preset_not_in_use(request: Request, *, model_instance_id: str, preset_id: str) -> None:
-    active_job_id, active_voice_ids = _collect_active_voice_ids(request)
-    if active_job_id is None:
-        return
-    projected_voice_id = _projected_voice_name(
-        model_instance_id=model_instance_id,
-        preset_id=preset_id,
-    )
-    if projected_voice_id not in active_voice_ids:
-        return
-    raise BlockAdapterError(
-        error_code="preset_in_use",
-        message=f"预设 '{preset_id}' 正被活动作业使用，暂时不能删除。",
-        details={
-            "model_instance_id": model_instance_id,
-            "preset_id": preset_id,
-            "active_job_id": active_job_id,
-            "voice_ids": [projected_voice_id],
-        },
-    )
+def _build_binding_catalog_service(request: Request) -> BindingCatalogService:
+    return BindingCatalogService(workspace_service=_build_workspace_service(request))
 
 
 @router.get("/adapters")
@@ -179,169 +127,323 @@ def list_adapters(request: Request) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("/models", response_model=list[ModelInstance])
-def list_models(request: Request) -> list[ModelInstance]:
-    return _build_model_registry(request).list_models()
+@router.get("/adapters/{adapter_id}/families")
+def list_adapter_families(request: Request, adapter_id: str) -> list[dict[str, Any]]:
+    return [
+        definition.model_dump(mode="json")
+        for definition in _build_adapter_store(request).list_families(adapter_id)
+    ]
 
 
-@router.post("/models", response_model=ModelInstance, status_code=status.HTTP_201_CREATED)
-def create_model(request: Request, body: CreateExternalModelRequest) -> ModelInstance:
-    registry = _build_model_registry(request)
-    if registry.get_model(body.model_instance_id) is not None:
-        raise ValueError(f"Model '{body.model_instance_id}' already exists.")
-    definition = _build_adapter_store(request).require(body.adapter_id)
-    required_secrets = [str(item) for item in body.account_binding.get("required_secrets") or []]
-    normalized_account_binding = dict(body.account_binding)
-    normalized_account_binding["required_secrets"] = required_secrets
-    normalized_account_binding["secret_handles"] = dict(body.account_binding.get("secret_handles") or {})
-    status_value: Literal["ready", "needs_secret", "invalid", "disabled", "pending_delete"] = (
-        "needs_secret" if required_secrets and not normalized_account_binding["secret_handles"] else "ready"
+@router.get("/bindings/catalog", response_model=BindingCatalogResponse)
+def get_binding_catalog(
+    request: Request,
+    workspace_id: str | None = Query(default=None),
+    adapter_id: str | None = Query(default=None),
+    family_id: str | None = Query(default=None),
+    include_disabled: bool = Query(default=False),
+) -> BindingCatalogResponse:
+    return _build_binding_catalog_service(request).get_catalog(
+        workspace_id=workspace_id,
+        adapter_id=adapter_id,
+        family_id=family_id,
+        include_disabled=include_disabled,
     )
-    model = ModelInstance(
-        model_instance_id=body.model_instance_id,
+
+
+@router.get("/workspaces", response_model=list[WorkspaceSummaryView])
+def list_workspaces(request: Request) -> list[WorkspaceSummaryView]:
+    return _build_workspace_service(request).list_workspaces()
+
+
+@router.post("/workspaces", response_model=WorkspaceSummaryView, status_code=status.HTTP_201_CREATED)
+def create_workspace(request: Request, body: CreateWorkspaceRequest) -> WorkspaceSummaryView:
+    return _build_workspace_service(request).create_workspace(
         adapter_id=body.adapter_id,
-        source_type="external_api",
+        family_id=body.family_id,
         display_name=body.display_name,
-        status=status_value,
-        storage_mode="managed",
-        instance_assets={},
-        endpoint=dict(body.endpoint),
-        account_binding=normalized_account_binding,
-        adapter_options=dict(body.adapter_options),
-        presets=[
-            ModelPreset(
-                preset_id=preset.preset_id,
-                display_name=preset.display_name,
-                kind=preset.kind,
-                status=preset.status,
-                base_preset_id=preset.base_preset_id,
-                fixed_fields=dict(preset.fixed_fields),
-                defaults=dict(preset.defaults),
-                preset_assets={},
-                override_policy=definition.override_policy,
-                fingerprint="pending",
-            )
-            for preset in body.presets
-        ],
-        fingerprint="pending",
-    )
-    return registry.replace_model(model)
-
-
-@router.post("/models/import", response_model=ModelInstance, status_code=status.HTTP_201_CREATED)
-def import_model(request: Request, body: ImportModelRequest) -> ModelInstance:
-    return _build_import_service(request).import_model_package(
-        body.package_path,
-        storage_mode=body.storage_mode,
+        slug=body.slug,
     )
 
 
-@router.get("/models/{model_instance_id}", response_model=ModelInstance)
-def get_model(request: Request, model_instance_id: str) -> ModelInstance:
-    model = _build_model_registry(request).get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    return model
+@router.get("/workspaces/{workspace_id}")
+def get_workspace(request: Request, workspace_id: str) -> dict[str, Any]:
+    return _build_workspace_service(request).get_workspace_tree(workspace_id).model_dump(mode="json")
 
 
-@router.patch("/models/{model_instance_id}", response_model=ModelInstance)
-def patch_model(request: Request, model_instance_id: str, body: UpdateModelRequest) -> ModelInstance:
-    registry = _build_model_registry(request)
-    model = registry.get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    updates = body.model_dump(exclude_none=True)
-    return registry.replace_model(model.model_copy(update=updates))
+@router.patch("/workspaces/{workspace_id}")
+def patch_workspace(request: Request, workspace_id: str, body: UpdateWorkspaceRequest) -> dict[str, Any]:
+    return _build_workspace_service(request).update_workspace(
+        workspace_id=workspace_id,
+        display_name=body.display_name,
+        slug=body.slug,
+        status=body.status,
+        ui_order=body.ui_order,
+    ).model_dump(mode="json")
 
 
-@router.delete("/models/{model_instance_id}")
-def delete_model(request: Request, model_instance_id: str) -> dict[str, str]:
-    registry = _build_model_registry(request)
-    model = registry.get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    _assert_model_not_in_use(request, model)
-    registry.delete_model(model_instance_id)
-    return {"status": "deleted", "model_instance_id": model_instance_id}
+@router.delete("/workspaces/{workspace_id}")
+def delete_workspace(request: Request, workspace_id: str) -> dict[str, str]:
+    _build_workspace_service(request).delete_workspace(workspace_id)
+    return {"status": "deleted", "workspace_id": workspace_id}
 
 
-@router.get("/models/{model_instance_id}/presets", response_model=list[ModelPreset])
-def list_presets(request: Request, model_instance_id: str) -> list[ModelPreset]:
-    model = _build_model_registry(request).get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    return model.presets
+@router.get("/workspaces/{workspace_id}/main-models")
+def list_workspace_main_models(request: Request, workspace_id: str) -> list[dict[str, Any]]:
+    return [
+        item.model_dump(mode="json")
+        for item in _build_workspace_service(request).list_main_models(workspace_id)
+    ]
 
 
-@router.post("/models/{model_instance_id}/presets", response_model=ModelPreset, status_code=status.HTTP_201_CREATED)
-def create_preset(request: Request, model_instance_id: str, body: CreatePresetRequest) -> ModelPreset:
-    registry = _build_model_registry(request)
-    model = registry.get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    if any(preset.preset_id == body.preset_id for preset in model.presets):
-        raise ValueError(f"Preset '{body.preset_id}' already exists.")
-    template_store = _build_adapter_store(request)
-    definition = template_store.require(model.adapter_id)
-    preset = ModelPreset(
+@router.post("/workspaces/{workspace_id}/main-models", status_code=status.HTTP_201_CREATED)
+def create_workspace_main_model(
+    request: Request,
+    workspace_id: str,
+    body: CreateMainModelRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).create_main_model(
+        workspace_id=workspace_id,
+        main_model_id=body.main_model_id,
+        display_name=body.display_name,
+        source_type=body.source_type,
+        main_model_metadata=body.main_model_metadata,
+    ).model_dump(mode="json")
+
+
+@router.get("/workspaces/{workspace_id}/main-models/{main_model_id}")
+def get_workspace_main_model(request: Request, workspace_id: str, main_model_id: str) -> dict[str, Any]:
+    tree = _build_workspace_service(request).get_workspace_tree(workspace_id)
+    for main_model in tree.main_models:
+        if main_model.main_model_id == main_model_id:
+            return main_model.model_dump(mode="json")
+    raise LookupError(f"Main model '{main_model_id}' not found.")
+
+
+@router.patch("/workspaces/{workspace_id}/main-models/{main_model_id}")
+def patch_workspace_main_model(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    body: UpdateMainModelRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).update_main_model(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        display_name=body.display_name,
+        status=body.status,
+        main_model_metadata=body.main_model_metadata,
+        default_submodel_id=body.default_submodel_id,
+    ).model_dump(mode="json")
+
+
+@router.delete("/workspaces/{workspace_id}/main-models/{main_model_id}")
+def delete_workspace_main_model(request: Request, workspace_id: str, main_model_id: str) -> dict[str, str]:
+    _build_workspace_service(request).delete_main_model(workspace_id, main_model_id)
+    return {"status": "deleted", "workspace_id": workspace_id, "main_model_id": main_model_id}
+
+
+@router.get("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels")
+def list_workspace_submodels(request: Request, workspace_id: str, main_model_id: str) -> list[dict[str, Any]]:
+    return [
+        item.model_dump(mode="json")
+        for item in _build_workspace_service(request).list_submodels(workspace_id, main_model_id)
+    ]
+
+
+@router.post("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels", status_code=status.HTTP_201_CREATED)
+def create_workspace_submodel(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    body: CreateSubmodelRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).create_submodel(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        submodel_id=body.submodel_id,
+        display_name=body.display_name,
+        status=body.status,
+        instance_assets=body.instance_assets,
+        endpoint=body.endpoint,
+        account_binding=body.account_binding,
+        adapter_options=body.adapter_options,
+        runtime_profile=body.runtime_profile,
+        is_hidden_singleton=body.is_hidden_singleton,
+    ).model_dump(mode="json")
+
+
+@router.get("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}")
+def get_workspace_submodel(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+) -> dict[str, Any]:
+    for item in _build_workspace_service(request).list_submodels(workspace_id, main_model_id):
+        if item.submodel_id == submodel_id:
+            return item.model_dump(mode="json")
+    raise LookupError(f"Submodel '{submodel_id}' not found.")
+
+
+@router.patch("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}")
+def patch_workspace_submodel(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+    body: UpdateSubmodelRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).update_submodel(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        submodel_id=submodel_id,
+        display_name=body.display_name,
+        status=body.status,
+        instance_assets=body.instance_assets,
+        endpoint=body.endpoint,
+        account_binding=body.account_binding,
+        adapter_options=body.adapter_options,
+        runtime_profile=body.runtime_profile,
+    ).model_dump(mode="json")
+
+
+@router.delete("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}")
+def delete_workspace_submodel(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+) -> dict[str, str]:
+    _build_workspace_service(request).delete_submodel(workspace_id, main_model_id, submodel_id)
+    return {
+        "status": "deleted",
+        "workspace_id": workspace_id,
+        "main_model_id": main_model_id,
+        "submodel_id": submodel_id,
+    }
+
+
+@router.put("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/secrets")
+def put_workspace_submodel_secrets(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+    body: PutSecretsRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).put_submodel_secrets(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        submodel_id=submodel_id,
+        secrets=body.secrets,
+    ).model_dump(mode="json")
+
+
+@router.post("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/connectivity-check")
+def connectivity_check_workspace_submodel(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+) -> dict[str, Any]:
+    service = _build_workspace_service(request)
+    submodel = service.list_submodels(workspace_id, main_model_id)
+    target = next((item for item in submodel if item.submodel_id == submodel_id), None)
+    if target is None:
+        raise LookupError(f"Submodel '{submodel_id}' not found.")
+    return {
+        "status": "ready" if target.status in {"ready", "needs_secret"} else target.status,
+        "workspace_id": workspace_id,
+        "main_model_id": main_model_id,
+        "submodel_id": submodel_id,
+    }
+
+
+@router.get("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/presets")
+def list_workspace_presets(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+) -> list[dict[str, Any]]:
+    return [
+        item.model_dump(mode="json")
+        for item in _build_workspace_service(request).list_presets(workspace_id, main_model_id, submodel_id)
+    ]
+
+
+@router.post(
+    "/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/presets",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_workspace_preset(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+    body: CreateWorkspacePresetRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).create_preset(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        submodel_id=submodel_id,
         preset_id=body.preset_id,
         display_name=body.display_name,
         kind=body.kind,
         status=body.status,
-        base_preset_id=body.base_preset_id,
-        fixed_fields=body.fixed_fields,
         defaults=body.defaults,
+        fixed_fields=body.fixed_fields,
         preset_assets=body.preset_assets,
-        override_policy=definition.override_policy,
-        fingerprint="pending",
-    )
-    updated_model = registry.replace_model(model.model_copy(update={"presets": [*model.presets, preset]}))
-    return next(item for item in updated_model.presets if item.preset_id == body.preset_id)
+        is_hidden_singleton=body.is_hidden_singleton,
+    ).model_dump(mode="json")
 
 
-@router.patch("/models/{model_instance_id}/presets/{preset_id}", response_model=ModelPreset)
-def patch_preset(request: Request, model_instance_id: str, preset_id: str, body: UpdatePresetRequest) -> ModelPreset:
-    registry = _build_model_registry(request)
-    model = registry.get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    updates = body.model_dump(exclude_none=True)
-    presets: list[ModelPreset] = []
-    found = False
-    for preset in model.presets:
-        if preset.preset_id == preset_id:
-            presets.append(preset.model_copy(update=updates))
-            found = True
-        else:
-            presets.append(preset)
-    if not found:
-        raise LookupError(f"Preset '{preset_id}' not found.")
-    updated_model = registry.replace_model(model.model_copy(update={"presets": presets}))
-    return next(item for item in updated_model.presets if item.preset_id == preset_id)
+@router.patch("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/presets/{preset_id}")
+def patch_workspace_preset(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+    preset_id: str,
+    body: UpdateWorkspacePresetRequest,
+) -> dict[str, Any]:
+    return _build_workspace_service(request).update_preset(
+        workspace_id=workspace_id,
+        main_model_id=main_model_id,
+        submodel_id=submodel_id,
+        preset_id=preset_id,
+        display_name=body.display_name,
+        status=body.status,
+        defaults=body.defaults,
+        fixed_fields=body.fixed_fields,
+        preset_assets=body.preset_assets,
+    ).model_dump(mode="json")
 
 
-@router.delete("/models/{model_instance_id}/presets/{preset_id}")
-def delete_preset(request: Request, model_instance_id: str, preset_id: str) -> dict[str, str]:
-    registry = _build_model_registry(request)
-    model = registry.get_model(model_instance_id)
-    if model is None:
-        raise LookupError(f"Model '{model_instance_id}' not found.")
-    if not any(preset.preset_id == preset_id for preset in model.presets):
-        raise LookupError(f"Preset '{preset_id}' not found.")
-    _assert_preset_not_in_use(request, model_instance_id=model_instance_id, preset_id=preset_id)
-    updated_model = registry.replace_model(
-        model.model_copy(update={"presets": [preset for preset in model.presets if preset.preset_id != preset_id]})
-    )
-    return {"status": "deleted", "model_instance_id": updated_model.model_instance_id, "preset_id": preset_id}
+@router.delete("/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/{submodel_id}/presets/{preset_id}")
+def delete_workspace_preset(
+    request: Request,
+    workspace_id: str,
+    main_model_id: str,
+    submodel_id: str,
+    preset_id: str,
+) -> dict[str, str]:
+    _build_workspace_service(request).delete_preset(workspace_id, main_model_id, submodel_id, preset_id)
+    return {
+        "status": "deleted",
+        "workspace_id": workspace_id,
+        "main_model_id": main_model_id,
+        "submodel_id": submodel_id,
+        "preset_id": preset_id,
+    }
 
 
-@router.put("/models/{model_instance_id}/secrets", response_model=ModelInstance)
-def put_model_secrets(request: Request, model_instance_id: str, body: PutSecretsRequest) -> ModelInstance:
-    return _build_import_service(request).put_model_secrets(model_instance_id, body.secrets)
-
-
-@router.post("/reload")
-def reload_registry(request: Request) -> dict[str, int | str]:
-    registry = _build_model_registry(request)
-    registry.reload()
-    return {"status": "success", "count": len(registry.list_models())}
+@router.post("/workspaces/{workspace_id}/test-render")
+def test_render_workspace(request: Request, workspace_id: str) -> dict[str, Any]:
+    tree = _build_workspace_service(request).get_workspace_tree(workspace_id)
+    return {
+        "status": "ready",
+        "workspace_id": workspace_id,
+        "main_model_count": len(tree.main_models),
+    }

@@ -31,6 +31,7 @@ class AdapterDefinition(BaseModel):
     adapter_id: str = Field(description="adapter 唯一标识。")
     display_name: str = Field(description="adapter 展示名。")
     adapter_family: str = Field(description="adapter family。")
+    supported_families: list[str] = Field(default_factory=list, description="adapter 支持的 family ID 列表。")
     runtime_kind: RuntimeKind = Field(description="adapter runtime 类型。")
     capabilities: AdapterCapabilities = Field(description="adapter 能力声明。")
     block_limits: AdapterBlockLimits = Field(default_factory=AdapterBlockLimits, description="block 输入限制。")
