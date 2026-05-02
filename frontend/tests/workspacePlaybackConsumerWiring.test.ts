@@ -77,4 +77,15 @@ describe("workspace playback consumer wiring", () => {
     expect(source).toContain("playbackCursorError");
     expect(source).toContain("if (playbackCursorError.value) return null");
   });
+
+  it("editSession 类型定义应继续暴露 block progress 与 alignment 契约", () => {
+    const source = readWorkspaceComponentSource(
+      "../src/types/editSession.ts",
+    );
+
+    expect(source).toContain("current_block_index?: number | null");
+    expect(source).toContain("total_block_count?: number | null");
+    expect(source).toContain("segment_alignment_mode?: SegmentAlignmentMode | null;");
+    expect(source).toContain("| 'block_completed'");
+  });
 });

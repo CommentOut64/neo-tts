@@ -247,16 +247,21 @@ def test_gpt_sovits_local_adapter_capabilities_cover_phase4_contract():
 
     capabilities = GPTSoVITSLocalAdapter.capabilities()
 
-    assert capabilities == AdapterCapabilities(
-        block_render=True,
-        exact_segment_output=True,
-        segment_level_voice_binding=True,
-        incremental_render=True,
-        boundary_enhancement=True,
-        native_join_fusion=True,
-        local_gpu_runtime=True,
-        cancellable=True,
-    )
+    assert capabilities.block_render is True
+    assert capabilities.exact_segment_output is True
+    assert capabilities.segment_level_voice_binding is True
+    assert capabilities.incremental_render is True
+    assert capabilities.boundary_enhancement is True
+    assert capabilities.native_join_fusion is True
+    assert capabilities.local_gpu_runtime is True
+    assert capabilities.cancellable is True
+    assert capabilities.supports_exact_alignment is True
+    assert capabilities.supports_block_only_alignment is True
+    assert capabilities.supports_boundary_enhancement is True
+    assert capabilities.supports_incremental_render is True
+    assert capabilities.supports_segment_level_voice_binding is True
+    assert capabilities.supports_pause_only_compose is True
+    assert capabilities.supports_cancellation is True
 
 
 def test_gpt_sovits_local_adapter_renders_multi_segment_block_with_exact_spans():
@@ -371,6 +376,11 @@ def test_gpt_sovits_local_adapter_uses_segment_level_binding_and_downgrades_inco
     assert result.join_report.requested_policy == "prefer_enhanced"
     assert result.join_report.applied_mode == "preserve_pause"
     assert result.join_report.enhancement_applied is False
+    assert result.degradation_report is not None
+    assert result.degradation_report.delivered_mode == "exact"
+    assert result.boundary_results[0].mode == "fallback"
+    assert result.scope_feedback is not None
+    assert result.scope_feedback.requested_scope == request.render_scope
     assert result.diagnostics["join_downgrade_reasons"] == {
         "edge-seg-1-seg-2": "binding_or_reference_mismatch"
     }
@@ -625,6 +635,9 @@ def test_gpt_sovits_local_adapter_prefers_base_render_asset_id_for_reuse():
     assert result.join_report is not None
     assert result.join_report.applied_mode == "prefer_enhanced"
     assert result.join_report.enhancement_applied is True
+    assert result.boundary_results[0].mode == "enhanced"
+    assert result.scope_feedback is not None
+    assert result.scope_feedback.actual_scope == request.render_scope
 
 
 def test_gpt_sovits_local_adapter_falls_back_to_exact_asset_when_base_render_asset_is_missing():

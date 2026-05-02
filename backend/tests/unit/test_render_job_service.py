@@ -13,6 +13,7 @@ from backend.app.inference.block_adapter_types import (
     AdapterCapabilities,
     BlockRenderResult,
     BlockScopeUnsupported,
+    BoundaryResult,
     JoinReport,
     SegmentOutput,
     SegmentScopeUnsupported,
@@ -52,6 +53,7 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
+from backend.app.services.render_execution_plan import ExecutionPlan, ExecutionUnit, FormalBlockPlan
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
 from backend.app.tts_registry.model_registry import ModelRegistry
@@ -173,12 +175,58 @@ class _FakeEditableBackend:
 
 
 class _FakeBlockAdapter:
+    def __init__(
+        self,
+        *,
+        cancellation_checker=None,
+        segment_asset_callback=None,
+        fail_render: bool = False,
+        fail_boundary: bool = False,
+        gate: threading.Event | None = None,
+    ) -> None:
+        self._cancellation_checker = cancellation_checker
+        self._segment_asset_callback = segment_asset_callback
+        self._fail_render = fail_render
+        self._fail_boundary = fail_boundary
+        self._gate = gate
+
     def render_block(self, request):
+        gate = getattr(self, "_gate", None)
+        cancellation_checker = getattr(self, "_cancellation_checker", None)
+        segment_asset_callback = getattr(self, "_segment_asset_callback", None)
+        fail_render = getattr(self, "_fail_render", False)
+        fail_boundary = getattr(self, "_fail_boundary", False)
+
+        if gate is not None:
+            gate.wait(timeout=2)
+        if callable(cancellation_checker) and cancellation_checker():
+            raise RuntimeError("Block rendering cancelled.")
+        if fail_render:
+            raise RuntimeError("segment render failed")
         audio: list[float] = []
         spans: list[SegmentSpan] = []
         outputs: list[SegmentOutput] = []
+        boundary_results: list[BoundaryResult] = []
         cursor = 0
         for index, segment in enumerate(request.block.segments, start=1):
+            asset = SegmentRenderAssetPayload(
+                render_asset_id=f"base-{segment.segment_id}",
+                segment_id=segment.segment_id,
+                render_version=segment.render_version or 1,
+                semantic_tokens=[1, 2],
+                phone_ids=[11, 12],
+                decoder_frame_count=1,
+                audio_sample_count=2,
+                left_margin_sample_count=0,
+                core_sample_count=2,
+                right_margin_sample_count=0,
+                left_margin_audio=np.zeros(0, dtype=np.float32),
+                core_audio=np.asarray([index / 10.0, index / 10.0], dtype=np.float32),
+                right_margin_audio=np.zeros(0, dtype=np.float32),
+                trace=None,
+            )
+            if callable(segment_asset_callback):
+                segment_asset_callback(asset, segment, False)
             audio.extend([index / 10.0, index / 10.0])
             span = SegmentSpan(
                 segment_id=segment.segment_id,
@@ -195,6 +243,20 @@ class _FakeBlockAdapter:
                 )
             )
             cursor += 2
+            if index < len(request.block.segments):
+                edge_control = request.edge_controls[index - 1]
+                audio.append(0.05 * index)
+                boundary_results.append(
+                    BoundaryResult(
+                        edge_id=edge_control.edge_id,
+                        mode="fallback",
+                        sample_span=(cursor, cursor + 1),
+                        diagnostics={"implementation": "fake-block-adapter"},
+                    )
+                )
+                cursor += 1
+        if fail_boundary:
+            raise RuntimeError("boundary render failed")
         return BlockRenderResult(
             block_id=request.block.block_id,
             segment_ids=[segment.segment_id for segment in request.block.segments],
@@ -204,6 +266,7 @@ class _FakeBlockAdapter:
             segment_alignment_mode="exact",
             segment_outputs=outputs,
             segment_spans=spans,
+            boundary_results=boundary_results,
             join_report=JoinReport(
                 requested_policy=request.join_policy,
                 applied_mode=request.join_policy,
@@ -292,7 +355,6 @@ def _build_service(
     run_jobs_in_background: bool = False,
     gate=None,
     block_planner: BlockPlanner | None = None,
-    enable_block_first_pipeline: bool = False,
 ) -> RenderJobService:
     repository = EditSessionRepository(project_root=tmp_path, db_file=tmp_path / "session.db")
     repository.initialize_schema()
@@ -313,17 +375,17 @@ def _build_service(
     gateway = EditableInferenceGateway(
         _FakeEditableBackend(fail_render=fail_render, fail_boundary=fail_boundary, gate=gate)
     )
-    adapter_registry = None
-    model_registry = None
-    block_render_request_builder = None
-    block_render_asset_persister = None
-    block_adapter_selector = None
-    if enable_block_first_pipeline:
-        adapter_registry = _build_block_first_adapter_registry()
-        model_registry = _build_block_first_model_registry(tmp_path)
-        block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
-        block_render_asset_persister = BlockRenderAssetPersister(asset_store=asset_store)
-        block_adapter_selector = lambda adapter_id, **kwargs: _FakeBlockAdapter()
+    adapter_registry = _build_block_first_adapter_registry()
+    model_registry = _build_block_first_model_registry(tmp_path)
+    block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
+    block_render_asset_persister = BlockRenderAssetPersister(asset_store=asset_store)
+    block_adapter_selector = lambda adapter_id, **kwargs: _FakeBlockAdapter(
+        cancellation_checker=kwargs.get("cancellation_checker"),
+        segment_asset_callback=kwargs.get("segment_asset_callback"),
+        fail_render=fail_render,
+        fail_boundary=fail_boundary,
+        gate=gate,
+    )
     return RenderJobService(
         repository=repository,
         asset_store=asset_store,
@@ -341,22 +403,7 @@ def _build_service(
     )
 
 
-def test_run_transaction_executes_prepare_render_compose_commit_in_order(tmp_path, monkeypatch):
-    service = _build_service(tmp_path)
-    steps: list[str] = []
-    plan = object()
-
-    monkeypatch.setattr(service, "_prepare", lambda value: steps.append(f"prepare:{id(value)}"))
-    monkeypatch.setattr(service, "_render", lambda value: steps.append(f"render:{id(value)}"))
-    monkeypatch.setattr(service, "_compose", lambda value: steps.append(f"compose:{id(value)}"))
-    monkeypatch.setattr(service, "_commit", lambda value: steps.append(f"commit:{id(value)}"))
-
-    service._run_transaction(plan)
-
-    assert steps == [f"prepare:{id(plan)}", f"render:{id(plan)}", f"compose:{id(plan)}", f"commit:{id(plan)}"]
-
-
-def test_run_transaction_uses_block_first_initialize_pipeline_when_plan_requests_it(tmp_path, monkeypatch):
+def test_run_transaction_routes_initialize_to_block_first_pipeline(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     steps: list[str] = []
     plan = RenderPlan(
@@ -365,12 +412,6 @@ def test_run_transaction_uses_block_first_initialize_pipeline_when_plan_requests
         document_id="doc-1",
         request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
     )
-    setattr(plan, "execution_mode", "block_first")
-
-    monkeypatch.setattr(service, "_prepare", lambda value: steps.append(f"prepare:{id(value)}"))
-    monkeypatch.setattr(service, "_render", lambda value: steps.append(f"render:{id(value)}"))
-    monkeypatch.setattr(service, "_compose", lambda value: steps.append(f"compose:{id(value)}"))
-    monkeypatch.setattr(service, "_commit", lambda value: steps.append(f"commit:{id(value)}"))
     monkeypatch.setattr(
         service,
         "_run_initialize_block_first",
@@ -383,7 +424,7 @@ def test_run_transaction_uses_block_first_initialize_pipeline_when_plan_requests
     assert steps == [f"block-first-initialize:{id(plan)}"]
 
 
-def test_run_transaction_uses_block_first_edit_pipeline_when_plan_requests_it(tmp_path, monkeypatch):
+def test_run_transaction_routes_edit_to_block_first_pipeline(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     steps: list[str] = []
     plan = RenderPlan(
@@ -393,12 +434,6 @@ def test_run_transaction_uses_block_first_edit_pipeline_when_plan_requests_it(tm
         request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
         document_version=2,
     )
-    setattr(plan, "execution_mode", "block_first")
-
-    monkeypatch.setattr(service, "_prepare_edit", lambda value: steps.append(f"prepare-edit:{id(value)}"))
-    monkeypatch.setattr(service, "_render_edit", lambda value: steps.append(f"render-edit:{id(value)}"))
-    monkeypatch.setattr(service, "_compose", lambda value: steps.append(f"compose:{id(value)}"))
-    monkeypatch.setattr(service, "_commit_edit", lambda value: steps.append(f"commit-edit:{id(value)}"))
     monkeypatch.setattr(
         service,
         "_run_edit_block_first",
@@ -454,6 +489,76 @@ def test_run_initialize_job_single_segment_commits_formal_assets_timeline_and_ch
     assert job is not None
     assert job.changed_block_asset_ids == [timeline.block_entries[0].block_asset_id]
     assert service._asset_store.block_asset_path(job.changed_block_asset_ids[0]).exists()  # noqa: SLF001
+
+
+def test_block_first_initialize_commits_head_timeline_block_assets_and_reusable_base_assets_in_timeline_order(tmp_path):
+    service = _build_service(
+        tmp_path,
+        block_planner=BlockPlanner(
+            sample_rate=1,
+            min_block_seconds=100,
+            max_block_seconds=1000,
+            max_segment_count=2,
+        ),
+    )
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            voice_id="demo",
+        )
+    )
+
+    class _PersistingBaseAssetAdapter(_FakeBlockAdapter):
+        def __init__(self, *, segment_asset_callback):
+            self._segment_asset_callback = segment_asset_callback
+
+        def render_block(self, request):
+            for index, segment in enumerate(request.block.segments, start=1):
+                self._segment_asset_callback(
+                    SegmentRenderAssetPayload(
+                        render_asset_id=f"base-{segment.segment_id}",
+                        segment_id=segment.segment_id,
+                        render_version=1,
+                        semantic_tokens=[index, index + 1],
+                        phone_ids=[10 + index, 20 + index],
+                        decoder_frame_count=3,
+                        audio_sample_count=4,
+                        left_margin_sample_count=1,
+                        core_sample_count=2,
+                        right_margin_sample_count=1,
+                        left_margin_audio=np.asarray([0.01 * index], dtype=np.float32),
+                        core_audio=np.asarray([0.1 * index, 0.1 * index], dtype=np.float32),
+                        right_margin_audio=np.asarray([0.02 * index], dtype=np.float32),
+                        trace={"kind": "base"},
+                    ),
+                    segment,
+                    False,
+                )
+            return super().render_block(request)
+
+    service._block_adapter_selector = (  # noqa: SLF001
+        lambda adapter_id, **kwargs: _PersistingBaseAssetAdapter(segment_asset_callback=kwargs["segment_asset_callback"])
+    )
+
+    service.run_initialize_job(accepted.job.job_id)
+
+    snapshot = service.get_head_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)  # noqa: SLF001
+    job = service.get_job(accepted.job.job_id)
+
+    assert snapshot.document_version == 1
+    assert snapshot.snapshot_kind == "head"
+    assert snapshot.timeline_manifest_id == timeline.timeline_manifest_id
+    assert len(timeline.block_entries) == 2
+    assert job is not None
+    assert job.changed_block_asset_ids == [entry.block_asset_id for entry in timeline.block_entries]
+
+    for block_entry in timeline.block_entries:
+        assert service._asset_store.block_asset_path(block_entry.block_asset_id).exists()  # noqa: SLF001
+
+    for segment in snapshot.segments:
+        assert segment.base_render_asset_id == f"base-{segment.segment_id}"
+        assert service._asset_store.segment_asset_path(segment.base_render_asset_id).exists()  # noqa: SLF001
 
 
 def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
@@ -901,11 +1006,15 @@ def test_run_edit_job_logs_traceback_when_render_raises(tmp_path, monkeypatch):
     assert snapshot is not None
     rerender = service.create_rerender_segment_job(snapshot.segments[0].segment_id)
 
-    def _raise_render_error(*args, **kwargs):
-        raise RuntimeError("edit render failed")
+    class _AlwaysFailingAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            raise RuntimeError("edit render failed")
 
     monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
-    monkeypatch.setattr(service._gateway, "render_segment_base", _raise_render_error)
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _AlwaysFailingAdapter(
+        cancellation_checker=kwargs.get("cancellation_checker"),
+        segment_asset_callback=kwargs.get("segment_asset_callback"),
+    )  # noqa: SLF001
 
     service.run_edit_job(rerender.job.job_id)
 
@@ -917,7 +1026,7 @@ def test_run_edit_job_logs_traceback_when_render_raises(tmp_path, monkeypatch):
     ]
 
 
-def test_run_initialize_job_updates_inference_runtime_while_segment_is_rendering(tmp_path):
+def test_run_initialize_job_enters_rendering_state_while_block_adapter_is_waiting(tmp_path):
     gate = threading.Event()
     service = _build_service(tmp_path, gate=gate)
     accepted = service.create_initialize_job(
@@ -931,21 +1040,22 @@ def test_run_initialize_job_updates_inference_runtime_while_segment_is_rendering
     worker.start()
 
     deadline = time.time() + 2
-    snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
-    while time.time() < deadline and snapshot.status != "inferencing":
+    job = service.get_job(accepted.job.job_id)
+    while time.time() < deadline and (job is None or job.status != "rendering"):
         time.sleep(0.01)
-        snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
+        job = service.get_job(accepted.job.job_id)
 
-    assert snapshot.status == "inferencing"
-    assert snapshot.progress > 0
-    assert snapshot.total_segments == 1
+    assert job is not None
+    assert job.status == "rendering"
+    assert job.progress > 0.0
 
     gate.set()
     worker.join(timeout=2)
 
-    final_snapshot = service._inference_runtime.snapshot()  # noqa: SLF001
-    assert final_snapshot.status == "completed"
-    assert final_snapshot.progress == 1.0
+    final_job = service.get_job(accepted.job.job_id)
+    assert final_job is not None
+    assert final_job.status == "completed"
+    assert final_job.progress == 1.0
 
 
 def test_prepare_updates_job_progress_from_reference_context_callback(tmp_path):
@@ -1015,60 +1125,9 @@ def test_run_initialize_job_rolls_back_staging_when_boundary_render_fails(tmp_pa
     service.run_initialize_job(accepted.job.job_id)
 
     assert not (tmp_path / "assets" / "staging" / accepted.job.job_id).exists()
-    assert any((tmp_path / "assets" / "formal" / "segments").rglob("audio.wav"))
+    assert not any((tmp_path / "assets" / "formal" / "segments").rglob("audio.wav"))
     assert not any((tmp_path / "assets" / "formal" / "boundaries").rglob("audio.wav"))
     assert not any((tmp_path / "assets" / "formal" / "compositions").rglob("*.wav"))
-
-
-def test_build_fallback_boundary_asset_crossfades_segment_margins_without_model_rerender(tmp_path):
-    service = _build_service(tmp_path)
-    left_asset = SegmentRenderAssetPayload(
-        render_asset_id="render-left",
-        segment_id="seg-left",
-        render_version=3,
-        semantic_tokens=[1],
-        phone_ids=[11],
-        decoder_frame_count=2,
-        audio_sample_count=4,
-        left_margin_sample_count=0,
-        core_sample_count=2,
-        right_margin_sample_count=2,
-        left_margin_audio=np.zeros(0, dtype=np.float32),
-        core_audio=np.asarray([0.2, 0.3], dtype=np.float32),
-        right_margin_audio=np.asarray([1.0, 1.0], dtype=np.float32),
-        trace=None,
-    )
-    right_asset = SegmentRenderAssetPayload(
-        render_asset_id="render-right",
-        segment_id="seg-right",
-        render_version=5,
-        semantic_tokens=[2],
-        phone_ids=[12],
-        decoder_frame_count=2,
-        audio_sample_count=4,
-        left_margin_sample_count=2,
-        core_sample_count=2,
-        right_margin_sample_count=0,
-        left_margin_audio=np.asarray([0.0, 0.0], dtype=np.float32),
-        core_audio=np.asarray([0.4, 0.5], dtype=np.float32),
-        right_margin_audio=np.zeros(0, dtype=np.float32),
-        trace=None,
-    )
-    edge = EditableEdge(
-        edge_id="edge-seg-left-seg-right",
-        document_id="doc-1",
-        left_segment_id="seg-left",
-        right_segment_id="seg-right",
-        edge_version=2,
-    )
-
-    boundary = service._build_fallback_boundary_asset(left_asset, right_asset, edge)
-
-    assert boundary.left_render_version == 3
-    assert boundary.right_render_version == 5
-    assert boundary.boundary_sample_count == 2
-    assert boundary.trace == {"boundary_kind": "fallback_equal_power_crossfade"}
-    assert np.allclose(boundary.boundary_audio, np.asarray([1.0, 0.0], dtype=np.float32), atol=1e-6)
 
 
 def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
@@ -1114,11 +1173,12 @@ def test_edit_job_only_recomposes_target_blocks(tmp_path, monkeypatch):
     )
     service.run_edit_job(edit_job.job.job_id)
     updated_snapshot = service.get_head_snapshot()
+    job = service.get_job(edit_job.job.job_id)
 
-    assert len(composed_block_ids) == 1
-    assert untouched_block_id not in composed_block_ids
-    assert updated_snapshot.segments[0].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[0].segment_id]
-    assert updated_snapshot.segments[1].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[1].segment_id]
+    assert composed_block_ids == []
+    assert job is not None
+    assert len(job.changed_block_asset_ids) == 1
+    assert untouched_block_id not in job.changed_block_asset_ids
     assert updated_snapshot.segments[2].render_asset_id == initial_render_asset_ids[updated_snapshot.segments[2].segment_id]
 
 
@@ -1213,7 +1273,6 @@ def test_edge_pause_update_handles_previous_parent_block_without_exact_reuse_mat
             max_block_seconds=1000,
             max_segment_count=50,
         ),
-        enable_block_first_pipeline=True,
     )
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -1262,7 +1321,6 @@ def test_block_first_middle_segment_update_keeps_timeline_blocks_in_document_ord
             max_block_seconds=1000,
             max_segment_count=50,
         ),
-        enable_block_first_pipeline=True,
     )
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -1412,7 +1470,7 @@ def test_segment_swap_does_not_build_reference_context_again(tmp_path, monkeypat
     assert build_context_calls == 0
 
 
-def test_segment_reorder_does_not_build_reference_context_again(tmp_path, monkeypatch):
+def test_segment_reorder_only_builds_boundary_context_when_boundary_asset_must_be_rebuilt(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -1448,10 +1506,10 @@ def test_segment_reorder_does_not_build_reference_context_again(tmp_path, monkey
     )
     service.run_edit_job(edit_job.job.job_id)
 
-    assert build_context_calls == 0
+    assert build_context_calls == 1
 
 
-def test_edge_pause_update_rebuilds_missing_boundary_asset_for_current_snapshot(tmp_path):
+def test_edge_pause_update_succeeds_when_standalone_boundary_asset_is_missing(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -1481,8 +1539,8 @@ def test_edge_pause_update_rebuilds_missing_boundary_asset_for_current_snapshot(
         boundary_strategy=edge.effective_boundary_strategy or edge.boundary_strategy,
     )
     boundary_dir = tmp_path / "assets" / "formal" / "boundaries" / boundary_asset_id
-    assert boundary_dir.exists()
-    shutil.rmtree(boundary_dir)
+    if boundary_dir.exists():
+        shutil.rmtree(boundary_dir)
     assert not boundary_dir.exists()
 
     pause_job = service.create_update_edge_job(
@@ -1494,7 +1552,6 @@ def test_edge_pause_update_rebuilds_missing_boundary_asset_for_current_snapshot(
 
     updated_snapshot = service.get_head_snapshot()
     assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
-    assert boundary_dir.exists()
 
 
 def test_create_update_segment_job_preserves_planner_metadata_for_queued_edit_job(tmp_path):
@@ -1584,7 +1641,7 @@ def test_run_edit_job_restores_planner_metadata_into_render_plan(tmp_path, monke
 
 
 def test_block_first_pause_only_update_recomposes_dirty_block_without_adapter_inference(tmp_path):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -1618,7 +1675,7 @@ def test_block_first_pause_only_update_recomposes_dirty_block_without_adapter_in
 
 
 def test_block_first_pause_only_update_reuses_boundary_audio_from_previous_block_asset(tmp_path, monkeypatch):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -1649,7 +1706,7 @@ def test_block_first_pause_only_update_reuses_boundary_audio_from_previous_block
 
 
 def test_block_first_pause_only_update_reuses_boundary_audio_when_block_repartitioned(tmp_path, monkeypatch):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。第三句。第四句。第五句。",
@@ -1708,7 +1765,7 @@ def test_block_first_pause_only_update_reuses_boundary_audio_when_block_repartit
 
 
 def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_are_derived(tmp_path, monkeypatch):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -1716,35 +1773,61 @@ def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_
         )
     )
 
-    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+    original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
 
-    def _split_initialize_request(**kwargs):
-        requests = original_build_requests(**kwargs)
-        assert len(requests) == 1
-        original_request = requests[0]
-        split_requests = []
-        for segment in original_request.block.segments:
-            split_requests.append(
-                original_request.model_copy(
-                    update={
-                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
-                        "block": original_request.block.model_copy(
-                            update={
-                                "block_id": f"block-{segment.segment_id}",
-                                "segment_ids": [segment.segment_id],
-                                "start_order_key": segment.order_key,
-                                "end_order_key": segment.order_key,
-                                "segments": [segment],
-                                "block_text": segment.text,
-                            }
-                        ),
-                        "edge_controls": [],
-                    }
+    def _split_initialize_execution_plan(**kwargs):
+        execution_plan = original_build_execution_plan(**kwargs)
+        assert len(execution_plan.formal_blocks) == 1
+        formal_block_plan = execution_plan.formal_blocks[0]
+        assert len(formal_block_plan.execution_units) == 1
+        original_unit = formal_block_plan.execution_units[0]
+        split_units: list[ExecutionUnit] = []
+        for segment in original_unit.request.block.segments:
+            split_request = original_unit.request.model_copy(
+                update={
+                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
+                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
+                    "block": original_unit.request.block.model_copy(
+                        update={
+                            "block_id": f"block-{segment.segment_id}",
+                            "segment_ids": [segment.segment_id],
+                            "start_order_key": segment.order_key,
+                            "end_order_key": segment.order_key,
+                            "segments": [segment],
+                            "block_text": segment.text,
+                        }
+                    ),
+                    "edge_controls": [],
+                    "boundary_contexts": [],
+                    "reusable_source_assets": [
+                        asset
+                        for asset in original_unit.request.reusable_source_assets
+                        if asset.segment_id == segment.segment_id
+                    ],
+                }
+            )
+            split_units.append(
+                ExecutionUnit(
+                    execution_unit_id=split_request.execution_unit_id,
+                    formal_block_id=formal_block_plan.formal_block_id,
+                    request=split_request,
+                    segment_ids=(segment.segment_id,),
+                    boundary_contexts=(),
+                    reusable_source_assets=tuple(split_request.reusable_source_assets),
+                    scope_policy=original_unit.scope_policy,
+                    degradation_policy=original_unit.degradation_policy,
                 )
             )
-        return split_requests
+        return ExecutionPlan(
+            formal_blocks=(
+                FormalBlockPlan(
+                    formal_block=formal_block_plan.formal_block,
+                    execution_units=tuple(split_units),
+                ),
+            )
+        )
 
-    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+    monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
 
     class _BoundaryRebuildAdapter(_FakeBlockAdapter):
         def __init__(self, *, segment_asset_callback):
@@ -1812,7 +1895,7 @@ def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_
 
 
 def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, monkeypatch):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -1820,35 +1903,60 @@ def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, m
         )
     )
 
-    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+    original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
 
-    def _split_initialize_request(**kwargs):
-        requests = original_build_requests(**kwargs)
-        assert len(requests) == 1
-        original_request = requests[0]
-        split_requests = []
-        for segment in original_request.block.segments:
-            split_requests.append(
-                original_request.model_copy(
-                    update={
-                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
-                        "block": original_request.block.model_copy(
-                            update={
-                                "block_id": f"block-{segment.segment_id}",
-                                "segment_ids": [segment.segment_id],
-                                "start_order_key": segment.order_key,
-                                "end_order_key": segment.order_key,
-                                "segments": [segment],
-                                "block_text": segment.text,
-                            }
-                        ),
-                        "edge_controls": [],
-                    }
+    def _split_initialize_execution_plan(**kwargs):
+        execution_plan = original_build_execution_plan(**kwargs)
+        assert len(execution_plan.formal_blocks) == 1
+        formal_block_plan = execution_plan.formal_blocks[0]
+        original_unit = formal_block_plan.execution_units[0]
+        split_units: list[ExecutionUnit] = []
+        for segment in original_unit.request.block.segments:
+            split_request = original_unit.request.model_copy(
+                update={
+                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
+                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
+                    "block": original_unit.request.block.model_copy(
+                        update={
+                            "block_id": f"block-{segment.segment_id}",
+                            "segment_ids": [segment.segment_id],
+                            "start_order_key": segment.order_key,
+                            "end_order_key": segment.order_key,
+                            "segments": [segment],
+                            "block_text": segment.text,
+                        }
+                    ),
+                    "edge_controls": [],
+                    "boundary_contexts": [],
+                    "reusable_source_assets": [
+                        asset
+                        for asset in original_unit.request.reusable_source_assets
+                        if asset.segment_id == segment.segment_id
+                    ],
+                }
+            )
+            split_units.append(
+                ExecutionUnit(
+                    execution_unit_id=split_request.execution_unit_id,
+                    formal_block_id=formal_block_plan.formal_block_id,
+                    request=split_request,
+                    segment_ids=(segment.segment_id,),
+                    boundary_contexts=(),
+                    reusable_source_assets=tuple(split_request.reusable_source_assets),
+                    scope_policy=original_unit.scope_policy,
+                    degradation_policy=original_unit.degradation_policy,
                 )
             )
-        return split_requests
+        return ExecutionPlan(
+            formal_blocks=(
+                FormalBlockPlan(
+                    formal_block=formal_block_plan.formal_block,
+                    execution_units=tuple(split_units),
+                ),
+            )
+        )
 
-    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+    monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
 
     class _PersistingBaseAssetAdapter(_FakeBlockAdapter):
         def __init__(self, *, segment_asset_callback):
@@ -1873,10 +1981,15 @@ def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, m
                         right_margin_audio=np.asarray([0.3], dtype=np.float32),
                         trace={"left_margin_frames": [0.1], "right_margin_frames": [0.3]},
                     ),
-                    segment,
-                    False,
-                )
-            return super().render_block(request)
+                        segment,
+                        False,
+                    )
+                callback = self._segment_asset_callback
+                self._segment_asset_callback = None
+                try:
+                    return super().render_block(request)
+                finally:
+                    self._segment_asset_callback = callback
 
     service._block_adapter_selector = (  # noqa: SLF001
         lambda adapter_id, **kwargs: _PersistingBaseAssetAdapter(segment_asset_callback=kwargs["segment_asset_callback"])
@@ -1892,9 +2005,23 @@ def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, m
         assert persisted_asset.segment_id == segment.segment_id
         assert persisted_asset.decoder_frame_count == 3
 
+    pin_set = service._render_asset_lifecycle.collect_pin_set()  # noqa: SLF001
+    assert any(asset.asset_kind == "block" for asset in pin_set.published_assets)
+    assert any(asset.asset_kind == "timeline" for asset in pin_set.published_assets)
+    assert {(asset.segment_id, asset.render_asset_id) for asset in pin_set.reusable_source_assets} == {
+        (segment.segment_id, f"base-{segment.segment_id}")
+        for segment in snapshot.segments
+    }
+
+    orphan_dir = service._asset_store.block_asset_path("orphan-block-asset")  # noqa: SLF001
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    (orphan_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    orphan_report = service._render_asset_lifecycle.scan_orphaned_assets()  # noqa: SLF001
+    assert "blocks/orphan-block-asset" in orphan_report.orphaned_relative_paths
+
 
 def test_block_first_boundary_rebuild_downgrades_to_crossfade_only_when_only_exact_assets_exist(tmp_path, monkeypatch):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -1902,35 +2029,60 @@ def test_block_first_boundary_rebuild_downgrades_to_crossfade_only_when_only_exa
         )
     )
 
-    original_build_requests = service._block_render_request_builder.build_requests  # noqa: SLF001
+    original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
 
-    def _split_initialize_request(**kwargs):
-        requests = original_build_requests(**kwargs)
-        assert len(requests) == 1
-        original_request = requests[0]
-        split_requests = []
-        for segment in original_request.block.segments:
-            split_requests.append(
-                original_request.model_copy(
-                    update={
-                        "request_id": f"{original_request.request_id}-{segment.segment_id}",
-                        "block": original_request.block.model_copy(
-                            update={
-                                "block_id": f"block-{segment.segment_id}",
-                                "segment_ids": [segment.segment_id],
-                                "start_order_key": segment.order_key,
-                                "end_order_key": segment.order_key,
-                                "segments": [segment],
-                                "block_text": segment.text,
-                            }
-                        ),
-                        "edge_controls": [],
-                    }
+    def _split_initialize_execution_plan(**kwargs):
+        execution_plan = original_build_execution_plan(**kwargs)
+        assert len(execution_plan.formal_blocks) == 1
+        formal_block_plan = execution_plan.formal_blocks[0]
+        original_unit = formal_block_plan.execution_units[0]
+        split_units: list[ExecutionUnit] = []
+        for segment in original_unit.request.block.segments:
+            split_request = original_unit.request.model_copy(
+                update={
+                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
+                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
+                    "block": original_unit.request.block.model_copy(
+                        update={
+                            "block_id": f"block-{segment.segment_id}",
+                            "segment_ids": [segment.segment_id],
+                            "start_order_key": segment.order_key,
+                            "end_order_key": segment.order_key,
+                            "segments": [segment],
+                            "block_text": segment.text,
+                        }
+                    ),
+                    "edge_controls": [],
+                    "boundary_contexts": [],
+                    "reusable_source_assets": [
+                        asset
+                        for asset in original_unit.request.reusable_source_assets
+                        if asset.segment_id == segment.segment_id
+                    ],
+                }
+            )
+            split_units.append(
+                ExecutionUnit(
+                    execution_unit_id=split_request.execution_unit_id,
+                    formal_block_id=formal_block_plan.formal_block_id,
+                    request=split_request,
+                    segment_ids=(segment.segment_id,),
+                    boundary_contexts=(),
+                    reusable_source_assets=tuple(split_request.reusable_source_assets),
+                    scope_policy=original_unit.scope_policy,
+                    degradation_policy=original_unit.degradation_policy,
                 )
             )
-        return split_requests
+        return ExecutionPlan(
+            formal_blocks=(
+                FormalBlockPlan(
+                    formal_block=formal_block_plan.formal_block,
+                    execution_units=tuple(split_units),
+                ),
+            )
+        )
 
-    monkeypatch.setattr(service._block_render_request_builder, "build_requests", _split_initialize_request)  # noqa: SLF001
+    monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
 
     def _assert_boundary_rebuild_is_downgraded(left_asset, right_asset, edge, context):
         del left_asset, right_asset, context
@@ -1977,7 +2129,7 @@ def test_block_first_segment_update_warns_and_escalates_from_segment_scope_to_bl
         def exception(self, message, *args):
             return None
 
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -2033,8 +2185,102 @@ def test_block_first_segment_update_warns_and_escalates_from_segment_scope_to_bl
     assert logged_warnings[0][1][3] == {"segment_ids": attempted_scopes[0][1]}
 
 
+def test_block_first_scope_escalation_and_result_degradation_use_separate_state_fields(tmp_path, monkeypatch):
+    logged_warnings: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def warning(self, message, *args):
+            logged_warnings.append((message, args))
+
+        def exception(self, message, *args):
+            return None
+
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    attempted_scopes: list[tuple[str, str | None]] = []
+
+    class _EscalatingEstimatedAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            attempted_scopes.append((request.render_scope, request.escalated_from_scope))
+            if request.render_scope == "segment":
+                raise SegmentScopeUnsupported(
+                    reason_code="neighbor_asset_not_reusable",
+                    message="局部窗口无法安全复用增强边界。",
+                )
+            return BlockRenderResult(
+                block_id=request.block.block_id,
+                segment_ids=[segment.segment_id for segment in request.block.segments],
+                sample_rate=32000,
+                audio=[0.1, 0.2, 0.3, 0.4],
+                audio_sample_count=4,
+                segment_alignment_mode="estimated",
+                segment_outputs=[],
+                segment_spans=[
+                    SegmentSpan(
+                        segment_id=request.block.segments[0].segment_id,
+                        sample_start=0,
+                        sample_end=2,
+                        precision="estimated",
+                        confidence=0.8,
+                        source="system_estimated",
+                    ),
+                    SegmentSpan(
+                        segment_id=request.block.segments[1].segment_id,
+                        sample_start=2,
+                        sample_end=4,
+                        precision="estimated",
+                        confidence=0.7,
+                        source="system_estimated",
+                    ),
+                ],
+                join_report=JoinReport(
+                    requested_policy=request.join_policy,
+                    applied_mode=request.join_policy,
+                    enhancement_applied=False,
+                    implementation="estimated-after-escalation",
+                ),
+            )
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _EscalatingEstimatedAdapter()  # noqa: SLF001
+
+    rerender = service.create_update_segment_job(
+        snapshot.segments[0].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    service.run_edit_job(rerender.job.job_id)
+
+    updated_snapshot = service.get_head_snapshot()
+    updated_timeline = service._asset_store.load_timeline_manifest(updated_snapshot.timeline_manifest_id)  # noqa: SLF001
+    job = service.get_job(rerender.job.job_id)
+
+    assert attempted_scopes == [("segment", None), ("block", "segment")]
+    assert [entry.segment_alignment_mode for entry in updated_timeline.block_entries] == ["estimated"]
+    assert [entry.alignment_precision for entry in updated_timeline.segment_entries] == ["estimated", "estimated"]
+    assert job is not None
+    assert job.status == "completed"
+    assert len(logged_warnings) == 1
+
+
 def test_block_first_segment_update_fails_when_block_scope_also_fails(tmp_path):
-    service = _build_service(tmp_path, enable_block_first_pipeline=True)
+    service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
             raw_text="第一句。第二句。",
@@ -2133,7 +2379,9 @@ def test_build_preview_reads_edge_audio_from_block_when_formal_boundary_asset_is
         edge_version=snapshot.edges[0].edge_version,
         boundary_strategy=snapshot.edges[0].effective_boundary_strategy or snapshot.edges[0].boundary_strategy,
     )
-    shutil.rmtree(service._asset_store.boundary_asset_path(boundary_asset_id))  # noqa: SLF001
+    boundary_path = service._asset_store.boundary_asset_path(boundary_asset_id)  # noqa: SLF001
+    if boundary_path.exists():
+        shutil.rmtree(boundary_path)
     expected_audio = block_asset.audio[
         edge_entry.boundary_start_sample - block_entry.start_sample : edge_entry.boundary_end_sample - block_entry.start_sample
     ]
@@ -2164,7 +2412,7 @@ def test_cancel_job_requests_runtime_cancel(tmp_path):
     assert job.status == "cancel_requested"
 
 
-def test_initialize_job_cancel_during_compose_becomes_cancelled_partial(tmp_path, monkeypatch):
+def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_partial(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -2172,15 +2420,77 @@ def test_initialize_job_cancel_during_compose_becomes_cancelled_partial(tmp_path
             voice_id="demo",
         )
     )
+    original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
 
-    original_compose = service._compose  # noqa: SLF001
+    def _split_initialize_execution_plan(**kwargs):
+        execution_plan = original_build_execution_plan(**kwargs)
+        assert len(execution_plan.formal_blocks) == 1
+        formal_block_plan = execution_plan.formal_blocks[0]
+        assert len(formal_block_plan.execution_units) == 1
+        original_unit = formal_block_plan.execution_units[0]
+        split_units: list[ExecutionUnit] = []
+        for segment in original_unit.request.block.segments:
+            split_request = original_unit.request.model_copy(
+                update={
+                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
+                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
+                    "block": original_unit.request.block.model_copy(
+                        update={
+                            "block_id": f"block-{segment.segment_id}",
+                            "segment_ids": [segment.segment_id],
+                            "start_order_key": segment.order_key,
+                            "end_order_key": segment.order_key,
+                            "segments": [segment],
+                            "block_text": segment.text,
+                        }
+                    ),
+                    "edge_controls": [],
+                    "boundary_contexts": [],
+                    "reusable_source_assets": [
+                        asset
+                        for asset in original_unit.request.reusable_source_assets
+                        if asset.segment_id == segment.segment_id
+                    ],
+                }
+            )
+            split_units.append(
+                ExecutionUnit(
+                    execution_unit_id=split_request.execution_unit_id,
+                    formal_block_id=formal_block_plan.formal_block_id,
+                    request=split_request,
+                    segment_ids=(segment.segment_id,),
+                    boundary_contexts=(),
+                    reusable_source_assets=tuple(split_request.reusable_source_assets),
+                    scope_policy=original_unit.scope_policy,
+                    degradation_policy=original_unit.degradation_policy,
+                )
+            )
+        return ExecutionPlan(
+            formal_blocks=(
+                FormalBlockPlan(
+                    formal_block=formal_block_plan.formal_block,
+                    execution_units=tuple(split_units),
+                ),
+            )
+        )
 
-    def _cancel_then_compose(plan):
-        cancelled = service.cancel_job(plan.job_id)
-        assert cancelled is True
-        return original_compose(plan)
+    cancel_requested = False
 
-    monkeypatch.setattr(service, "_compose", _cancel_then_compose)
+    class _CancelAfterFirstExecutionUnitAdapter(_FakeBlockAdapter):
+        def render_block(self, request):
+            nonlocal cancel_requested
+            result = super().render_block(request)
+            if not cancel_requested:
+                cancel_requested = True
+                cancelled = service.cancel_job(accepted.job.job_id)
+                assert cancelled is True
+            return result
+
+    monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _CancelAfterFirstExecutionUnitAdapter(
+        cancellation_checker=kwargs.get("cancellation_checker"),
+        segment_asset_callback=kwargs.get("segment_asset_callback"),
+    )  # noqa: SLF001
 
     service.run_initialize_job(accepted.job.job_id)
 

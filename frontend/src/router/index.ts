@@ -33,12 +33,6 @@ const router = createRouter({
       meta: { title: '语音合成', icon: 'Microphone' },
     },
     {
-      path: '/studio',
-      name: 'TtsStudio',
-      component: () => import('@/views/TtsStudioView.vue'),
-      meta: { title: '旧版合成', icon: 'Microphone' },
-    },
-    {
       path: '/voices',
       name: 'VoiceAdmin',
       component: () => import('@/views/VoiceAdminView.vue'),

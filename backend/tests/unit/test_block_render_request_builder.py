@@ -381,6 +381,76 @@ def test_block_render_request_builder_maps_edge_controls_join_policy_and_dirty_c
     assert request.dirty_context.dirty_segment_ids == ["seg-2"]
     assert request.dirty_context.dirty_edge_ids == [edge.edge_id]
     assert request.dirty_context.reuse_policy == "prefer_reuse"
+    assert request.requested_alignment_mode == "exact"
+    assert request.boundary_contexts[0].requested_boundary_strategy == "latent_overlap_then_equal_power_crossfade"
+    assert request.allowed_degradation.allowed_modes == ["exact", "estimated", "block_only"]
+    assert request.allowed_scope_escalation.allowed_scopes == ["block"]
+    assert [asset.segment_id for asset in request.reusable_source_assets] == ["seg-1", "seg-2"]
+
+
+def test_block_render_request_builder_builds_execution_plan_with_formal_block_and_child_execution_units():
+    seg1 = _segment("seg-1", 1, "binding-a")
+    seg2 = _segment("seg-2", 2, "binding-a")
+    seg3 = _segment("seg-3", 3, "binding-a")
+    seg4 = _segment("seg-4", 4, "binding-a")
+    binding = _binding(
+        "binding-a",
+        "voice-a",
+        "model-a",
+        model_instance_id="model-1",
+        preset_id="preset-1",
+    )
+    edge12 = _edge("seg-1", "seg-2", strategy="latent_overlap_then_equal_power_crossfade")
+    edge23 = _edge("seg-2", "seg-3", strategy="latent_overlap_then_equal_power_crossfade")
+    edge34 = _edge("seg-3", "seg-4", strategy="crossfade_only")
+    snapshot = _snapshot(
+        segments=[seg1, seg2, seg3, seg4],
+        edges=[edge12, edge23, edge34],
+        voice_bindings=[binding],
+    )
+    formal_block = _render_block(["seg-1", "seg-2", "seg-3", "seg-4"])
+    builder = BlockRenderRequestBuilder(
+        adapter_registry=_adapter_registry(
+            _adapter_definition("gpt_sovits_local", incremental_render=True, segment_level_voice_binding=True),
+        )
+    )
+
+    execution_plan = builder.build_execution_plan(
+        snapshot=snapshot,
+        blocks=[formal_block],
+        resolved_segments={
+            "seg-1": _resolved_segment(seg1, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
+            "seg-2": _resolved_segment(seg2, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
+            "seg-3": _resolved_segment(seg3, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
+            "seg-4": _resolved_segment(seg4, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
+        },
+        resolved_edges={
+            edge12.edge_id: _resolved_edge(edge12, binding, binding, "latent_overlap_then_equal_power_crossfade"),
+            edge23.edge_id: _resolved_edge(edge23, binding, binding, "latent_overlap_then_equal_power_crossfade"),
+            edge34.edge_id: _resolved_edge(edge34, binding, binding, "crossfade_only"),
+        },
+        target_segment_ids={"seg-2"},
+        target_edge_ids={edge12.edge_id, edge23.edge_id},
+        previous_timeline=_timeline("block-asset-old", ["seg-1", "seg-2", "seg-3", "seg-4"]),
+        reuse_policy="prefer_reuse",
+        render_scope="segment",
+    )
+
+    assert len(execution_plan.formal_blocks) == 1
+    formal_block_plan = execution_plan.formal_blocks[0]
+    assert formal_block_plan.formal_block_id == formal_block.block_id
+    assert [unit.formal_block_id for unit in formal_block_plan.execution_units] == [formal_block.block_id, formal_block.block_id]
+    assert [list(unit.segment_ids) for unit in formal_block_plan.execution_units] == [
+        ["seg-1", "seg-2", "seg-3"],
+        ["seg-4"],
+    ]
+    assert all(unit.request.formal_block_id == formal_block.block_id for unit in formal_block_plan.execution_units)
+    assert all(unit.request.execution_unit_id.startswith("unit-") for unit in formal_block_plan.execution_units)
+    assert formal_block_plan.execution_units[0].request.block.block_id != formal_block.block_id
+    assert formal_block_plan.execution_units[0].scope_policy is not None
+    assert formal_block_plan.execution_units[0].scope_policy.allowed_scopes == ("segment", "block")
+    assert formal_block_plan.execution_units[0].degradation_policy is not None
+    assert formal_block_plan.execution_units[0].degradation_policy.allowed_modes == ("exact", "estimated", "block_only")
 
 
 def test_block_render_request_builder_prefers_segment_scope_window_for_dirty_middle_segment():
@@ -466,6 +536,7 @@ def test_block_render_request_builder_prefers_segment_scope_window_for_dirty_mid
         ("segment", ["seg-1", "seg-2", "seg-3"]),
         ("segment", ["seg-4"]),
     ]
+    assert all(request.escalated_from_scope is None for request in requests)
     assert requests[0].dirty_context is not None
     assert requests[0].dirty_context.dirty_segment_ids == ["seg-2"]
     assert requests[0].dirty_context.dirty_edge_ids == [edge12.edge_id, edge23.edge_id]
