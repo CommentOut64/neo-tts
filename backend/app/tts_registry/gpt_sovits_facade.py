@@ -21,6 +21,9 @@ class GPTSoVITSWorkspaceImportResult(BaseModel):
 
 
 class GPTSoVITSRegistryFacade:
+    DEFAULT_MAIN_MODEL_ID = "gpt_sovits"
+    DEFAULT_MAIN_MODEL_DISPLAY_NAME = "GPT-SoVITS"
+
     def __init__(
         self,
         *,
@@ -36,16 +39,18 @@ class GPTSoVITSRegistryFacade:
         workspace_id: str,
         source_path: str | Path,
         storage_mode: str = "managed",
+        main_model_id: str = DEFAULT_MAIN_MODEL_ID,
+        main_model_display_name: str = DEFAULT_MAIN_MODEL_DISPLAY_NAME,
     ) -> GPTSoVITSWorkspaceImportResult:
         imported_model = self._model_import_service.import_model_package(
             source_path=source_path,
             storage_mode=storage_mode,
         )
-        main_model_id = _normalize_identifier(imported_model.model_instance_id)
+        normalized_main_model_id = _normalize_identifier(main_model_id)
         main_model = self._upsert_main_model(
             workspace_id=workspace_id,
-            main_model_id=main_model_id,
-            display_name=imported_model.display_name,
+            main_model_id=normalized_main_model_id,
+            display_name=main_model_display_name,
             source_type=imported_model.source_type,
             main_model_metadata={
                 "package_id": imported_model.model_instance_id,
@@ -70,14 +75,14 @@ class GPTSoVITSRegistryFacade:
             }
             submodel = self._upsert_submodel(
                 workspace_id=workspace_id,
-                main_model_id=main_model_id,
+                main_model_id=normalized_main_model_id,
                 submodel_id=submodel_id,
                 display_name=preset.display_name,
                 instance_assets=submodel_assets,
             )
             actual_preset = self._upsert_preset(
                 workspace_id=workspace_id,
-                main_model_id=main_model_id,
+                main_model_id=normalized_main_model_id,
                 submodel_id=submodel_id,
                 preset_id="default",
                 display_name="default",
@@ -168,6 +173,187 @@ class GPTSoVITSRegistryFacade:
                 )
             )
         return imported
+
+    def import_legacy_voices_as_submodels_to_workspace(
+        self,
+        *,
+        workspace_id: str,
+        main_model_id: str,
+        main_model_display_name: str,
+        voices_by_name: dict[str, Any],
+    ) -> GPTSoVITSWorkspaceImportResult:
+        main_model = self._upsert_main_model(
+            workspace_id=workspace_id,
+            main_model_id=main_model_id,
+            display_name=main_model_display_name,
+            source_type="local_package",
+            main_model_metadata={
+                "migration_source": "voices.json",
+                "legacy_layout": "single_main_model_many_submodels",
+            },
+            shared_assets={},
+        )
+
+        submodels: list[SubmodelRecord] = []
+        presets: list[PresetRecord] = []
+        for voice_name, raw_config in voices_by_name.items():
+            if not isinstance(raw_config, dict):
+                continue
+            defaults = raw_config.get("defaults")
+            preset_defaults = dict(defaults) if isinstance(defaults, dict) else {}
+            if "reference_text" not in preset_defaults and raw_config.get("ref_text") is not None:
+                preset_defaults["reference_text"] = raw_config.get("ref_text")
+            if "reference_language" not in preset_defaults and raw_config.get("ref_lang") is not None:
+                preset_defaults["reference_language"] = raw_config.get("ref_lang")
+
+            preset_assets: dict[str, Any] = {}
+            if raw_config.get("ref_audio"):
+                preset_assets["reference_audio"] = {"path": str(raw_config.get("ref_audio"))}
+
+            submodel_id = _normalize_identifier(str(voice_name))
+            submodel = self._upsert_submodel(
+                workspace_id=workspace_id,
+                main_model_id=main_model.main_model_id,
+                submodel_id=submodel_id,
+                display_name=str(voice_name),
+                instance_assets={
+                    "gpt_weight": {"path": str(raw_config.get("gpt_path") or "")},
+                    "sovits_weight": {"path": str(raw_config.get("sovits_path") or "")},
+                },
+            )
+            preset = self._upsert_preset(
+                workspace_id=workspace_id,
+                main_model_id=main_model.main_model_id,
+                submodel_id=submodel_id,
+                preset_id="default",
+                display_name="default",
+                defaults=preset_defaults,
+                fixed_fields={},
+                preset_assets=preset_assets,
+            )
+            submodels.append(submodel)
+            presets.append(preset)
+
+        return GPTSoVITSWorkspaceImportResult(
+            main_model=main_model,
+            submodels=submodels,
+            presets=presets,
+        )
+
+    def restructure_workspace_to_single_main_model(
+        self,
+        *,
+        workspace_id: str,
+        target_main_model_id: str,
+        target_main_model_display_name: str,
+    ) -> GPTSoVITSWorkspaceImportResult:
+        tree = self._workspace_service.get_workspace_tree(workspace_id)
+        existing_target = next(
+            (item for item in tree.main_models if item.main_model_id == target_main_model_id),
+            None,
+        )
+        target_main_model = self._upsert_main_model(
+            workspace_id=workspace_id,
+            main_model_id=target_main_model_id,
+            display_name=target_main_model_display_name,
+            source_type="local_package",
+            main_model_metadata=(
+                dict(existing_target.main_model_metadata)
+                if existing_target is not None
+                else {
+                    "migration_source": "workspace_restructure",
+                    "legacy_layout": "single_main_model_many_submodels",
+                }
+            ),
+            shared_assets=dict(existing_target.shared_assets) if existing_target is not None else {},
+        )
+
+        submodels: list[SubmodelRecord] = []
+        presets: list[PresetRecord] = []
+        for main_model in tree.main_models:
+            if main_model.main_model_id == target_main_model_id:
+                for submodel in main_model.submodels:
+                    actual_submodel = self._upsert_submodel(
+                        workspace_id=workspace_id,
+                        main_model_id=target_main_model.main_model_id,
+                        submodel_id=submodel.submodel_id,
+                        display_name=submodel.display_name,
+                        instance_assets=dict(submodel.instance_assets),
+                    )
+                    submodels.append(actual_submodel)
+                    for preset in submodel.presets:
+                        presets.append(
+                            self._upsert_preset(
+                                workspace_id=workspace_id,
+                                main_model_id=target_main_model.main_model_id,
+                                submodel_id=actual_submodel.submodel_id,
+                                preset_id=preset.preset_id,
+                                display_name=preset.display_name,
+                                defaults=dict(preset.defaults),
+                                fixed_fields=dict(preset.fixed_fields),
+                                preset_assets=dict(preset.preset_assets),
+                            )
+                        )
+                continue
+
+            if len(main_model.submodels) == 1 and main_model.submodels[0].submodel_id == "default":
+                source_submodel = main_model.submodels[0]
+                actual_submodel = self._upsert_submodel(
+                    workspace_id=workspace_id,
+                    main_model_id=target_main_model.main_model_id,
+                    submodel_id=main_model.main_model_id,
+                    display_name=main_model.display_name,
+                    instance_assets=dict(source_submodel.instance_assets),
+                )
+                submodels.append(actual_submodel)
+                for preset in source_submodel.presets:
+                    presets.append(
+                        self._upsert_preset(
+                            workspace_id=workspace_id,
+                            main_model_id=target_main_model.main_model_id,
+                            submodel_id=actual_submodel.submodel_id,
+                            preset_id=preset.preset_id,
+                            display_name=preset.display_name,
+                            defaults=dict(preset.defaults),
+                            fixed_fields=dict(preset.fixed_fields),
+                            preset_assets=dict(preset.preset_assets),
+                        )
+                    )
+                continue
+
+            for submodel in main_model.submodels:
+                actual_submodel = self._upsert_submodel(
+                    workspace_id=workspace_id,
+                    main_model_id=target_main_model.main_model_id,
+                    submodel_id=submodel.submodel_id,
+                    display_name=submodel.display_name,
+                    instance_assets=dict(submodel.instance_assets),
+                )
+                submodels.append(actual_submodel)
+                for preset in submodel.presets:
+                    presets.append(
+                        self._upsert_preset(
+                            workspace_id=workspace_id,
+                            main_model_id=target_main_model.main_model_id,
+                            submodel_id=actual_submodel.submodel_id,
+                            preset_id=preset.preset_id,
+                            display_name=preset.display_name,
+                            defaults=dict(preset.defaults),
+                            fixed_fields=dict(preset.fixed_fields),
+                            preset_assets=dict(preset.preset_assets),
+                        )
+                    )
+
+        for main_model in tree.main_models:
+            if main_model.main_model_id == target_main_model.main_model_id:
+                continue
+            self._workspace_service.delete_main_model(workspace_id, main_model.main_model_id)
+
+        return GPTSoVITSWorkspaceImportResult(
+            main_model=target_main_model,
+            submodels=submodels,
+            presets=presets,
+        )
 
     def _upsert_main_model(
         self,
