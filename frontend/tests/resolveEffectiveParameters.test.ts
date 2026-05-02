@@ -6,6 +6,7 @@ import {
   resolveEffectiveParameters,
 } from "../src/components/workspace/parameter-panel/resolveEffectiveParameters";
 import type {
+  BindingReference,
   EditSessionSnapshot,
   EditableSegment,
   EditableEdge,
@@ -14,7 +15,16 @@ import type {
   TimelineManifest,
   VoiceBinding,
 } from "../src/types/editSession";
-import type { VoiceProfile } from "../src/types/tts";
+import type { RegistryBindingOption } from "../src/types/ttsRegistry";
+
+function createBindingRef(mainModelId: string): BindingReference {
+  return {
+    workspace_id: "ws-demo",
+    main_model_id: mainModelId,
+    submodel_id: "default",
+    preset_id: "default",
+  };
+}
 
 function createSnapshot(): EditSessionSnapshot {
   return {
@@ -29,58 +39,76 @@ function createSnapshot(): EditSessionSnapshot {
   };
 }
 
-function createVoices(): VoiceProfile[] {
+function createBindingOptions(): RegistryBindingOption[] {
   return [
     {
-      name: "voice-default",
-      gpt_path: "models/default.ckpt",
-      sovits_path: "models/default.pth",
-      ref_audio: "voices/default-preset.wav",
-      ref_text: "默认音色预设文本",
-      ref_lang: "zh",
-      description: "默认音色",
-      defaults: {
-        speed: 1,
-        temperature: 1,
-        top_p: 1,
-        top_k: 15,
-        pause_length: 0.3,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-default:default:default",
+      bindingRef: createBindingRef("voice-default"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-default",
+      mainModelDisplayName: "voice-default",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-default",
+      status: "ready",
+      referenceAudioPath: "voices/default-preset.wav",
+      referenceText: "默认音色预设文本",
+      referenceLanguage: "zh",
+      defaults: {},
+      fixedFields: {},
     },
     {
-      name: "voice-a",
-      gpt_path: "models/a.ckpt",
-      sovits_path: "models/a.pth",
-      ref_audio: "voices/a-preset.wav",
-      ref_text: "音色A预设文本",
-      ref_lang: "en",
-      description: "音色 A",
-      defaults: {
-        speed: 1.1,
-        temperature: 0.9,
-        top_p: 0.8,
-        top_k: 20,
-        pause_length: 0.35,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-a:default:default",
+      bindingRef: createBindingRef("voice-a"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-a",
+      mainModelDisplayName: "voice-a",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-a",
+      status: "ready",
+      referenceAudioPath: "voices/a-preset.wav",
+      referenceText: "音色A预设文本",
+      referenceLanguage: "en",
+      defaults: {},
+      fixedFields: {},
     },
     {
-      name: "voice-b",
-      gpt_path: "models/b.ckpt",
-      sovits_path: "models/b.pth",
-      ref_audio: "voices/b-preset.wav",
-      ref_text: "音色B预设文本",
-      ref_lang: "ja",
-      description: "音色 B",
-      defaults: {
-        speed: 1.2,
-        temperature: 1,
-        top_p: 0.7,
-        top_k: 25,
-        pause_length: 0.4,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-b:default:default",
+      bindingRef: createBindingRef("voice-b"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-b",
+      mainModelDisplayName: "voice-b",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-b",
+      status: "ready",
+      referenceAudioPath: "voices/b-preset.wav",
+      referenceText: "音色B预设文本",
+      referenceLanguage: "ja",
+      defaults: {},
+      fixedFields: {},
     },
   ];
 }
@@ -111,10 +139,9 @@ function createProfiles(): RenderProfile[] {
       top_p: 0.8,
       temperature: 0.9,
       noise_scale: 0.4,
-      reference_overrides_by_binding: {
-        [buildReferenceBindingKey({
-          voiceId: "voice-a",
-          modelKey: "voice-a",
+        reference_overrides_by_binding: {
+          [buildReferenceBindingKey({
+            bindingRef: createBindingRef("voice-a"),
         })]: {
           reference_identity: "doc-1:session-ref-a",
           reference_audio_fingerprint: "audio-fp-a",
@@ -152,6 +179,7 @@ function createBindings(): VoiceBinding[] {
     {
       voice_binding_id: "binding-session",
       scope: "session",
+      binding_ref: createBindingRef("voice-default"),
       voice_id: "voice-default",
       model_key: "voice-default",
       gpt_path: "models/default.ckpt",
@@ -161,6 +189,7 @@ function createBindings(): VoiceBinding[] {
     {
       voice_binding_id: "binding-seg-1",
       scope: "segment",
+      binding_ref: createBindingRef("voice-a"),
       voice_id: "voice-a",
       model_key: "voice-a",
       gpt_path: "models/a.ckpt",
@@ -170,6 +199,7 @@ function createBindings(): VoiceBinding[] {
     {
       voice_binding_id: "binding-seg-2",
       scope: "segment",
+      binding_ref: createBindingRef("voice-b"),
       voice_id: "voice-b",
       model_key: "voice-b",
       gpt_path: "models/b.ckpt",
@@ -338,7 +368,7 @@ function createEdges(): EditableEdge[] {
 
 describe("resolveEffectiveParameters", () => {
   const snapshot = createSnapshot();
-  const voices = createVoices();
+  const bindingOptions = createBindingOptions();
   const renderProfiles = createProfiles();
   const voiceBindings = createBindings();
   const groups = createGroups();
@@ -358,7 +388,7 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-      voices,
+      bindingOptions,
     } as never);
     const reference = (resolved as any).reference;
 
@@ -366,8 +396,8 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
     expect(reference.source).toBe("preset");
     expect(reference.reference_scope).toBe("voice_preset");
-    expect(reference.binding_key).toBe("voice-default:voice-default");
-    expect(reference.reference_identity).toBe("voice-default:preset");
+    expect(reference.binding_key).toBe("ws-demo:voice-default:default:default");
+    expect(reference.reference_identity).toBe("ws-demo:voice-default:default:default:preset");
     expect(reference.session_reference_asset_id).toBeNull();
     expect(reference.reference_audio_fingerprint).toBeNull();
     expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
@@ -389,7 +419,7 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-      voices,
+      bindingOptions,
     } as never);
     const reference = (resolved as any).reference;
 
@@ -397,7 +427,7 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.voiceBinding.voice_id).toBe("voice-a");
     expect(reference.source).toBe("custom");
     expect(reference.reference_scope).toBe("session_override");
-    expect(reference.binding_key).toBe("voice-a:voice-a");
+    expect(reference.binding_key).toBe("ws-demo:voice-a:default:default");
     expect(reference.reference_identity).toBe("doc-1:session-ref-a");
     expect(reference.session_reference_asset_id).toBeNull();
     expect(reference.reference_audio_fingerprint).toBe("audio-fp-a");
@@ -420,7 +450,7 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-      voices,
+      bindingOptions,
     } as never);
     const reference = (resolved as any).reference;
 
@@ -428,7 +458,7 @@ describe("resolveEffectiveParameters", () => {
     expect(resolved.voiceBinding.voice_id).toBe("voice-default");
     expect(reference.source).toBe("preset");
     expect(reference.reference_scope).toBe("voice_preset");
-    expect(reference.reference_identity).toBe("voice-default:preset");
+    expect(reference.reference_identity).toBe("ws-demo:voice-default:default:default:preset");
     expect(reference.reference_audio_path).toBe("voices/default-preset.wav");
     expect(reference.reference_text).toBe("默认音色预设文本");
   });
@@ -445,7 +475,7 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-      voices,
+      bindingOptions,
     } as never);
     const reference = (resolved as any).reference;
 
@@ -471,7 +501,7 @@ describe("resolveEffectiveParameters", () => {
       renderProfiles,
       voiceBindings,
       edges,
-      voices,
+      bindingOptions,
     } as never);
 
     expect(resolved.edge?.pause_duration_seconds).toBe(0.45);
