@@ -86,6 +86,9 @@ def test_compose_block_inserts_boundary_then_pause_and_tracks_segment_spans():
     assert [entry.segment_id for entry in block.segment_entries] == ["seg-1", "seg-2"]
     assert block.segment_entries[0].audio_sample_span == (0, 3)
     assert block.segment_entries[1].audio_sample_span == (6, 9)
+    assert block.segment_alignment_mode == "exact"
+    assert [entry.precision for entry in block.segment_entries] == ["exact", "exact"]
+    assert [entry.source for entry in block.segment_entries] == ["adapter_exact", "adapter_exact"]
 
 
 def test_compose_document_offsets_block_spans_and_concatenates_audio():

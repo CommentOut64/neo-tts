@@ -262,3 +262,21 @@ def test_tts_registry_adapter_family_catalog_declares_supported_families_and_sch
     assert first_family["main_model_form_schema"] is not None
     assert first_family["submodel_form_schema"] is not None
     assert first_family["preset_form_schema"] is not None
+
+
+def test_tts_registry_gpt_sovits_family_exposes_explicit_submodel_and_preset_management(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    _write_json(settings.voices_config_path, {})
+
+    with TestClient(create_app(settings=settings)) as client:
+        families = client.get("/v1/tts-registry/adapters/gpt_sovits_local/families")
+
+    assert families.status_code == 200
+    family = families.json()[0]
+    assert family["family_id"] == "gpt_sovits_local_default"
+    assert family["supports_submodels"] is True
+    assert family["auto_singleton_submodel"] is False
+    assert any(field["field_key"] == "gpt_weight.path" for field in family["submodel_form_schema"])
+    assert any(field["field_key"] == "sovits_weight.path" for field in family["submodel_form_schema"])
+    assert any(field["field_key"] == "reference_text" for field in family["preset_form_schema"])
+    assert any(field["field_key"] == "reference_audio.path" for field in family["preset_form_schema"])

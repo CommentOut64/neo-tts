@@ -87,3 +87,56 @@ def test_timeline_route_returns_markers_and_compatible_block_reuse(test_app_sett
         assert updated_payload["timeline_version"] == initial_payload["timeline_version"] + 1
         assert updated_payload["block_entries"][1]["block_asset_id"] == second_block_asset_id
         assert {entry["segment_alignment_mode"] for entry in updated_payload["block_entries"]} == {"exact"}
+
+
+def test_timeline_route_keeps_exact_alignment_after_voice_binding_commit_and_rerender(
+    test_app_settings,
+    demo_binding_ref,
+):
+    gate = threading.Event()
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
+
+    with TestClient(app) as client:
+        initialize = client.post(
+            "/v1/edit-session/initialize",
+            json={
+                "raw_text": "第一句。第二句。",
+                "binding_ref": demo_binding_ref,
+            },
+        )
+        assert initialize.status_code == 202
+        gate.set()
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
+
+        initial_snapshot = client.get("/v1/edit-session/snapshot").json()
+        segment_id = initial_snapshot["segments"][0]["segment_id"]
+
+        patch_segment = client.patch(
+            f"/v1/edit-session/segments/{segment_id}",
+            json={
+                "text_patch": {
+                    "stem": "第一句改写",
+                    "terminal_raw": "。",
+                    "terminal_source": "original",
+                }
+            },
+        )
+        assert patch_segment.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 2)
+
+        commit_binding = client.patch(
+            f"/v1/edit-session/segments/{segment_id}/voice-binding/config",
+            json={"binding_ref": demo_binding_ref},
+        )
+        assert commit_binding.status_code == 200
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 3)
+
+        rerender = client.post(f"/v1/edit-session/segments/{segment_id}/rerender")
+        assert rerender.status_code == 202
+        _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["document_version"] == 4)
+
+        timeline_payload = client.get("/v1/edit-session/timeline").json()
+
+        assert {entry["segment_alignment_mode"] for entry in timeline_payload["block_entries"]} == {"exact"}
+        assert {entry["alignment_precision"] for entry in timeline_payload["segment_entries"]} == {"exact"}

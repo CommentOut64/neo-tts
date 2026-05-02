@@ -12,17 +12,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.app.core.settings import AppSettings, get_settings
 from backend.app.schemas.edit_session import BindingReference
-from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
-from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
-from backend.app.tts_registry.secret_store import SecretStore
-from backend.app.tts_registry.workspace_service import WorkspaceService
-from backend.app.tts_registry.workspace_store import WorkspaceStore
+from backend.app.tts_registry.gpt_sovits_binding_bootstrap import ensure_gpt_sovits_binding_for_voice
 
 
 REAL_MODEL_VOICE_ID = "neuro2"
-REAL_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
+REAL_MODEL_WORKSPACE_ID = "ws_real_gpt_sovits"
+REAL_MODEL_WORKSPACE_SLUG = "real-gpt-sovits"
+REAL_MODEL_WORKSPACE_DISPLAY_NAME = "Real GPT-SoVITS"
 TEST_MODEL_VOICE_ID = "demo"
-TEST_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
+TEST_MODEL_WORKSPACE_ID = "ws_test_gpt_sovits"
+TEST_MODEL_WORKSPACE_SLUG = "test-gpt-sovits"
+TEST_MODEL_WORKSPACE_DISPLAY_NAME = "Test GPT-SoVITS"
 REAL_MODEL_SEGMENT_BOUNDARY_MODE = "zh_period"
 REAL_MODEL_TEXT_LANGUAGE = "zh"
 REAL_MODEL_TTS_TEXT = (
@@ -57,71 +57,14 @@ class RealModelEnv:
     segment_boundary_mode: str
 
 
-def _build_workspace_service(settings: AppSettings) -> WorkspaceService:
-    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-    return WorkspaceService(
-        adapter_store=build_default_adapter_definition_store(
-            enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
-        ),
-        workspace_store=WorkspaceStore(registry_root),
-        secret_store=SecretStore(registry_root),
+def _ensure_real_model_binding(settings: AppSettings) -> tuple[object, BindingReference, dict[str, object]]:
+    return ensure_gpt_sovits_binding_for_voice(
+        settings=settings,
+        workspace_slug=REAL_MODEL_WORKSPACE_SLUG,
+        workspace_display_name=REAL_MODEL_WORKSPACE_DISPLAY_NAME,
+        voice_id=REAL_MODEL_VOICE_ID,
+        allow_legacy_bootstrap=True,
     )
-
-
-def _ensure_real_model_binding(settings: AppSettings) -> tuple[WorkspaceService, BindingReference, dict[str, object]]:
-    workspace_service = _build_workspace_service(settings)
-    binding_ref = BindingReference(
-        workspace_id=REAL_MODEL_WORKSPACE_ID,
-        main_model_id=REAL_MODEL_VOICE_ID,
-        submodel_id="default",
-        preset_id="default",
-    )
-    try:
-        resolved = workspace_service.resolve_binding_reference(binding_ref)
-    except LookupError:
-        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-        migration_service = TtsRegistryMigrationService(
-            workspace_service=workspace_service,
-            registry_root=registry_root,
-        )
-        created = migration_service.migrate_legacy_voices_file(
-            voices_config_path=settings.voices_config_path,
-        )
-        if not any(item.get("legacy_voice_id") == REAL_MODEL_VOICE_ID for item in created):
-            raise LookupError(f"真实模型 E2E 缺少 legacy voice '{REAL_MODEL_VOICE_ID}'。")
-        resolved = workspace_service.resolve_binding_reference(binding_ref)
-    return workspace_service, binding_ref, resolved
-
-
-def _ensure_legacy_voice_binding(
-    settings: AppSettings,
-    *,
-    workspace_id: str,
-    voice_id: str,
-) -> BindingReference:
-    workspace_service = _build_workspace_service(settings)
-    binding_ref = BindingReference(
-        workspace_id=workspace_id,
-        main_model_id=voice_id,
-        submodel_id="default",
-        preset_id="default",
-    )
-    try:
-        workspace_service.resolve_binding_reference(binding_ref)
-        return binding_ref
-    except LookupError:
-        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-        migration_service = TtsRegistryMigrationService(
-            workspace_service=workspace_service,
-            registry_root=registry_root,
-        )
-        created = migration_service.migrate_legacy_voices_file(
-            voices_config_path=settings.voices_config_path,
-        )
-        if not any(item.get("legacy_voice_id") == voice_id for item in created):
-            raise LookupError(f"缺少 legacy voice '{voice_id}'。")
-        workspace_service.resolve_binding_reference(binding_ref)
-        return binding_ref
 
 
 def require_real_model_env(*, settings: AppSettings | None = None) -> RealModelEnv:
@@ -158,11 +101,14 @@ def require_real_model_env(*, settings: AppSettings | None = None) -> RealModelE
 
 
 def _ensure_test_binding(settings: AppSettings, *, voice_id: str = TEST_MODEL_VOICE_ID) -> BindingReference:
-    return _ensure_legacy_voice_binding(
-        settings,
-        workspace_id=TEST_MODEL_WORKSPACE_ID,
+    _, binding_ref, _ = ensure_gpt_sovits_binding_for_voice(
+        settings=settings,
+        workspace_slug=TEST_MODEL_WORKSPACE_SLUG,
+        workspace_display_name=TEST_MODEL_WORKSPACE_DISPLAY_NAME,
         voice_id=voice_id,
+        allow_legacy_bootstrap=True,
     )
+    return binding_ref
 
 
 @pytest.fixture()
