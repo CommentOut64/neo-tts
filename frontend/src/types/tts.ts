@@ -7,23 +7,6 @@ export interface VoiceDefaults {
   pause_length: number
 }
 
-export interface VoiceProfile {
-  name: string
-  gpt_path: string
-  sovits_path: string
-  weight_storage_mode: 'external' | 'managed'
-  gpt_fingerprint: string
-  sovits_fingerprint: string
-  ref_audio: string
-  ref_text: string
-  ref_lang: string
-  description: string
-  defaults: VoiceDefaults
-  managed: boolean
-  created_at?: string | null
-  updated_at?: string | null
-}
-
 export interface InferenceParams {
   speed: number
   temperature: number

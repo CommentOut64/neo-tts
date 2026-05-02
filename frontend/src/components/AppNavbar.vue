@@ -27,7 +27,7 @@ const aboutDialogVisible = ref(false)
 const navItems = [
   { path: '/text-input', label: '文本输入' },
   { path: '/workspace', label: '语音合成' },
-  { path: '/voices', label: '模型管理' },
+  { path: '/models', label: '模型管理' },
 ]
 
 const canOpenExport = computed(() =>

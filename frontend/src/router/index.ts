@@ -33,9 +33,15 @@ const router = createRouter({
       meta: { title: '语音合成', icon: 'Microphone' },
     },
     {
-      path: '/voices',
-      name: 'VoiceAdmin',
-      component: () => import('@/views/VoiceAdminView.vue'),
+      path: '/models',
+      name: 'ModelHub',
+      component: () => import('@/views/ModelHubView.vue'),
+      meta: { title: '模型中心', icon: 'Setting' },
+    },
+    {
+      path: '/models/:familyRoute/:workspaceSlug',
+      name: 'ModelWorkspace',
+      component: () => import('@/views/ModelWorkspaceView.vue'),
       meta: { title: '模型管理', icon: 'Setting' },
     },
   ],
