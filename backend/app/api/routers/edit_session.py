@@ -22,7 +22,6 @@ from backend.app.inference.adapters import ExternalHttpTtsAdapter
 from backend.app.inference.adapters import GPTSoVITSLocalAdapter
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.external_http_rate_limiter import ExternalHttpLimitConfig
-from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.edit_session import (
     AppendSegmentsRequest,
     BaselineSnapshotResponse,
@@ -53,26 +52,28 @@ from backend.app.schemas.edit_session import (
     SegmentExportRequest,
     SegmentAssetResponse,
     SegmentBatchRenderProfilePatchRequest,
-    SegmentBatchVoiceBindingPatchRequest,
+    SegmentBatchSynthesisBindingPatchRequest,
     SegmentListResponse,
     SplitSegmentRequest,
     StandardizationPreviewRequest,
     StandardizationPreviewResponse,
     SwapSegmentsRequest,
+    SynthesisBindingListResponse,
+    SynthesisBindingPatchRequest,
     TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
-    VoiceBindingListResponse,
-    VoiceBindingPatchRequest,
 )
 from backend.app.services.audio_delivery_service import AudioDeliveryService
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.export_service import ExportService
 from backend.app.services.render_job_service import RenderJobService
-from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.binding_catalog_service import BindingCatalogService
 from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
 from backend.app.tts_registry.model_registry import ModelRegistry
 from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
 
 
 router = APIRouter(prefix="/v1/edit-session", tags=["edit-session"])
@@ -110,23 +111,35 @@ class _UnavailableEditableBackend:
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
 
-def _build_voice_service(request: Request) -> VoiceService:
-    model_registry = _build_model_registry(request)
-    settings = request.app.state.settings
-    repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
-    return VoiceService(repository, model_registry)
-
-
 def _build_model_registry(request: Request) -> ModelRegistry:
+    shared = getattr(request.app.state, "model_registry", None)
+    if shared is not None:
+        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return ModelRegistry(registry_root)
 
 
 def _build_secret_store(request: Request) -> SecretStore:
+    shared = getattr(request.app.state, "secret_store", None)
+    if shared is not None:
+        return shared
     settings = request.app.state.settings
     registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
     return SecretStore(registry_root)
+
+
+def _build_workspace_service(request: Request) -> WorkspaceService:
+    shared = getattr(request.app.state, "workspace_service", None)
+    if shared is not None:
+        return shared
+    return WorkspaceService(
+        adapter_store=build_default_adapter_definition_store(
+            enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+        ),
+        workspace_store=WorkspaceStore(_build_model_registry(request).root_dir),
+        secret_store=_build_secret_store(request),
+    )
 
 
 def _build_external_http_default_limit_config(request: Request) -> ExternalHttpLimitConfig:
@@ -197,7 +210,8 @@ def _resolve_runtime_model_path(request: Request, raw_path: str) -> str:
 def _build_editable_gateway(
     request: Request,
     *,
-    voice_id: str,
+    voice_id: str | None = None,
+    binding_ref=None,
 ) -> EditableInferenceGateway | LazyEditableInferenceGateway | RoutingEditableInferenceGateway:
     existing = getattr(request.app.state, "editable_inference_gateway", None)
     if existing is not None:
@@ -213,14 +227,30 @@ def _build_editable_gateway(
             model_cache_cls=PyTorchModelCache,
         )
         request.app.state.model_cache = model_cache
-    voice_service = _build_voice_service(request)
-    voice = voice_service.get_voice(voice_id)
+    workspace_service = _build_workspace_service(request)
+    default_gpt_path: str | None = None
+    default_sovits_path: str | None = None
+    resolved_binding_ref = binding_ref
+    if resolved_binding_ref is None and voice_id is None:
+        active_session = request.app.state.edit_session_repository.get_active_session()
+        if active_session is None or active_session.initialize_request is None:
+            raise EditSessionNotFoundError("Active edit session not found.")
+        else:
+            resolved_binding_ref = active_session.initialize_request.binding_ref
+
+    if resolved_binding_ref is None:
+        raise LookupError("当前会话缺少 binding_ref，无法构建 editable gateway。")
+    resolved_binding = workspace_service.resolve_binding_reference(resolved_binding_ref)
+    default_gpt_path = resolved_binding.get("gpt_path")
+    default_sovits_path = resolved_binding.get("sovits_path")
+    if not isinstance(default_gpt_path, str) or not isinstance(default_sovits_path, str):
+        raise LookupError("当前 binding_ref 未提供本地可用的 GPT/SoVITS 权重路径。")
     cache: dict[tuple[str, str], EditableInferenceGateway | LazyEditableInferenceGateway] = getattr(
         request.app.state,
         "editable_inference_gateway_cache",
         {},
     )
-    default_cache_key = (voice.gpt_path, voice.sovits_path)
+    default_cache_key = (default_gpt_path, default_sovits_path)
 
     def _build_cached_gateway(gpt_path: str, sovits_path: str) -> LazyEditableInferenceGateway:
         resolved_gpt_path = _resolve_runtime_model_path(request, gpt_path)
@@ -250,23 +280,18 @@ def _build_edit_session_service(request: Request) -> EditSessionService:
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
-        voice_service=_build_voice_service(request),
+        workspace_service=_build_workspace_service(request),
     )
 
 
-def _build_render_job_service(request: Request, *, voice_id: str | None = None) -> RenderJobService:
-    if voice_id is None:
-        active_session = request.app.state.edit_session_repository.get_active_session()
-        if active_session is None or active_session.initialize_request is None:
-            raise EditSessionNotFoundError("Active edit session not found.")
-        voice_id = active_session.initialize_request.voice_id
+def _build_render_job_service(request: Request, *, voice_id: str | None = None, binding_ref=None) -> RenderJobService:
     return RenderJobService(
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
         inference_runtime=request.app.state.inference_runtime,
         session_service=_build_edit_session_service(request),
-        gateway=_build_editable_gateway(request, voice_id=voice_id),
+        gateway=_build_editable_gateway(request, voice_id=voice_id, binding_ref=binding_ref),
         audio_delivery_service=AudioDeliveryService(),
         model_registry=_build_model_registry(request),
         adapter_registry=_build_adapter_registry(request),
@@ -404,7 +429,7 @@ async def upload_reference_audio(
     responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
 )
 def initialize_edit_session(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
-    service = _build_render_job_service(request, voice_id=body.voice_id)
+    service = _build_render_job_service(request, binding_ref=body.binding_ref)
     return service.create_initialize_job(body)
 
 
@@ -417,7 +442,7 @@ def initialize_edit_session(request: Request, body: InitializeEditSessionRequest
     responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
 )
 def create_render_job(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
-    service = _build_render_job_service(request, voice_id=body.voice_id)
+    service = _build_render_job_service(request, binding_ref=body.binding_ref)
     return service.create_initialize_job(body)
 
 
@@ -488,12 +513,17 @@ def get_render_profiles(request: Request) -> RenderProfileListResponse:
 
 @router.get(
     "/voice-bindings",
-    response_model=VoiceBindingListResponse,
-    summary="列出音色与模型绑定",
-    description="返回当前文档已存在的 session/group/segment 级 voice/model binding。",
+    response_model=SynthesisBindingListResponse,
+    include_in_schema=False,
+)
+@router.get(
+    "/synthesis-bindings",
+    response_model=SynthesisBindingListResponse,
+    summary="列出合成绑定",
+    description="返回当前文档已存在的 session/group/segment 级 synthesis/model binding。",
     responses=NOT_FOUND_RESPONSE,
 )
-def get_voice_bindings(request: Request) -> VoiceBindingListResponse:
+def get_voice_bindings(request: Request) -> SynthesisBindingListResponse:
     return _build_readonly_render_job_service(request).list_voice_bindings()
 
 
@@ -719,11 +749,16 @@ def patch_session_render_profile(request: Request, body: RenderProfilePatchReque
 @router.patch(
     "/session/voice-binding/config",
     response_model=ConfigurationCommitResponse,
-    summary="仅提交会话级音色绑定",
-    description="创建新的 session-scope voice/model binding 并持久化，但不立即触发重推理。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/session/synthesis-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交会话级合成绑定",
+    description="创建新的 session-scope synthesis/model binding 并持久化，但不立即触发重推理。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
-def commit_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
+def commit_session_voice_binding(request: Request, body: SynthesisBindingPatchRequest) -> ConfigurationCommitResponse:
     return _build_render_job_service(request).commit_patch_session_voice_binding(body)
 
 
@@ -731,11 +766,17 @@ def commit_session_voice_binding(request: Request, body: VoiceBindingPatchReques
     "/session/voice-binding",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="更新会话级音色绑定",
-    description="创建新的 session-scope voice/model binding，并作为后续段的默认绑定。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/session/synthesis-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新会话级合成绑定",
+    description="创建新的 session-scope synthesis/model binding，并作为后续段的默认绑定。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
-def patch_session_voice_binding(request: Request, body: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
+def patch_session_voice_binding(request: Request, body: SynthesisBindingPatchRequest) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_session_voice_binding_job(body)
 
 
@@ -759,14 +800,20 @@ def patch_group_render_profile(
     "/groups/{group_id}/voice-binding",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="更新组级音色绑定",
-    description="为指定 group 创建新的 voice/model binding，并让组内段继承该绑定。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/groups/{group_id}/synthesis-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新组级合成绑定",
+    description="为指定 group 创建新的 synthesis/model binding，并让组内段继承该绑定。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def patch_group_voice_binding(
     request: Request,
     group_id: str,
-    body: VoiceBindingPatchRequest,
+    body: SynthesisBindingPatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_group_voice_binding_job(group_id, body)
 
@@ -805,14 +852,19 @@ def patch_segment_render_profile(
 @router.patch(
     "/segments/{segment_id}/voice-binding/config",
     response_model=ConfigurationCommitResponse,
-    summary="仅提交段级音色绑定",
-    description="为单个段创建新的 voice/model binding 并持久化，但不立即触发重推理。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/segments/{segment_id}/synthesis-binding/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交段级合成绑定",
+    description="为单个段创建新的 synthesis/model binding 并持久化，但不立即触发重推理。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def commit_segment_voice_binding(
     request: Request,
     segment_id: str,
-    body: VoiceBindingPatchRequest,
+    body: SynthesisBindingPatchRequest,
 ) -> ConfigurationCommitResponse:
     return _build_render_job_service(request).commit_patch_segment_voice_binding(segment_id, body)
 
@@ -821,14 +873,20 @@ def commit_segment_voice_binding(
     "/segments/{segment_id}/voice-binding",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="更新段级音色绑定",
-    description="为单个段创建新的 voice/model binding，并触发必要的重渲染。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/segments/{segment_id}/synthesis-binding",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="更新段级合成绑定",
+    description="为单个段创建新的 synthesis/model binding，并触发必要的重渲染。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def patch_segment_voice_binding(
     request: Request,
     segment_id: str,
-    body: VoiceBindingPatchRequest,
+    body: SynthesisBindingPatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segment_voice_binding_job(segment_id, body)
 
@@ -865,13 +923,18 @@ def patch_segments_render_profile_batch(
 @router.patch(
     "/segments/voice-binding-batch/config",
     response_model=ConfigurationCommitResponse,
-    summary="仅提交批量段级音色绑定",
-    description="对目标段批量绑定新的 voice/model binding 并持久化，但不立即触发重推理。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/segments/synthesis-binding-batch/config",
+    response_model=ConfigurationCommitResponse,
+    summary="仅提交批量段级合成绑定",
+    description="对目标段批量绑定新的 synthesis/model binding 并持久化，但不立即触发重推理。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def commit_segments_voice_binding_batch(
     request: Request,
-    body: SegmentBatchVoiceBindingPatchRequest,
+    body: SegmentBatchSynthesisBindingPatchRequest,
 ) -> ConfigurationCommitResponse:
     return _build_render_job_service(request).commit_patch_segments_voice_binding_batch(body)
 
@@ -880,13 +943,19 @@ def commit_segments_voice_binding_batch(
     "/segments/voice-binding-batch",
     response_model=RenderJobAcceptedResponse,
     status_code=202,
-    summary="批量更新段级音色绑定",
-    description="对一组目标段批量创建并绑定同一个新的 voice/model binding。",
+    include_in_schema=False,
+)
+@router.patch(
+    "/segments/synthesis-binding-batch",
+    response_model=RenderJobAcceptedResponse,
+    status_code=202,
+    summary="批量更新段级合成绑定",
+    description="对一组目标段批量创建并绑定同一个新的 synthesis/model binding。",
     responses={**BAD_REQUEST_RESPONSE, **NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 def patch_segments_voice_binding_batch(
     request: Request,
-    body: SegmentBatchVoiceBindingPatchRequest,
+    body: SegmentBatchSynthesisBindingPatchRequest,
 ) -> RenderJobAcceptedResponse:
     return _build_render_job_service(request).create_patch_segments_voice_binding_batch_job(body)
 

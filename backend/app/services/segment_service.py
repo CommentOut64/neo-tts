@@ -110,6 +110,8 @@ class SegmentService:
         raw_segments: list[str],
         text_language: str,
         group_id: str | None = None,
+        render_profile_id: str | None = None,
+        voice_binding_id: str | None = None,
         snapshot: DocumentSnapshot | None = None,
     ) -> SegmentBatchMutationResult:
         head_snapshot = snapshot or self._get_head_snapshot()
@@ -129,6 +131,8 @@ class SegmentService:
                     text_language=text_language,
                     standardized=standardized,
                     group_id=group_id,
+                    render_profile_id=render_profile_id,
+                    voice_binding_id=voice_binding_id,
                     inference_override={},
                 )
             )

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.inference.block_adapter_errors import BlockAdapterErrorPayload
 from backend.app.text.segment_standardizer import build_segment_display_text
@@ -24,10 +24,10 @@ def _now_utc() -> datetime:
 
 
 class InitializeEditSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
     raw_text: str = Field(description="要初始化为 edit-session 的原始全文文本。")
     text_language: str = Field(default="auto", description="全文文本语言，通常为 `auto` 或 `zh`。")
-    voice_id: str = Field(description="初始化使用的音色 ID。")
-    model_id: str = Field(default="gpt-sovits-v2", description="兼容字段，初始化时记录的模型标识。")
+    binding_ref: "BindingReference" = Field(description="初始化使用的统一模型绑定引用。")
     reference_source: Literal["preset", "custom"] = Field(default="preset", description="初始化参考来源。")
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径；未提供时使用 voice 配置默认值。")
     reference_text: str | None = Field(default=None, description="可选的参考文本；未提供时使用 voice 配置默认值。")
@@ -47,6 +47,67 @@ class InitializeEditSessionRequest(BaseModel):
         default="raw_strong_punctuation",
         description="初始化切段策略，例如 `raw_strong_punctuation` 或 `zh_period`。",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_voice_payload(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if "binding_ref" in value:
+            return value
+        legacy_voice_id = value.get("voice_id")
+        if legacy_voice_id is None:
+            return value
+        upgraded = dict(value)
+        upgraded["binding_ref"] = {
+            "workspace_id": "legacy",
+            "main_model_id": str(legacy_voice_id),
+            "submodel_id": str(value.get("model_id") or "gpt-sovits-v2"),
+            "preset_id": str(value.get("preset_id") or "default"),
+        }
+        return upgraded
+
+    @property
+    def voice_id(self) -> str:
+        legacy_voice_id = self._legacy_extra_value("voice_id")
+        if legacy_voice_id is not None:
+            return legacy_voice_id
+        return self.binding_ref.to_legacy_voice_id()
+
+    @property
+    def model_id(self) -> str:
+        legacy_model_id = self._legacy_extra_value("model_id")
+        if legacy_model_id is not None:
+            return legacy_model_id
+        return self.binding_ref.to_legacy_model_key()
+
+    def _legacy_extra_value(self, key: str) -> str | None:
+        extra = self.model_extra or {}
+        raw_value = extra.get(key)
+        if raw_value is None:
+            return None
+        return str(raw_value)
+
+
+class BindingReference(BaseModel):
+    workspace_id: str = Field(description="绑定所在 workspace。")
+    main_model_id: str = Field(description="主模型 ID。")
+    submodel_id: str = Field(description="子模型 ID。")
+    preset_id: str = Field(description="预设 ID。")
+
+    def to_legacy_voice_id(self) -> str:
+        if self.workspace_id == "legacy":
+            if self.preset_id == "default":
+                return self.main_model_id
+            return f"{self.main_model_id}__{self.preset_id}"
+        if self.preset_id == "default":
+            return self.main_model_id
+        return f"{self.main_model_id}__{self.preset_id}"
+
+    def to_legacy_model_key(self) -> str:
+        if self.workspace_id == "legacy":
+            return self.submodel_id
+        return f"{self.workspace_id}:{self.main_model_id}:{self.submodel_id}"
 
 
 class ReferenceAudioUploadResponse(BaseModel):
@@ -120,9 +181,10 @@ class ReferenceBindingOverridePatchRequest(BaseModel):
     reference_language: str | None = Field(default=None, description="新的参考语言。")
 
 
-class VoiceBinding(BaseModel):
-    voice_binding_id: str = Field(description="voice/model binding 的唯一标识。")
+class SynthesisBinding(BaseModel):
+    voice_binding_id: str = Field(description="当前合成绑定的唯一标识。")
     scope: Literal["session", "group", "segment"] = Field(description="binding 生效范围。")
+    binding_ref: BindingReference | None = Field(default=None, description="统一绑定引用。")
     voice_id: str = Field(description="音色 ID。")
     model_key: str = Field(description="模型标识。")
     model_instance_id: str | None = Field(
@@ -136,6 +198,9 @@ class VoiceBinding(BaseModel):
     sovits_path: str | None = Field(default=None, description="可选的 SoVITS 模型路径。")
     gpt_path: str | None = Field(default=None, description="可选的 GPT 模型路径。")
     speaker_meta: dict[str, Any] = Field(default_factory=dict, description="可选的说话人附加元数据。")
+
+
+VoiceBinding = SynthesisBinding
 
 
 class SegmentGroup(BaseModel):
@@ -259,37 +324,101 @@ class RenderProfilePatchRequest(BaseModel):
         return self
 
 
-class VoiceBindingPatchRequest(BaseModel):
-    voice_id: str | None = Field(default=None, description="新的音色 ID。")
-    model_key: str | None = Field(default=None, description="新的模型标识。")
-    model_instance_id: str | None = Field(
-        default=None,
-        description="新的标准模型实例 ID；未提供时保留当前值或回落到兼容投影。",
-    )
-    preset_id: str | None = Field(
-        default=None,
-        description="新的标准预设 ID；未提供时保留当前值或回落到兼容投影。",
-    )
-    sovits_path: str | None = Field(default=None, description="新的 SoVITS 模型路径。")
-    gpt_path: str | None = Field(default=None, description="新的 GPT 模型路径。")
+class SynthesisBindingPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    binding_ref: BindingReference | None = Field(default=None, description="新的统一合成绑定引用。")
     speaker_meta: dict[str, Any] | None = Field(default=None, description="新的说话人附加元数据。")
 
-    @model_validator(mode="after")
-    def _validate_has_patch_fields(self) -> "VoiceBindingPatchRequest":
-        if all(
-            value is None
-            for value in (
-                self.voice_id,
-                self.model_key,
-                self.model_instance_id,
-                self.preset_id,
-                self.sovits_path,
-                self.gpt_path,
-                self.speaker_meta,
-            )
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_voice_binding_patch(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if "binding_ref" in value:
+            return value
+        legacy_voice_id = value.get("voice_id")
+        legacy_model_key = value.get("model_key")
+        legacy_model_instance_id = value.get("model_instance_id")
+        legacy_preset_id = value.get("preset_id")
+        if (
+            legacy_voice_id is None
+            and legacy_model_key is None
+            and legacy_model_instance_id is None
+            and legacy_preset_id is None
         ):
-            raise ValueError("At least one voice binding field must be provided.")
+            return value
+        upgraded = dict(value)
+        upgraded["binding_ref"] = {
+            "workspace_id": "legacy",
+            "main_model_id": str(legacy_voice_id or legacy_model_instance_id or "legacy"),
+            "submodel_id": str(legacy_model_key or "gpt-sovits-v2"),
+            "preset_id": str(legacy_preset_id or "default"),
+        }
+        return upgraded
+
+    @model_validator(mode="after")
+    def _validate_has_patch_fields(self) -> "SynthesisBindingPatchRequest":
+        if self.binding_ref is None and self.speaker_meta is None:
+            raise ValueError("At least one synthesis binding field must be provided.")
         return self
+
+    @property
+    def voice_id(self) -> str | None:
+        legacy_voice_id = self._legacy_extra_value("voice_id")
+        if legacy_voice_id is not None:
+            return legacy_voice_id
+        if self.binding_ref is None:
+            return None
+        return self.binding_ref.to_legacy_voice_id()
+
+    @property
+    def model_key(self) -> str | None:
+        legacy_model_key = self._legacy_extra_value("model_key")
+        if legacy_model_key is not None:
+            return legacy_model_key
+        if self.binding_ref is None:
+            return None
+        return self.binding_ref.to_legacy_model_key()
+
+    @property
+    def model_instance_id(self) -> str | None:
+        legacy_model_instance_id = self._legacy_extra_value("model_instance_id")
+        if legacy_model_instance_id is not None:
+            return legacy_model_instance_id
+        if self.binding_ref is None:
+            return None
+        if self.binding_ref.workspace_id == "legacy":
+            return self.binding_ref.main_model_id
+        return None
+
+    @property
+    def preset_id(self) -> str | None:
+        legacy_preset_id = self._legacy_extra_value("preset_id")
+        if legacy_preset_id is not None:
+            return legacy_preset_id
+        if self.binding_ref is None:
+            return None
+        if self.binding_ref.workspace_id == "legacy":
+            return self.binding_ref.preset_id
+        return None
+
+    @property
+    def sovits_path(self) -> str | None:
+        return None
+
+    @property
+    def gpt_path(self) -> str | None:
+        return None
+
+    def _legacy_extra_value(self, key: str) -> str | None:
+        extra = self.model_extra or {}
+        raw_value = extra.get(key)
+        if raw_value is None:
+            return None
+        return str(raw_value)
+
+
+VoiceBindingPatchRequest = SynthesisBindingPatchRequest
 
 
 class AppendSegmentsRequest(BaseModel):
@@ -302,9 +431,9 @@ class AppendSegmentsRequest(BaseModel):
         default=None,
         description="可选的组级 render profile patch；提供时可能自动创建组。",
     )
-    group_voice_binding: VoiceBindingPatchRequest | None = Field(
+    group_voice_binding: SynthesisBindingPatchRequest | None = Field(
         default=None,
-        description="可选的组级 voice/model binding patch；提供时可能自动创建组。",
+        description="可选的组级 synthesis/model binding patch；提供时可能自动创建组。",
     )
 
 
@@ -672,10 +801,13 @@ class RenderProfileListResponse(BaseModel):
     items: list[RenderProfile] = Field(default_factory=list, description="当前版本中的全部 render profile。")
 
 
-class VoiceBindingListResponse(BaseModel):
+class SynthesisBindingListResponse(BaseModel):
     document_id: str = Field(description="文档 ID。")
     document_version: int = Field(description="当前版本号。")
-    items: list[VoiceBinding] = Field(default_factory=list, description="当前版本中的全部 voice/model binding。")
+    items: list[SynthesisBinding] = Field(default_factory=list, description="当前版本中的全部 synthesis/model binding。")
+
+
+VoiceBindingListResponse = SynthesisBindingListResponse
 
 
 class ExportRequestBase(BaseModel):
@@ -767,15 +899,18 @@ class SegmentBatchRenderProfilePatchRequest(BaseModel):
         return self
 
 
-class SegmentBatchVoiceBindingPatchRequest(BaseModel):
-    segment_ids: list[str] = Field(min_length=1, description="要批量绑定 voice/model 的段 ID 列表。")
-    patch: VoiceBindingPatchRequest = Field(description="要应用到这批段的新 voice binding patch。")
+class SegmentBatchSynthesisBindingPatchRequest(BaseModel):
+    segment_ids: list[str] = Field(min_length=1, description="要批量绑定 synthesis/model 的段 ID 列表。")
+    patch: SynthesisBindingPatchRequest = Field(description="要应用到这批段的新 synthesis binding patch。")
 
     @model_validator(mode="after")
-    def _validate_unique_segment_ids(self) -> "SegmentBatchVoiceBindingPatchRequest":
+    def _validate_unique_segment_ids(self) -> "SegmentBatchSynthesisBindingPatchRequest":
         if len(set(self.segment_ids)) != len(self.segment_ids):
-            raise ValueError("Batch voice binding segment ids must be unique.")
+            raise ValueError("Batch synthesis binding segment ids must be unique.")
         return self
+
+
+SegmentBatchVoiceBindingPatchRequest = SegmentBatchSynthesisBindingPatchRequest
 
 
 class ExportOutputManifest(BaseModel):

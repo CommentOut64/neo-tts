@@ -8,6 +8,7 @@ from backend.app.repositories.edit_session_repository import EditSessionReposito
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
     BaselineSnapshotResponse,
+    BindingReference,
     ConfigurationCommitResponse,
     CurrentCheckpointResponse,
     DocumentSnapshot,
@@ -27,7 +28,7 @@ from backend.app.services.session_reference_asset_service import (
     SessionReferenceAsset,
     SessionReferenceAssetService,
 )
-from backend.app.services.voice_service import VoiceService
+from backend.app.tts_registry.workspace_service import WorkspaceService
 
 
 def should_inline_segment_summary(total_segment_count: int) -> bool:
@@ -41,29 +42,33 @@ class EditSessionService:
         repository: EditSessionRepository,
         asset_store: EditAssetStore,
         runtime: EditSessionRuntime,
-        voice_service: VoiceService,
+        workspace_service: WorkspaceService | None = None,
         session_reference_asset_service: SessionReferenceAssetService | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
         self._runtime = runtime
-        self._voice_service = voice_service
+        self._workspace_service = workspace_service
         self._session_reference_asset_service = session_reference_asset_service or SessionReferenceAssetService(
             assets_root=asset_store.assets_root
         )
 
     def prepare_initialize_request(self, request: InitializeEditSessionRequest) -> InitializeEditSessionRequest:
-        voice = self._voice_service.get_voice(request.voice_id)
+        if self._workspace_service is None:
+            return request
+        resolved_binding = self._workspace_service.resolve_binding_reference(request.binding_ref)
         return request.model_copy(
             update={
-                "reference_audio_path": request.reference_audio_path or voice.ref_audio,
-                "reference_text": request.reference_text or voice.ref_text,
-                "reference_language": request.reference_language or voice.ref_lang,
+                "reference_audio_path": request.reference_audio_path or resolved_binding["reference_audio_path"],
+                "reference_text": request.reference_text or resolved_binding["reference_text"],
+                "reference_language": request.reference_language or resolved_binding["reference_language"],
             }
         )
 
-    def get_voice_profile(self, voice_id: str):
-        return self._voice_service.get_voice(voice_id)
+    def resolve_binding_reference(self, binding_ref: BindingReference | dict[str, object]) -> dict[str, object]:
+        if self._workspace_service is None:
+            raise LookupError("Workspace service is not configured.")
+        return self._workspace_service.resolve_binding_reference(binding_ref)
 
     def create_session_reference_asset(
         self,

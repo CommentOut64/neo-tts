@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from uuid import uuid4
 
@@ -239,10 +240,10 @@ class RenderJobService:
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
         self._render_config_resolver = RenderConfigResolver(
-            voice_service=session_service,
             model_registry=model_registry,
             adapter_registry=adapter_registry,
             secret_store=secret_store,
+            workspace_service=session_service,
         )
         self._secret_store = secret_store
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
@@ -398,6 +399,16 @@ class RenderJobService:
             raw_segments=raw_segments,
             text_language=body.text_language,
             group_id=group_id,
+            render_profile_id=(
+                self._resolve_group_assigned_render_profile_id(working_snapshot, group_id)
+                if group_id is not None
+                else working_snapshot.default_render_profile_id
+            ),
+            voice_binding_id=(
+                self._resolve_group_assigned_voice_binding_id(working_snapshot, group_id)
+                if group_id is not None
+                else working_snapshot.default_voice_binding_id
+            ),
             snapshot=working_snapshot,
         )
         if group_id is not None:
@@ -2055,9 +2066,10 @@ class RenderJobService:
             progress=PREPARE_START_PROGRESS,
             message="正在准备参考上下文。",
         )
+        projected_binding = self._resolve_projected_binding_for_initialize_request(plan.request)
         resolved_context = self._build_resolved_context_from_request(
             plan.request,
-            projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+            projected_voice=projected_binding,
         )
         render_job_logger.info(
             "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
@@ -2071,23 +2083,24 @@ class RenderJobService:
             resolved_context.temperature,
             resolved_context.noise_scale,
         )
-        context_started = time.perf_counter()
-        plan.context = self._gateway.build_reference_context(
-            resolved_context,
-            progress_callback=self._build_prepare_progress_callback(
-                job_id=plan.job_id,
-                default_message="正在准备参考上下文。",
-            ),
-        )
-        render_job_logger.info(
-            "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
-            resolved_context.voice_id,
-            plan.context.reference_context_id,
-            (time.perf_counter() - context_started) * 1000,
-        )
+        if self._can_build_local_reference_context(projected_binding):
+            context_started = time.perf_counter()
+            plan.context = self._gateway.build_reference_context(
+                resolved_context,
+                progress_callback=self._build_prepare_progress_callback(
+                    job_id=plan.job_id,
+                    default_message="正在准备参考上下文。",
+                ),
+            )
+            render_job_logger.info(
+                "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
+                resolved_context.voice_id,
+                plan.context.reference_context_id,
+                (time.perf_counter() - context_started) * 1000,
+            )
         default_render_profile, default_voice_binding = self._build_default_configuration(
             plan.request,
-            projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+            projected_voice=projected_binding,
         )
         plan.render_profiles = [default_render_profile]
         plan.voice_bindings = [default_voice_binding]
@@ -2196,11 +2209,12 @@ class RenderJobService:
             progress=PREPARE_START_PROGRESS,
             message="正在准备编辑作业。",
         )
-        if self._should_prepare_edit_reference_context(plan):
+        projected_binding = self._resolve_projected_binding_for_initialize_request(plan.request)
+        if self._should_prepare_edit_reference_context(plan) and self._can_build_local_reference_context(projected_binding):
             plan.context = self._gateway.build_reference_context(
                 self._build_resolved_context_from_request(
                     plan.request,
-                    projected_voice=self._session_service.get_voice_profile(plan.request.voice_id),
+                    projected_voice=projected_binding,
                 ),
                 progress_callback=self._build_prepare_progress_callback(
                     job_id=plan.job_id,
@@ -3283,6 +3297,13 @@ class RenderJobService:
             raise EditSessionNotFoundError(f"Segment group '{group_id}' not found.")
         return group.voice_binding_id or snapshot.default_voice_binding_id
 
+    @staticmethod
+    def _resolve_group_assigned_render_profile_id(snapshot: DocumentSnapshot, group_id: str) -> str | None:
+        group = next((item for item in snapshot.groups if item.group_id == group_id), None)
+        if group is None:
+            raise EditSessionNotFoundError(f"Segment group '{group_id}' not found.")
+        return group.render_profile_id or snapshot.default_render_profile_id
+
     def _resolve_projected_voice_for_binding_patch(
         self,
         *,
@@ -3295,11 +3316,10 @@ class RenderJobService:
         )
         if not refresh_projected_fields:
             return None
-        effective_voice_id = patch.voice_id if patch.voice_id is not None else base_binding.voice_id
-        try:
-            return self._session_service.get_voice_profile(effective_voice_id)
-        except Exception:
-            return None
+        effective_binding_ref = patch.binding_ref or base_binding.binding_ref
+        if effective_binding_ref is not None:
+            return self._resolve_projected_binding_for_binding_ref(effective_binding_ref)
+        return None
 
     @staticmethod
     def _build_default_configuration(
@@ -3309,6 +3329,7 @@ class RenderJobService:
         voice_binding = VoiceBinding(
             voice_binding_id=f"binding-session-{uuid4().hex}",
             scope="session",
+            binding_ref=request.binding_ref,
             voice_id=request.voice_id,
             model_key=request.model_id,
             model_instance_id=getattr(projected_voice, "model_instance_id", None),
@@ -3319,7 +3340,11 @@ class RenderJobService:
         reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
         if request.reference_source == "custom":
             reference_overrides_by_binding[
-                build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+                build_binding_key(
+                    binding_ref=voice_binding.binding_ref,
+                    voice_id=voice_binding.voice_id,
+                    model_key=voice_binding.model_key,
+                )
             ] = ReferenceBindingOverride(
                 session_reference_asset_id=None,
                 reference_audio_path=request.reference_audio_path,
@@ -3458,9 +3483,13 @@ class RenderJobService:
             reference_language=request.reference_language or "",
             reference_scope="session_override" if request.reference_source == "custom" else "voice_preset",
             reference_identity=(
-                f"{request.voice_id}:{request.model_id}"
+                build_binding_key(
+                    binding_ref=request.binding_ref,
+                    voice_id=request.voice_id,
+                    model_key=request.model_id,
+                )
                 if request.reference_source == "custom"
-                else f"{request.voice_id}:preset"
+                else f"{build_binding_key(binding_ref=request.binding_ref, voice_id=request.voice_id, model_key=request.model_id)}:preset"
             ),
             speed=request.speed,
             top_k=request.top_k,
@@ -3477,6 +3506,31 @@ class RenderJobService:
                 sovits_path=getattr(projected_voice, "sovits_path", None),
             ),
             render_profile_id="profile-session-default",
+        )
+
+    def _resolve_projected_binding_for_initialize_request(self, request: InitializeEditSessionRequest):
+        return self._resolve_projected_binding_for_binding_ref(request.binding_ref)
+
+    def _resolve_projected_binding_for_binding_ref(self, binding_ref):
+        try:
+            resolved_binding = self._session_service.resolve_binding_reference(binding_ref)
+        except Exception:
+            return None
+        return SimpleNamespace(
+            model_instance_id=resolved_binding.get("model_instance_id"),
+            preset_id=binding_ref.preset_id,
+            gpt_path=resolved_binding.get("gpt_path"),
+            sovits_path=resolved_binding.get("sovits_path"),
+            voice_id=resolved_binding.get("voice_id"),
+            model_key=resolved_binding.get("model_key"),
+        )
+
+    @staticmethod
+    def _can_build_local_reference_context(projected_voice) -> bool:
+        return bool(
+            projected_voice is not None
+            and getattr(projected_voice, "gpt_path", None)
+            and getattr(projected_voice, "sovits_path", None)
         )
 
     @staticmethod

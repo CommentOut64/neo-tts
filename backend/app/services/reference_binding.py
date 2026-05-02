@@ -2,17 +2,35 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from backend.app.schemas.edit_session import BindingReference
 from backend.app.schemas.edit_session import ReferenceBindingOverride
-from backend.app.schemas.voice import VoiceProfile
 
 
-def build_binding_key(*, voice_id: str, model_key: str) -> str:
+def build_binding_key(
+    *,
+    voice_id: str | None = None,
+    model_key: str | None = None,
+    binding_ref: BindingReference | Mapping[str, Any] | None = None,
+) -> str:
+    if binding_ref is not None:
+        if isinstance(binding_ref, BindingReference):
+            normalized_binding_ref = binding_ref.model_dump(mode="json")
+        else:
+            normalized_binding_ref = dict(binding_ref)
+        return ":".join(
+            [
+                str(normalized_binding_ref.get("workspace_id") or ""),
+                str(normalized_binding_ref.get("main_model_id") or ""),
+                str(normalized_binding_ref.get("submodel_id") or ""),
+                str(normalized_binding_ref.get("preset_id") or ""),
+            ]
+        )
     return f"{voice_id}:{model_key}"
 
 
 def merge_reference_override(
     *,
-    preset_voice: VoiceProfile,
+    preset_reference: Mapping[str, Any] | None = None,
     override: ReferenceBindingOverride | Mapping[str, Any] | None,
 ) -> dict[str, str]:
     if isinstance(override, Mapping):
@@ -22,18 +40,28 @@ def merge_reference_override(
     else:
         override_payload = {}
 
+    if preset_reference is not None:
+        preset_reference_payload = dict(preset_reference)
+        fallback_audio_path = str(preset_reference_payload.get("reference_audio_path") or "")
+        fallback_text = str(preset_reference_payload.get("reference_text") or "")
+        fallback_language = str(preset_reference_payload.get("reference_language") or "")
+    else:
+        fallback_audio_path = ""
+        fallback_text = ""
+        fallback_language = ""
+
     return {
         "reference_audio_path": _pick_reference_value(
             override_payload.get("reference_audio_path"),
-            preset_voice.ref_audio,
+            fallback_audio_path,
         ),
         "reference_text": _pick_reference_value(
             override_payload.get("reference_text"),
-            preset_voice.ref_text,
+            fallback_text,
         ),
         "reference_language": _pick_reference_value(
             override_payload.get("reference_language"),
-            preset_voice.ref_lang,
+            fallback_language,
         ),
     }
 

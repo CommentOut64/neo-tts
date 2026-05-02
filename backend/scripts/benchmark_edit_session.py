@@ -22,10 +22,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.app.core.settings import AppSettings, get_settings
 from backend.app.main import create_app
-from backend.app.repositories.voice_repository import VoiceRepository
-from backend.app.services.voice_service import VoiceService
+from backend.app.schemas.edit_session import BindingReference
+from backend.app.text.segment_standardizer import build_segment_display_text
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
 
 REAL_MODEL_VOICE_ID = "neuro2"
+REAL_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
 REAL_MODEL_TEXT_LANGUAGE = "zh"
 REAL_MODEL_SEGMENT_BOUNDARY_MODE = "zh_period"
 REAL_MODEL_TTS_TEXT = (
@@ -52,7 +58,7 @@ class BenchmarkMetrics(TypedDict):
 
 @dataclass(frozen=True)
 class RealModelBenchmarkEnv:
-    voice_id: str
+    binding_ref: dict[str, str]
     reference_audio_path: Path
     reference_text: str
     tts_text: str
@@ -96,26 +102,61 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _build_workspace_service(settings: AppSettings) -> WorkspaceService:
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    return WorkspaceService(
+        adapter_store=build_default_adapter_definition_store(
+            enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
+        ),
+        workspace_store=WorkspaceStore(registry_root),
+        secret_store=SecretStore(registry_root),
+    )
+
+
+def _ensure_real_model_binding(settings: AppSettings) -> tuple[BindingReference, dict[str, object]]:
+    workspace_service = _build_workspace_service(settings)
+    binding_ref = BindingReference(
+        workspace_id=REAL_MODEL_WORKSPACE_ID,
+        main_model_id=REAL_MODEL_VOICE_ID,
+        submodel_id="default",
+        preset_id="default",
+    )
+    try:
+        resolved = workspace_service.resolve_binding_reference(binding_ref)
+    except LookupError:
+        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+        migration_service = TtsRegistryMigrationService(
+            workspace_service=workspace_service,
+            registry_root=registry_root,
+        )
+        created = migration_service.migrate_legacy_voices_file(
+            voices_config_path=settings.voices_config_path,
+        )
+        if not any(item.get("legacy_voice_id") == REAL_MODEL_VOICE_ID for item in created):
+            raise RuntimeError(f"缺少预设 voice '{REAL_MODEL_VOICE_ID}'，无法迁移为正式 binding_ref。")
+        resolved = workspace_service.resolve_binding_reference(binding_ref)
+    return binding_ref, resolved
+
+
 def require_real_model_env() -> RealModelBenchmarkEnv:
     if os.getenv("GPT_SOVITS_E2E") != "1":
         raise RuntimeError("请先设置 GPT_SOVITS_E2E=1，再运行真实模型 benchmark。")
 
     settings = get_settings()
-    try:
-        voice = VoiceService(VoiceRepository(settings=settings)).get_voice(REAL_MODEL_VOICE_ID)
-    except LookupError as exc:
-        raise RuntimeError(f"缺少预设 voice '{REAL_MODEL_VOICE_ID}': {exc}") from exc
-
-    reference_audio_path = Path(voice.ref_audio)
+    binding_ref, resolved_binding = _ensure_real_model_binding(settings)
+    reference_audio_raw = str(resolved_binding.get("reference_audio_path") or "")
+    if not reference_audio_raw:
+        raise RuntimeError(f"binding_ref '{REAL_MODEL_VOICE_ID}' 缺少 reference_audio_path。")
+    reference_audio_path = Path(reference_audio_raw)
     if not reference_audio_path.is_absolute():
         reference_audio_path = (settings.project_root / reference_audio_path).resolve()
     if not reference_audio_path.exists():
         raise RuntimeError(f"参考音频不存在: {reference_audio_path}")
 
     return RealModelBenchmarkEnv(
-        voice_id=REAL_MODEL_VOICE_ID,
+        binding_ref=binding_ref.model_dump(mode="json"),
         reference_audio_path=reference_audio_path,
-        reference_text=voice.ref_text,
+        reference_text=str(resolved_binding.get("reference_text") or ""),
         tts_text=REAL_MODEL_TTS_TEXT,
         updated_first_segment_text=REAL_MODEL_UPDATED_FIRST_SEGMENT,
         text_language=REAL_MODEL_TEXT_LANGUAGE,
@@ -125,9 +166,11 @@ def require_real_model_env() -> RealModelBenchmarkEnv:
 
 def build_benchmark_settings(storage_root: Path) -> AppSettings:
     base_settings = get_settings()
-    return AppSettings(
+    settings = AppSettings(
         project_root=base_settings.project_root,
         voices_config_path=base_settings.voices_config_path,
+        user_data_root=storage_root,
+        tts_registry_root=storage_root / "tts-registry",
         managed_voices_dir=base_settings.managed_voices_dir,
         synthesis_results_dir=storage_root / "synthesis_results",
         inference_params_cache_file=storage_root / "state" / "params_cache.json",
@@ -137,6 +180,28 @@ def build_benchmark_settings(storage_root: Path) -> AppSettings:
         cnhubert_base_path=base_settings.cnhubert_base_path,
         bert_path=base_settings.bert_path,
     )
+    _ensure_real_model_binding(settings)
+    return settings
+
+
+def _segment_display_text(segment: dict) -> str:
+    return build_segment_display_text(
+        stem=segment["stem"],
+        text_language=segment["text_language"],
+        terminal_raw=segment.get("terminal_raw", ""),
+        terminal_closer_suffix=segment.get("terminal_closer_suffix", ""),
+        terminal_source=segment.get("terminal_source", "synthetic"),
+    )
+
+
+def _build_text_patch(display_text: str) -> dict[str, str]:
+    if display_text.endswith("。"):
+        return {
+            "stem": display_text[:-1],
+            "terminal_raw": "。",
+            "terminal_source": "original",
+        }
+    return {"stem": display_text}
 
 
 def _wait_for_terminal_job(
@@ -224,7 +289,7 @@ def _measure_initialize(
         json_body={
             "raw_text": env.tts_text,
             "text_language": env.text_language,
-            "voice_id": env.voice_id,
+            "binding_ref": env.binding_ref,
             "segment_boundary_mode": env.segment_boundary_mode,
         },
     )
@@ -280,7 +345,7 @@ def run_benchmark_suite(
 
                 segment_id = initial_snapshot["segments"][0]["segment_id"]
                 edge_id = initial_snapshot["edges"][0]["edge_id"]
-                baseline_text = initial_snapshot["segments"][0]["raw_text"]
+                baseline_text = _segment_display_text(initial_snapshot["segments"][0])
                 baseline_pause = initial_snapshot["edges"][0]["pause_duration_seconds"]
                 baseline_strategy = initial_snapshot["edges"][0]["boundary_strategy"]
 
@@ -292,11 +357,11 @@ def run_benchmark_suite(
                     expected_version=2,
                     timeout_seconds=timeout_seconds,
                     json_body={
-                        "raw_text": env.updated_first_segment_text,
+                        "text_patch": _build_text_patch(env.updated_first_segment_text),
                         "text_language": env.text_language,
                     },
                 )
-                if segment_snapshot["segments"][0]["raw_text"] != env.updated_first_segment_text:
+                if _segment_display_text(segment_snapshot["segments"][0]) != env.updated_first_segment_text:
                     raise RuntimeError("segment_update 场景未得到预期文本结果。")
                 segment_update_samples.append(segment_duration)
 
@@ -334,7 +399,7 @@ def run_benchmark_suite(
                     expected_version=5,
                     timeout_seconds=timeout_seconds,
                 )
-                if restore_snapshot["segments"][0]["raw_text"] != baseline_text:
+                if _segment_display_text(restore_snapshot["segments"][0]) != baseline_text:
                     raise RuntimeError("restore_baseline 场景未恢复初始文本。")
                 if restore_snapshot["edges"][0]["pause_duration_seconds"] != baseline_pause:
                     raise RuntimeError("restore_baseline 场景未恢复初始停顿时长。")
