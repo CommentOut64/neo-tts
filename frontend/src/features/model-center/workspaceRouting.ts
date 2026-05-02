@@ -64,3 +64,12 @@ export function buildNextWorkspaceDraft(
     sequence += 1;
   }
 }
+
+export function buildWorkspaceDraftFromSummary(
+  workspace: TtsRegistryWorkspaceSummary,
+): CreateWorkspaceDraft {
+  return {
+    display_name: workspace.display_name,
+    slug: workspace.slug,
+  };
+}

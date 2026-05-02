@@ -455,10 +455,7 @@ class WorkspaceService:
         self,
         binding_ref: BindingReference | dict[str, Any],
     ) -> dict[str, Any]:
-        if isinstance(binding_ref, BindingReference):
-            normalized_binding_ref = binding_ref.model_dump(mode="json")
-        else:
-            normalized_binding_ref = dict(binding_ref)
+        normalized_binding_ref = self._normalize_binding_reference(binding_ref).model_dump(mode="json")
         workspace_id = str(normalized_binding_ref["workspace_id"])
         main_model_id = str(normalized_binding_ref["main_model_id"])
         submodel_id = str(normalized_binding_ref["submodel_id"])
@@ -494,6 +491,22 @@ class WorkspaceService:
             "preset_defaults": dict(preset.defaults),
             "preset_fixed_fields": dict(preset.fixed_fields),
         }
+
+    def _normalize_binding_reference(
+        self,
+        binding_ref: BindingReference | dict[str, Any],
+    ) -> BindingReference:
+        normalized = binding_ref if isinstance(binding_ref, BindingReference) else BindingReference.model_validate(binding_ref)
+        if normalized.workspace_id != "legacy":
+            return normalized
+        from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
+
+        migration_service = TtsRegistryMigrationService(
+            workspace_service=self,
+            registry_root=self._workspace_store.root_dir,
+        )
+        resolved = migration_service.resolve_legacy_binding_ref(normalized)
+        return resolved or normalized
 
     def _ensure_hidden_singletons(self, *, workspace: FamilyWorkspaceRecord, main_model: MainModelRecord) -> None:
         family = self._adapter_store.require_family(workspace.adapter_id, workspace.family_id)

@@ -53,6 +53,9 @@ export interface TtsRegistryWorkspaceRecord {
   display_name: string;
   slug: string;
   status: Extract<RegistryStatus, "ready" | "disabled" | "invalid" | "pending_delete">;
+  ui_order?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface TtsRegistryWorkspaceSummary extends TtsRegistryWorkspaceRecord {
@@ -131,7 +134,7 @@ export interface RegistryBindingOption {
   fixedFields: Record<string, unknown>;
 }
 
-export interface TtsRegistryPresetNode {
+export interface TtsRegistryPresetRecord {
   preset_id: string;
   workspace_id: string;
   main_model_id: string;
@@ -143,9 +146,13 @@ export interface TtsRegistryPresetNode {
   fixed_fields: Record<string, unknown>;
   preset_assets: Record<string, unknown>;
   is_hidden_singleton: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
-export interface TtsRegistrySubmodelNode {
+export interface TtsRegistryPresetNode extends TtsRegistryPresetRecord {}
+
+export interface TtsRegistrySubmodelRecord {
   submodel_id: string;
   workspace_id: string;
   main_model_id: string;
@@ -157,10 +164,15 @@ export interface TtsRegistrySubmodelNode {
   adapter_options: Record<string, unknown>;
   runtime_profile: Record<string, unknown>;
   is_hidden_singleton: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TtsRegistrySubmodelNode extends TtsRegistrySubmodelRecord {
   presets: TtsRegistryPresetNode[];
 }
 
-export interface TtsRegistryMainModelNode {
+export interface TtsRegistryMainModelRecord {
   main_model_id: string;
   workspace_id: string;
   display_name: string;
@@ -168,6 +180,11 @@ export interface TtsRegistryMainModelNode {
   source_type: "local_package" | "external_api" | "builtin";
   main_model_metadata: Record<string, unknown>;
   default_submodel_id: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TtsRegistryMainModelNode extends TtsRegistryMainModelRecord {
   submodels: TtsRegistrySubmodelNode[];
 }
 
@@ -181,6 +198,87 @@ export interface CreateRegistryWorkspacePayload {
   family_id: string;
   display_name: string;
   slug: string;
+}
+
+export interface PatchRegistryWorkspacePayload {
+  display_name?: string;
+  slug?: string;
+  status?: Extract<RegistryStatus, "ready" | "disabled" | "invalid" | "pending_delete">;
+  ui_order?: number;
+}
+
+export interface CreateRegistryMainModelPayload {
+  main_model_id: string;
+  display_name: string;
+  source_type?: "local_package" | "external_api" | "builtin";
+  main_model_metadata?: Record<string, unknown>;
+}
+
+export interface PatchRegistryMainModelPayload {
+  display_name?: string;
+  status?: Extract<RegistryStatus, "ready" | "disabled" | "invalid" | "pending_delete">;
+  main_model_metadata?: Record<string, unknown>;
+  default_submodel_id?: string | null;
+}
+
+export interface CreateRegistrySubmodelPayload {
+  submodel_id: string;
+  display_name: string;
+  status?: RegistryStatus;
+  instance_assets?: Record<string, unknown>;
+  endpoint?: Record<string, unknown> | null;
+  account_binding?: Record<string, unknown> | null;
+  adapter_options?: Record<string, unknown>;
+  runtime_profile?: Record<string, unknown>;
+  is_hidden_singleton?: boolean;
+}
+
+export interface PatchRegistrySubmodelPayload {
+  display_name?: string;
+  status?: RegistryStatus;
+  instance_assets?: Record<string, unknown>;
+  endpoint?: Record<string, unknown> | null;
+  account_binding?: Record<string, unknown> | null;
+  adapter_options?: Record<string, unknown>;
+  runtime_profile?: Record<string, unknown>;
+}
+
+export interface PutRegistrySubmodelSecretsPayload {
+  secrets: Record<string, string>;
+}
+
+export interface TtsRegistrySubmodelConnectivityCheckResult {
+  status: RegistryStatus;
+  workspace_id: string;
+  main_model_id: string;
+  submodel_id: string;
+}
+
+export interface CreateRegistryPresetPayload {
+  preset_id: string;
+  display_name: string;
+  kind?: "builtin" | "imported" | "remote" | "user";
+  status?: Extract<RegistryStatus, "ready" | "invalid" | "disabled" | "pending_delete">;
+  defaults?: Record<string, unknown>;
+  fixed_fields?: Record<string, unknown>;
+  preset_assets?: Record<string, unknown>;
+  is_hidden_singleton?: boolean;
+}
+
+export interface PatchRegistryPresetPayload {
+  display_name?: string;
+  status?: Extract<RegistryStatus, "ready" | "invalid" | "disabled" | "pending_delete">;
+  defaults?: Record<string, unknown>;
+  fixed_fields?: Record<string, unknown>;
+  preset_assets?: Record<string, unknown>;
+}
+
+export interface TtsRegistryDeleteResult {
+  status: "deleted";
+  workspace_id: string;
+  main_model_id?: string;
+  submodel_id?: string;
+  preset_id?: string;
 }
 
 export function buildBindingKey(bindingRef: BindingReference): string {
