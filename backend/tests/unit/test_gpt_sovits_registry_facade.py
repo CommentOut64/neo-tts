@@ -20,13 +20,23 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _build_local_package(package_root: Path) -> Path:
+def _build_local_package(
+    package_root: Path,
+    *,
+    package_id: str = "demo-gpt-sovits",
+    display_name: str = "Demo Voice",
+    preset_id: str = "speaker-a",
+    preset_display_name: str = "Speaker A",
+    gpt_weight: str = "weights/demo.ckpt",
+    sovits_weight: str = "weights/demo.pth",
+    reference_audio: str = "refs/demo.wav",
+) -> Path:
     _write_json(
         package_root / "neo-tts-model.json",
         {
             "schema_version": 1,
-            "package_id": "demo-gpt-sovits",
-            "display_name": "Demo Voice",
+            "package_id": package_id,
+            "display_name": display_name,
             "adapter_id": "gpt_sovits_local",
             "source_type": "local_package",
             "instance": {
@@ -37,12 +47,12 @@ def _build_local_package(package_root: Path) -> Path:
             },
             "presets": [
                 {
-                    "preset_id": "speaker-a",
-                    "display_name": "Speaker A",
+                    "preset_id": preset_id,
+                    "display_name": preset_display_name,
                     "assets": {
-                        "gpt_weight": "weights/demo.ckpt",
-                        "sovits_weight": "weights/demo.pth",
-                        "reference_audio": "refs/demo.wav",
+                        "gpt_weight": gpt_weight,
+                        "sovits_weight": sovits_weight,
+                        "reference_audio": reference_audio,
                     },
                     "defaults": {
                         "reference_text": "测试参考文本",
@@ -55,9 +65,9 @@ def _build_local_package(package_root: Path) -> Path:
     )
     _write_text(package_root / "base" / "README.txt", "base data")
     _write_text(package_root / "pretrained" / "bert.bin", "bert")
-    _write_text(package_root / "weights" / "demo.ckpt", "ckpt")
-    _write_text(package_root / "weights" / "demo.pth", "pth")
-    _write_text(package_root / "refs" / "demo.wav", "wav")
+    _write_text(package_root / gpt_weight, "ckpt")
+    _write_text(package_root / sovits_weight, "pth")
+    _write_text(package_root / reference_audio, "wav")
     return package_root
 
 
@@ -69,7 +79,7 @@ def _build_workspace_service(registry_root: Path) -> WorkspaceService:
     )
 
 
-def test_gpt_sovits_registry_facade_imports_local_package_into_formal_workspace_tree(tmp_path: Path):
+def test_gpt_sovits_registry_facade_imports_local_package_into_fixed_workspace_main_model(tmp_path: Path):
     registry_root = tmp_path / "tts-registry"
     workspace_service = _build_workspace_service(registry_root)
     workspace = workspace_service.create_workspace(
@@ -93,7 +103,7 @@ def test_gpt_sovits_registry_facade_imports_local_package_into_formal_workspace_
         storage_mode="managed",
     )
 
-    assert imported.main_model.main_model_id == "demo_gpt_sovits"
+    assert imported.main_model.main_model_id == "gpt_sovits"
     assert imported.main_model.shared_assets["bert"]["source_path"].endswith("pretrained/bert.bin")
     assert imported.submodels[0].submodel_id == "speaker_a"
     assert imported.submodels[0].instance_assets["gpt_weight"]["source_path"].endswith("weights/demo.ckpt")
@@ -102,9 +112,61 @@ def test_gpt_sovits_registry_facade_imports_local_package_into_formal_workspace_
     assert imported.presets[0].defaults["reference_text"] == "测试参考文本"
 
     tree = workspace_service.get_workspace_tree(workspace.workspace_id)
-    assert tree.main_models[0].main_model_id == "demo_gpt_sovits"
+    assert [item.main_model_id for item in tree.main_models] == ["gpt_sovits"]
     assert tree.main_models[0].submodels[0].submodel_id == "speaker_a"
     assert tree.main_models[0].submodels[0].presets[0].preset_id == "default"
+
+
+def test_gpt_sovits_registry_facade_keeps_one_main_model_when_importing_multiple_weights(tmp_path: Path):
+    registry_root = tmp_path / "tts-registry"
+    workspace_service = _build_workspace_service(registry_root)
+    workspace = workspace_service.create_workspace(
+        adapter_id="gpt_sovits_local",
+        family_id="gpt_sovits_local_default",
+        display_name="GPT-SoVITS Workspace",
+        slug="gpt-sovits-workspace",
+    )
+    facade = GPTSoVITSRegistryFacade(
+        workspace_service=workspace_service,
+        model_import_service=ModelImportService(
+            adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+            model_registry=ModelRegistry(registry_root),
+            secret_store=SecretStore(registry_root),
+        ),
+    )
+
+    facade.import_model_package_to_workspace(
+        workspace_id=workspace.workspace_id,
+        source_path=_build_local_package(
+            tmp_path / "source-package-a",
+            package_id="demo-gpt-sovits-a",
+            display_name="Voice A",
+            preset_id="speaker-a",
+            preset_display_name="Speaker A",
+            gpt_weight="weights/a.ckpt",
+            sovits_weight="weights/a.pth",
+            reference_audio="refs/a.wav",
+        ),
+        storage_mode="managed",
+    )
+    facade.import_model_package_to_workspace(
+        workspace_id=workspace.workspace_id,
+        source_path=_build_local_package(
+            tmp_path / "source-package-b",
+            package_id="demo-gpt-sovits-b",
+            display_name="Voice B",
+            preset_id="speaker-b",
+            preset_display_name="Speaker B",
+            gpt_weight="weights/b.ckpt",
+            sovits_weight="weights/b.pth",
+            reference_audio="refs/b.wav",
+        ),
+        storage_mode="managed",
+    )
+
+    tree = workspace_service.get_workspace_tree(workspace.workspace_id)
+    assert [item.main_model_id for item in tree.main_models] == ["gpt_sovits"]
+    assert sorted(item.submodel_id for item in tree.main_models[0].submodels) == ["speaker_a", "speaker_b"]
 
 
 def test_gpt_sovits_registry_facade_imports_legacy_voice_into_formal_workspace_tree(tmp_path: Path):
@@ -203,3 +265,120 @@ def test_gpt_sovits_registry_facade_bulk_imports_legacy_voices_into_formal_works
     assert [item.main_model.main_model_id for item in imported] == ["demo_voice", "second_voice"]
     tree = workspace_service.get_workspace_tree(workspace.workspace_id)
     assert [item.main_model_id for item in tree.main_models] == ["demo_voice", "second_voice"]
+
+
+def test_gpt_sovits_registry_facade_can_consolidate_legacy_voices_under_single_main_model(tmp_path: Path):
+    registry_root = tmp_path / "tts-registry"
+    workspace_service = _build_workspace_service(registry_root)
+    workspace = workspace_service.create_workspace(
+        adapter_id="gpt_sovits_local",
+        family_id="gpt_sovits_local_default",
+        display_name="GPT-SoVITS",
+        slug="gpt-sovits",
+    )
+    facade = GPTSoVITSRegistryFacade(
+        workspace_service=workspace_service,
+        model_import_service=ModelImportService(
+            adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+            model_registry=ModelRegistry(registry_root),
+            secret_store=SecretStore(registry_root),
+        ),
+    )
+
+    imported = facade.import_legacy_voices_as_submodels_to_workspace(
+        workspace_id=workspace.workspace_id,
+        main_model_id="gpt_sovits",
+        main_model_display_name="GPT-SoVITS",
+        voices_by_name={
+            "Demo Voice": {
+                "gpt_path": "weights/demo.ckpt",
+                "sovits_path": "weights/demo.pth",
+                "ref_audio": "refs/demo.wav",
+                "ref_text": "hello world",
+                "ref_lang": "en",
+            },
+            "Second Voice": {
+                "gpt_path": "weights/second.ckpt",
+                "sovits_path": "weights/second.pth",
+                "ref_audio": "refs/second.wav",
+                "ref_text": "second world",
+                "ref_lang": "zh",
+            },
+        },
+    )
+
+    assert imported.main_model.main_model_id == "gpt_sovits"
+    assert [item.submodel_id for item in imported.submodels] == ["demo_voice", "second_voice"]
+    assert [item.main_model_id for item in workspace_service.get_workspace_tree(workspace.workspace_id).main_models] == [
+        "gpt_sovits"
+    ]
+    resolved = workspace_service.resolve_binding_reference(
+        {
+            "workspace_id": workspace.workspace_id,
+            "main_model_id": "gpt_sovits",
+            "submodel_id": "demo_voice",
+            "preset_id": "default",
+        }
+    )
+    assert resolved["gpt_path"] == "weights/demo.ckpt"
+    assert resolved["reference_audio_path"] == "refs/demo.wav"
+
+
+def test_gpt_sovits_registry_facade_can_restructure_workspace_to_single_main_model(tmp_path: Path):
+    registry_root = tmp_path / "tts-registry"
+    workspace_service = _build_workspace_service(registry_root)
+    workspace = workspace_service.create_workspace(
+        adapter_id="gpt_sovits_local",
+        family_id="gpt_sovits_local_default",
+        display_name="GPT-SoVITS",
+        slug="gpt-sovits",
+    )
+    facade = GPTSoVITSRegistryFacade(
+        workspace_service=workspace_service,
+        model_import_service=ModelImportService(
+            adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+            model_registry=ModelRegistry(registry_root),
+            secret_store=SecretStore(registry_root),
+        ),
+    )
+    facade.import_legacy_voices_to_workspace(
+        workspace_id=workspace.workspace_id,
+        voices_by_name={
+            "Demo Voice": {
+                "gpt_path": "weights/demo.ckpt",
+                "sovits_path": "weights/demo.pth",
+                "ref_audio": "refs/demo.wav",
+                "ref_text": "hello world",
+                "ref_lang": "en",
+            },
+            "Second Voice": {
+                "gpt_path": "weights/second.ckpt",
+                "sovits_path": "weights/second.pth",
+                "ref_audio": "refs/second.wav",
+                "ref_text": "second world",
+                "ref_lang": "zh",
+            },
+        },
+    )
+
+    rebuilt = facade.restructure_workspace_to_single_main_model(
+        workspace_id=workspace.workspace_id,
+        target_main_model_id="gpt_sovits",
+        target_main_model_display_name="GPT-SoVITS",
+    )
+
+    assert rebuilt.main_model.main_model_id == "gpt_sovits"
+    assert [item.main_model_id for item in workspace_service.get_workspace_tree(workspace.workspace_id).main_models] == [
+        "gpt_sovits"
+    ]
+    assert [item.submodel_id for item in rebuilt.submodels] == ["demo_voice", "second_voice"]
+    resolved = workspace_service.resolve_binding_reference(
+        {
+            "workspace_id": workspace.workspace_id,
+            "main_model_id": "gpt_sovits",
+            "submodel_id": "second_voice",
+            "preset_id": "default",
+        }
+    )
+    assert resolved["gpt_path"] == "weights/second.ckpt"
+    assert resolved["reference_audio_path"] == "refs/second.wav"

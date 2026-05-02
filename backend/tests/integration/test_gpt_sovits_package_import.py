@@ -104,7 +104,7 @@ def test_tts_registry_workspace_scoped_gpt_sovits_import_creates_formal_workspac
         detail = client.get(f"/v1/tts-registry/workspaces/{workspace_id}")
 
     assert imported.status_code == 201
-    assert imported.json()["main_model"]["main_model_id"] == "demo_gpt_sovits"
+    assert imported.json()["main_model"]["main_model_id"] == "gpt_sovits"
     assert detail.status_code == 200
     main_model = detail.json()["main_models"][0]
     assert main_model["shared_assets"]["bert"]["source_path"].endswith("pretrained/bert.bin")
