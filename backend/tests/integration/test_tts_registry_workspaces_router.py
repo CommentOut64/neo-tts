@@ -105,3 +105,29 @@ def test_tts_registry_workspace_main_model_creation_auto_normalizes_hidden_singl
     preset = submodel["presets"][0]
     assert preset["preset_id"] == "default"
     assert preset["is_hidden_singleton"] is True
+
+
+def test_tts_registry_startup_auto_migrates_legacy_voices_into_formal_workspace(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    _write_json(
+        settings.voices_config_path,
+        {
+            "demo": {
+                "gpt_path": "weights/demo.ckpt",
+                "sovits_path": "weights/demo.pth",
+                "ref_audio": "refs/demo.wav",
+                "ref_text": "hello world",
+                "ref_lang": "en",
+            }
+        },
+    )
+
+    with TestClient(create_app(settings=settings)) as client:
+        workspaces = client.get("/v1/tts-registry/workspaces")
+        catalog = client.get("/v1/tts-registry/bindings/catalog")
+
+    assert workspaces.status_code == 200
+    assert [item["workspace_id"] for item in workspaces.json()] == ["ws_legacy_gpt_sovits"]
+    assert catalog.status_code == 200
+    assert catalog.json()["items"][0]["workspace_id"] == "ws_legacy_gpt_sovits"
+    assert catalog.json()["items"][0]["main_models"][0]["main_model_id"] == "demo"

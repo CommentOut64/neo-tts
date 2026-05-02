@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildNextWorkspaceDraft,
+  buildWorkspaceDraftFromSummary,
   buildModelWorkspaceRouteLocation,
   findWorkspaceSummaryByRoute,
   type ModelWorkspaceRouteLocation,
@@ -69,6 +70,20 @@ describe("model workspace routing helpers", () => {
     expect(draft).toEqual({
       display_name: "New Workspace 3",
       slug: "new-workspace-3",
+    });
+  });
+
+  it("builds an editable workspace draft from an existing workspace summary", () => {
+    expect(
+      buildWorkspaceDraftFromSummary(
+        buildWorkspaceSummary({
+          display_name: "Workspace Alpha",
+          slug: "workspace-alpha",
+        }),
+      ),
+    ).toEqual({
+      display_name: "Workspace Alpha",
+      slug: "workspace-alpha",
     });
   });
 });

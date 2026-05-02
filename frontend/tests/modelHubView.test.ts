@@ -26,10 +26,18 @@ describe("model hub view", () => {
     const modelHubViewSource = readFileSync(modelHubViewPath, "utf8");
     expect(modelHubViewSource).toContain("/v1/tts-registry/workspaces");
     expect(modelHubViewSource).toContain("/v1/tts-registry/adapters");
+    expect(modelHubViewSource).toContain("fetchAdapterFamilies");
+    expect(modelHubViewSource).toContain("WorkspaceDialog");
+    expect(modelHubViewSource).toContain("DeleteConfirmDialog");
+    expect(modelHubViewSource).toContain("patchRegistryWorkspace");
+    expect(modelHubViewSource).toContain("deleteRegistryWorkspace");
+    expect(modelHubViewSource).not.toContain('family_id: "external_http_tts_default"');
   });
 
   it("tts registry api exposes workspace catalog helpers for the model hub", () => {
     expect(ttsRegistryApiSource).toContain("fetchRegistryWorkspaces");
     expect(ttsRegistryApiSource).toContain("createRegistryWorkspace");
+    expect(ttsRegistryApiSource).toContain("patchRegistryWorkspace");
+    expect(ttsRegistryApiSource).toContain("deleteRegistryWorkspace");
   });
 });
