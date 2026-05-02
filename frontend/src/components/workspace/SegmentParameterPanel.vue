@@ -4,12 +4,12 @@ import { computed } from "vue";
 import { useEditSession } from "@/composables/useEditSession";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useSegmentSelection } from "@/composables/useSegmentSelection";
-import type { VoiceProfile } from "@/types/tts";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
 
 import SharedParameterScopePanel from "./parameter-panel/SharedParameterScopePanel.vue";
 
 const props = defineProps<{
-  voices: VoiceProfile[];
+  bindings: RegistryBindingOption[];
 }>();
 
 const editSession = useEditSession();
@@ -29,7 +29,7 @@ const adjacentEdges = computed(() => {
 
 <template>
   <SharedParameterScopePanel
-    :voices="props.voices"
+    :bindings="props.bindings"
     title="段级参数"
     hint="当前选中段的运行期参数。提交后仅持久化配置，后续推理会继承这些值。"
   />

@@ -13,13 +13,13 @@ import type {
   RenderJobResponse,
   RenderJob,
   RenderJobStatus,
+  SegmentBatchSynthesisBindingPatchBody,
+  SynthesisBindingListResponse,
+  SynthesisBindingPatch,
   TimelineManifest,
   RenderJobEventType,
-  VoiceBindingListResponse,
-  VoiceBindingPatch,
   SegmentTextPatch,
   SegmentBatchRenderProfilePatchBody,
-  SegmentBatchVoiceBindingPatchBody,
   EdgeUpdateBody,
   ReorderSegmentsBody,
   ExportRequestBody,
@@ -122,8 +122,8 @@ export async function getRenderProfiles(): Promise<RenderProfileListResponse> {
   return data
 }
 
-export async function getVoiceBindings(): Promise<VoiceBindingListResponse> {
-  const { data } = await axios.get<VoiceBindingListResponse>('/v1/edit-session/voice-bindings')
+export async function getVoiceBindings(): Promise<SynthesisBindingListResponse> {
+  const { data } = await axios.get<SynthesisBindingListResponse>('/v1/edit-session/synthesis-bindings')
   return data
 }
 
@@ -194,17 +194,17 @@ export async function commitSessionRenderProfile(body: RenderProfilePatch): Prom
   return data
 }
 
-export async function patchSessionVoiceBinding(body: VoiceBindingPatch): Promise<RenderJobResponse> {
+export async function patchSessionVoiceBinding(body: SynthesisBindingPatch): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
-    '/v1/edit-session/session/voice-binding',
+    '/v1/edit-session/session/synthesis-binding',
     body,
   )
   return unwrapAcceptedRenderJob(data)
 }
 
-export async function commitSessionVoiceBinding(body: VoiceBindingPatch): Promise<ConfigurationCommitResponse> {
+export async function commitSessionVoiceBinding(body: SynthesisBindingPatch): Promise<ConfigurationCommitResponse> {
   const { data } = await axios.patch<ConfigurationCommitResponse>(
-    '/v1/edit-session/session/voice-binding/config',
+    '/v1/edit-session/session/synthesis-binding/config',
     body,
   )
   return data
@@ -234,10 +234,10 @@ export async function commitSegmentRenderProfile(
 
 export async function patchSegmentVoiceBinding(
   segmentId: string,
-  body: VoiceBindingPatch,
+  body: SynthesisBindingPatch,
 ): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
-    `/v1/edit-session/segments/${segmentId}/voice-binding`,
+    `/v1/edit-session/segments/${segmentId}/synthesis-binding`,
     body,
   )
   return unwrapAcceptedRenderJob(data)
@@ -245,10 +245,10 @@ export async function patchSegmentVoiceBinding(
 
 export async function commitSegmentVoiceBinding(
   segmentId: string,
-  body: VoiceBindingPatch,
+  body: SynthesisBindingPatch,
 ): Promise<ConfigurationCommitResponse> {
   const { data } = await axios.patch<ConfigurationCommitResponse>(
-    `/v1/edit-session/segments/${segmentId}/voice-binding/config`,
+    `/v1/edit-session/segments/${segmentId}/synthesis-binding/config`,
     body,
   )
   return data
@@ -275,20 +275,20 @@ export async function commitSegmentRenderProfileBatch(
 }
 
 export async function patchSegmentVoiceBindingBatch(
-  body: SegmentBatchVoiceBindingPatchBody,
+  body: SegmentBatchSynthesisBindingPatchBody,
 ): Promise<RenderJobResponse> {
   const { data } = await axios.patch<RenderJobAcceptedResponse>(
-    '/v1/edit-session/segments/voice-binding-batch',
+    '/v1/edit-session/segments/synthesis-binding-batch',
     body,
   )
   return unwrapAcceptedRenderJob(data)
 }
 
 export async function commitSegmentVoiceBindingBatch(
-  body: SegmentBatchVoiceBindingPatchBody,
+  body: SegmentBatchSynthesisBindingPatchBody,
 ): Promise<ConfigurationCommitResponse> {
   const { data } = await axios.patch<ConfigurationCommitResponse>(
-    '/v1/edit-session/segments/voice-binding-batch/config',
+    '/v1/edit-session/segments/synthesis-binding-batch/config',
     body,
   )
   return data

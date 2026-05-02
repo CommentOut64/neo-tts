@@ -7,7 +7,7 @@ const { initialize, lastInitParams, sessionStatus } = useEditSession();
 
 const canRetry = computed(() => {
   const p = lastInitParams?.value;
-  return !!(p && p.raw_text && p.voice_id);
+  return !!(p && p.raw_text && p.binding_ref);
 });
 
 async function onRetry() {

@@ -1,14 +1,21 @@
 import type {
+  BindingReference,
   RenderProfile,
   VoiceBinding,
 } from "@/types/editSession";
 import type {
-  ReferenceSelectionByBinding,
-  ReferenceSelectionByBindingEntry,
-  VoiceProfile,
-} from "@/types/tts";
+  RegistryBindingOption,
+} from "@/types/ttsRegistry";
 
-export const DEFAULT_REFERENCE_BINDING_MODEL_KEY = "gpt-sovits-v2";
+export interface ReferenceSelectionByBindingEntry {
+  source: "preset" | "custom";
+  session_reference_asset_id?: string | null;
+  custom_ref_path: string | null;
+  ref_text: string;
+  ref_lang: string;
+}
+
+export type ReferenceSelectionByBinding = Record<string, ReferenceSelectionByBindingEntry>;
 
 export interface ResolvedBindingReferenceState {
   source: "preset" | "custom" | null;
@@ -26,52 +33,20 @@ export interface ResolvedBindingReferenceState {
   preset_language: string | null;
 }
 
-export function buildReferenceBindingKey({
-  voiceId,
-  modelKey,
-}: {
-  voiceId: string;
-  modelKey: string;
+export function buildReferenceBindingKey(input: {
+  bindingRef?: BindingReference | null;
+  voiceId?: string | null;
+  modelKey?: string | null;
 }): string {
-  return `${voiceId}:${modelKey}`;
-}
-
-export function resolveBindingReferenceState(input: {
-  binding: Pick<VoiceBinding, "voice_id" | "model_key"> | null;
-  profile: Pick<RenderProfile, "reference_overrides_by_binding"> | null;
-  voices: VoiceProfile[];
-}): ResolvedBindingReferenceState {
-  if (!input.binding?.voice_id || !input.binding.model_key) {
-    return buildEmptyResolvedBindingReferenceState();
+  if (input.bindingRef) {
+    return [
+      input.bindingRef.workspace_id,
+      input.bindingRef.main_model_id,
+      input.bindingRef.submodel_id,
+      input.bindingRef.preset_id,
+    ].join(":");
   }
-
-  const voice = input.voices.find((item) => item.name === input.binding?.voice_id) ?? null;
-  const bindingKey = buildReferenceBindingKey({
-    voiceId: input.binding.voice_id,
-    modelKey: input.binding.model_key,
-  });
-  const override = input.profile?.reference_overrides_by_binding?.[bindingKey] ?? null;
-
-  return {
-    source: override ? "custom" : "preset",
-    reference_scope: override ? "session_override" : "voice_preset",
-    binding_key: bindingKey,
-    reference_identity: override
-      ? override.reference_identity
-        ?? (override.session_reference_asset_id
-          ? `session-override:${override.session_reference_asset_id}`
-          : bindingKey)
-      : `${input.binding.voice_id}:preset`,
-    session_reference_asset_id: override?.session_reference_asset_id ?? null,
-    reference_audio_fingerprint: override?.reference_audio_fingerprint ?? null,
-    reference_audio_path: override?.reference_audio_path ?? voice?.ref_audio ?? null,
-    reference_text: override?.reference_text ?? voice?.ref_text ?? null,
-    reference_text_fingerprint: override?.reference_text_fingerprint ?? null,
-    reference_language: override?.reference_language ?? voice?.ref_lang ?? null,
-    preset_audio_path: voice?.ref_audio ?? null,
-    preset_text: voice?.ref_text ?? null,
-    preset_language: voice?.ref_lang ?? null,
-  };
+  return `${input.voiceId ?? ""}:${input.modelKey ?? ""}`;
 }
 
 export function buildReferenceSelectionEntry(input: {
@@ -90,34 +65,64 @@ export function buildReferenceSelectionEntry(input: {
   };
 }
 
-function buildPresetReferenceSelectionEntry(
-  voice: VoiceProfile | null,
-): ReferenceSelectionByBindingEntry {
-  return buildReferenceSelectionEntry({
-    source: "preset",
-    sessionReferenceAssetId: null,
-    customRefPath: null,
-    refText: voice?.ref_text ?? "",
-    refLang: voice?.ref_lang ?? "auto",
+export function resolveBindingReferenceState(input: {
+  binding: Pick<VoiceBinding, "voice_id" | "model_key" | "binding_ref"> | null;
+  profile: Pick<RenderProfile, "reference_overrides_by_binding"> | null;
+  bindingOptions: RegistryBindingOption[];
+}): ResolvedBindingReferenceState {
+  const bindingOptions = input.bindingOptions ?? [];
+  if (!input.binding?.binding_ref && (!input.binding?.voice_id || !input.binding.model_key)) {
+    return buildEmptyResolvedBindingReferenceState();
+  }
+
+  const bindingKey = buildReferenceBindingKey({
+    bindingRef: input.binding.binding_ref,
+    voiceId: input.binding.voice_id ?? "",
+    modelKey: input.binding.model_key ?? "",
   });
+  const override = input.profile?.reference_overrides_by_binding?.[bindingKey] ?? null;
+  const bindingOption = bindingOptions.find((item) => item.bindingKey === bindingKey) ?? null;
+
+  return {
+    source: override ? "custom" : "preset",
+    reference_scope: override ? "session_override" : "voice_preset",
+    binding_key: bindingKey,
+    reference_identity: override
+      ? override.reference_identity
+        ?? (override.session_reference_asset_id
+          ? `session-override:${override.session_reference_asset_id}`
+          : bindingKey)
+      : `${bindingKey}:preset`,
+    session_reference_asset_id: override?.session_reference_asset_id ?? null,
+    reference_audio_fingerprint: override?.reference_audio_fingerprint ?? null,
+    reference_audio_path: override?.reference_audio_path ?? bindingOption?.referenceAudioPath ?? null,
+    reference_text: override?.reference_text ?? bindingOption?.referenceText ?? null,
+    reference_text_fingerprint: override?.reference_text_fingerprint ?? null,
+    reference_language: override?.reference_language ?? bindingOption?.referenceLanguage ?? null,
+    preset_audio_path: bindingOption?.referenceAudioPath ?? null,
+    preset_text: bindingOption?.referenceText ?? null,
+    preset_language: bindingOption?.referenceLanguage ?? null,
+  };
 }
 
 export function resolveReferenceSelectionForBinding(input: {
-  voiceId: string;
+  bindingRef?: BindingReference | null;
+  voiceId?: string | null;
   modelKey?: string | null;
-  voices: VoiceProfile[];
+  bindingOptions: RegistryBindingOption[];
   selections: ReferenceSelectionByBinding;
 }): {
   bindingKey: string;
   selection: ReferenceSelectionByBindingEntry;
 } {
-  const modelKey = input.modelKey || DEFAULT_REFERENCE_BINDING_MODEL_KEY;
+  const bindingOptions = input.bindingOptions ?? [];
   const bindingKey = buildReferenceBindingKey({
+    bindingRef: input.bindingRef,
     voiceId: input.voiceId,
-    modelKey,
+    modelKey: input.modelKey,
   });
   const cachedSelection = input.selections[bindingKey];
-  const voice = input.voices.find((item) => item.name === input.voiceId) ?? null;
+  const bindingOption = bindingOptions.find((item) => item.bindingKey === bindingKey) ?? null;
 
   if (cachedSelection?.source === "custom") {
     return {
@@ -128,31 +133,33 @@ export function resolveReferenceSelectionForBinding(input: {
 
   return {
     bindingKey,
-    selection: buildPresetReferenceSelectionEntry(voice),
+    selection: buildPresetReferenceSelectionEntry(bindingOption),
   };
 }
 
 export function resolveReferenceSelectionBySource(input: {
-  voiceId: string;
-  source: "preset" | "custom";
+  bindingRef?: BindingReference | null;
+  voiceId?: string | null;
   modelKey?: string | null;
-  voices: VoiceProfile[];
+  source: "preset" | "custom";
+  bindingOptions: RegistryBindingOption[];
   selections: ReferenceSelectionByBinding;
 }): {
   bindingKey: string;
   selection: ReferenceSelectionByBindingEntry;
 } {
-  const modelKey = input.modelKey || DEFAULT_REFERENCE_BINDING_MODEL_KEY;
+  const bindingOptions = input.bindingOptions ?? [];
   const bindingKey = buildReferenceBindingKey({
+    bindingRef: input.bindingRef,
     voiceId: input.voiceId,
-    modelKey,
+    modelKey: input.modelKey,
   });
-  const voice = input.voices.find((item) => item.name === input.voiceId) ?? null;
+  const bindingOption = bindingOptions.find((item) => item.bindingKey === bindingKey) ?? null;
 
   if (input.source === "preset") {
     return {
       bindingKey,
-      selection: buildPresetReferenceSelectionEntry(voice),
+      selection: buildPresetReferenceSelectionEntry(bindingOption),
     };
   }
 
@@ -164,28 +171,29 @@ export function resolveReferenceSelectionBySource(input: {
     };
   }
 
-    return {
-      bindingKey,
-      selection: buildReferenceSelectionEntry({
-        source: "custom",
-        sessionReferenceAssetId: null,
-        customRefPath: null,
-        refText: voice?.ref_text ?? "",
-        refLang: voice?.ref_lang ?? "auto",
+  return {
+    bindingKey,
+    selection: buildReferenceSelectionEntry({
+      source: "custom",
+      sessionReferenceAssetId: null,
+      customRefPath: null,
+      refText: bindingOption?.referenceText ?? "",
+      refLang: bindingOption?.referenceLanguage ?? "auto",
     }),
   };
 }
 
 export function upsertReferenceSelectionByBinding(input: {
   selections: ReferenceSelectionByBinding;
-  voiceId: string;
+  bindingRef?: BindingReference | null;
+  voiceId?: string | null;
   modelKey?: string | null;
   entry: ReferenceSelectionByBindingEntry;
 }): ReferenceSelectionByBinding {
-  const modelKey = input.modelKey || DEFAULT_REFERENCE_BINDING_MODEL_KEY;
   const bindingKey = buildReferenceBindingKey({
+    bindingRef: input.bindingRef,
     voiceId: input.voiceId,
-    modelKey,
+    modelKey: input.modelKey,
   });
 
   return {
@@ -213,7 +221,7 @@ export function upgradeInferenceParamsCachePayload(
       normalizedSelections[
         buildReferenceBindingKey({
           voiceId,
-          modelKey: DEFAULT_REFERENCE_BINDING_MODEL_KEY,
+          modelKey: readString(payload.model_key) ?? "gpt-sovits-v2",
         })
       ] = {
         source: refSource,
@@ -227,6 +235,36 @@ export function upgradeInferenceParamsCachePayload(
 
   upgradedPayload.referenceSelectionsByBinding = normalizedSelections;
   return upgradedPayload;
+}
+
+function buildPresetReferenceSelectionEntry(
+  bindingOption: RegistryBindingOption | null,
+): ReferenceSelectionByBindingEntry {
+  return buildReferenceSelectionEntry({
+    source: "preset",
+    sessionReferenceAssetId: null,
+    customRefPath: null,
+    refText: bindingOption?.referenceText ?? "",
+    refLang: bindingOption?.referenceLanguage ?? "auto",
+  });
+}
+
+function buildEmptyResolvedBindingReferenceState(): ResolvedBindingReferenceState {
+  return {
+    source: null,
+    reference_scope: null,
+    binding_key: null,
+    reference_identity: null,
+    session_reference_asset_id: null,
+    reference_audio_fingerprint: null,
+    reference_audio_path: null,
+    reference_text: null,
+    reference_text_fingerprint: null,
+    reference_language: null,
+    preset_audio_path: null,
+    preset_text: null,
+    preset_language: null,
+  };
 }
 
 function normalizeReferenceSelectionsByBinding(
@@ -246,20 +284,13 @@ function normalizeReferenceSelectionsByBinding(
       return [];
     }
 
-    return [[
-      bindingKey,
-      {
-        source,
-        session_reference_asset_id: readNullableString(
-          (value as Record<string, unknown>).session_reference_asset_id,
-        ),
-        custom_ref_path: readNullableString(
-          (value as Record<string, unknown>).custom_ref_path,
-        ),
-        ref_text: readString((value as Record<string, unknown>).ref_text) ?? "",
-        ref_lang: readString((value as Record<string, unknown>).ref_lang) ?? "auto",
-      },
-    ]] as const;
+    return [[bindingKey, {
+      source,
+      session_reference_asset_id: readNullableString((value as Record<string, unknown>).session_reference_asset_id),
+      custom_ref_path: readNullableString((value as Record<string, unknown>).custom_ref_path),
+      ref_text: readString((value as Record<string, unknown>).ref_text) ?? "",
+      ref_lang: readString((value as Record<string, unknown>).ref_lang) ?? "auto",
+    } satisfies ReferenceSelectionByBindingEntry]];
   });
 
   return Object.fromEntries(normalizedEntries);
@@ -275,22 +306,4 @@ function readNullableString(value: unknown): string | null {
 
 function readReferenceSource(value: unknown): "preset" | "custom" | null {
   return value === "preset" || value === "custom" ? value : null;
-}
-
-function buildEmptyResolvedBindingReferenceState(): ResolvedBindingReferenceState {
-  return {
-    source: null,
-    reference_scope: null,
-    binding_key: null,
-    reference_identity: null,
-    session_reference_asset_id: null,
-    reference_audio_fingerprint: null,
-    reference_audio_path: null,
-    reference_text: null,
-    reference_text_fingerprint: null,
-    reference_language: null,
-    preset_audio_path: null,
-    preset_text: null,
-    preset_language: null,
-  };
 }

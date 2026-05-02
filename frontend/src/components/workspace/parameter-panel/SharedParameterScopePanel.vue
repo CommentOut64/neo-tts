@@ -3,16 +3,16 @@ import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { uploadEditSessionReferenceAudio } from "@/api/editSession";
-import VoiceSelect from "@/components/VoiceSelect.vue";
+import BindingSelector from "@/components/workspace/BindingSelector.vue";
 import { useParameterPanel } from "@/composables/useParameterPanel";
-import { DEFAULT_REFERENCE_BINDING_MODEL_KEY } from "@/features/reference-binding";
-import type { VoiceProfile } from "@/types/tts";
+import { buildReferenceBindingKey } from "@/features/reference-binding";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
 
 import RuntimeInferenceSettingsPanel from "./RuntimeInferenceSettingsPanel.vue";
 import { MIXED_VALUE } from "./resolveEffectiveParameters";
 
 const props = defineProps<{
-  voices: VoiceProfile[];
+  bindings: RegistryBindingOption[];
   title: string;
   hint: string;
 }>();
@@ -33,9 +33,9 @@ const scopeStatusMessage = computed(() => {
 });
 
 watch(
-  () => props.voices,
-  (nextVoices) => {
-    panel.setVoices(nextVoices);
+  () => props.bindings,
+  (nextBindings) => {
+    panel.setBindings(nextBindings);
   },
   { immediate: true, deep: true },
 );
@@ -53,14 +53,13 @@ function asString(
   return value;
 }
 
-const selectedVoiceId = computed(() => {
-  return asString(panel.displayValues.value.voiceBinding.voice_id);
+const selectedBindingKey = computed(() => {
+  const bindingRef = panel.displayValues.value.voiceBinding.binding_ref;
+  return bindingRef ? buildReferenceBindingKey({ bindingRef }) : "";
 });
 
-const selectedVoice = computed(() => {
-  return (
-    props.voices.find((voice) => voice.name === selectedVoiceId.value) ?? null
-  );
+const selectedBinding = computed(() => {
+  return props.bindings.find((binding) => binding.bindingKey === selectedBindingKey.value) ?? null;
 });
 
 const referenceState = computed(() => panel.displayValues.value.reference);
@@ -73,34 +72,13 @@ const refSource = computed<"preset" | "custom">({
   },
 });
 
-function updateVoice(voiceId: string) {
-  const isOriginalVoice = voiceId === panel.resolvedValues.value.voiceBinding.voice_id;
-  const voice = props.voices.find((item) => item.name === voiceId);
-
-  panel.updateVoiceBindingField("voice_id", voiceId);
-
-  if (isOriginalVoice) {
-    const originalModelKey = panel.resolvedValues.value.voiceBinding.model_key as string | null;
-    if (originalModelKey !== MIXED_VALUE) {
-      panel.updateVoiceBindingField("model_key", originalModelKey);
-    }
-  } else {
-    panel.updateVoiceBindingField("model_key", DEFAULT_REFERENCE_BINDING_MODEL_KEY);
+function updateBinding(bindingKey: string) {
+  const binding = props.bindings.find((item) => item.bindingKey === bindingKey);
+  if (!binding) {
+    return;
   }
 
-  if (isOriginalVoice) {
-    const origGpt = panel.resolvedValues.value.voiceBinding.gpt_path as string | null;
-    if (origGpt !== MIXED_VALUE) {
-      panel.updateVoiceBindingField("gpt_path", origGpt);
-    }
-    const origSovits = panel.resolvedValues.value.voiceBinding.sovits_path as string | null;
-    if (origSovits !== MIXED_VALUE) {
-      panel.updateVoiceBindingField("sovits_path", origSovits);
-    }
-  } else if (voice) {
-    panel.updateVoiceBindingField("gpt_path", voice.gpt_path);
-    panel.updateVoiceBindingField("sovits_path", voice.sovits_path);
-  }
+  panel.updateVoiceBindingField("binding_ref", binding.bindingRef);
 }
 
 function handleRuntimeUpdate(
@@ -145,27 +123,27 @@ async function handleReferenceAudioUpload(file: { raw?: File }) {
 
   <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
     <h3 class="text-[13px] font-semibold text-foreground mb-3 flex items-center">
-      目标音色<span v-if="panel.dirtyFields.value.has('voiceBinding.voice_id')" class="text-red-500 font-bold ml-0.5">*</span>
+      目标模型<span v-if="panel.dirtyFields.value.has('voiceBinding.binding_ref')" class="text-red-500 font-bold ml-0.5">*</span>
     </h3>
-    <VoiceSelect
-      :model-value="selectedVoiceId"
-      :voices="voices"
+    <BindingSelector
+      :model-value="selectedBindingKey"
+      :bindings="bindings"
       :disabled="inputsDisabled"
       :placeholder="
-        isMixed(panel.displayValues.value.voiceBinding.voice_id)
-          ? '多个音色'
-          : '选择模型'
+        isMixed(panel.displayValues.value.voiceBinding.binding_ref)
+          ? '多个模型绑定'
+          : '选择模型绑定'
       "
-      @update:model-value="updateVoice"
+      @update:model-value="updateBinding"
     />
-    <p v-if="selectedVoice" class="text-[12px] text-muted-fg mt-2">
-      {{ selectedVoice.description }}
+    <p v-if="selectedBinding" class="text-[12px] text-muted-fg mt-2">
+      {{ selectedBinding.label }}
     </p>
     <p
-      v-else-if="isMixed(panel.displayValues.value.voiceBinding.voice_id)"
+      v-else-if="isMixed(panel.displayValues.value.voiceBinding.binding_ref)"
       class="text-[12px] text-muted-fg mt-2"
     >
-      当前选择包含多个音色，修改后将统一覆盖为同一音色。
+      当前选择包含多个模型绑定，修改后将统一覆盖为同一 binding。
     </p>
   </section>
 

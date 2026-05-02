@@ -4,14 +4,16 @@ import {
   resolveReferenceSelectionBySource,
   resolveReferenceSelectionForBinding,
 } from "@/features/reference-binding";
-import type { VoiceProfile } from "@/types/tts";
-import VoiceSelect from "@/components/VoiceSelect.vue";
+import BindingSelector from "@/components/workspace/BindingSelector.vue";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
 import InferenceSettingsPanel from "@/components/InferenceSettingsPanel.vue";
 import type { InputTextLanguage } from "@/composables/useInputDraft";
+import type { BindingReference } from "@/types/editSession";
 
 const props = defineProps<{
   modelValue: {
-    voice_id: string;
+    binding_key: string;
+    binding_ref: BindingReference | null;
     speed: number;
     temperature: number;
     top_p: number;
@@ -35,7 +37,7 @@ const props = defineProps<{
       }
     >;
   };
-  voices: VoiceProfile[];
+  bindings: RegistryBindingOption[];
 }>();
 
 const emit = defineEmits<{
@@ -44,29 +46,43 @@ const emit = defineEmits<{
   reset: [];
 }>();
 
-const selectedVoice = computed(() => {
-  return props.voices.find((v) => v.name === props.modelValue.voice_id) || null;
+const selectedBinding = computed(() => {
+  return props.bindings.find((binding) => binding.bindingKey === props.modelValue.binding_key) ?? null;
 });
 
 function update(key: string, value: any) {
   emit("update:modelValue", { ...props.modelValue, [key]: value });
 }
 
-function handleVoiceChange(val: string) {
-  const v = props.voices.find((vo) => vo.name === val);
-  const newParams = { ...props.modelValue, voice_id: val };
-  if (v && v.defaults) {
-    newParams.speed = v.defaults.speed;
-    newParams.temperature = v.defaults.temperature;
-    newParams.top_p = v.defaults.top_p;
-    newParams.top_k = v.defaults.top_k;
-    newParams.noise_scale = v.defaults.noise_scale ?? 0.35;
-    newParams.pause_length = v.defaults.pause_length;
+function handleBindingChange(bindingKey: string) {
+  const binding = props.bindings.find((item) => item.bindingKey === bindingKey);
+  if (!binding) {
+    return;
   }
+  const newParams = {
+    ...props.modelValue,
+    binding_key: binding.bindingKey,
+    binding_ref: binding.bindingRef,
+    speed: typeof binding.defaults.speed === "number" ? binding.defaults.speed : props.modelValue.speed,
+    temperature:
+      typeof binding.defaults.temperature === "number"
+        ? binding.defaults.temperature
+        : props.modelValue.temperature,
+    top_p: typeof binding.defaults.top_p === "number" ? binding.defaults.top_p : props.modelValue.top_p,
+    top_k: typeof binding.defaults.top_k === "number" ? binding.defaults.top_k : props.modelValue.top_k,
+    noise_scale:
+      typeof binding.defaults.noise_scale === "number"
+        ? binding.defaults.noise_scale
+        : props.modelValue.noise_scale,
+    pause_length:
+      typeof binding.defaults.pause_length === "number"
+        ? binding.defaults.pause_length
+        : props.modelValue.pause_length,
+  };
 
   const { selection } = resolveReferenceSelectionForBinding({
-    voiceId: val,
-    voices: props.voices,
+    bindingRef: binding.bindingRef,
+    bindingOptions: props.bindings,
     selections: props.modelValue.referenceSelectionsByBinding,
   });
   newParams.ref_source = selection.source;
@@ -79,15 +95,15 @@ function handleVoiceChange(val: string) {
 }
 
 function handleReferenceSourceChange(source: "preset" | "custom") {
-  if (!props.modelValue.voice_id) {
+  if (!props.modelValue.binding_ref) {
     update("ref_source", source);
     return;
   }
 
   const { selection } = resolveReferenceSelectionBySource({
-    voiceId: props.modelValue.voice_id,
+    bindingRef: props.modelValue.binding_ref,
     source,
-    voices: props.voices,
+    bindingOptions: props.bindings,
     selections: props.modelValue.referenceSelectionsByBinding,
   });
 
@@ -115,7 +131,6 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
   <div
     class="space-y-5 w-full h-full overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
   >
-    <!-- 顶部状态卡片 -->
     <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-semibold text-foreground flex items-center shrink-0 h-6">
@@ -124,20 +139,18 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
       </div>
     </section>
 
-    <!-- 音色卡片 -->
     <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
-      <h3 class="text-[13px] font-semibold text-foreground mb-3">目标音色</h3>
-      <VoiceSelect
-        :model-value="modelValue.voice_id"
-        :voices="voices"
-        @update:model-value="handleVoiceChange"
+      <h3 class="text-[13px] font-semibold text-foreground mb-3">目标模型</h3>
+      <BindingSelector
+        :model-value="modelValue.binding_key"
+        :bindings="bindings"
+        @update:model-value="handleBindingChange"
       />
-      <p v-if="selectedVoice" class="text-[12px] text-muted-fg mt-2">
-        {{ selectedVoice.description }}
+      <p v-if="selectedBinding" class="text-[12px] text-muted-fg mt-2">
+        {{ selectedBinding.label }}
       </p>
     </section>
 
-    <!-- 参考音频卡片 -->
     <section class="bg-card rounded-card p-4 shadow-card border border-border dark:border-transparent animate-fall">
       <h3 class="text-[13px] font-semibold text-foreground mb-3">参考音频</h3>
       <el-radio-group
@@ -149,15 +162,13 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
         <el-radio value="custom">自定义上传</el-radio>
       </el-radio-group>
 
-      <!-- 模型预设 -->
       <div
-        v-if="modelValue.ref_source === 'preset' && selectedVoice"
+        v-if="modelValue.ref_source === 'preset' && selectedBinding?.referenceAudioPath"
         class="text-xs text-muted-fg"
       >
-        {{ selectedVoice.ref_audio.split("/").pop() }}
+        {{ selectedBinding.referenceAudioPath.split("/").pop() }}
       </div>
 
-      <!-- 自定义上传 -->
       <div v-if="modelValue.ref_source === 'custom'">
         <el-upload
           :auto-upload="false"
@@ -171,7 +182,6 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
         </el-upload>
       </div>
 
-      <!-- 参考文本 -->
       <div class="mt-3">
         <label class="text-[13px] font-semibold text-foreground block mb-1.5"
           >参考文本</label
@@ -186,7 +196,6 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
         />
       </div>
 
-      <!-- 参考语言 -->
       <div class="mt-3 flex flex-col gap-1.5 self-start">
         <label class="text-[13px] font-semibold text-foreground"
           >参考语言</label
@@ -207,7 +216,6 @@ function handleInferenceParamsUpdate(nextParams: typeof props.modelValue) {
       </div>
     </section>
 
-    <!-- 合成参数卡片 -->
     <section class="bg-card rounded-card overflow-hidden shadow-card border border-border dark:border-transparent animate-fall">
       <InferenceSettingsPanel
         :params="modelValue"

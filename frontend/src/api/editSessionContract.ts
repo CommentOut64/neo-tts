@@ -1,4 +1,5 @@
 import type {
+  BindingReference,
   InitializeRequest,
   RenderJobAcceptedResponse,
   RenderJobResponse,
@@ -8,7 +9,8 @@ import type {
 
 export interface WorkspaceInitializeDraft {
   text: string;
-  voiceId: string;
+  voiceId?: string;
+  bindingRef?: BindingReference;
   textLang: string;
   speed: number;
   temperature: number;
@@ -23,7 +25,7 @@ export interface WorkspaceInitializeDraft {
   customRefPath: string | null;
 }
 
-export interface VoiceReferenceSource {
+export interface BindingReferenceSource {
   refAudio?: string | null;
 }
 
@@ -31,12 +33,18 @@ export const WORKSPACE_SEGMENT_BOUNDARY_MODE = "raw_strong_punctuation" as const
 
 export function buildInitializeRequest(
   draft: WorkspaceInitializeDraft,
-  voice?: VoiceReferenceSource,
+  binding?: BindingReferenceSource,
 ): InitializeRequest {
+  const bindingRef: BindingReference = draft.bindingRef ?? {
+    workspace_id: "legacy",
+    main_model_id: draft.voiceId ?? "default",
+    submodel_id: "gpt-sovits-v2",
+    preset_id: "default",
+  };
   const payload: InitializeRequest = {
     raw_text: draft.text,
     text_language: draft.textLang,
-    voice_id: draft.voiceId,
+    binding_ref: bindingRef,
     reference_source: draft.refSource,
     speed: draft.speed,
     temperature: draft.temperature,
@@ -47,8 +55,8 @@ export function buildInitializeRequest(
     segment_boundary_mode: WORKSPACE_SEGMENT_BOUNDARY_MODE,
   };
 
-  if (draft.refSource === "preset" && voice?.refAudio) {
-    payload.reference_audio_path = voice.refAudio;
+  if (draft.refSource === "preset" && binding?.refAudio) {
+    payload.reference_audio_path = binding.refAudio;
   }
 
   if (draft.refSource === "custom" && draft.customRefPath) {
