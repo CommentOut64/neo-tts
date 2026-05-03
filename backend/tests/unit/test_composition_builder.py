@@ -1,4 +1,5 @@
 import numpy as np
+from types import SimpleNamespace
 
 from backend.app.inference.editable_types import (
     BlockCompositionAssetPayload,
@@ -28,6 +29,7 @@ def _segment_asset(
         render_asset_id=f"render-{segment_id}",
         segment_id=segment_id,
         render_version=1,
+        sample_rate=4,
         semantic_tokens=[1, 2, 3],
         phone_ids=[11, 12],
         decoder_frame_count=3,
@@ -52,6 +54,7 @@ def _boundary_asset(*, edge_id: str, left_segment_id: str, right_segment_id: str
         right_segment_id=right_segment_id,
         right_render_version=1,
         edge_version=1,
+        sample_rate=4,
         boundary_strategy="latent_overlap_then_equal_power_crossfade",
         boundary_sample_count=int(boundary_audio.size),
         boundary_audio=boundary_audio,
@@ -120,6 +123,69 @@ def test_compose_document_offsets_block_spans_and_concatenates_audio():
     assert manifest.playable_sample_span == (0, 5)
     assert manifest.block_spans["block-1"] == (0, 2)
     assert manifest.block_spans["block-2"] == (2, 5)
+
+
+def test_compose_document_uses_block_sample_rate_instead_of_builder_default():
+    builder = CompositionBuilder(sample_rate=32000)
+    first_block = BlockCompositionAssetPayload(
+        block_id="block-1",
+        segment_ids=["seg-1"],
+        sample_rate=24000,
+        audio=np.asarray([0.1, 0.2], dtype=np.float32),
+        audio_sample_count=2,
+        segment_entries=[],
+    )
+    second_block = BlockCompositionAssetPayload(
+        block_id="block-2",
+        segment_ids=["seg-2"],
+        sample_rate=24000,
+        audio=np.asarray([0.3, 0.4, 0.5], dtype=np.float32),
+        audio_sample_count=3,
+        segment_entries=[],
+    )
+
+    manifest = builder.compose_document(
+        document_id="doc-1",
+        document_version=1,
+        blocks=[first_block, second_block],
+    )
+
+    assert manifest.sample_rate == 24000
+    assert manifest.playable_sample_span == (0, 5)
+
+
+def test_compose_block_uses_asset_sample_rate_instead_of_builder_default():
+    builder = CompositionBuilder(sample_rate=32000)
+    first = SimpleNamespace(
+        segment_id="seg-1",
+        render_asset_id="render-seg-1",
+        sample_rate=24000,
+        left_margin_audio=np.asarray([], dtype=np.float32),
+        core_audio=np.asarray([0.1, 0.2], dtype=np.float32),
+        right_margin_audio=np.asarray([], dtype=np.float32),
+    )
+    second = SimpleNamespace(
+        segment_id="seg-2",
+        render_asset_id="render-seg-2",
+        sample_rate=24000,
+        left_margin_audio=np.asarray([], dtype=np.float32),
+        core_audio=np.asarray([0.3], dtype=np.float32),
+        right_margin_audio=np.asarray([], dtype=np.float32),
+    )
+    edge = _edge(left_segment_id="seg-1", right_segment_id="seg-2", pause_duration_seconds=0.5)
+
+    block = builder.compose_block(
+        segments=[first, second],
+        boundaries=[],
+        edges=[edge],
+    )
+
+    assert block.sample_rate == 24000
+    assert block.audio_sample_count == 12003
+    assert block.segment_entries[0].audio_sample_span == (0, 2)
+    assert block.segment_entries[1].audio_sample_span == (12002, 12003)
+    assert np.allclose(block.audio[:2], np.asarray([0.1, 0.2], dtype=np.float32))
+    assert np.allclose(block.audio[-1:], np.asarray([0.3], dtype=np.float32))
 
 
 def test_build_preview_returns_full_segment_boundary_or_block_audio():

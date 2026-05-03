@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 
 from backend.app.inference.editable_gateway import EditableInferenceGateway
@@ -30,11 +32,18 @@ class _BoundaryContextTrackingBackend(_FakeEditableBackend):
             right_segment_id=right_asset.segment_id,
             right_render_version=right_asset.render_version,
             edge_version=edge.edge_version,
+            sample_rate=left_asset.sample_rate,
             boundary_strategy=edge.boundary_strategy,
             boundary_sample_count=sample_count,
             boundary_audio=np.asarray([0.9] * sample_count, dtype=np.float32),
             trace={"speed": speed},
         )
+
+
+class _LowSampleRateBoundaryContextTrackingBackend(_BoundaryContextTrackingBackend):
+    def render_segment_base(self, segment, context, *, progress_callback=None):
+        asset = super().render_segment_base(segment, context, progress_callback=progress_callback)
+        return replace(asset, sample_rate=24000)
 
 
 def test_checkpoint_service_saves_partial_head_and_working_snapshot(tmp_path):
@@ -86,11 +95,12 @@ def test_checkpoint_service_saves_partial_head_and_working_snapshot(tmp_path):
     assert len(working_snapshot.segments) == 2
     assert len(partial_timeline.segment_entries) == 1
     assert len(partial_timeline.block_entries) == 1
+    assert partial_timeline.sample_rate == 32000
 
 
 def test_checkpoint_service_uses_effective_segment_context_when_backfilling_partial_boundaries(tmp_path):
     service = _build_service(tmp_path)
-    tracking_backend = _BoundaryContextTrackingBackend()
+    tracking_backend = _LowSampleRateBoundaryContextTrackingBackend()
     gateway = EditableInferenceGateway(tracking_backend)
     service._gateway = gateway  # noqa: SLF001
     service._checkpoint_service._gateway = gateway  # noqa: SLF001
@@ -127,7 +137,7 @@ def test_checkpoint_service_uses_effective_segment_context_when_backfilling_part
         segment.effective_duration_samples = asset.audio_sample_count
         service._write_segment_asset(plan.job_id, asset)  # noqa: SLF001
 
-    service._checkpoint_service.save_partial_head(  # noqa: SLF001
+    checkpoint, _ = service._checkpoint_service.save_partial_head(  # noqa: SLF001
         document_id=plan.document_id,
         job_id=plan.job_id,
         active_session=service._repository.get_active_session(),  # noqa: SLF001
@@ -143,3 +153,10 @@ def test_checkpoint_service_uses_effective_segment_context_when_backfilling_part
     )
 
     assert tracking_backend.boundary_context_speeds == [0.5]
+    partial_timeline = service._asset_store.load_timeline_manifest(checkpoint.timeline_manifest_id)  # noqa: SLF001
+    assert partial_timeline.sample_rate == 24000
+    assert len(partial_timeline.edge_entries) == 1
+    pause_samples = (
+        partial_timeline.edge_entries[0].pause_end_sample - partial_timeline.edge_entries[0].pause_start_sample
+    )
+    assert pause_samples == 7200

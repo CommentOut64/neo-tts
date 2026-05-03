@@ -15,7 +15,12 @@ from backend.app.inference.block_adapter_types import (
     EdgeControl,
     ResolvedModelBinding,
 )
-from backend.app.inference.editable_types import BlockCompositionAssetPayload, SegmentCompositionEntry, SegmentRenderAssetPayload
+from backend.app.inference.editable_types import (
+    BlockCompositionAssetPayload,
+    BoundaryAssetPayload,
+    SegmentCompositionEntry,
+    SegmentRenderAssetPayload,
+)
 from backend.app.services.composition_builder import CompositionBuilder
 
 
@@ -26,6 +31,7 @@ def _segment_asset(
     left: list[float],
     core: list[float],
     right: list[float],
+    sample_rate: int = 4,
 ) -> SegmentRenderAssetPayload:
     left_audio = np.asarray(left, dtype=np.float32)
     core_audio = np.asarray(core, dtype=np.float32)
@@ -34,6 +40,7 @@ def _segment_asset(
         render_asset_id=f"render-{segment_id}-v{render_version}",
         segment_id=segment_id,
         render_version=render_version,
+        sample_rate=sample_rate,
         semantic_tokens=[1, 2, 3],
         phone_ids=[11, 12],
         decoder_frame_count=3,
@@ -207,13 +214,14 @@ class _FakeEditableGateway:
     def render_boundary_asset(self, left_asset, right_asset, edge, context):
         self.boundary_calls.append((left_asset.segment_id, right_asset.segment_id, edge.edge_id, context))
         boundary_audio = np.asarray(self._boundary_audio_by_edge_id[edge.edge_id], dtype=np.float32)
-        return SimpleNamespace(
+        return BoundaryAssetPayload(
             boundary_asset_id=f"boundary-{edge.edge_id}",
             left_segment_id=edge.left_segment_id,
             left_render_version=left_asset.render_version,
             right_segment_id=edge.right_segment_id,
             right_render_version=right_asset.render_version,
             edge_version=0,
+            sample_rate=left_asset.sample_rate,
             boundary_strategy=edge.boundary_strategy,
             boundary_sample_count=int(boundary_audio.size),
             boundary_audio=boundary_audio,
@@ -433,7 +441,7 @@ def test_gpt_sovits_local_adapter_prefers_reuse_for_clean_segments_and_rerenders
             block_id="block-1",
             block_asset_id="block-asset-old",
             segment_ids=["seg-1", "seg-2"],
-            sample_rate=32000,
+            sample_rate=4,
             audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
             audio_sample_count=9,
             segment_entries=[
@@ -515,7 +523,7 @@ def test_gpt_sovits_local_adapter_downgrades_join_policy_when_reusable_segment_c
             block_id="block-1",
             block_asset_id="block-asset-old",
             segment_ids=["seg-1", "seg-2"],
-            sample_rate=32000,
+            sample_rate=4,
             audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
             audio_sample_count=9,
             segment_entries=[
@@ -604,7 +612,7 @@ def test_gpt_sovits_local_adapter_prefers_base_render_asset_id_for_reuse():
             block_id="block-1",
             block_asset_id="block-asset-old",
             segment_ids=["seg-1", "seg-2"],
-            sample_rate=32000,
+            sample_rate=4,
             audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
             audio_sample_count=9,
             segment_entries=[
@@ -695,7 +703,7 @@ def test_gpt_sovits_local_adapter_falls_back_to_exact_asset_when_base_render_ass
             block_id="block-1",
             block_asset_id="block-asset-old",
             segment_ids=["seg-1", "seg-2"],
-            sample_rate=32000,
+            sample_rate=4,
             audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
             audio_sample_count=9,
             segment_entries=[
@@ -771,7 +779,7 @@ def test_gpt_sovits_local_adapter_builds_boundary_context_when_enhanced_edge_use
             block_id="block-1",
             block_asset_id="block-asset-old",
             segment_ids=["seg-1", "seg-2"],
-            sample_rate=32000,
+            sample_rate=4,
             audio=np.asarray([0.1, 0.2, 0.3, 0.9, 0.0, 0.0, 0.6, 0.7, 0.8], dtype=np.float32),
             audio_sample_count=9,
             segment_entries=[
@@ -882,7 +890,7 @@ def test_gpt_sovits_local_adapter_force_full_render_and_mixed_binding_reuse_both
         block_id="block-1",
         block_asset_id="block-asset-old",
         segment_ids=["seg-1", "seg-2"],
-        sample_rate=32000,
+        sample_rate=4,
         audio=np.asarray([0.9, 0.9], dtype=np.float32),
         audio_sample_count=2,
         segment_entries=[

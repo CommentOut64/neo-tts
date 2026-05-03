@@ -197,6 +197,7 @@ def test_edit_asset_store_loads_exact_segment_asset_derived_from_block_metadata(
 
     assert asset.render_asset_id == "seg-1-derived"
     assert asset.segment_id == "seg-1"
+    assert asset.sample_rate == 4
     assert asset.left_margin_sample_count == 0
     assert asset.core_sample_count == 3
     assert asset.right_margin_sample_count == 0

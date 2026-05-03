@@ -62,6 +62,10 @@ class _FakeWorkspaceService:
                 "endpoint": None,
                 "account_binding": {},
                 "adapter_options": {},
+                "preset_defaults": {
+                    "speaker": "Speaker-A",
+                    "language": "Chinese",
+                },
                 "preset_fixed_fields": {},
             },
             "ws_voice_b:voice-b:default:speaker-b": {
@@ -81,6 +85,10 @@ class _FakeWorkspaceService:
                 "endpoint": None,
                 "account_binding": {},
                 "adapter_options": {},
+                "preset_defaults": {
+                    "speaker": "Speaker-B",
+                    "language": "Japanese",
+                },
                 "preset_fixed_fields": {},
             },
             "ws_voice_c:voice-c:default:speaker-c": {
@@ -100,6 +108,10 @@ class _FakeWorkspaceService:
                 "endpoint": None,
                 "account_binding": {},
                 "adapter_options": {},
+                "preset_defaults": {
+                    "speaker": "Speaker-C",
+                    "language": "English",
+                },
                 "preset_fixed_fields": {},
             },
         }
@@ -671,6 +683,10 @@ def test_render_config_resolver_resolves_formal_binding_ref_through_workspace_se
     assert resolved.resolved_model_binding.model_instance_id == "ws_voice_a:voice-a:default"
     assert resolved.resolved_model_binding.preset_id == "speaker-a"
     assert resolved.resolved_model_binding.resolved_assets["gpt_weight"]["fingerprint"] == "gpt-a-fp"
+    assert resolved.resolved_model_binding.preset_defaults == {
+        "speaker": "Speaker-A",
+        "language": "Chinese",
+    }
     assert resolved.resolved_reference is not None
     assert resolved.resolved_reference.binding_key == "ws_voice_a:voice-a:default:speaker-a"
     assert resolved.resolved_reference.reference_audio_path == "preset-a.wav"

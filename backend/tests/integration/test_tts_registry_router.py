@@ -22,6 +22,7 @@ def _build_settings(tmp_path: Path) -> AppSettings:
         voices_config_path=tmp_path / "voices.json",
         tts_registry_root=tmp_path / "tts-registry",
         gpt_sovits_adapter_installed=True,
+        qwen3_tts_adapter_installed=True,
         managed_voices_dir=tmp_path / "managed_voices",
         synthesis_results_dir=tmp_path / "synthesis_results",
         inference_params_cache_file=tmp_path / "state" / "params_cache.json",
@@ -178,7 +179,11 @@ def test_tts_registry_empty_state_and_health_are_valid(tmp_path: Path):
         health = client.get("/health")
 
     assert adapters.status_code == 200
-    assert sorted(item["adapter_id"] for item in adapters.json()) == ["external_http_tts", "gpt_sovits_local"]
+    assert sorted(item["adapter_id"] for item in adapters.json()) == [
+        "external_http_tts",
+        "gpt_sovits_local",
+        "qwen3_tts_local",
+    ]
     external_adapter = next(item for item in adapters.json() if item["adapter_id"] == "external_http_tts")
     assert sorted(external_adapter["option_schema"]["properties"].keys()) == [
         "acquire_timeout_ms",
@@ -279,4 +284,23 @@ def test_tts_registry_gpt_sovits_family_exposes_explicit_submodel_and_preset_man
     assert any(field["field_key"] == "gpt_weight.path" for field in family["submodel_form_schema"])
     assert any(field["field_key"] == "sovits_weight.path" for field in family["submodel_form_schema"])
     assert any(field["field_key"] == "reference_text" for field in family["preset_form_schema"])
+    assert any(field["field_key"] == "reference_audio.path" for field in family["preset_form_schema"])
+
+
+def test_tts_registry_qwen3_family_exposes_workspace_model_and_preset_fields(tmp_path: Path):
+    settings = _build_settings(tmp_path)
+    _write_json(settings.voices_config_path, {})
+
+    with TestClient(create_app(settings=settings)) as client:
+        families = client.get("/v1/tts-registry/adapters/qwen3_tts_local/families")
+
+    assert families.status_code == 200
+    family = families.json()[0]
+    assert family["family_id"] == "qwen3_tts_local_default"
+    assert family["supports_submodels"] is True
+    assert family["supports_presets"] is True
+    assert family["auto_singleton_submodel"] is False
+    assert any(field["field_key"] == "model_dir.path" for field in family["submodel_form_schema"])
+    assert any(field["field_key"] == "generation_mode" for field in family["preset_form_schema"])
+    assert any(field["field_key"] == "speaker" for field in family["preset_form_schema"])
     assert any(field["field_key"] == "reference_audio.path" for field in family["preset_form_schema"])
