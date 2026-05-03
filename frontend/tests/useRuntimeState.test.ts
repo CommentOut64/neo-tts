@@ -531,6 +531,44 @@ describe("useRuntimeState", () => {
     unsubscribe();
   });
 
+  it("收到失败态 adapter_error 后，会保留结构化错误并把 message 提升为可读诊断", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-adapter-error",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.3,
+        message: "running",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-adapter-error",
+      document_id: "doc-1",
+      status: "failed",
+      progress: 0,
+      message: "External HTTP provider rate limited the request.",
+      adapter_error: {
+        error_code: "rate_limited",
+        message: "External HTTP provider rate limited the request.",
+        details: {
+          provider_http_status: 429,
+          provider_message: "slow down",
+          retry_after_ms: 2000,
+        },
+      },
+    });
+
+    expect(runtimeState.currentRenderJob.value?.adapter_error?.error_code).toBe("rate_limited");
+    expect(runtimeState.currentRenderJob.value?.message).toContain("429");
+    expect(runtimeState.currentRenderJob.value?.message).toContain("slow down");
+  });
+
   it("会把 job committed 元数据归一化后只广播一次，即使同时收到 timeline_committed 与 job_state_changed", async () => {
     const { useRuntimeState } = await import("../src/composables/useRuntimeState");
     const runtimeState = useRuntimeState();
@@ -582,6 +620,60 @@ describe("useRuntimeState", () => {
       committed_document_version: 2,
       committed_timeline_manifest_id: "timeline-2",
       changed_block_asset_ids: ["block-2"],
+    });
+  });
+
+  it("会稳定转发 block_completed 事件，并保留 block 级进度字段", async () => {
+    const { useRuntimeState } = await import("../src/composables/useRuntimeState");
+    const runtimeState = useRuntimeState();
+    const listener = vi.fn();
+
+    runtimeState.trackJob(
+      {
+        job_id: "job-block-progress",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.4,
+        message: "rendering",
+      },
+      { refreshSessionOnTerminal: false },
+    );
+
+    runtimeState.onRenderJobEvent(listener);
+    const handler = subscribeRenderJobEvents.mock.calls[0][1];
+
+    await handler.onEvent("job_state_changed", {
+      job_id: "job-block-progress",
+      document_id: "doc-1",
+      status: "rendering",
+      progress: 0.6,
+      message: "block 1 completed",
+      current_block_index: 1,
+      total_block_count: 3,
+    });
+    await handler.onEvent("block_completed", {
+      block_id: "block-1",
+      block_asset_id: "block-asset-1",
+      current_block_index: 1,
+      total_block_count: 3,
+      segment_ids: ["seg-1"],
+    });
+
+    expect(runtimeState.currentRenderJob.value).toMatchObject({
+      current_block_index: 1,
+      total_block_count: 3,
+      progress: 0.6,
+    });
+    expect(listener).toHaveBeenCalledWith({
+      type: "block_completed",
+      payload: {
+        block_id: "block-1",
+        block_asset_id: "block-asset-1",
+        current_block_index: 1,
+        total_block_count: 3,
+        segment_ids: ["seg-1"],
+      },
+      jobId: "job-block-progress",
     });
   });
 

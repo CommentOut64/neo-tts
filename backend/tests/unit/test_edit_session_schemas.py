@@ -12,6 +12,7 @@ from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdgeResponse,
     EditableSegmentResponse,
+    ExportRequest,
     InitializeEditSessionRequest,
     PreviewRequest,
     PreviewResponse,
@@ -274,3 +275,15 @@ def test_checkpoint_state_rejects_running_partial_status():
             resume_token=None,
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
+
+
+def test_export_request_accepts_blocks_export_kind():
+    request = ExportRequest(
+        document_version=1,
+        target_dir="C:/exports",
+        audio={
+            "kind": "blocks",
+            "overwrite_policy": "fail",
+        },
+    )
+    assert request.audio.kind == "blocks"

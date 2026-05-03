@@ -4,7 +4,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.app.repositories.edit_session_repository import EditSessionRepository
-from backend.app.schemas.edit_session import ActiveDocumentState, DocumentSnapshot, EditableEdge, EditableSegment, RenderJobRecord
+from backend.app.schemas.edit_session import (
+    ActiveDocumentState,
+    DocumentSnapshot,
+    EditableEdge,
+    EditableSegment,
+    ExportJobRecord,
+    ExportOutputManifest,
+    RenderJobRecord,
+)
 from backend.app.text.terminal_capsule import parse_terminal_capsule
 
 
@@ -326,6 +334,81 @@ def test_repository_loads_recoverable_state_and_collects_referenced_assets(tmp_p
     assert referenced.boundary_asset_ids
 
 
+def test_repository_collects_composition_manifest_ids_from_completed_export_jobs(tmp_path: Path):
+    repository = _build_repository(tmp_path / "edit_session.db")
+    head_snapshot = _snapshot(
+        snapshot_id="snap-head",
+        snapshot_kind="head",
+        document_version=2,
+        block_ids=["block-2"],
+        composition_manifest_id=None,
+        segments=[
+            _segment(
+                segment_id="seg-1",
+                order_key=1,
+                raw_text="甲。",
+                render_asset_id="render-3",
+                render_version=4,
+            ),
+            _segment(
+                segment_id="seg-2",
+                order_key=2,
+                raw_text="乙。",
+                previous_segment_id="seg-1",
+                render_asset_id="render-2",
+                render_version=2,
+            ),
+        ],
+        edges=[
+            EditableEdge(
+                edge_id="edge-1",
+                document_id="doc-1",
+                left_segment_id="seg-1",
+                right_segment_id="seg-2",
+                edge_version=3,
+            )
+        ],
+    )
+    repository.save_snapshot(head_snapshot)
+    repository.upsert_active_session(
+        ActiveDocumentState(
+            document_id="doc-1",
+            session_status="ready",
+            baseline_snapshot_id="snap-head",
+            head_snapshot_id="snap-head",
+        )
+    )
+    repository.save_export_job(
+        ExportJobRecord(
+            export_job_id="export-1",
+            document_id="doc-1",
+            document_version=2,
+            timeline_manifest_id="timeline-2",
+            export_kind="composition",
+            status="completed",
+            target_dir=str(tmp_path / "exports"),
+            overwrite_policy="fail",
+            progress=1.0,
+            message="done",
+            output_manifest=ExportOutputManifest(
+                export_kind="composition",
+                target_dir=str(tmp_path / "exports"),
+                files=[str(tmp_path / "exports" / "demo.wav")],
+                audio_files=[str(tmp_path / "exports" / "demo.wav")],
+                composition_file=str(tmp_path / "exports" / "demo.wav"),
+                composition_manifest_id="comp-export-1",
+                manifest_file=str(tmp_path / "exports" / "manifest.json"),
+            ),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    referenced = repository.collect_referenced_asset_ids()
+
+    assert "comp-export-1" in referenced.composition_manifest_ids
+
+
 def test_repository_lists_non_terminal_jobs_and_marks_terminal(tmp_path: Path):
     repository = _build_repository(tmp_path / "edit_session.db")
     preparing = RenderJobRecord(
@@ -592,10 +675,9 @@ def test_repository_upgrades_legacy_render_profile_reference_fields_on_read(tmp_
     assert loaded.segments[0].display_text == "第一句。"
     assert not hasattr(loaded, "raw_text")
     assert not hasattr(loaded, "normalized_text")
-    assert loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"] == {
-        "voice-a:model-a": {
-            "reference_audio_path": "legacy.wav",
-            "reference_text": "遗留参考文本",
-            "reference_language": "zh",
-        }
-    }
+    override_payload = loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"][
+        "voice-a:model-a"
+    ]
+    assert override_payload["reference_audio_path"] == "legacy.wav"
+    assert override_payload["reference_text"] == "遗留参考文本"
+    assert override_payload["reference_language"] == "zh"

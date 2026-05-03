@@ -27,7 +27,7 @@ const aboutDialogVisible = ref(false)
 const navItems = [
   { path: '/text-input', label: '文本输入' },
   { path: '/workspace', label: '语音合成' },
-  { path: '/voices', label: '模型管理' },
+  { path: '/models', label: '模型管理' },
 ]
 
 const canOpenExport = computed(() =>
@@ -138,18 +138,6 @@ watch(
       <!-- 预留导出位和运行态提示位 -->
       <div id="runtime-state-placeholder"></div>
       <div id="export-action-placeholder"></div>
-
-      <!-- 进度流状态 -->
-      <div v-if="isProgressStreamConnected !== undefined && route.path === '/studio'" class="flex items-center gap-1.5">
-        <span
-          class="w-1.5 h-1.5 rounded-full"
-          :class="isProgressStreamConnected ? 'bg-accent' : 'bg-muted-fg/40'"
-        />
-        <span class="text-xs text-muted-fg">
-          {{ isProgressStreamConnected ? '进度流在线' : '进度流离线' }}
-        </span>
-      </div>
-
       <!-- 设置图标按钮 -->
       <button
         class="w-8 h-8 flex items-center justify-center rounded-full transition-colors duration-200 text-muted-fg hover:text-foreground dark:hover:bg-secondary"

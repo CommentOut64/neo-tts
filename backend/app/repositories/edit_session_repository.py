@@ -554,6 +554,8 @@ class EditSessionRepository:
             for segment in snapshot.segments:
                 if segment.render_asset_id is not None:
                     graph.segment_asset_ids.add(segment.render_asset_id)
+                if segment.base_render_asset_id is not None:
+                    graph.segment_asset_ids.add(segment.base_render_asset_id)
 
             for edge in snapshot.edges:
                 left_segment = segments_by_id.get(edge.left_segment_id)
@@ -572,6 +574,13 @@ class EditSessionRepository:
                         boundary_strategy=edge.boundary_strategy,
                     )
                 )
+
+        for export_job in self._list_completed_export_jobs():
+            if export_job.export_kind != "composition" or export_job.output_manifest is None:
+                continue
+            if export_job.output_manifest.composition_manifest_id is None:
+                continue
+            graph.composition_manifest_ids.add(export_job.output_manifest.composition_manifest_id)
         return graph
 
     def clear(self) -> None:
@@ -583,6 +592,18 @@ class EditSessionRepository:
             connection.execute("DELETE FROM render_jobs")
             connection.execute("DELETE FROM checkpoints")
             connection.execute("DELETE FROM export_jobs")
+
+    def _list_completed_export_jobs(self) -> list[ExportJobRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM export_jobs
+                ORDER BY updated_at DESC, export_job_id DESC
+                """
+            ).fetchall()
+        jobs = [ExportJobRecord.model_validate_json(row["payload"]) for row in rows]
+        return [job for job in jobs if job.status == "completed"]
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_file)

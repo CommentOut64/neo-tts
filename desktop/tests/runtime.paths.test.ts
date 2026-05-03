@@ -103,13 +103,18 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0", root: path.join(installRoot, "packages", "update-agent", "1.1.0") },
 						shell: { version: "v0.0.1", root: path.join(installRoot, "packages", "shell", "v0.0.1") },
 						"app-core": { version: "v0.0.1", root: path.join(installRoot, "packages", "app-core", "v0.0.1") },
-						runtime: { version: "py311-cu128-v1", root: path.join(installRoot, "packages", "runtime", "py311-cu128-v1") },
-						models: { version: "builtin-v1", root: path.join(installRoot, "packages", "models", "builtin-v1") },
-						"pretrained-models": { version: "support-v1", root: path.join(installRoot, "packages", "pretrained-models", "support-v1") },
+						"python-runtime": { version: "py311-cu128-v1", root: path.join(installRoot, "packages", "python-runtime", "py311-cu128-v1") },
+						"adapter-system": { version: "gpt-sovits-v1", root: path.join(installRoot, "packages", "adapter-system", "gpt-sovits-v1") },
+						"support-assets": { version: "support-v1", root: path.join(installRoot, "packages", "support-assets", "support-v1") },
+						"seed-model-packages": { version: "seed-v1", root: path.join(installRoot, "packages", "seed-model-packages", "seed-v1") },
 					},
 					paths: {
 						userDataRoot: path.join(workspace, "LocalAppData", "NeoTTS"),
+						configRoot: path.join(workspace, "LocalAppData", "NeoTTS", "config"),
+						ttsRegistryRoot: path.join(workspace, "LocalAppData", "NeoTTS", "tts-registry"),
+						cacheRoot: path.join(workspace, "LocalAppData", "NeoTTS", "cache"),
 						exportsRoot: path.join(workspace, "Documents", "NeoTTS", "Exports"),
+						logsRoot: path.join(workspace, "LocalAppData", "NeoTTS", "logs"),
 					},
 				},
 				null,
@@ -132,13 +137,19 @@ describe("product runtime paths", () => {
 		expect(paths.bootstrapRoot).toBe(path.join(installRoot, "packages", "bootstrap", "1.1.0"));
 		expect(paths.shellRoot).toBe(path.join(installRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.appCoreRoot).toBe(path.join(installRoot, "packages", "app-core", "v0.0.1"));
-		expect(paths.runtimeRoot).toBe(path.join(installRoot, "packages", "runtime", "py311-cu128-v1"));
-		expect(paths.modelsRoot).toBe(path.join(installRoot, "packages", "models", "builtin-v1"));
-		expect(paths.pretrainedModelsRoot).toBe(path.join(installRoot, "packages", "pretrained-models", "support-v1"));
+		expect(paths.runtimeRoot).toBe(path.join(installRoot, "packages", "python-runtime", "py311-cu128-v1"));
+		expect(paths.adapterSystemRoot).toBe(path.join(installRoot, "packages", "adapter-system", "gpt-sovits-v1"));
+		expect(paths.supportAssetsRoot).toBe(path.join(installRoot, "packages", "support-assets", "support-v1"));
+		expect(paths.seedModelPackagesRoot).toBe(path.join(installRoot, "packages", "seed-model-packages", "seed-v1"));
 		expect(paths.backendDir).toBe(path.join(paths.appCoreRoot, "backend"));
 		expect(paths.runtimePython).toBe(path.join(paths.runtimeRoot, "runtime", "python", "python.exe"));
-		expect(paths.builtinModelDir).toBe(path.join(paths.modelsRoot, "models", "builtin"));
-		expect(paths.pretrainedModelsDir).toBe(path.join(paths.pretrainedModelsRoot, "pretrained_models"));
+		expect(paths.gptSovitsDir).toBe(path.join(paths.adapterSystemRoot, "adapter-system", "gpt-sovits", "GPT_SoVITS"));
+		expect(paths.builtinModelDir).toBe(path.join(paths.supportAssetsRoot, "support-assets", "gpt-sovits"));
+		expect(paths.pretrainedModelsDir).toBe(path.join(paths.supportAssetsRoot, "support-assets", "shared", "pretrained_models"));
+		expect(paths.configDataDir).toBe(path.join(workspace, "LocalAppData", "NeoTTS", "config"));
+		expect(paths.ttsRegistryDir).toBe(path.join(workspace, "LocalAppData", "NeoTTS", "tts-registry"));
+		expect(paths.cacheDir).toBe(path.join(workspace, "LocalAppData", "NeoTTS", "cache"));
+		expect(paths.logsDir).toBe(path.join(workspace, "LocalAppData", "NeoTTS", "logs"));
 	});
 
 	it("resolves portable layered roots from NEO_TTS_RUNTIME_DESCRIPTOR when provided", () => {
@@ -162,13 +173,18 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0", root: path.join(portableRoot, "packages", "update-agent", "1.1.0") },
 						shell: { version: "v0.0.1", root: path.join(portableRoot, "packages", "shell", "v0.0.1") },
 						"app-core": { version: "v0.0.1", root: path.join(portableRoot, "packages", "app-core", "v0.0.1") },
-						runtime: { version: "py311-cu128-v1", root: path.join(portableRoot, "packages", "runtime", "py311-cu128-v1") },
-						models: { version: "builtin-v1", root: path.join(portableRoot, "packages", "models", "builtin-v1") },
-						"pretrained-models": { version: "support-v1", root: path.join(portableRoot, "packages", "pretrained-models", "support-v1") },
+						"python-runtime": { version: "py311-cu128-v1", root: path.join(portableRoot, "packages", "python-runtime", "py311-cu128-v1") },
+						"adapter-system": { version: "gpt-sovits-v1", root: path.join(portableRoot, "packages", "adapter-system", "gpt-sovits-v1") },
+						"support-assets": { version: "support-v1", root: path.join(portableRoot, "packages", "support-assets", "support-v1") },
+						"seed-model-packages": { version: "seed-v1", root: path.join(portableRoot, "packages", "seed-model-packages", "seed-v1") },
 					},
 					paths: {
 						userDataRoot: path.join(portableRoot, "data"),
-						exportsRoot: path.join(portableRoot, "exports"),
+						configRoot: path.join(portableRoot, "data", "config"),
+						ttsRegistryRoot: path.join(portableRoot, "data", "tts-registry"),
+						cacheRoot: path.join(portableRoot, "data", "cache"),
+						exportsRoot: path.join(portableRoot, "data", "exports"),
+						logsRoot: path.join(portableRoot, "data", "logs"),
 					},
 				},
 				null,
@@ -193,9 +209,16 @@ describe("product runtime paths", () => {
 		expect(paths.distributionKind).toBe("portable");
 		expect((paths as ProductPaths & { productRoot?: string }).productRoot).toBe(portableRoot);
 		expect(paths.userDataDir).toBe(path.join(portableRoot, "data"));
-		expect(paths.exportsDir).toBe(path.join(portableRoot, "exports"));
+		expect(paths.exportsDir).toBe(path.join(portableRoot, "data", "exports"));
 		expect(paths.shellRoot).toBe(path.join(portableRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.frontendDir).toBe(path.join(paths.appCoreRoot, "frontend-dist"));
+		expect(paths.gptSovitsDir).toBe(path.join(paths.adapterSystemRoot, "adapter-system", "gpt-sovits", "GPT_SoVITS"));
+		expect(paths.builtinModelDir).toBe(path.join(paths.supportAssetsRoot, "support-assets", "gpt-sovits"));
+		expect(paths.pretrainedModelsDir).toBe(path.join(paths.supportAssetsRoot, "support-assets", "shared", "pretrained_models"));
+		expect(paths.configDataDir).toBe(path.join(portableRoot, "data", "config"));
+		expect(paths.ttsRegistryDir).toBe(path.join(portableRoot, "data", "tts-registry"));
+		expect(paths.cacheDir).toBe(path.join(portableRoot, "data", "cache"));
+		expect(paths.logsDir).toBe(path.join(portableRoot, "data", "logs"));
 	});
 
 	it("resolves portable layered roots from version-only descriptor entries after moving the portable root", () => {
@@ -219,13 +242,18 @@ describe("product runtime paths", () => {
 						"update-agent": { version: "1.1.0" },
 						shell: { version: "v0.0.1" },
 						"app-core": { version: "v0.0.1" },
-						runtime: { version: "py311-cu128-v1" },
-						models: { version: "builtin-v1" },
-						"pretrained-models": { version: "support-v1" },
+						"python-runtime": { version: "py311-cu128-v1" },
+						"adapter-system": { version: "gpt-sovits-v1" },
+						"support-assets": { version: "support-v1" },
+						"seed-model-packages": { version: "seed-v1" },
 					},
 					paths: {
 						userDataRoot: "./data",
-						exportsRoot: "./exports",
+						configRoot: "./data/config",
+						ttsRegistryRoot: "./data/tts-registry",
+						cacheRoot: "./data/cache",
+						exportsRoot: "./data/exports",
+						logsRoot: "./data/logs",
 					},
 				},
 				null,
@@ -251,12 +279,17 @@ describe("product runtime paths", () => {
 		expect(paths.updateAgentRoot).toBe(path.join(portableRoot, "packages", "update-agent", "1.1.0"));
 		expect(paths.shellRoot).toBe(path.join(portableRoot, "packages", "shell", "v0.0.1"));
 		expect(paths.appCoreRoot).toBe(path.join(portableRoot, "packages", "app-core", "v0.0.1"));
-		expect(paths.runtimeRoot).toBe(path.join(portableRoot, "packages", "runtime", "py311-cu128-v1"));
-		expect(paths.modelsRoot).toBe(path.join(portableRoot, "packages", "models", "builtin-v1"));
-		expect(paths.pretrainedModelsRoot).toBe(
-			path.join(portableRoot, "packages", "pretrained-models", "support-v1"),
+		expect(paths.runtimeRoot).toBe(path.join(portableRoot, "packages", "python-runtime", "py311-cu128-v1"));
+		expect(paths.adapterSystemRoot).toBe(path.join(portableRoot, "packages", "adapter-system", "gpt-sovits-v1"));
+		expect(paths.supportAssetsRoot).toBe(path.join(portableRoot, "packages", "support-assets", "support-v1"));
+		expect(paths.seedModelPackagesRoot).toBe(
+			path.join(portableRoot, "packages", "seed-model-packages", "seed-v1"),
 		);
 		expect(paths.userDataDir).toBe(path.join(portableRoot, "data"));
-		expect(paths.exportsDir).toBe(path.join(portableRoot, "exports"));
+		expect(paths.exportsDir).toBe(path.join(portableRoot, "data", "exports"));
+		expect(paths.configDataDir).toBe(path.join(portableRoot, "data", "config"));
+		expect(paths.ttsRegistryDir).toBe(path.join(portableRoot, "data", "tts-registry"));
+		expect(paths.cacheDir).toBe(path.join(portableRoot, "data", "cache"));
+		expect(paths.logsDir).toBe(path.join(portableRoot, "data", "logs"));
 	});
 });

@@ -41,6 +41,10 @@ class ResolvedVoiceBinding:
     voice_binding_id: str
     voice_id: str
     model_key: str
+    adapter_id: str | None = None
+    model_instance_id: str | None = None
+    preset_id: str | None = None
+    binding_fingerprint: str = ""
     gpt_path: str | None = None
     sovits_path: str | None = None
     speaker_meta: dict[str, Any] = field(default_factory=dict)
@@ -114,6 +118,9 @@ class SegmentCompositionEntry:
     audio_sample_span: tuple[int, int]
     order_key: int = 0
     render_asset_id: str | None = None
+    base_render_asset_id: str | None = None
+    precision: str | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +151,8 @@ class BlockCompositionAssetPayload:
     audio_sample_count: int
     segment_entries: list[SegmentCompositionEntry]
     block_asset_id: str = ""
+    segment_alignment_mode: str | None = None
+    join_report_summary: dict[str, Any] | None = None
     edge_entries: list[EdgeCompositionEntry] = field(default_factory=list)
     marker_entries: list[BlockMarkerEntry] = field(default_factory=list)
 

@@ -154,7 +154,7 @@ type runtimeDriverTarget struct {
 }
 
 func resolveRuntimeDriverTarget(current CurrentState) (runtimeDriverTarget, bool) {
-	runtimePackage, ok := current.Packages["runtime"]
+	runtimePackage, ok := current.Packages["python-runtime"]
 	if !ok {
 		return runtimeDriverTarget{}, false
 	}

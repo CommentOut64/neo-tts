@@ -3,6 +3,10 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+from backend.app.core.lifespan import _preload_configured_voices
+from backend.app.core.settings import AppSettings
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+
 
 def test_sv_module_does_not_prepend_developer_ffmpeg_path(monkeypatch):
     module_name = "GPT_SoVITS.sv"
@@ -122,3 +126,33 @@ def test_korean_module_uses_user_data_runtime_temp_for_mecab_fallback(monkeypatc
     assert copied_paths == [
         (str(tmp_path / "韩文词典" / "data"), str(user_data_root / "runtime_temp" / "ko" / "ko_dict"))
     ]
+
+
+def test_default_adapter_definition_store_skips_gpt_sovits_when_family_is_not_installed():
+    store = build_default_adapter_definition_store(enable_gpt_sovits_local=False)
+
+    assert store.get("gpt_sovits_local") is None
+    assert store.require("external_http_tts").adapter_id == "external_http_tts"
+
+
+def test_default_adapter_definition_store_marks_gpt_sovits_local_as_incremental_render_capable():
+    store = build_default_adapter_definition_store(enable_gpt_sovits_local=True)
+
+    assert store.require("gpt_sovits_local").capabilities.incremental_render is True
+
+
+def test_preload_configured_voices_skips_when_gpt_sovits_adapter_is_unavailable(tmp_path):
+    settings = AppSettings(
+        project_root=tmp_path,
+        voices_config_path=tmp_path / "config" / "voices.json",
+        preload_on_start=True,
+        preload_voice_ids=("demo",),
+        gpt_sovits_adapter_installed=False,
+    )
+    app = SimpleNamespace(state=SimpleNamespace(settings=settings))
+    model_cache = SimpleNamespace(
+        get_model_handle=lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not preload model handle")),
+        get_engine=lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not preload engine")),
+    )
+
+    _preload_configured_voices(app, model_cache)

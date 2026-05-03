@@ -66,6 +66,8 @@ func TestSwitcherPreparePendingSwitchInitializesLastKnownGoodOnceAndWritesCandid
 	if _, err := store.SaveCurrent(current); err != nil {
 		t.Fatalf("SaveCurrent returned error: %v", err)
 	}
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "packages", "shell", "v0.0.2", "NeoTTSApp.exe"), []byte("shell"))
+	writeBootstrapTestFile(t, filepath.Join(rootDir, "packages", "bootstrap", "1.2.0", "NeoTTS.exe"), []byte("bootstrap"))
 
 	switcher := NewSwitcher(SwitcherOptions{
 		RootDir: rootDir,

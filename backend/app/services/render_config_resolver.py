@@ -6,7 +6,10 @@ import json
 from typing import Literal
 
 from backend.app.core.exceptions import EditSessionNotFoundError
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.block_adapter_types import ResolvedModelBinding
 from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
+from backend.app.inference.editable_types import fingerprint_inference_config
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdge,
@@ -17,6 +20,10 @@ from backend.app.schemas.edit_session import (
 )
 from backend.app.services.reference_binding import build_binding_key, merge_reference_override
 from backend.app.services.session_reference_asset_service import SessionReferenceAsset
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.types import ModelInstance, ModelPreset
+from backend.app.tts_registry.workspace_service import WorkspaceService
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,7 @@ class ResolvedSegmentConfig:
     voice_binding: VoiceBinding
     render_context_fingerprint: str
     model_cache_key: str
+    resolved_model_binding: ResolvedModelBinding | None = None
     resolved_reference: "ResolvedReferenceSelection | None" = None
 
     @property
@@ -55,8 +63,18 @@ class ResolvedEdgeConfig:
 
 
 class RenderConfigResolver:
-    def __init__(self, *, voice_service: object | None = None) -> None:
-        self._voice_service = voice_service
+    def __init__(
+        self,
+        *,
+        model_registry: ModelRegistry | None = None,
+        adapter_registry: AdapterRegistry | None = None,
+        secret_store: SecretStore | None = None,
+        workspace_service: WorkspaceService | None = None,
+    ) -> None:
+        self._model_registry = model_registry
+        self._adapter_registry = adapter_registry
+        self._secret_store = secret_store
+        self._workspace_service = workspace_service
 
     def resolve_segment(self, *, snapshot: DocumentSnapshot, segment_id: str) -> ResolvedSegmentConfig:
         segment = next((item for item in snapshot.segments if item.segment_id == segment_id), None)
@@ -71,6 +89,11 @@ class RenderConfigResolver:
         )
         effective_render_profile = self._apply_effective_reference(
             render_profile=render_profile,
+            resolved_reference=resolved_reference,
+        )
+        resolved_model_binding = self._resolve_model_binding(
+            voice_binding=voice_binding,
+            render_profile=effective_render_profile,
             resolved_reference=resolved_reference,
         )
         fingerprint_payload = json.dumps(
@@ -96,9 +119,14 @@ class RenderConfigResolver:
             sort_keys=True,
         )
         render_context_fingerprint = hashlib.sha1(fingerprint_payload.encode("utf-8")).hexdigest()
-        model_cache_key = build_binding_key(
-            voice_id=voice_binding.voice_id,
-            model_key=voice_binding.model_key,
+        model_cache_key = (
+            resolved_model_binding.binding_fingerprint
+            if resolved_model_binding is not None
+            else build_binding_key(
+                binding_ref=voice_binding.binding_ref,
+                voice_id=voice_binding.voice_id,
+                model_key=voice_binding.model_key,
+            )
         )
         return ResolvedSegmentConfig(
             segment=segment,
@@ -106,6 +134,7 @@ class RenderConfigResolver:
             voice_binding=voice_binding,
             render_context_fingerprint=render_context_fingerprint,
             model_cache_key=model_cache_key,
+            resolved_model_binding=resolved_model_binding,
             resolved_reference=resolved_reference,
         )
 
@@ -189,120 +218,82 @@ class RenderConfigResolver:
         voice_binding: VoiceBinding,
     ) -> ResolvedReferenceSelection | None:
         binding_key = build_binding_key(
+            binding_ref=voice_binding.binding_ref,
             voice_id=voice_binding.voice_id,
             model_key=voice_binding.model_key,
         )
-        override = render_profile.reference_overrides_by_binding.get(binding_key)
+        override = self._resolve_reference_override(
+            render_profile=render_profile,
+            voice_binding=voice_binding,
+            binding_key=binding_key,
+        )
         legacy_override = self._build_legacy_reference_override(render_profile)
         active_override = override or legacy_override or self._resolve_legacy_binding_fallback(render_profile)
         session_reference_asset = self._resolve_session_reference_asset(active_override)
 
-        if self._voice_service is None:
-            if active_override is None:
-                return None
-            payload = self._build_effective_override_payload(
-                active_override=active_override,
-                session_reference_asset=session_reference_asset,
-            )
-            return ResolvedReferenceSelection(
-                binding_key=binding_key,
-                source="custom",
-                reference_scope="session_override",
-                reference_identity=self._build_session_reference_identity(
-                    binding_key=binding_key,
-                    session_reference_asset=session_reference_asset,
-                ),
-                reference_audio_path=payload.get("reference_audio_path") or "",
-                reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
-                    payload.get("reference_audio_path") or "",
-                    session_reference_asset=session_reference_asset,
-                ),
-                reference_text=payload.get("reference_text") or "",
-                reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
-                reference_language=payload.get("reference_language") or "",
-            )
-
-        try:
-            if hasattr(self._voice_service, "get_voice_profile"):
-                preset_voice = self._voice_service.get_voice_profile(voice_binding.voice_id)
-            elif hasattr(self._voice_service, "get_voice"):
-                preset_voice = self._voice_service.get_voice(voice_binding.voice_id)
-            else:
-                if active_override is None:
-                    return None
-                payload = self._build_effective_override_payload(
+        if (
+            voice_binding.binding_ref is not None
+            and self._workspace_service is not None
+        ):
+            resolved_binding = self._workspace_service.resolve_binding_reference(voice_binding.binding_ref)
+            merged_reference = merge_reference_override(
+                preset_reference={
+                    "reference_audio_path": resolved_binding.get("reference_audio_path") or "",
+                    "reference_text": resolved_binding.get("reference_text") or "",
+                    "reference_language": resolved_binding.get("reference_language") or "",
+                },
+                override=self._build_effective_override_payload(
                     active_override=active_override,
                     session_reference_asset=session_reference_asset,
                 )
-                return ResolvedReferenceSelection(
+                if active_override is not None
+                else None,
+            )
+            reference_scope = "session_override" if active_override is not None else "voice_preset"
+            reference_identity = (
+                self._build_session_reference_identity(
                     binding_key=binding_key,
-                    source="custom",
-                    reference_scope="session_override",
-                    reference_identity=self._build_session_reference_identity(
-                        binding_key=binding_key,
-                        session_reference_asset=session_reference_asset,
-                    ),
-                    reference_audio_path=payload.get("reference_audio_path") or "",
-                    reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
-                        payload.get("reference_audio_path") or "",
-                        session_reference_asset=session_reference_asset,
-                    ),
-                    reference_text=payload.get("reference_text") or "",
-                    reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
-                    reference_language=payload.get("reference_language") or "",
+                    session_reference_asset=session_reference_asset,
                 )
-        except Exception:
-            if active_override is None:
-                return None
-            payload = self._build_effective_override_payload(
-                active_override=active_override,
-                session_reference_asset=session_reference_asset,
+                if active_override is not None
+                else f"{binding_key}:preset"
             )
             return ResolvedReferenceSelection(
                 binding_key=binding_key,
-                source="custom",
-                reference_scope="session_override",
-                reference_identity=self._build_session_reference_identity(
-                    binding_key=binding_key,
-                    session_reference_asset=session_reference_asset,
-                ),
-                reference_audio_path=payload.get("reference_audio_path") or "",
+                source="custom" if active_override is not None else "preset",
+                reference_scope=reference_scope,
+                reference_identity=reference_identity,
+                reference_audio_path=merged_reference["reference_audio_path"],
                 reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
-                    payload.get("reference_audio_path") or "",
+                    merged_reference["reference_audio_path"],
                     session_reference_asset=session_reference_asset,
                 ),
-                reference_text=payload.get("reference_text") or "",
-                reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
-                reference_language=payload.get("reference_language") or "",
+                reference_text=merged_reference["reference_text"],
+                reference_text_fingerprint=fingerprint_text(merged_reference["reference_text"]),
+                reference_language=merged_reference["reference_language"],
             )
-        merged_reference = merge_reference_override(
-            preset_voice=preset_voice,
-            override=self._build_effective_override_payload(
-                active_override=active_override,
-                session_reference_asset=session_reference_asset,
-            )
-            if active_override is not None
-            else None,
-        )
-        reference_scope = "session_override" if active_override is not None else "voice_preset"
-        reference_identity = (
-            self._build_session_reference_identity(
-                binding_key=binding_key,
-                session_reference_asset=session_reference_asset,
-            )
-            if active_override is not None
-            else f"{voice_binding.voice_id}:preset"
+        if active_override is None:
+            return None
+        payload = self._build_effective_override_payload(
+            active_override=active_override,
+            session_reference_asset=session_reference_asset,
         )
         return ResolvedReferenceSelection(
             binding_key=binding_key,
-            source="custom" if active_override is not None else "preset",
-            reference_scope=reference_scope,
-            reference_identity=reference_identity,
-            reference_audio_path=merged_reference["reference_audio_path"],
-            reference_audio_fingerprint=self._safe_fingerprint_file(merged_reference["reference_audio_path"]),
-            reference_text=merged_reference["reference_text"],
-            reference_text_fingerprint=fingerprint_text(merged_reference["reference_text"]),
-            reference_language=merged_reference["reference_language"],
+            source="custom",
+            reference_scope="session_override",
+            reference_identity=self._build_session_reference_identity(
+                binding_key=binding_key,
+                session_reference_asset=session_reference_asset,
+            ),
+            reference_audio_path=payload.get("reference_audio_path") or "",
+            reference_audio_fingerprint=self._resolve_reference_audio_fingerprint(
+                payload.get("reference_audio_path") or "",
+                session_reference_asset=session_reference_asset,
+            ),
+            reference_text=payload.get("reference_text") or "",
+            reference_text_fingerprint=fingerprint_text(payload.get("reference_text") or ""),
+            reference_language=payload.get("reference_language") or "",
         )
 
     def _resolve_session_reference_asset(
@@ -312,11 +303,29 @@ class RenderConfigResolver:
         if (
             override is None
             or not override.session_reference_asset_id
-            or self._voice_service is None
-            or not hasattr(self._voice_service, "get_session_reference_asset")
+            or self._workspace_service is None
+            or not hasattr(self._workspace_service, "get_session_reference_asset")
         ):
             return None
-        return self._voice_service.get_session_reference_asset(override.session_reference_asset_id)
+        return self._workspace_service.get_session_reference_asset(override.session_reference_asset_id)
+
+    @staticmethod
+    def _resolve_reference_override(
+        *,
+        render_profile: RenderProfile,
+        voice_binding: VoiceBinding,
+        binding_key: str,
+    ) -> ReferenceBindingOverride | None:
+        override = render_profile.reference_overrides_by_binding.get(binding_key)
+        if override is not None:
+            return override
+        legacy_binding_key = build_binding_key(
+            voice_id=voice_binding.voice_id,
+            model_key=voice_binding.model_key,
+        )
+        if legacy_binding_key == binding_key:
+            return None
+        return render_profile.reference_overrides_by_binding.get(legacy_binding_key)
 
     @staticmethod
     def _build_effective_override_payload(
@@ -407,3 +416,278 @@ class RenderConfigResolver:
             return fingerprint_file(raw_path)
         except FileNotFoundError:
             return ""
+
+    def _resolve_model_binding(
+        self,
+        *,
+        voice_binding: VoiceBinding,
+        render_profile: RenderProfile,
+        resolved_reference: ResolvedReferenceSelection | None,
+    ) -> ResolvedModelBinding | None:
+        if (
+            self._model_registry is None
+            and self._adapter_registry is None
+            and self._secret_store is None
+        ):
+            return None
+
+        if self._model_registry is None:
+            if self._workspace_service is None:
+                return None
+
+        seed = self._resolve_model_binding_seed(voice_binding)
+        if seed is None:
+            raise AdapterRegistry.build_model_required_error()
+
+        if seed.get("workspace_id") and self._workspace_service is not None:
+            resolved_binding = self._workspace_service.resolve_binding_reference(seed)
+            adapter_id = str(resolved_binding["adapter_id"])
+            model_instance_id = str(resolved_binding["model_instance_id"])
+            preset_id = str(seed["preset_id"])
+            resolved_assets = dict(resolved_binding["resolved_assets"])
+            endpoint = resolved_binding["endpoint"]
+            account_binding = dict(resolved_binding["account_binding"])
+            adapter_options = dict(resolved_binding["adapter_options"])
+            preset_fixed_fields = dict(resolved_binding["preset_fixed_fields"])
+            preset_reference = {
+                "reference_audio_path": resolved_binding["reference_audio_path"] or "",
+                "reference_text": resolved_binding["reference_text"] or "",
+                "reference_language": resolved_binding["reference_language"] or "",
+            }
+            if self._adapter_registry is not None:
+                self._adapter_registry.require(adapter_id)
+            resolved_reference_payload = self._build_resolved_reference_payload_for_reference_map(
+                resolved_reference=resolved_reference,
+                preset_reference=preset_reference,
+                binding_key=build_binding_key(
+                    binding_ref=voice_binding.binding_ref,
+                    voice_id=voice_binding.voice_id,
+                    model_key=voice_binding.model_key,
+                ),
+            )
+            resolved_parameters = {
+                "speed": render_profile.speed,
+                "top_k": render_profile.top_k,
+                "top_p": render_profile.top_p,
+                "temperature": render_profile.temperature,
+                "noise_scale": render_profile.noise_scale,
+            }
+            secret_handles = self._resolve_secret_handles_for_binding_ref(seed, account_binding)
+            binding_fingerprint = fingerprint_inference_config(
+                {
+                    "adapter_id": adapter_id,
+                    "model_instance_id": model_instance_id,
+                    "preset_id": preset_id,
+                    "resolved_assets": resolved_assets,
+                    "resolved_reference": resolved_reference_payload,
+                    "resolved_parameters": resolved_parameters,
+                    "secret_handles": secret_handles,
+                }
+            )
+            return ResolvedModelBinding(
+                adapter_id=adapter_id,
+                model_instance_id=model_instance_id,
+                preset_id=preset_id,
+                resolved_assets=resolved_assets,
+                resolved_reference=resolved_reference_payload,
+                resolved_parameters=resolved_parameters,
+                secret_handles=secret_handles,
+                endpoint=dict(endpoint) if isinstance(endpoint, dict) else None,
+                account_binding=account_binding,
+                preset_fixed_fields=preset_fixed_fields,
+                adapter_options=adapter_options,
+                binding_fingerprint=binding_fingerprint,
+            )
+
+        model_instance = self._model_registry.get_model(seed["model_instance_id"]) if self._model_registry is not None else None
+        if model_instance is None:
+            raise AdapterRegistry.build_model_required_error()
+
+        preset = next((item for item in model_instance.presets if item.preset_id == seed["preset_id"]), None)
+        if preset is None:
+            raise AdapterRegistry.build_model_required_error(adapter_id=model_instance.adapter_id)
+
+        if self._adapter_registry is not None:
+            self._adapter_registry.require(model_instance.adapter_id)
+
+        resolved_reference_payload = self._build_resolved_reference_payload(
+            resolved_reference=resolved_reference,
+            preset=preset,
+            voice_binding=voice_binding,
+        )
+        resolved_parameters = {
+            "speed": render_profile.speed,
+            "top_k": render_profile.top_k,
+            "top_p": render_profile.top_p,
+            "temperature": render_profile.temperature,
+            "noise_scale": render_profile.noise_scale,
+        }
+        resolved_assets = dict(model_instance.instance_assets)
+        resolved_assets.update(preset.preset_assets)
+        secret_handles = self._resolve_secret_handles(model_instance)
+        binding_fingerprint = fingerprint_inference_config(
+            {
+                "adapter_id": model_instance.adapter_id,
+                "model_instance_id": model_instance.model_instance_id,
+                "preset_id": preset.preset_id,
+                "resolved_assets": resolved_assets,
+                "resolved_reference": resolved_reference_payload,
+                "resolved_parameters": resolved_parameters,
+                "secret_handles": secret_handles,
+            }
+        )
+        return ResolvedModelBinding(
+            adapter_id=model_instance.adapter_id,
+            model_instance_id=model_instance.model_instance_id,
+            preset_id=preset.preset_id,
+            resolved_assets=resolved_assets,
+            resolved_reference=resolved_reference_payload,
+            resolved_parameters=resolved_parameters,
+            secret_handles=secret_handles,
+            endpoint=dict(model_instance.endpoint) if isinstance(model_instance.endpoint, dict) else None,
+            account_binding=dict(model_instance.account_binding) if isinstance(model_instance.account_binding, dict) else {},
+            preset_fixed_fields=dict(preset.fixed_fields),
+            adapter_options=dict(model_instance.adapter_options),
+            binding_fingerprint=binding_fingerprint,
+        )
+
+    def _resolve_model_binding_seed(self, voice_binding: VoiceBinding) -> dict[str, str] | None:
+        if (
+            voice_binding.binding_ref is not None
+            and voice_binding.binding_ref.workspace_id != "legacy"
+        ):
+            return {
+                "workspace_id": voice_binding.binding_ref.workspace_id,
+                "main_model_id": voice_binding.binding_ref.main_model_id,
+                "submodel_id": voice_binding.binding_ref.submodel_id,
+                "model_instance_id": f"{voice_binding.binding_ref.workspace_id}:{voice_binding.binding_ref.main_model_id}:{voice_binding.binding_ref.submodel_id}",
+                "preset_id": voice_binding.binding_ref.preset_id,
+            }
+        if voice_binding.model_instance_id and voice_binding.preset_id:
+            return {
+                "model_instance_id": voice_binding.model_instance_id,
+                "preset_id": voice_binding.preset_id,
+            }
+
+        if voice_binding.binding_ref is not None:
+            return {
+                "workspace_id": voice_binding.binding_ref.workspace_id,
+                "main_model_id": voice_binding.binding_ref.main_model_id,
+                "submodel_id": voice_binding.binding_ref.submodel_id,
+                "model_instance_id": f"{voice_binding.binding_ref.workspace_id}:{voice_binding.binding_ref.main_model_id}:{voice_binding.binding_ref.submodel_id}",
+                "preset_id": voice_binding.binding_ref.preset_id,
+            }
+        return None
+
+    @staticmethod
+    def _build_resolved_reference_payload(
+        *,
+        resolved_reference: ResolvedReferenceSelection | None,
+        preset: ModelPreset,
+        voice_binding: VoiceBinding,
+    ) -> dict[str, str]:
+        if resolved_reference is None:
+            return {
+                "reference_id": f"{voice_binding.voice_id}:preset",
+                "audio_uri": str(
+                    preset.preset_assets.get("reference_audio", {}).get("path")
+                    or preset.preset_assets.get("reference_audio", {}).get("source_path")
+                    or preset.preset_assets.get("reference_audio", {}).get("relative_path")
+                    or ""
+                ),
+                "text": str(preset.defaults.get("reference_text") or ""),
+                "language": str(preset.defaults.get("reference_language") or ""),
+                "source": "preset",
+                "fingerprint": str(
+                    preset.preset_assets.get("reference_audio", {}).get("fingerprint")
+                    or ""
+                ),
+            }
+        return {
+            "reference_id": resolved_reference.reference_identity,
+            "audio_uri": resolved_reference.reference_audio_path,
+            "text": resolved_reference.reference_text,
+            "language": resolved_reference.reference_language,
+            "source": resolved_reference.source,
+            "fingerprint": resolved_reference.reference_audio_fingerprint,
+        }
+
+    @staticmethod
+    def _build_resolved_reference_payload_for_reference_map(
+        *,
+        resolved_reference: ResolvedReferenceSelection | None,
+        preset_reference: dict[str, str],
+        binding_key: str,
+    ) -> dict[str, str]:
+        if resolved_reference is None:
+            return {
+                "reference_id": f"{binding_key}:preset",
+                "audio_uri": preset_reference.get("reference_audio_path", ""),
+                "text": preset_reference.get("reference_text", ""),
+                "language": preset_reference.get("reference_language", ""),
+                "source": "preset",
+                "fingerprint": "",
+            }
+        return {
+            "reference_id": resolved_reference.reference_identity,
+            "audio_uri": resolved_reference.reference_audio_path,
+            "text": resolved_reference.reference_text,
+            "language": resolved_reference.reference_language,
+            "source": resolved_reference.source,
+            "fingerprint": resolved_reference.reference_audio_fingerprint,
+        }
+
+    def _resolve_secret_handles(self, model_instance: ModelInstance) -> dict[str, str]:
+        account_binding = model_instance.account_binding
+        if not isinstance(account_binding, dict):
+            return {}
+        required_secrets = account_binding.get("required_secrets")
+        if (
+            self._secret_store is not None
+            and isinstance(required_secrets, list)
+            and self._secret_store.has_all_secrets(
+                model_instance.model_instance_id,
+                [str(secret_name) for secret_name in required_secrets],
+            )
+        ):
+            return {
+                str(secret_name): self._secret_store.build_handle(
+                    model_instance.model_instance_id,
+                    str(secret_name),
+                )
+                for secret_name in required_secrets
+            }
+        secret_handles = account_binding.get("secret_handles")
+        if not isinstance(secret_handles, dict):
+            return {}
+        return {str(key): str(value) for key, value in secret_handles.items()}
+
+    def _resolve_secret_handles_for_binding_ref(
+        self,
+        seed: dict[str, str],
+        account_binding: dict[str, str | list[str] | dict[str, str]],
+    ) -> dict[str, str]:
+        required_secrets = account_binding.get("required_secrets")
+        if (
+            self._secret_store is not None
+            and isinstance(required_secrets, list)
+            and self._secret_store.has_all_submodel_secrets(
+                workspace_id=seed["workspace_id"],
+                main_model_id=seed["main_model_id"],
+                submodel_id=seed["submodel_id"],
+                required_secret_names=[str(secret_name) for secret_name in required_secrets],
+            )
+        ):
+            return {
+                str(secret_name): self._secret_store.build_submodel_handle(
+                    workspace_id=seed["workspace_id"],
+                    main_model_id=seed["main_model_id"],
+                    submodel_id=seed["submodel_id"],
+                    secret_name=str(secret_name),
+                )
+                for secret_name in required_secrets
+            }
+        secret_handles = account_binding.get("secret_handles")
+        if not isinstance(secret_handles, dict):
+            return {}
+        return {str(key): str(value) for key, value in secret_handles.items()}

@@ -487,6 +487,7 @@ func TestUpdateManagerCleanupObsoletePackagesDeletesOnlyExpiredUnreferencedDirec
 			t.Fatalf("MkdirAll(%s) returned error: %v", dir, err)
 		}
 	}
+	writeBootstrapTestFile(t, filepath.Join(currentPackageDir, "NeoTTSApp.exe"), []byte("shell"))
 
 	staleTime := time.Date(2026, 4, 12, 9, 0, 0, 0, time.UTC)
 	recentTime := time.Date(2026, 4, 22, 8, 0, 0, 0, time.UTC)
@@ -725,5 +726,77 @@ func TestUpdateManagerStageReleaseRedownloadsCompletedPackageWhenStoredHashDoesN
 	}
 	if hits != 1 {
 		t.Fatalf("download hits = %d, want 1", hits)
+	}
+}
+
+func TestValidateStagedPackageAcceptsPortableFirstPackageKeys(t *testing.T) {
+	rootDir := t.TempDir()
+	testCases := []struct {
+		packageID string
+		files     []string
+	}{
+		{
+			packageID: "python-runtime",
+			files: []string{
+				filepath.Join("python-runtime", "python", "python.exe"),
+			},
+		},
+		{
+			packageID: "adapter-system",
+			files: []string{
+				filepath.Join("adapter-system", "gpt-sovits", "GPT_SoVITS", ".keep"),
+			},
+		},
+		{
+			packageID: "support-assets",
+			files: []string{
+				filepath.Join("support-assets", "gpt-sovits", ".keep"),
+			},
+		},
+		{
+			packageID: "seed-model-packages",
+			files: []string{
+				filepath.Join("seed-model-packages", "gpt-sovits", "neuro2", "neo-tts-model.json"),
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.packageID, func(t *testing.T) {
+			packageRoot := filepath.Join(rootDir, testCase.packageID)
+			for _, relativePath := range testCase.files {
+				writeBootstrapTestFile(t, filepath.Join(packageRoot, relativePath), []byte("ok"))
+			}
+
+			if err := validateStagedPackage(testCase.packageID, packageRoot); err != nil {
+				t.Fatalf("validateStagedPackage(%q) returned error: %v", testCase.packageID, err)
+			}
+		})
+	}
+}
+
+func TestUpdateManagerCleanupObsoletePackagesDoesNotDeleteUserDataDirectories(t *testing.T) {
+	rootDir := t.TempDir()
+	userPaths := []string{
+		filepath.Join(rootDir, "data", "tts-registry"),
+		filepath.Join(rootDir, "data", "exports"),
+		filepath.Join(rootDir, "data", "secrets"),
+	}
+	for _, path := range userPaths {
+		writeBootstrapTestFile(t, filepath.Join(path, ".keep"), []byte("keep"))
+	}
+
+	manager := NewUpdateManager(UpdateManagerOptions{
+		RootDir: rootDir,
+		Now:     func() time.Time { return time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC) },
+	})
+
+	if err := manager.CleanupObsoletePackages(); err != nil {
+		t.Fatalf("CleanupObsoletePackages returned error: %v", err)
+	}
+	for _, path := range userPaths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("user data path %q should be kept, got err=%v", path, err)
+		}
 	}
 }

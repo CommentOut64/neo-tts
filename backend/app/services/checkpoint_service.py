@@ -25,6 +25,9 @@ from backend.app.services.composition_builder import CompositionBuilder
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 
 
 class CheckpointService:
@@ -37,6 +40,9 @@ class CheckpointService:
         block_planner: BlockPlanner | None = None,
         composition_builder: CompositionBuilder | None = None,
         timeline_manifest_service: TimelineManifestService | None = None,
+        model_registry: ModelRegistry | None = None,
+        adapter_registry: AdapterRegistry | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
@@ -44,7 +50,11 @@ class CheckpointService:
         self._block_planner = block_planner or BlockPlanner()
         self._composition_builder = composition_builder or CompositionBuilder()
         self._timeline_manifest_service = timeline_manifest_service or TimelineManifestService()
-        self._render_config_resolver = RenderConfigResolver()
+        self._render_config_resolver = RenderConfigResolver(
+            model_registry=model_registry,
+            adapter_registry=adapter_registry,
+            secret_store=secret_store,
+        )
 
     def get_current_checkpoint(self, document_id: str) -> CheckpointState | None:
         return self._repository.get_latest_checkpoint(document_id)

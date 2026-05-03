@@ -1,6 +1,8 @@
+import importlib.abc
 from dataclasses import replace
 import json
 from pathlib import Path
+import sys
 
 from fastapi.testclient import TestClient
 
@@ -54,7 +56,14 @@ def test_app_lifespan_preloads_configured_voices_on_start(test_app_settings, mon
         "backend.app.inference.model_cache.PyTorchModelCache",
         _FakeModelCache,
     )
-    application = create_app(settings=replace(test_app_settings, preload_on_start=True, preload_voice_ids=("demo",)))
+    application = create_app(
+        settings=replace(
+            test_app_settings,
+            preload_on_start=True,
+            preload_voice_ids=("demo",),
+            gpt_sovits_adapter_installed=True,
+        )
+    )
 
     with TestClient(application):
         assert preload_calls == [
@@ -110,6 +119,7 @@ def test_app_lifespan_preloads_managed_voice_relative_to_user_data_root_on_start
         edit_session_staging_ttl_seconds=60,
         preload_on_start=True,
         preload_voice_ids=("demo",),
+        gpt_sovits_adapter_installed=True,
     )
 
     monkeypatch.setattr(
@@ -135,6 +145,45 @@ def test_create_app_exposes_health_route():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_portable_app_startup_and_health_do_not_require_gpt_sovits_runtime(tmp_path):
+    class _BlockPytorchOptimizedImport(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "backend.app.inference.pytorch_optimized":
+                raise RuntimeError(f"unexpected import during portable startup: {fullname}")
+            return None
+
+    app_core_root = tmp_path / "packages" / "app-core" / "v0.0.1"
+    runtime_root = tmp_path / "packages" / "python-runtime" / "py311"
+    settings = AppSettings(
+        project_root=tmp_path,
+        distribution_kind="portable",
+        app_core_root=app_core_root,
+        runtime_root=runtime_root,
+        voices_config_path=tmp_path / "data" / "config" / "voices.json",
+        synthesis_results_dir=tmp_path / "data" / "cache" / "synthesis_results",
+        inference_params_cache_file=tmp_path / "data" / "cache" / "inference" / "params_cache.json",
+        edit_session_db_file=tmp_path / "data" / "edit-session" / "session.db",
+        edit_session_assets_dir=tmp_path / "data" / "edit-session" / "assets",
+        edit_session_exports_dir=tmp_path / "data" / "exports",
+        edit_session_staging_ttl_seconds=60,
+        preload_on_start=True,
+        preload_voice_ids=("demo",),
+        gpt_sovits_adapter_installed=False,
+    )
+    blocker = _BlockPytorchOptimizedImport()
+    sys.modules.pop("backend.app.inference.pytorch_optimized", None)
+    sys.meta_path.insert(0, blocker)
+    try:
+        application = create_app(settings=settings)
+        with TestClient(application) as client:
+            response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        assert getattr(client.app.state.settings, "gpt_sovits_adapter_installed", None) is False
+    finally:
+        sys.meta_path.remove(blocker)
 
 
 def test_app_lifespan_offloads_idle_models_under_gpu_pressure_before_loading_new_model(tmp_path, monkeypatch):
@@ -189,6 +238,7 @@ def test_app_lifespan_offloads_idle_models_under_gpu_pressure_before_loading_new
         gpu_offload_enabled=True,
         gpu_min_free_mb=2048,
         gpu_reserve_mb_for_load=4096,
+        gpt_sovits_adapter_installed=True,
     )
     offload_counter = {"count": 0}
     free_bytes_state = {"value": 6 * 1024 * 1024 * 1024}

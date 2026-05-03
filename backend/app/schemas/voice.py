@@ -14,6 +14,8 @@ class VoiceDefaults(BaseModel):
 
 class VoiceProfile(BaseModel):
     name: str = Field(description="音色名称，也是接口里使用的 voice ID。")
+    model_instance_id: str | None = Field(default=None, description="兼容投影来源的模型实例 ID。")
+    preset_id: str | None = Field(default=None, description="兼容投影来源的预设 ID。")
     gpt_path: str = Field(description="该音色关联的 GPT 权重文件路径。")
     sovits_path: str = Field(description="该音色关联的 SoVITS 权重文件路径。")
     weight_storage_mode: Literal["external", "managed"] = Field(

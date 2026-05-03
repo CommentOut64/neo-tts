@@ -7,35 +7,6 @@ export interface VoiceDefaults {
   pause_length: number
 }
 
-export interface VoiceProfile {
-  name: string
-  gpt_path: string
-  sovits_path: string
-  weight_storage_mode: 'external' | 'managed'
-  gpt_fingerprint: string
-  sovits_fingerprint: string
-  ref_audio: string
-  ref_text: string
-  ref_lang: string
-  description: string
-  defaults: VoiceDefaults
-  managed: boolean
-  created_at?: string | null
-  updated_at?: string | null
-}
-
-export interface AudioHistoryItem {
-  id: string
-  text: string
-  blobUrl: string | null
-  duration: number | null
-  taskId?: string | null
-  resultId?: string | null
-  createdAt: Date
-  status: 'pending' | 'done' | 'error'
-  errorMessage?: string
-}
-
 export interface InferenceParams {
   speed: number
   temperature: number
@@ -46,28 +17,6 @@ export interface InferenceParams {
   text_lang: string
   text_split_method: string
   chunk_length: number
-}
-
-export interface SpeechRequest {
-  input: string
-  voice: string
-  model?: string
-  response_format?: string
-  speed?: number
-  top_k?: number
-  top_p?: number
-  temperature?: number
-  text_lang?: string
-  text_split_method?: string
-  chunk_length?: number
-  history_window?: number
-  pause_length?: number
-  noise_scale?: number
-  sid?: number
-  ref_audio?: string
-  ref_audio_file?: File
-  ref_text?: string
-  ref_lang?: string
 }
 
 export type InferenceProgressStatus =
@@ -101,17 +50,6 @@ export interface CleanupResidualsResponse {
   removed_temp_ref_dirs: number
   removed_result_files: number
   state: InferenceProgressState
-}
-
-export interface DeleteSynthesisResultResponse {
-  status: 'deleted'
-  result_id: string
-}
-
-export interface SynthesizeSpeechResponse {
-  blob: Blob
-  taskId: string | null
-  resultId: string | null
 }
 
 export interface InferenceParamsCacheResponse {

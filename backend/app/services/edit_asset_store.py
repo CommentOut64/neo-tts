@@ -340,19 +340,19 @@ class EditAssetStore:
         metadata = self._read_json(asset_dir / "metadata.json")
         sample_rate, audio = self.load_wav_asset(asset_dir)
         del sample_rate
-        left_count = int(metadata["left_margin_sample_count"])
-        core_count = int(metadata["core_sample_count"])
-        right_count = int(metadata["right_margin_sample_count"])
+        left_count = int(metadata.get("left_margin_sample_count", 0))
+        core_count = int(metadata.get("core_sample_count", int(audio.size)))
+        right_count = int(metadata.get("right_margin_sample_count", 0))
         if int(audio.size) != left_count + core_count + right_count:
             raise ValueError(f"Segment asset '{render_asset_id}' metadata does not match audio sample count.")
         return SegmentRenderAssetPayload(
-            render_asset_id=metadata["render_asset_id"],
+            render_asset_id=metadata.get("render_asset_id", metadata.get("segment_asset_id", render_asset_id)),
             segment_id=metadata["segment_id"],
-            render_version=int(metadata["render_version"]),
-            semantic_tokens=list(metadata["semantic_tokens"]),
-            phone_ids=list(metadata["phone_ids"]),
-            decoder_frame_count=int(metadata["decoder_frame_count"]),
-            audio_sample_count=int(metadata["audio_sample_count"]),
+            render_version=int(metadata.get("render_version", 0)),
+            semantic_tokens=list(metadata.get("semantic_tokens", [])),
+            phone_ids=list(metadata.get("phone_ids", [])),
+            decoder_frame_count=int(metadata.get("decoder_frame_count", 0)),
+            audio_sample_count=int(metadata.get("audio_sample_count", int(audio.size))),
             left_margin_sample_count=left_count,
             core_sample_count=core_count,
             right_margin_sample_count=right_count,
@@ -390,6 +390,9 @@ class EditAssetStore:
                 audio_sample_span=tuple(entry["audio_sample_span"]),
                 order_key=int(entry.get("order_key", 0)),
                 render_asset_id=entry.get("render_asset_id"),
+                base_render_asset_id=entry.get("base_render_asset_id"),
+                precision=entry.get("precision"),
+                source=entry.get("source"),
             )
             for entry in metadata["segment_entries"]
         ]
@@ -422,6 +425,17 @@ class EditAssetStore:
             audio=audio,
             audio_sample_count=int(metadata["audio_sample_count"]),
             segment_entries=segment_entries,
+            segment_alignment_mode=metadata.get("segment_alignment_mode"),
+            join_report_summary=metadata.get("join_report_summary")
+            or (
+                {
+                    "requested_policy": metadata["join_report"]["requested_policy"],
+                    "applied_mode": metadata["join_report"]["applied_mode"],
+                    "enhancement_applied": metadata["join_report"]["enhancement_applied"],
+                }
+                if isinstance(metadata.get("join_report"), dict)
+                else None
+            ),
             edge_entries=edge_entries,
             marker_entries=marker_entries,
         )

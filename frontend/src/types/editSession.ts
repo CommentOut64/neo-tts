@@ -11,11 +11,18 @@ export interface RenderJobCommitMetadata {
   changed_block_asset_ids?: string[]
 }
 
+export interface BlockAdapterErrorPayload {
+  error_code: string
+  message: string
+  details: Record<string, unknown>
+}
+
 export interface RenderJobSummary extends RenderJobCommitMetadata {
   job_id: string
   status: RenderJobStatus
   progress: number
   message: string
+  adapter_error?: BlockAdapterErrorPayload | null
 }
 
 export interface RenderJob extends RenderJobSummary {
@@ -62,6 +69,7 @@ export interface EditableSegment {
   inference_exclusion_reason?: InferenceExclusionReason | null
   render_version: number
   render_asset_id: string | null
+  base_render_asset_id: string | null
   group_id: string | null
   render_profile_id: string | null
   voice_binding_id: string | null
@@ -142,15 +150,20 @@ export interface ReferenceBindingOverridePatch {
   reference_language?: string | null
 }
 
-export interface VoiceBinding {
+export interface SynthesisBinding {
   voice_binding_id: string
   scope: 'session' | 'group' | 'segment'
-  voice_id: string
+  binding_ref?: BindingReference | null
+  voice_id?: string
   model_key: string
+  model_instance_id: string | null
+  preset_id: string | null
   sovits_path: string | null
   gpt_path: string | null
   speaker_meta: Record<string, unknown>
 }
+
+export type VoiceBinding = SynthesisBinding
 
 export interface SegmentListResponse {
   document_id: string
@@ -178,16 +191,25 @@ export interface RenderProfileListResponse {
   items: RenderProfile[]
 }
 
-export interface VoiceBindingListResponse {
+export interface SynthesisBindingListResponse {
   document_id: string
   document_version: number
-  items: VoiceBinding[]
+  items: SynthesisBinding[]
+}
+
+export type VoiceBindingListResponse = SynthesisBindingListResponse
+
+export interface BindingReference {
+  workspace_id: string
+  main_model_id: string
+  submodel_id: string
+  preset_id: string
 }
 
 export interface InitializeRequest {
   raw_text: string
   text_language?: string
-  voice_id: string
+  binding_ref: BindingReference
   reference_source?: 'preset' | 'custom'
   reference_audio_path?: string
   reference_text?: string
@@ -270,23 +292,30 @@ export interface RenderProfilePatch {
   extra_overrides?: Record<string, unknown> | null
 }
 
-export interface VoiceBindingPatch {
+export interface SynthesisBindingPatch {
+  binding_ref?: BindingReference | null
   voice_id?: string | null
   model_key?: string | null
+  model_instance_id?: string | null
+  preset_id?: string | null
   sovits_path?: string | null
   gpt_path?: string | null
   speaker_meta?: Record<string, unknown> | null
 }
+
+export type VoiceBindingPatch = SynthesisBindingPatch
 
 export interface SegmentBatchRenderProfilePatchBody {
   segment_ids: string[]
   patch: RenderProfilePatch
 }
 
-export interface SegmentBatchVoiceBindingPatchBody {
+export interface SegmentBatchSynthesisBindingPatchBody {
   segment_ids: string[]
-  patch: VoiceBindingPatch
+  patch: SynthesisBindingPatch
 }
+
+export type SegmentBatchVoiceBindingPatchBody = SegmentBatchSynthesisBindingPatchBody
 
 export interface EdgeUpdateBody {
   pause_duration_seconds?: number | null
@@ -304,6 +333,7 @@ export interface RenderJobResponse {
   status: RenderJobStatus
   progress: number
   message: string
+  adapter_error?: BlockAdapterErrorPayload | null
   cancel_requested?: boolean
   pause_requested?: boolean
   current_segment_index?: number | null
@@ -324,6 +354,8 @@ export interface RenderJobAcceptedResponse {
   job: RenderJobResponse
 }
 
+export type SegmentAlignmentMode = "exact" | "estimated" | "block_only";
+
 export interface TimelineBlockEntry {
   block_asset_id: string;
   segment_ids: string[];
@@ -331,6 +363,8 @@ export interface TimelineBlockEntry {
   end_sample: number;
   audio_sample_count: number;
   audio_url: string;
+  segment_alignment_mode?: SegmentAlignmentMode | null;
+  join_report_summary?: Record<string, unknown> | null;
 }
 
 export interface TimelineSegmentEntry {
@@ -342,6 +376,8 @@ export interface TimelineSegmentEntry {
   group_id: string | null;
   render_profile_id: string | null;
   voice_binding_id: string | null;
+  alignment_precision?: "exact" | "estimated" | null;
+  source?: string | null;
 }
 
 export interface TimelineEdgeEntry {

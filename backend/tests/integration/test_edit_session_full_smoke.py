@@ -17,7 +17,7 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
-def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_app_settings):
+def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -30,7 +30,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
             "/v1/edit-session/initialize",
             json={
                 "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
+                "binding_ref": demo_binding_ref,
             },
         )
         assert initialize.status_code == 202
@@ -69,7 +69,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
             "/v1/edit-session/exports/segments",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "full-smoke-segments",
+                "target_dir": str(segment_export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -83,7 +83,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
             "/v1/edit-session/exports/composition",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "full-smoke-composition",
+                "target_dir": str(composition_export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -104,7 +104,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
         refreshed_snapshot = client.get("/v1/edit-session/snapshot").json()
         assert refreshed_snapshot["composition_manifest_id"] is not None
 
-    assert (segment_export_dir / "0001.wav").exists()
-    assert (segment_export_dir / "0002.wav").exists()
-    assert (segment_export_dir / "0003.wav").exists()
-    assert (composition_export_dir / "composition.wav").exists()
+    assert len(list(segment_export_dir.glob("neo-tts-export-*\\segments-1.wav"))) == 1
+    assert len(list(segment_export_dir.glob("neo-tts-export-*\\segments-2.wav"))) == 1
+    assert len(list(segment_export_dir.glob("neo-tts-export-*\\segments-3.wav"))) == 1
+    assert len(list(composition_export_dir.glob("neo-tts-export-*.wav"))) == 1

@@ -31,11 +31,16 @@ class CompositionBuilder:
         *,
         block_id: str | None = None,
         block_asset_id: str | None = None,
+        segment_alignment_mode: str | None = None,
+        join_report_summary: dict | None = None,
+        segment_entry_asset_ids: dict[str, str | None] | None = None,
+        segment_entry_base_asset_ids: dict[str, str | None] | None = None,
     ) -> BlockCompositionAssetPayload:
         if not segments:
             raise ValueError("compose_block requires at least one segment asset.")
 
         logical_block_id = block_id or f"block-{uuid4().hex}"
+        effective_alignment_mode = segment_alignment_mode or "exact"
         if len(segments) == 1:
             only_segment = segments[0]
             audio = self._full_segment_audio(only_segment)
@@ -43,7 +48,18 @@ class CompositionBuilder:
                 SegmentCompositionEntry(
                     segment_id=only_segment.segment_id,
                     audio_sample_span=(0, int(audio.size)),
-                    render_asset_id=only_segment.render_asset_id,
+                    render_asset_id=self._resolve_segment_entry_asset_id(
+                        only_segment.segment_id,
+                        only_segment.render_asset_id,
+                        segment_entry_asset_ids,
+                    ),
+                    base_render_asset_id=self._resolve_segment_entry_asset_id(
+                        only_segment.segment_id,
+                        only_segment.render_asset_id,
+                        segment_entry_base_asset_ids,
+                    ),
+                    precision="exact",
+                    source="adapter_exact",
                 )
             ]
             marker_entries = [
@@ -66,6 +82,8 @@ class CompositionBuilder:
                 audio=audio,
                 audio_sample_count=int(audio.size),
                 segment_entries=segment_entries,
+                segment_alignment_mode=effective_alignment_mode,
+                join_report_summary=join_report_summary,
                 edge_entries=[],
                 marker_entries=marker_entries,
             )
@@ -88,7 +106,18 @@ class CompositionBuilder:
             SegmentCompositionEntry(
                 segment_id=first.segment_id,
                 audio_sample_span=(0, cursor),
-                render_asset_id=first.render_asset_id,
+                render_asset_id=self._resolve_segment_entry_asset_id(
+                    first.segment_id,
+                    first.render_asset_id,
+                    segment_entry_asset_ids,
+                ),
+                base_render_asset_id=self._resolve_segment_entry_asset_id(
+                    first.segment_id,
+                    first.render_asset_id,
+                    segment_entry_base_asset_ids,
+                ),
+                precision="exact",
+                source="adapter_exact",
             )
         )
         marker_entries.append(BlockMarkerEntry(marker_type="segment_end", sample=cursor, related_id=first.segment_id))
@@ -147,7 +176,18 @@ class CompositionBuilder:
                 SegmentCompositionEntry(
                     segment_id=right_segment.segment_id,
                     audio_sample_span=(start, end),
-                    render_asset_id=right_segment.render_asset_id,
+                    render_asset_id=self._resolve_segment_entry_asset_id(
+                        right_segment.segment_id,
+                        right_segment.render_asset_id,
+                        segment_entry_asset_ids,
+                    ),
+                    base_render_asset_id=self._resolve_segment_entry_asset_id(
+                        right_segment.segment_id,
+                        right_segment.render_asset_id,
+                        segment_entry_base_asset_ids,
+                    ),
+                    precision="exact",
+                    source="adapter_exact",
                 )
             )
             marker_entries.append(
@@ -172,6 +212,8 @@ class CompositionBuilder:
             audio=audio.astype(np.float32, copy=False),
             audio_sample_count=int(audio.size),
             segment_entries=segment_entries,
+            segment_alignment_mode=effective_alignment_mode,
+            join_report_summary=join_report_summary,
             edge_entries=edge_entries,
             marker_entries=marker_entries,
         )
@@ -204,6 +246,7 @@ class CompositionBuilder:
                             block_start + entry.audio_sample_span[1],
                         ),
                         render_asset_id=entry.render_asset_id,
+                        base_render_asset_id=entry.base_render_asset_id,
                     )
                 )
 
@@ -266,6 +309,16 @@ class CompositionBuilder:
         return np.zeros(int(self._sample_rate * pause_duration_seconds), dtype=np.float32)
 
     @staticmethod
+    def _resolve_segment_entry_asset_id(
+        segment_id: str,
+        fallback_asset_id: str | None,
+        overrides: dict[str, str | None] | None,
+    ) -> str | None:
+        if overrides is None:
+            return fallback_asset_id
+        return overrides.get(segment_id, fallback_asset_id)
+
+    @staticmethod
     def _build_block_asset_id(
         *,
         block_id: str,
@@ -281,6 +334,7 @@ class CompositionBuilder:
                     "segment_id": entry.segment_id,
                     "audio_sample_span": list(entry.audio_sample_span),
                     "render_asset_id": entry.render_asset_id,
+                    "base_render_asset_id": entry.base_render_asset_id,
                 }
                 for entry in segments
             ],

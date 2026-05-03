@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import json
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+from backend.app.schemas.edit_session import BindingReference
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.gpt_sovits_facade import GPTSoVITSRegistryFacade
+from backend.app.tts_registry.model_import_service import ModelImportService
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
+
+if TYPE_CHECKING:
+    from backend.app.tts_registry.workspace_service import WorkspaceService
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_identifier(value: str) -> str:
+    return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+class TtsRegistryMigrationService:
+    def __init__(self, *, workspace_service: "WorkspaceService", registry_root: str | Path) -> None:
+        self._workspace_service = workspace_service
+        self._registry_root = Path(registry_root).resolve()
+
+    @property
+    def backup_root(self) -> Path:
+        return self._registry_root / "_migration_backups"
+
+    @property
+    def legacy_binding_map_file(self) -> Path:
+        return self._registry_root / "legacy-binding-map.json"
+
+    def backup_file(self, source: str | Path) -> Path:
+        source_path = Path(source).resolve()
+        self.backup_root.mkdir(parents=True, exist_ok=True)
+        target = self.backup_root / f"{source_path.name}.{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.bak"
+        shutil.copy2(source_path, target)
+        return target
+
+    def migrate_legacy_voices_file(
+        self,
+        *,
+        voices_config_path: str | Path,
+        adapter_id: str = "gpt_sovits_local",
+        family_id: str = "gpt_sovits_local_default",
+    ) -> list[dict[str, Any]]:
+        source = Path(voices_config_path).resolve()
+        if not source.exists():
+            return []
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not payload:
+            return []
+        self.backup_file(source)
+        workspace = self._ensure_legacy_workspace(adapter_id=adapter_id, family_id=family_id)
+        legacy_binding_map = self._load_legacy_binding_map()
+        facade = GPTSoVITSRegistryFacade(
+            workspace_service=self._workspace_service,
+            model_import_service=ModelImportService(
+                adapter_store=build_default_adapter_definition_store(enable_gpt_sovits_local=True),
+                model_registry=ModelRegistry(self._registry_root),
+                secret_store=SecretStore(self._registry_root),
+            ),
+        )
+        imported = facade.import_legacy_voices_to_workspace(
+            workspace_id=workspace.workspace_id,
+            voices_by_name=payload,
+        )
+        created_bindings: list[dict[str, Any]] = []
+        for item in imported:
+            binding_payload = {
+                "workspace_id": item.main_model.workspace_id,
+                "main_model_id": item.main_model.main_model_id,
+                "submodel_id": item.submodels[0].submodel_id,
+                "preset_id": item.presets[0].preset_id,
+            }
+            legacy_voice_id = str(item.main_model.main_model_metadata.get("legacy_voice_id") or item.main_model.display_name)
+            legacy_binding_map[legacy_voice_id] = binding_payload
+            created_bindings.append(
+                {
+                    "legacy_voice_id": legacy_voice_id,
+                    "binding_ref": binding_payload,
+                }
+            )
+        self._write_legacy_binding_map(legacy_binding_map)
+        return created_bindings
+
+    def resolve_legacy_binding_ref(
+        self,
+        binding_ref: BindingReference | dict[str, Any],
+    ) -> BindingReference | None:
+        normalized = binding_ref if isinstance(binding_ref, BindingReference) else BindingReference.model_validate(binding_ref)
+        legacy_binding_map = self._load_legacy_binding_map()
+        resolved = legacy_binding_map.get(normalized.main_model_id)
+        if resolved is None:
+            return None
+        return BindingReference.model_validate(resolved)
+
+    def upgrade_snapshot_binding_ref(
+        self,
+        *,
+        voice_id: str | None,
+        model_key: str | None,
+        model_instance_id: str | None,
+        preset_id: str | None,
+    ) -> BindingReference:
+        if model_key and ":" in model_key and model_instance_id:
+            workspace_id, main_model_id, submodel_id = model_key.split(":", 2)
+            return BindingReference(
+                workspace_id=workspace_id,
+                main_model_id=main_model_id or model_instance_id,
+                submodel_id=submodel_id or "default",
+                preset_id=preset_id or "default",
+            )
+        return BindingReference(
+            workspace_id="legacy",
+            main_model_id=str(voice_id or model_instance_id or "legacy"),
+            submodel_id=str(model_key or "gpt-sovits-v2"),
+            preset_id=str(preset_id or "default"),
+        )
+
+    def _ensure_legacy_workspace(self, *, adapter_id: str, family_id: str):
+        existing = next(
+            (
+                workspace
+                for workspace in self._workspace_service.list_workspaces()
+                if workspace.slug == "legacy-gpt-sovits"
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        return self._workspace_service.create_workspace(
+            adapter_id=adapter_id,
+            family_id=family_id,
+            display_name="Legacy GPT-SoVITS",
+            slug="legacy-gpt-sovits",
+        )
+
+    def _load_legacy_binding_map(self) -> dict[str, dict[str, Any]]:
+        if not self.legacy_binding_map_file.exists():
+            return {}
+        payload = json.loads(self.legacy_binding_map_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in payload.items()
+            if isinstance(value, dict)
+        }
+
+    def _write_legacy_binding_map(self, payload: dict[str, dict[str, Any]]) -> None:
+        self.legacy_binding_map_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.legacy_binding_map_file.with_name(
+            f"{self.legacy_binding_map_file.name}.{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.tmp"
+        )
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.legacy_binding_map_file)

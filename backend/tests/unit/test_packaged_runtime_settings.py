@@ -29,7 +29,7 @@ def _set_packaged_runtime_env(
 def test_installed_runtime_uses_appdata_and_documents(tmp_path, monkeypatch):
     runtime_root = tmp_path / "NeoTTS"
     app_core_root = runtime_root / "packages" / "app-core" / "v0.0.1"
-    python_root = runtime_root / "packages" / "runtime" / "py311-cu128-v1"
+    python_root = runtime_root / "packages" / "python-runtime" / "py311-cu128-v1"
     models_root = runtime_root / "packages" / "models" / "builtin-v1"
     pretrained_models_root = runtime_root / "packages" / "pretrained-models" / "support-v1"
     user_data_root = tmp_path / "AppData" / "Local" / "NeoTTS"
@@ -60,13 +60,16 @@ def test_installed_runtime_uses_appdata_and_documents(tmp_path, monkeypatch):
     assert settings.logs_dir == user_data_root.resolve() / "logs"
     assert settings.builtin_voices_config_path == app_core_root.resolve() / "config" / "voices.json"
     assert settings.voices_config_path == user_data_root.resolve() / "config" / "voices.json"
-    assert settings.cnhubert_base_path == models_root.resolve() / "models" / "builtin" / "chinese-hubert-base"
-    assert settings.bert_path == models_root.resolve() / "models" / "builtin" / "chinese-roberta-wwm-ext-large"
-    assert settings.managed_voices_dir == user_data_root.resolve() / "managed_voices"
-    assert settings.synthesis_results_dir == user_data_root.resolve() / "synthesis_results"
-    assert settings.inference_params_cache_file == user_data_root.resolve() / "inference" / "params_cache.json"
-    assert settings.edit_session_db_file == user_data_root.resolve() / "edit_session" / "session.db"
-    assert settings.edit_session_assets_dir == user_data_root.resolve() / "edit_session" / "assets"
+    assert settings.tts_registry_root == user_data_root.resolve() / "tts-registry"
+    assert settings.cache_root == user_data_root.resolve() / "cache"
+    assert settings.cnhubert_base_path == app_core_root.resolve() / "support-assets" / "gpt-sovits" / "chinese-hubert-base"
+    assert settings.bert_path == app_core_root.resolve() / "support-assets" / "gpt-sovits" / "chinese-roberta-wwm-ext-large"
+    assert settings.user_models_dir == user_data_root.resolve() / "tts-registry" / "models"
+    assert settings.managed_voices_dir == user_data_root.resolve() / "tts-registry" / "managed_voices"
+    assert settings.synthesis_results_dir == user_data_root.resolve() / "cache" / "synthesis_results"
+    assert settings.inference_params_cache_file == user_data_root.resolve() / "cache" / "inference" / "params_cache.json"
+    assert settings.edit_session_db_file == user_data_root.resolve() / "edit-session" / "session.db"
+    assert settings.edit_session_assets_dir == user_data_root.resolve() / "edit-session" / "assets"
     assert settings.edit_session_exports_dir == exports_root.resolve()
     assert log_dir == settings.logs_dir
 
@@ -74,11 +77,11 @@ def test_installed_runtime_uses_appdata_and_documents(tmp_path, monkeypatch):
 def test_portable_runtime_uses_side_by_side_data_dirs(tmp_path, monkeypatch):
     runtime_root = tmp_path / "NeoTTS-Portable"
     app_core_root = runtime_root / "packages" / "app-core" / "v0.0.1"
-    python_root = runtime_root / "packages" / "runtime" / "py311-cu128-v1"
+    python_root = runtime_root / "packages" / "python-runtime" / "py311-cu128-v1"
     models_root = runtime_root / "packages" / "models" / "builtin-v1"
     pretrained_models_root = runtime_root / "packages" / "pretrained-models" / "support-v1"
     user_data_root = runtime_root / "data"
-    exports_root = runtime_root / "exports"
+    exports_root = runtime_root / "data" / "exports"
     _set_packaged_runtime_env(
         monkeypatch=monkeypatch,
         distribution_kind="portable",
@@ -105,12 +108,15 @@ def test_portable_runtime_uses_side_by_side_data_dirs(tmp_path, monkeypatch):
     assert settings.logs_dir == user_data_root.resolve() / "logs"
     assert settings.builtin_voices_config_path == app_core_root.resolve() / "config" / "voices.json"
     assert settings.voices_config_path == user_data_root.resolve() / "config" / "voices.json"
-    assert settings.cnhubert_base_path == models_root.resolve() / "models" / "builtin" / "chinese-hubert-base"
-    assert settings.bert_path == models_root.resolve() / "models" / "builtin" / "chinese-roberta-wwm-ext-large"
-    assert settings.managed_voices_dir == user_data_root.resolve() / "managed_voices"
-    assert settings.synthesis_results_dir == user_data_root.resolve() / "synthesis_results"
-    assert settings.inference_params_cache_file == user_data_root.resolve() / "inference" / "params_cache.json"
-    assert settings.edit_session_db_file == user_data_root.resolve() / "edit_session" / "session.db"
-    assert settings.edit_session_assets_dir == user_data_root.resolve() / "edit_session" / "assets"
+    assert settings.tts_registry_root == user_data_root.resolve() / "tts-registry"
+    assert settings.cache_root == user_data_root.resolve() / "cache"
+    assert settings.cnhubert_base_path == app_core_root.resolve() / "support-assets" / "gpt-sovits" / "chinese-hubert-base"
+    assert settings.bert_path == app_core_root.resolve() / "support-assets" / "gpt-sovits" / "chinese-roberta-wwm-ext-large"
+    assert settings.user_models_dir == user_data_root.resolve() / "tts-registry" / "models"
+    assert settings.managed_voices_dir == user_data_root.resolve() / "tts-registry" / "managed_voices"
+    assert settings.synthesis_results_dir == user_data_root.resolve() / "cache" / "synthesis_results"
+    assert settings.inference_params_cache_file == user_data_root.resolve() / "cache" / "inference" / "params_cache.json"
+    assert settings.edit_session_db_file == user_data_root.resolve() / "edit-session" / "session.db"
+    assert settings.edit_session_assets_dir == user_data_root.resolve() / "edit-session" / "assets"
     assert settings.edit_session_exports_dir == exports_root.resolve()
     assert log_dir == settings.logs_dir

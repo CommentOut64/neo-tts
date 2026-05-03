@@ -11,6 +11,9 @@ def _build_metrics() -> dict:
         "pause_only_edge_update_seconds_p50": 0.3,
         "boundary_strategy_update_seconds_p50": 0.6,
         "restore_baseline_seconds_p50": 0.7,
+        "initialize_inference_call_count": 3,
+        "segment_update_inference_call_count": 1,
+        "pause_only_edge_update_inference_call_count": 0,
         "peak_rss_mb": 512.0,
         "peak_gpu_memory_mb": 256.0,
     }
@@ -65,3 +68,18 @@ def test_compare_with_optional_baseline_returns_one_when_regressed(tmp_path: Pat
     result = compare_with_optional_baseline(_build_metrics(), baseline_path)
 
     assert result == 1
+
+
+def test_phase0_review_metrics_include_timing_and_inference_call_baseline_fields():
+    metrics = _build_metrics()
+
+    assert set(
+        [
+            "initialize_seconds_p50",
+            "segment_update_seconds_p50",
+            "pause_only_edge_update_seconds_p50",
+            "initialize_inference_call_count",
+            "segment_update_inference_call_count",
+            "pause_only_edge_update_inference_call_count",
+        ]
+    ).issubset(metrics)

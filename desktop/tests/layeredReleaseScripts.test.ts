@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("layered release scripts", () => {
-  it("adds a dedicated layered release builder and manifest writer for the seven update packages", () => {
+  it("adds a dedicated layered release builder and manifest writer for the portable-first update packages", () => {
     const buildScriptPath = path.join(process.cwd(), "scripts", "build-layered-release.ps1");
     const manifestWriterPath = path.join(process.cwd(), "scripts", "write-update-manifest.ps1");
     const policyPath = path.join(process.cwd(), "packaging", "update-package-policy.json");
@@ -22,9 +22,10 @@ describe("layered release scripts", () => {
     expect(buildScript).toContain('"update-agent"');
     expect(buildScript).toContain('"shell"');
     expect(buildScript).toContain('"app-core"');
-    expect(buildScript).toContain('"runtime"');
-    expect(buildScript).toContain('"models"');
-    expect(buildScript).toContain('"pretrained-models"');
+    expect(buildScript).toContain('"python-runtime"');
+    expect(buildScript).toContain('"adapter-system"');
+    expect(buildScript).toContain('"support-assets"');
+    expect(buildScript).toContain('"seed-model-packages"');
   });
 
   it("renames the packaged Electron executable to NeoTTSApp.exe while integrated packaging still prepares NeoTTS.exe launcher entrypoints", () => {
@@ -64,21 +65,23 @@ describe("layered release scripts", () => {
 
     expect(stageRuntime).toContain("layerPackage");
     expect(stageRuntime).toContain('"app-core"');
-    expect(stageRuntime).toContain('"runtime"');
-    expect(stageRuntime).toContain('"models"');
-    expect(stageRuntime).toContain('"pretrained-models"');
+    expect(stageRuntime).toContain('"python-runtime"');
+    expect(stageRuntime).toContain('"adapter-system"');
+    expect(stageRuntime).toContain('"support-assets"');
+    expect(stageRuntime).toContain('"seed-model-packages"');
 
     expect(integratedPackage).toContain("build-layered-release.ps1");
 
     expect(manifest).toContain('"layerPackage": "app-core"');
-    expect(manifest).toContain('"layerPackage": "models"');
-    expect(manifest).toContain('"layerPackage": "pretrained-models"');
+    expect(manifest).toContain('"layerPackage": "adapter-system"');
+    expect(manifest).toContain('"layerPackage": "support-assets"');
 
     expect(profile).toContain('"layeredPackages"');
-    expect(profile).toContain('"runtimeVersion"');
-    expect(profile).toContain('"runtimeVersion": "py311-cu128-v1"');
-    expect(profile).toContain('"modelsVersion"');
-    expect(profile).toContain('"pretrainedModelsVersion"');
+    expect(profile).toContain('"pythonRuntimeVersion"');
+    expect(profile).toContain('"pythonRuntimeVersion": "py311-cu128-v1"');
+    expect(profile).toContain('"adapterSystemVersion"');
+    expect(profile).toContain('"supportAssetsVersion"');
+    expect(profile).toContain('"seedModelPackagesVersion"');
     expect(stageRuntime).toContain("https://download.pytorch.org/whl/cu128");
     expect(stageRuntime).not.toContain("https://download.pytorch.org/whl/cu124");
   });
@@ -123,12 +126,12 @@ describe("layered release scripts", () => {
       const outputRoot = path.join(tempRoot, "output");
       mkdirSync(path.join(layeredRoot, "releases", "v0.0.2"), { recursive: true });
       mkdirSync(path.join(layeredRoot, "packages", "bootstrap"), { recursive: true });
-      mkdirSync(path.join(layeredRoot, "packages", "runtime"), { recursive: true });
+      mkdirSync(path.join(layeredRoot, "packages", "python-runtime"), { recursive: true });
       mkdirSync(path.join(baselineRoot, "state"), { recursive: true });
       mkdirSync(outputRoot, { recursive: true });
 
       writeFileSync(path.join(layeredRoot, "packages", "bootstrap", "0.0.2.zip"), "bootstrap-package");
-      writeFileSync(path.join(layeredRoot, "packages", "runtime", "py311-cu128-v1.zip"), "runtime-package");
+      writeFileSync(path.join(layeredRoot, "packages", "python-runtime", "py311-cu128-v1.zip"), "runtime-package");
       const manifestPayload = JSON.stringify({
         schemaVersion: 1,
         releaseId: "v0.0.2",
@@ -136,7 +139,7 @@ describe("layered release scripts", () => {
         releaseKind: "stable",
         packages: {
           bootstrap: { version: "0.0.2", sha256: "bootstrap", sizeBytes: 17 },
-          runtime: { version: "py311-cu128-v1", sha256: "runtime", sizeBytes: 15 },
+          "python-runtime": { version: "py311-cu128-v1", sha256: "runtime", sizeBytes: 15 },
         },
       });
       writeFileSync(
@@ -168,7 +171,7 @@ describe("layered release scripts", () => {
           releaseId: "v0.0.1",
           packages: {
             bootstrap: { version: "0.0.1" },
-            runtime: { version: "py311-cu128-v1" },
+            "python-runtime": { version: "py311-cu128-v1" },
           },
         }),
       );
@@ -215,7 +218,7 @@ describe("layered release scripts", () => {
       );
 
       expect(inspection).toContain("packages/bootstrap/0.0.2.zip");
-      expect(inspection).not.toContain("packages/runtime/py311-cu128-v1.zip");
+      expect(inspection).not.toContain("packages/python-runtime/py311-cu128-v1.zip");
       expect(inspection).toContain("LATEST_PREFIX=7B");
       expect(inspection).not.toContain("LATEST_PREFIX=EF-BB-BF");
     } finally {

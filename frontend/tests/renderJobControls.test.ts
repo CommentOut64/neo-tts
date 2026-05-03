@@ -44,6 +44,33 @@ describe("render job controls", () => {
     expect(resolved.source).toBe("tts");
   });
 
+  it("即使 RenderJob 仍处于 preparing，已进入 inferencing 的 TTS 也应优先显示", () => {
+    const resolved = resolveWorkspaceProgressState({
+      inferenceProgress: {
+        task_id: "tts-1",
+        status: "inferencing",
+        progress: 0.4,
+        message: "第 2/5 段处理中。",
+        cancel_requested: false,
+        current_segment: 2,
+        total_segments: 5,
+        result_id: null,
+        updated_at: "2026-04-30T00:00:00.000Z",
+      },
+      renderJob: {
+        job_id: "job-prepare",
+        document_id: "doc-1",
+        status: "preparing",
+        progress: 0.18,
+        message: "参考上下文准备中。",
+      },
+    });
+
+    expect(resolved.percent).toBe(40);
+    expect(resolved.message).toBe("正在生成语音 (2/5 段)");
+    expect(resolved.source).toBe("tts");
+  });
+
   it("TTS 已结束且 RenderJob 在提交阶段时显示 100% 同步中", () => {
     const resolved = resolveWorkspaceProgressState({
       inferenceProgress: {
@@ -98,16 +125,45 @@ describe("render job controls", () => {
     expect(resolved.source).toBe("idle");
   });
 
-  it("inference runtime 仍在 preparing 时也保持 0% 加载态", () => {
+  it("block-first 渲染阶段在没有 TTS 流式进度时回退到 render job 自身进度", () => {
+    const resolved = resolveWorkspaceProgressState({
+      inferenceProgress: {
+        task_id: null,
+        status: "idle",
+        progress: 0,
+        message: "",
+        cancel_requested: false,
+        current_segment: null,
+        total_segments: null,
+        result_id: null,
+        updated_at: "2026-04-30T00:00:00.000Z",
+      },
+      renderJob: {
+        job_id: "job-block-first",
+        document_id: "doc-1",
+        status: "rendering",
+        progress: 0.58,
+        message: "已完成第 2/4 个 block 渲染。",
+        current_block_index: 2,
+        total_block_count: 4,
+      },
+    });
+
+    expect(resolved.percent).toBe(58);
+    expect(resolved.message).toBe("已完成第 2/4 个 block 渲染。");
+    expect(resolved.source).toBe("render");
+  });
+
+  it("inference runtime 在 0% preparing 时保持加载态", () => {
     const resolved = resolveWorkspaceProgressState({
       inferenceProgress: {
         task_id: "tts-prepare",
         status: "preparing",
-        progress: 0.64,
+        progress: 0,
         message: "参考上下文准备中。",
         cancel_requested: false,
-        current_segment: null,
-        total_segments: null,
+        current_segment: 0,
+        total_segments: 5,
         result_id: null,
         updated_at: "2026-04-19T00:00:00.000Z",
       },
@@ -123,5 +179,32 @@ describe("render job controls", () => {
     expect(resolved.percent).toBe(0);
     expect(resolved.message).toBe("加载中...（首次推理耗时可能较长，请耐心等待）");
     expect(resolved.source).toBe("idle");
+  });
+
+  it("一旦 preparing 已出现非零进度，就不再回退到加载态", () => {
+    const resolved = resolveWorkspaceProgressState({
+      inferenceProgress: {
+        task_id: "tts-prepare",
+        status: "preparing",
+        progress: 0.64,
+        message: "参考上下文准备中。",
+        cancel_requested: false,
+        current_segment: 1,
+        total_segments: 5,
+        result_id: null,
+        updated_at: "2026-04-19T00:00:00.000Z",
+      },
+      renderJob: {
+        job_id: "job-prepare",
+        document_id: "doc-1",
+        status: "preparing",
+        progress: 0.18,
+        message: "参考上下文准备中。",
+      },
+    });
+
+    expect(resolved.percent).toBe(64);
+    expect(resolved.message).toBe("正在生成语音 (1/5 段)");
+    expect(resolved.source).toBe("tts");
   });
 });

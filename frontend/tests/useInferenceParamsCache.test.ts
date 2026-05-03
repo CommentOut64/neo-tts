@@ -81,6 +81,7 @@ describe("useInferenceParamsCache", () => {
     expect(restored?.payload.referenceSelectionsByBinding).toEqual({
       [bindingKey]: {
         source: "custom",
+        session_reference_asset_id: null,
         custom_ref_path: "managed_voices/_temp_refs/custom.wav",
         ref_text: "缓存里的自定义参考文本",
         ref_lang: "ja",
@@ -93,6 +94,7 @@ describe("useInferenceParamsCache", () => {
     expect(persisted.payload.referenceSelectionsByBinding).toEqual({
       [bindingKey]: {
         source: "custom",
+        session_reference_asset_id: null,
         custom_ref_path: "managed_voices/_temp_refs/custom.wav",
         ref_text: "缓存里的自定义参考文本",
         ref_lang: "ja",
@@ -131,6 +133,7 @@ describe("useInferenceParamsCache", () => {
         referenceSelectionsByBinding: {
           [bindingKey]: {
             source: "preset",
+            session_reference_asset_id: null,
             custom_ref_path: null,
             ref_text: "预设参考文本",
             ref_lang: "zh",

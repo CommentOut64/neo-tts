@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,10 +11,19 @@ from backend.app.core.logging import get_logger
 from backend.app.core.path_resolution import resolve_runtime_path
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.repositories.voice_repository import VoiceRepository
+from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
+from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.tts_registry.workspace_service import WorkspaceService
+from backend.app.tts_registry.workspace_store import WorkspaceStore
+from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
+from backend.app.services.block_render_request_builder import BlockRenderRequestBuilder
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_maintenance_service import EditSessionMaintenanceService
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.export_service import ExportService
+from backend.app.inference.external_http_rate_limiter import ExternalHttpRateLimiter
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
@@ -36,6 +46,8 @@ def _resolve_runtime_voice_path(app: FastAPI, raw_path: str) -> str:
 
 def _preload_configured_voices(app: FastAPI, model_cache) -> None:
     settings = app.state.settings
+    if not getattr(settings, "gpt_sovits_adapter_installed", True):
+        return
     if not settings.preload_on_start or not settings.preload_voice_ids:
         return
 
@@ -65,6 +77,30 @@ def _preload_configured_voices(app: FastAPI, model_cache) -> None:
             lifespan_logger.info("启动预加载完成 voice_id={}", voice_id)
         except Exception as exc:
             lifespan_logger.warning("启动预加载失败 voice_id={} reason={}", voice_id, exc)
+
+
+def _migrate_legacy_voices_if_needed(settings, workspace_service: WorkspaceService, registry_root: Path) -> None:
+    if not getattr(settings, "auto_migrate_legacy_voices_on_start", False):
+        return
+    voices_config_path = settings.voices_config_path
+    if not voices_config_path.exists():
+        return
+    try:
+        raw_payload = json.loads(voices_config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        lifespan_logger.warning("旧 voices 配置读取失败，跳过 registry 迁移 reason={}", exc)
+        return
+    if not isinstance(raw_payload, dict) or not raw_payload:
+        return
+    migration_service = TtsRegistryMigrationService(
+        workspace_service=workspace_service,
+        registry_root=registry_root,
+    )
+    created = migration_service.migrate_legacy_voices_file(
+        voices_config_path=voices_config_path,
+    )
+    if created:
+        lifespan_logger.info("已将 legacy voices 迁移到 tts-registry count={}", len(created))
 
 
 @asynccontextmanager
@@ -102,6 +138,23 @@ async def app_lifespan(app: FastAPI):
         export_root=settings.edit_session_exports_dir,
         staging_ttl_seconds=settings.edit_session_staging_ttl_seconds,
     )
+    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
+    model_registry = ModelRegistry(registry_root)
+    secret_store = SecretStore(registry_root)
+    workspace_store = WorkspaceStore(registry_root)
+    adapter_definition_store = build_default_adapter_definition_store(
+        enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
+    )
+    workspace_service = WorkspaceService(
+        adapter_store=adapter_definition_store,
+        workspace_store=workspace_store,
+        secret_store=secret_store,
+    )
+    _migrate_legacy_voices_if_needed(settings, workspace_service, registry_root)
+    adapter_registry = adapter_definition_store._registry  # noqa: SLF001
+    block_render_request_builder = BlockRenderRequestBuilder(adapter_registry=adapter_registry)
+    block_render_asset_persister = BlockRenderAssetPersister(asset_store=edit_asset_store)
+    external_http_rate_limiter = ExternalHttpRateLimiter()
     edit_session_runtime = EditSessionRuntime()
     edit_session_export_service = ExportService(
         repository=edit_session_repository,
@@ -121,6 +174,13 @@ async def app_lifespan(app: FastAPI):
     app.state.inference_params_cache_store = inference_params_cache_store
     app.state.edit_session_repository = edit_session_repository
     app.state.edit_asset_store = edit_asset_store
+    app.state.model_registry = model_registry
+    app.state.secret_store = secret_store
+    app.state.workspace_service = workspace_service
+    app.state.adapter_registry = adapter_registry
+    app.state.block_render_request_builder = block_render_request_builder
+    app.state.block_render_asset_persister = block_render_asset_persister
+    app.state.external_http_rate_limiter = external_http_rate_limiter
     app.state.edit_session_runtime = edit_session_runtime
     app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service

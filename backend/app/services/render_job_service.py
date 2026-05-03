@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from uuid import uuid4
 
@@ -68,6 +69,7 @@ from backend.app.schemas.edit_session import (
     RenderJobRecord,
     RenderJobResponse,
     SwapSegmentsRequest,
+    TimelineBlockEntry,
     TimelineManifest,
     UpdateEdgeRequest,
     UpdateSegmentRequest,
@@ -76,7 +78,10 @@ from backend.app.schemas.edit_session import (
     VoiceBindingPatchRequest,
 )
 from backend.app.services.block_planner import BlockPlanner
+from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
+from backend.app.services.block_render_request_builder import BlockRenderRequestBuilder
 from backend.app.services.composition_builder import CompositionBuilder
+from backend.app.services.formal_block_assembler import FormalBlockAssembler
 from backend.app.services.edge_service import EdgeService
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.audio_delivery_service import AudioDeliveryService
@@ -98,12 +103,18 @@ from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
 from backend.app.services.reference_binding import build_binding_key
+from backend.app.services.render_asset_lifecycle import RenderAssetLifecycle
 from backend.app.text.segment_standardizer import (
     build_standardization_preview,
     split_text_segments_with_terminal_capsules,
     standardize_segment_text,
     standardize_segment_texts,
 )
+from backend.app.inference.block_adapter_registry import AdapterRegistry
+from backend.app.inference.block_adapter_errors import BlockAdapterError
+from backend.app.inference.block_adapter_types import SegmentScopeUnsupported
+from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.secret_store import SecretStore
 
 render_job_logger = get_logger("render_job_service")
 
@@ -152,9 +163,17 @@ class RenderPlan:
     skip_render: bool = False
     skip_compose: bool = False
     emitted_block_ids: set[str] = field(default_factory=set)
+    emitted_segment_ids: set[str] = field(default_factory=set)
     changed_block_asset_ids: set[str] = field(default_factory=set)
     inference_task_id: str | None = None
     inference_total_segments: int = 0
+    execution_mode: str = "block_first"
+
+
+@dataclass(frozen=True)
+class QueuedInitializeJob:
+    request: InitializeEditSessionRequest
+    execution_mode: str
 
 
 @dataclass(frozen=True)
@@ -171,6 +190,7 @@ class QueuedEditJob:
     change_reason: str | None = None
     skip_render: bool = False
     skip_compose: bool = False
+    execution_mode: str = "block_first"
 
 
 class RenderJobService:
@@ -193,6 +213,12 @@ class RenderJobService:
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
         checkpoint_service: CheckpointService | None = None,
+        model_registry: ModelRegistry | None = None,
+        adapter_registry: AdapterRegistry | None = None,
+        secret_store: SecretStore | None = None,
+        block_render_request_builder: BlockRenderRequestBuilder | None = None,
+        block_render_asset_persister: BlockRenderAssetPersister | None = None,
+        block_adapter_selector: Callable[..., object] | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -213,8 +239,21 @@ class RenderJobService:
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
-        self._render_config_resolver = RenderConfigResolver(voice_service=session_service)
+        self._render_config_resolver = RenderConfigResolver(
+            model_registry=model_registry,
+            adapter_registry=adapter_registry,
+            secret_store=secret_store,
+            workspace_service=session_service,
+        )
+        self._secret_store = secret_store
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
+        self._block_render_request_builder = block_render_request_builder
+        self._block_render_asset_persister = block_render_asset_persister
+        self._block_adapter_selector = block_adapter_selector
+        self._render_asset_lifecycle = RenderAssetLifecycle(
+            repository=repository,
+            asset_store=asset_store,
+        )
         self._checkpoint_service = checkpoint_service or CheckpointService(
             repository=repository,
             asset_store=asset_store,
@@ -222,10 +261,13 @@ class RenderJobService:
             block_planner=self._block_planner,
             composition_builder=self._composition_builder,
             timeline_manifest_service=self._timeline_manifest_service,
+            model_registry=model_registry,
+            adapter_registry=adapter_registry,
+            secret_store=secret_store,
         )
         self._run_jobs_in_background = run_jobs_in_background
         self._preview_ttl_seconds = preview_ttl_seconds
-        self._queued_requests: dict[str, InitializeEditSessionRequest] = {}
+        self._queued_requests: dict[str, QueuedInitializeJob] = {}
         self._queued_edit_jobs: dict[str, QueuedEditJob] = {}
 
     def _assert_can_commit_configuration(self) -> None:
@@ -252,7 +294,10 @@ class RenderJobService:
             (prepared_request.reference_text or "")[:80],
         )
         session, job = self._session_service.initialize_document(prepared_request)
-        self._queued_requests[job.job_id] = prepared_request
+        self._queued_requests[job.job_id] = QueuedInitializeJob(
+            request=prepared_request,
+            execution_mode="block_first",
+        )
         job_record = RenderJobRecord(
             job_id=job.job_id,
             document_id=session.document_id,
@@ -334,10 +379,18 @@ class RenderJobService:
                 snapshot=working_snapshot,
             ).snapshot
         if group_id is not None and body.group_voice_binding is not None:
+            base_binding = self._get_voice_binding(
+                working_snapshot,
+                self._resolve_group_assigned_voice_binding_id(working_snapshot, group_id),
+            )
             working_snapshot = self._segment_group_service.update_group_voice_binding(
                 group_id,
                 body.group_voice_binding,
                 snapshot=working_snapshot,
+                projected_voice=self._resolve_projected_voice_for_binding_patch(
+                    base_binding=base_binding,
+                    patch=body.group_voice_binding,
+                ),
             ).snapshot
 
         raw_segments = self._split_raw_segments(body.raw_text, segment_boundary_mode=body.segment_boundary_mode)
@@ -346,6 +399,16 @@ class RenderJobService:
             raw_segments=raw_segments,
             text_language=body.text_language,
             group_id=group_id,
+            render_profile_id=(
+                self._resolve_group_assigned_render_profile_id(working_snapshot, group_id)
+                if group_id is not None
+                else working_snapshot.default_render_profile_id
+            ),
+            voice_binding_id=(
+                self._resolve_group_assigned_voice_binding_id(working_snapshot, group_id)
+                if group_id is not None
+                else working_snapshot.default_voice_binding_id
+            ),
             snapshot=working_snapshot,
         )
         if group_id is not None:
@@ -584,7 +647,12 @@ class RenderJobService:
 
     def create_patch_session_voice_binding_job(self, patch: VoiceBindingPatchRequest) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
-        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
+        after_snapshot = self._segment_group_service.update_session_voice_binding(
+            patch,
+            snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
+        )
         return self._enqueue_configuration_job(
             job_kind="session_voice_binding_patch",
             message="已创建会话级 voice/model 绑定更新作业。",
@@ -599,10 +667,15 @@ class RenderJobService:
         patch: VoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_group_assigned_voice_binding_id(before_snapshot, group_id),
+        )
         after_snapshot = self._segment_group_service.update_group_voice_binding(
             group_id,
             patch,
             snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         ).snapshot
         return self._enqueue_configuration_job(
             job_kind="group_voice_binding_patch",
@@ -618,11 +691,16 @@ class RenderJobService:
         patch: VoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=patch,
             base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         )
         after_snapshot = self._segment_service.update_segment_voice_binding(
             segment_id,
@@ -667,11 +745,16 @@ class RenderJobService:
         body: SegmentBatchVoiceBindingPatchRequest,
     ) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=body.patch,
             base_binding_id=before_snapshot.default_voice_binding_id,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(
+                base_binding=base_binding,
+                patch=body.patch,
+            ),
         )
         after_snapshot = self._segment_service.update_segments_voice_binding(
             body.segment_ids,
@@ -742,7 +825,12 @@ class RenderJobService:
     def commit_patch_session_voice_binding(self, patch: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
-        after_snapshot = self._segment_group_service.update_session_voice_binding(patch, snapshot=before_snapshot)
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
+        after_snapshot = self._segment_group_service.update_session_voice_binding(
+            patch,
+            snapshot=before_snapshot,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
+        )
         changed_segment_ids = self._collect_changed_segment_ids(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
@@ -789,11 +877,16 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(
+            before_snapshot,
+            self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+        )
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=patch,
             base_binding_id=self._resolve_segment_assigned_voice_binding_id(before_snapshot, segment_id),
+            projected_voice=self._resolve_projected_voice_for_binding_patch(base_binding=base_binding, patch=patch),
         )
         after_snapshot = self._segment_service.update_segment_voice_binding(
             segment_id,
@@ -844,11 +937,16 @@ class RenderJobService:
     ) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
+        base_binding = self._get_voice_binding(before_snapshot, before_snapshot.default_voice_binding_id)
         working_snapshot, binding = self._segment_group_service.create_voice_binding(
             snapshot=before_snapshot,
             scope="segment",
             patch=body.patch,
             base_binding_id=before_snapshot.default_voice_binding_id,
+            projected_voice=self._resolve_projected_voice_for_binding_patch(
+                base_binding=base_binding,
+                patch=body.patch,
+            ),
         )
         after_snapshot = self._segment_service.update_segments_voice_binding(
             body.segment_ids,
@@ -894,16 +992,17 @@ class RenderJobService:
         )
 
     def run_initialize_job(self, job_id: str) -> None:
-        request = self._queued_requests.get(job_id)
+        queued = self._queued_requests.get(job_id)
         job = self.get_job(job_id)
-        if request is None or job is None:
+        if queued is None or job is None:
             raise EditSessionNotFoundError(f"Render job '{job_id}' not found.")
 
         plan = RenderPlan(
             job_id=job_id,
             job_kind="initialize",
             document_id=job.document_id,
-            request=request,
+            request=queued.request,
+            execution_mode=queued.execution_mode,
         )
         try:
             self._run_transaction(plan)
@@ -923,6 +1022,17 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
+        except BlockAdapterError as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_initialize_job",
+                exc=exc,
+            )
+            self._rollback_uncommitted_assets(job_id)
+            self._mark_terminal(job_id, status="failed", message=exc.message, adapter_error=exc.to_payload())
+            self._mark_session_failed(job.document_id)
         except _CancelledJobError:
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
@@ -981,6 +1091,7 @@ class RenderJobService:
             change_reason=queued_job.change_reason,
             skip_render=queued_job.skip_render,
             skip_compose=queued_job.skip_compose,
+            execution_mode=queued_job.execution_mode,
         )
         try:
             self._run_transaction(plan)
@@ -1000,6 +1111,16 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
+        except BlockAdapterError as exc:
+            self._log_background_job_failure(
+                job_kind=plan.job_kind,
+                job_id=job_id,
+                document_id=job.document_id,
+                phase="run_edit_job",
+                exc=exc,
+            )
+            self._rollback_uncommitted_assets(job_id)
+            self._mark_terminal(job_id, status="failed", message=exc.message, adapter_error=exc.to_payload())
         except _CancelledJobError:
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
@@ -1212,9 +1333,15 @@ class RenderJobService:
                 edge_version=edge.edge_version,
                 boundary_strategy=edge.boundary_strategy,
             )
-            sample_rate, audio = self._asset_store.load_wav_asset(
-                self._asset_store.boundary_asset_path(boundary_asset_id)
-            )
+            try:
+                sample_rate, audio = self._asset_store.load_wav_asset(
+                    self._asset_store.boundary_asset_path(boundary_asset_id)
+                )
+            except FileNotFoundError:
+                sample_rate, audio = self._build_edge_preview_from_timeline(
+                    snapshot=snapshot,
+                    edge_id=edge.edge_id,
+                )
             return PreviewPayload(
                 preview_asset_id=f"preview-edge-{boundary_asset_id}",
                 preview_kind="edge",
@@ -1232,6 +1359,40 @@ class RenderJobService:
             sample_rate=sample_rate,
             audio=audio,
         )
+
+    def _build_edge_preview_from_timeline(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        edge_id: str,
+    ) -> tuple[int, np.ndarray]:
+        if snapshot.timeline_manifest_id is None:
+            raise EditSessionNotFoundError(f"Edge '{edge_id}' preview target not found.")
+        timeline = self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
+        timeline_edge = next((entry for entry in timeline.edge_entries if entry.edge_id == edge_id), None)
+        if timeline_edge is None:
+            raise EditSessionNotFoundError(f"Edge '{edge_id}' preview target not found.")
+        preview_start = timeline_edge.boundary_start_sample
+        preview_end = timeline_edge.boundary_end_sample
+        if preview_end <= preview_start:
+            preview_start = timeline_edge.pause_start_sample
+            preview_end = timeline_edge.pause_end_sample
+        if preview_end <= preview_start:
+            raise EditSessionNotFoundError(f"Edge '{edge_id}' preview target not found.")
+        block_entry = next(
+            (
+                entry
+                for entry in timeline.block_entries
+                if entry.start_sample <= preview_start and preview_end <= entry.end_sample
+            ),
+            None,
+        )
+        if block_entry is None:
+            raise EditSessionNotFoundError(f"Edge '{edge_id}' preview target not found.")
+        block_asset = self._asset_store.load_block_asset(block_entry.block_asset_id)
+        local_start = preview_start - block_entry.start_sample
+        local_end = preview_end - block_entry.start_sample
+        return block_asset.sample_rate, block_asset.audio[local_start:local_end].astype(np.float32, copy=False)
 
     def get_preview_response(self, request: PreviewRequest) -> PreviewResponse:
         payload = self.build_preview(request)
@@ -1329,15 +1490,573 @@ class RenderJobService:
 
     def _run_transaction(self, plan: RenderPlan) -> None:
         if getattr(plan, "job_kind", "initialize") == "initialize":
-            self._prepare(plan)
-            self._render(plan)
-            self._compose(plan)
-            self._commit(plan)
+            self._run_initialize_block_first(plan)
             return
+        self._run_edit_block_first(plan)
+
+    def _run_initialize_block_first(self, plan: RenderPlan) -> None:
+        if (
+            self._block_render_request_builder is None
+            or self._block_render_asset_persister is None
+            or self._block_adapter_selector is None
+        ):
+            raise RuntimeError("Block-first initialize pipeline dependencies are not configured.")
+        self._prepare(plan)
+        self._render_block_first(plan)
+        self._commit(plan)
+
+    def _run_edit_block_first(self, plan: RenderPlan) -> None:
+        if (
+            self._block_render_request_builder is None
+            or self._block_render_asset_persister is None
+            or self._block_adapter_selector is None
+        ):
+            raise RuntimeError("Block-first edit pipeline dependencies are not configured.")
         self._prepare_edit(plan)
-        self._render_edit(plan)
-        self._compose(plan)
+        self._render_block_first(plan)
         self._commit_edit(plan)
+
+    def _render_block_first(self, plan: RenderPlan) -> None:
+        self._runtime.update_job(
+            plan.job_id,
+            status="rendering",
+            progress=PREPARE_END_PROGRESS,
+            message="正在按 block 渲染资产。",
+        )
+        temporary_snapshot = self._build_temporary_snapshot(plan)
+        resolved_segments = {
+            segment.segment_id: self._render_config_resolver.resolve_segment(
+                snapshot=temporary_snapshot,
+                segment_id=segment.segment_id,
+            )
+            for segment in plan.segments
+        }
+        resolved_edges = {
+            edge.edge_id: self._render_config_resolver.resolve_edge(
+                snapshot=temporary_snapshot,
+                edge_id=edge.edge_id,
+            )
+            for edge in plan.edges
+        }
+        previous_timeline = self._load_previous_timeline(plan)
+        planned_blocks = self._block_planner.build_blocks(plan.segments)
+        execution_plan = self._block_render_request_builder.build_execution_plan(
+            snapshot=temporary_snapshot,
+            blocks=planned_blocks,
+            resolved_segments=resolved_segments,
+            resolved_edges=resolved_edges,
+            target_segment_ids=plan.target_segment_ids,
+            target_edge_ids=plan.target_edge_ids,
+            previous_timeline=previous_timeline,
+            reuse_policy="force_full_render" if plan.job_kind == "initialize" else "prefer_reuse",
+            render_scope="block" if plan.job_kind == "initialize" else "segment",
+        )
+        plan.blocks = [formal_block_plan.formal_block for formal_block_plan in execution_plan.formal_blocks]
+        plan.block_assets = []
+        plan.changed_block_asset_ids.clear()
+        self._seed_existing_segment_assets_for_block_render(plan)
+        self._runtime.update_job(plan.job_id, total_block_count=len(plan.blocks))
+
+        for index, formal_block_plan in enumerate(execution_plan.formal_blocks, start=1):
+            block = formal_block_plan.formal_block
+            control_action = self._get_control_action(plan.job_id)
+            if control_action is not None and plan.changed_block_asset_ids:
+                self._commit_partial_after_segment(plan, status=control_action)
+            if self._should_compose_block_without_inference(plan=plan, block=block):
+                block_asset = self._compose_block_without_inference(
+                    plan=plan,
+                    block=block,
+                    snapshot=temporary_snapshot,
+                    previous_timeline=previous_timeline,
+                )
+                plan.changed_block_asset_ids.add(block_asset.block_asset_id)
+                plan.block_assets.append(block_asset)
+                self._sync_segments_from_block_asset(plan=plan, block_asset=block_asset)
+            elif self._can_reuse_existing_block(plan=plan, block=block, previous_timeline=previous_timeline):
+                previous_entry = next(
+                    entry for entry in previous_timeline.block_entries if entry.segment_ids == list(block.segment_ids)
+                )
+                block_asset = self._asset_store.load_block_asset(previous_entry.block_asset_id)
+                plan.block_assets.append(block_asset)
+                self._sync_segments_from_block_asset(plan=plan, block_asset=block_asset)
+            else:
+                escalated_to_block_scope = False
+                executed_block_assets: list[BlockCompositionAssetPayload] = []
+                for execution_unit in formal_block_plan.execution_units:
+                    request = execution_unit.request
+                    request_state = {"completed_target_segment_ids": set()}
+                    adapter = self._select_block_adapter(
+                        request.model_binding.adapter_id,
+                        cancellation_checker=lambda: self._should_interrupt_block_render(
+                            plan=plan,
+                            request_state=request_state,
+                        ),
+                        segment_asset_callback=self._build_block_segment_asset_callback(
+                            plan=plan,
+                            request_state=request_state,
+                        ),
+                    )
+                    try:
+                        result = adapter.render_block(request)
+                    except SegmentScopeUnsupported as exc:
+                        if request.render_scope != "segment":
+                            raise
+                        render_job_logger.warning(
+                            "segment-scope render unsupported; escalating to block scope job_id={} block_id={} reason_code={} details={}",
+                            plan.job_id,
+                            block.block_id,
+                            exc.reason_code,
+                            exc.details,
+                        )
+                        escalated_execution_plan = self._block_render_request_builder.build_execution_plan(
+                            snapshot=temporary_snapshot,
+                            blocks=[block],
+                            resolved_segments=resolved_segments,
+                            resolved_edges=resolved_edges,
+                            target_segment_ids=plan.target_segment_ids,
+                            target_edge_ids=plan.target_edge_ids,
+                            previous_timeline=previous_timeline,
+                            reuse_policy="force_full_render" if plan.job_kind == "initialize" else "prefer_reuse",
+                            render_scope="block",
+                        )
+                        for escalated_unit in escalated_execution_plan.formal_blocks[0].execution_units:
+                            escalated_request = escalated_unit.request
+                            escalated_request.escalated_from_scope = "segment"
+                            escalated_adapter = self._select_block_adapter(
+                                escalated_request.model_binding.adapter_id,
+                                cancellation_checker=lambda: self._should_interrupt_block_render(
+                                    plan=plan,
+                                    request_state=request_state,
+                                ),
+                                segment_asset_callback=self._build_block_segment_asset_callback(
+                                    plan=plan,
+                                    request_state=request_state,
+                                ),
+                            )
+                            escalated_result = escalated_adapter.render_block(escalated_request)
+                            persisted = self._block_render_asset_persister.persist(
+                                job_id=plan.job_id,
+                                request=escalated_request,
+                                result=escalated_result,
+                                block_render_cache_key=escalated_request.request_id,
+                                base_render_asset_ids=request_state.get("base_render_asset_ids"),
+                                base_render_assets=request_state.get("base_render_assets"),
+                            )
+                            if persisted is None:
+                                continue
+                            block_asset = self._asset_store.load_block_asset(persisted.block_asset.block_asset_id)
+                            executed_block_assets.append(block_asset)
+                            self._sync_segments_from_block_asset(plan=plan, block_asset=block_asset)
+                            self._emit_exact_segment_events(plan=plan, block_asset=block_asset)
+                            control_action = self._get_control_action(plan.job_id)
+                            if control_action is not None and self._should_commit_partial_after_block_request(
+                                plan=plan,
+                                request_state=request_state,
+                            ):
+                                self._commit_partial_after_segment(plan, status=control_action)
+                        escalated_to_block_scope = True
+                        break
+                    except RuntimeError as exc:
+                        control_action = self._get_control_action(plan.job_id)
+                        if (
+                            str(exc) == "Block rendering cancelled."
+                            and control_action is not None
+                            and self._should_commit_partial_after_block_request(
+                                plan=plan,
+                                request_state=request_state,
+                            )
+                        ):
+                            self._commit_partial_after_segment(plan, status=control_action)
+                        raise
+                    persisted = self._block_render_asset_persister.persist(
+                        job_id=plan.job_id,
+                        request=request,
+                        result=result,
+                        block_render_cache_key=request.request_id,
+                        base_render_asset_ids=request_state.get("base_render_asset_ids"),
+                        base_render_assets=request_state.get("base_render_assets"),
+                    )
+                    if persisted is None:
+                        continue
+                    block_asset = self._asset_store.load_block_asset(persisted.block_asset.block_asset_id)
+                    executed_block_assets.append(block_asset)
+                    self._sync_segments_from_block_asset(plan=plan, block_asset=block_asset)
+                    self._emit_exact_segment_events(plan=plan, block_asset=block_asset)
+                    control_action = self._get_control_action(plan.job_id)
+                    if control_action is not None and self._should_commit_partial_after_block_request(
+                        plan=plan,
+                        request_state=request_state,
+                    ):
+                        self._commit_partial_after_segment(plan, status=control_action)
+                if len(executed_block_assets) == 1 and executed_block_assets[0].segment_ids == list(block.segment_ids):
+                    final_block_asset = executed_block_assets[0]
+                else:
+                    final_block_asset = self._compose_block_without_inference(
+                        plan=plan,
+                        block=block,
+                        snapshot=temporary_snapshot,
+                        previous_timeline=previous_timeline,
+                    )
+                plan.changed_block_asset_ids.add(final_block_asset.block_asset_id)
+                plan.block_assets.append(final_block_asset)
+                self._runtime.emit_event(
+                    plan.job_id,
+                    "block_completed",
+                    {
+                        "block_asset_id": final_block_asset.block_asset_id,
+                        "segment_ids": list(final_block_asset.segment_ids),
+                        "audio_sample_count": final_block_asset.audio_sample_count,
+                    },
+                )
+                if escalated_to_block_scope:
+                    self._runtime.update_job(
+                        plan.job_id,
+                        message=f"已升级为 block 级重渲染并完成第 {index}/{len(planned_blocks)} 个 block。",
+                    )
+            self._runtime.update_job(
+                plan.job_id,
+                current_block_index=index,
+                total_block_count=len(plan.blocks),
+                progress=PREPARE_END_PROGRESS + (0.75 - PREPARE_END_PROGRESS) * (index / max(1, len(plan.blocks))),
+                message=f"已完成第 {index}/{len(plan.blocks)} 个 block 渲染。",
+            )
+
+        final_snapshot = self._build_temporary_snapshot(plan)
+        plan.timeline_manifest, playback_map = self._timeline_manifest_service.build(
+            snapshot=final_snapshot,
+            blocks=plan.block_assets,
+            sample_rate=plan.block_assets[0].sample_rate if plan.block_assets else self._composition_builder._sample_rate,
+            previous_timeline=previous_timeline,
+            reflow_from_order_key=plan.earliest_changed_order_key if plan.timeline_reflow_required else None,
+        )
+        span_by_segment_id = {entry.segment_id: entry.audio_sample_span for entry in playback_map.entries}
+        for segment in plan.segments:
+            span = span_by_segment_id.get(segment.segment_id)
+            segment.assembled_audio_span = span
+            segment.effective_duration_samples = None if span is None else max(0, span[1] - span[0])
+        self._persist_runtime_job(plan.job_id)
+
+    @staticmethod
+    def _should_compose_block_without_inference(plan: RenderPlan, block: RenderBlock) -> bool:
+        return (
+            plan.compose_only
+            and not plan.target_segment_ids
+            and not plan.target_edge_ids
+            and block.block_id in plan.target_block_ids
+        )
+
+    def _can_reuse_existing_block(
+        self,
+        *,
+        plan: RenderPlan,
+        block: RenderBlock,
+        previous_timeline: TimelineManifest | None,
+    ) -> bool:
+        if previous_timeline is None or plan.job_kind == "initialize":
+            return False
+        if block.block_id in plan.target_block_ids:
+            return False
+        if plan.target_segment_ids.intersection(block.segment_ids):
+            return False
+        block_edge_ids = {
+            edge.edge_id
+            for edge in plan.edges
+            if edge.left_segment_id in block.segment_ids and edge.right_segment_id in block.segment_ids
+        }
+        if block_edge_ids.intersection(plan.target_edge_ids):
+            return False
+        return any(entry.segment_ids == list(block.segment_ids) for entry in previous_timeline.block_entries)
+
+    def _compose_block_without_inference(
+        self,
+        *,
+        plan: RenderPlan,
+        block: RenderBlock,
+        snapshot: DocumentSnapshot,
+        previous_timeline: TimelineManifest | None,
+    ) -> BlockCompositionAssetPayload:
+        assembler = FormalBlockAssembler(
+            composition_builder=self._composition_builder,
+            render_config_resolver=self._render_config_resolver,
+            resolve_boundary_strategy_for_assets=self._resolve_boundary_strategy_for_assets,
+            load_previous_block_asset_for_recompose=self._load_previous_block_asset_for_recompose,
+            build_boundary_asset_from_previous_block_asset=self._build_boundary_asset_from_previous_block_asset,
+            load_or_rebuild_boundary_asset=lambda **kwargs: self._load_or_rebuild_boundary_asset(plan=plan, **kwargs),
+            write_block_asset=self._write_block_asset,
+        )
+        return assembler.assemble(
+            job_id=plan.job_id,
+            segments=plan.segments,
+            edges=plan.edges,
+            segment_assets=plan.segment_assets,
+            boundary_assets=plan.boundary_assets,
+            block=block,
+            snapshot=snapshot,
+            previous_timeline=previous_timeline,
+        )
+
+    def _load_previous_block_asset_for_recompose(
+        self,
+        *,
+        previous_timeline: TimelineManifest | None,
+        block: RenderBlock,
+    ) -> BlockCompositionAssetPayload | None:
+        if previous_timeline is None:
+            return None
+        previous_entry = self._find_previous_block_entry_for_recompose(
+            previous_timeline=previous_timeline,
+            segment_ids=list(block.segment_ids),
+        )
+        if previous_entry is None:
+            return None
+        try:
+            return self._asset_store.load_block_asset(previous_entry.block_asset_id)
+        except (FileNotFoundError, ValueError):
+            return None
+
+    @staticmethod
+    def _find_previous_block_entry_for_recompose(
+        *,
+        previous_timeline: TimelineManifest,
+        segment_ids: list[str],
+    ) -> TimelineBlockEntry | None:
+        exact_match = next(
+            (
+                entry
+                for entry in previous_timeline.block_entries
+                if entry.segment_ids == segment_ids
+            ),
+            None,
+        )
+        if exact_match is not None:
+            return exact_match
+        return next(
+            (
+                entry
+                for entry in previous_timeline.block_entries
+                if RenderJobService._is_contiguous_subsequence(segment_ids, entry.segment_ids)
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _is_contiguous_subsequence(segment_ids: list[str], candidate_ids: list[str]) -> bool:
+        if not segment_ids or len(segment_ids) > len(candidate_ids):
+            return False
+        window_size = len(segment_ids)
+        for index in range(0, len(candidate_ids) - window_size + 1):
+            if candidate_ids[index : index + window_size] == segment_ids:
+                return True
+        return False
+
+    @staticmethod
+    def _build_boundary_asset_from_previous_block_asset(
+        *,
+        previous_block_asset: BlockCompositionAssetPayload | None,
+        edge: EditableEdge,
+        left_asset: SegmentRenderAssetPayload,
+        right_asset: SegmentRenderAssetPayload,
+        effective_boundary_strategy: str,
+    ) -> BoundaryAssetPayload | None:
+        if previous_block_asset is None:
+            return None
+        previous_edge_entry = next(
+            (
+                entry
+                for entry in previous_block_asset.edge_entries
+                if entry.edge_id == edge.edge_id
+            ),
+            None,
+        )
+        if previous_edge_entry is None:
+            return None
+        previous_boundary_start, previous_boundary_end = previous_edge_entry.boundary_sample_span
+        if (
+            previous_edge_entry.effective_boundary_strategy != effective_boundary_strategy
+            and previous_boundary_end > previous_boundary_start
+        ):
+            return None
+        boundary_start, boundary_end = previous_boundary_start, previous_boundary_end
+        boundary_audio = previous_block_asset.audio[boundary_start:boundary_end].astype(np.float32, copy=False)
+        return BoundaryAssetPayload(
+            boundary_asset_id=build_boundary_asset_id(
+                left_segment_id=edge.left_segment_id,
+                left_render_version=left_asset.render_version,
+                right_segment_id=edge.right_segment_id,
+                right_render_version=right_asset.render_version,
+                edge_version=edge.edge_version,
+                boundary_strategy=effective_boundary_strategy,
+            ),
+            left_segment_id=edge.left_segment_id,
+            left_render_version=left_asset.render_version,
+            right_segment_id=edge.right_segment_id,
+            right_render_version=right_asset.render_version,
+            edge_version=edge.edge_version,
+            boundary_strategy=effective_boundary_strategy,
+            boundary_sample_count=int(boundary_audio.size),
+            boundary_audio=boundary_audio,
+            trace={
+                "derived_from_block_asset": previous_block_asset.block_asset_id,
+                "edge_id": edge.edge_id,
+            },
+        )
+
+    def _sync_segments_from_block_asset(self, *, plan: RenderPlan, block_asset: BlockCompositionAssetPayload) -> None:
+        segment_by_id = {segment.segment_id: segment for segment in plan.segments}
+        for entry in block_asset.segment_entries:
+            segment = segment_by_id.get(entry.segment_id)
+            if segment is None:
+                continue
+            segment.render_asset_id = entry.render_asset_id
+            segment.base_render_asset_id = entry.base_render_asset_id or segment.base_render_asset_id or entry.render_asset_id
+            segment.render_status = "ready"
+            segment.assembled_audio_span = entry.audio_sample_span
+            segment.effective_duration_samples = max(0, entry.audio_sample_span[1] - entry.audio_sample_span[0])
+            resolved_asset = self._load_segment_asset_for_boundary_reuse(
+                base_render_asset_id=segment.base_render_asset_id,
+                fallback_render_asset_id=entry.render_asset_id,
+                existing_asset=plan.segment_assets.get(entry.segment_id),
+            )
+            if resolved_asset is not None:
+                plan.segment_assets[entry.segment_id] = resolved_asset
+
+    def _emit_exact_segment_events(self, *, plan: RenderPlan, block_asset: BlockCompositionAssetPayload) -> None:
+        for entry in block_asset.segment_entries:
+            if entry.render_asset_id is None:
+                continue
+            if entry.segment_id in plan.emitted_segment_ids:
+                continue
+            self._runtime.emit_event(
+                plan.job_id,
+                "segment_completed",
+                {
+                    "segment_id": entry.segment_id,
+                    "order_key": entry.order_key,
+                    "render_asset_id": entry.render_asset_id,
+                    "render_status": "ready",
+                    "effective_duration_samples": max(0, entry.audio_sample_span[1] - entry.audio_sample_span[0]),
+                },
+            )
+            plan.emitted_segment_ids.add(entry.segment_id)
+
+    def _seed_existing_segment_assets_for_block_render(self, plan: RenderPlan) -> None:
+        for segment in plan.segments:
+            if segment.segment_id in plan.segment_assets:
+                continue
+            asset = self._load_segment_asset_for_boundary_reuse(
+                base_render_asset_id=segment.base_render_asset_id,
+                fallback_render_asset_id=segment.render_asset_id,
+                existing_asset=None,
+            )
+            if asset is not None:
+                plan.segment_assets[segment.segment_id] = asset
+
+    def _build_block_segment_asset_callback(
+        self,
+        *,
+        plan: RenderPlan,
+        request_state: dict[str, object],
+    ) -> Callable[[SegmentRenderAssetPayload, object, bool], None]:
+        segment_by_id = {segment.segment_id: segment for segment in plan.segments}
+        total_targets = len(plan.segments) if plan.job_kind == "initialize" else max(1, len(plan.target_segment_ids))
+
+        def _callback(asset: SegmentRenderAssetPayload, request_segment: object, reused: bool) -> None:
+            segment_id = getattr(request_segment, "segment_id", None)
+            if not isinstance(segment_id, str):
+                return
+            segment = segment_by_id.get(segment_id)
+            if segment is None:
+                return
+
+            should_track = plan.job_kind == "initialize" or segment_id in plan.target_segment_ids
+            if should_track:
+                completed_target_segment_ids = request_state.setdefault("completed_target_segment_ids", set())
+                if isinstance(completed_target_segment_ids, set):
+                    completed_target_segment_ids.add(segment_id)
+            base_render_asset_ids = request_state.setdefault("base_render_asset_ids", {})
+            if isinstance(base_render_asset_ids, dict):
+                base_render_asset_ids[segment_id] = asset.render_asset_id
+            base_render_assets = request_state.setdefault("base_render_assets", {})
+            if isinstance(base_render_assets, dict):
+                base_render_assets[segment_id] = asset
+            plan.segment_assets[segment_id] = asset
+            segment.base_render_asset_id = asset.render_asset_id
+            segment.render_asset_id = asset.render_asset_id
+            segment.render_status = "ready"
+            segment.assembled_audio_span = (0, asset.audio_sample_count)
+            segment.effective_duration_samples = asset.audio_sample_count
+            control_action = self._get_control_action(plan.job_id)
+            if control_action is None:
+                return
+            if not should_track or segment_id in plan.emitted_segment_ids:
+                return
+
+            completed_count = sum(
+                1
+                for current_segment in plan.segments
+                if current_segment.render_status == "ready"
+                and (plan.job_kind == "initialize" or current_segment.segment_id in plan.target_segment_ids)
+            )
+            self._runtime.update_job(
+                plan.job_id,
+                current_segment_index=completed_count,
+                total_segment_count=total_targets,
+                progress=build_render_segment_progress(
+                    completed_segments=completed_count,
+                    total_segments=total_targets,
+                    start_progress=PREPARE_END_PROGRESS,
+                    end_progress=0.6,
+                ),
+                message=f"已完成第 {completed_count}/{total_targets} 段渲染。",
+            )
+            self._runtime.emit_event(
+                plan.job_id,
+                "segment_completed",
+                {
+                    "segment_id": segment.segment_id,
+                    "order_key": segment.order_key,
+                    "render_asset_id": asset.render_asset_id,
+                    "render_status": segment.render_status,
+                    "effective_duration_samples": segment.effective_duration_samples,
+                },
+            )
+            plan.emitted_segment_ids.add(segment_id)
+
+        return _callback
+
+    @staticmethod
+    def _request_state_has_completed_target_segments(request_state: dict[str, object]) -> bool:
+        completed_target_segment_ids = request_state.get("completed_target_segment_ids")
+        return isinstance(completed_target_segment_ids, set) and bool(completed_target_segment_ids)
+
+    def _should_commit_partial_after_block_request(
+        self,
+        *,
+        plan: RenderPlan,
+        request_state: dict[str, object],
+    ) -> bool:
+        if not plan.target_segment_ids:
+            return True
+        return self._request_state_has_completed_target_segments(request_state)
+
+    def _should_interrupt_block_render(self, *, plan: RenderPlan, request_state: dict[str, object]) -> bool:
+        control_action = self._get_control_action(plan.job_id)
+        if control_action is None:
+            return False
+        return self._request_state_has_completed_target_segments(request_state)
+
+    def _select_block_adapter(self, adapter_id: str, **kwargs):
+        if self._block_adapter_selector is None:
+            raise RuntimeError("Block adapter selector is not configured.")
+        return self._block_adapter_selector(
+            adapter_id,
+            gateway=self._gateway,
+            asset_store=self._asset_store,
+            composition_builder=self._composition_builder,
+            secret_store=self._secret_store,
+            cancellation_checker=kwargs.get("cancellation_checker"),
+            segment_asset_callback=kwargs.get("segment_asset_callback"),
+        )
 
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)
@@ -1347,7 +2066,11 @@ class RenderJobService:
             progress=PREPARE_START_PROGRESS,
             message="正在准备参考上下文。",
         )
-        resolved_context = self._build_resolved_context_from_request(plan.request)
+        projected_binding = self._resolve_projected_binding_for_initialize_request(plan.request)
+        resolved_context = self._build_resolved_context_from_request(
+            plan.request,
+            projected_voice=projected_binding,
+        )
         render_job_logger.info(
             "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
             resolved_context.voice_id,
@@ -1360,21 +2083,25 @@ class RenderJobService:
             resolved_context.temperature,
             resolved_context.noise_scale,
         )
-        context_started = time.perf_counter()
-        plan.context = self._gateway.build_reference_context(
-            resolved_context,
-            progress_callback=self._build_prepare_progress_callback(
-                job_id=plan.job_id,
-                default_message="正在准备参考上下文。",
-            ),
+        if self._can_build_local_reference_context(projected_binding):
+            context_started = time.perf_counter()
+            plan.context = self._gateway.build_reference_context(
+                resolved_context,
+                progress_callback=self._build_prepare_progress_callback(
+                    job_id=plan.job_id,
+                    default_message="正在准备参考上下文。",
+                ),
+            )
+            render_job_logger.info(
+                "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
+                resolved_context.voice_id,
+                plan.context.reference_context_id,
+                (time.perf_counter() - context_started) * 1000,
+            )
+        default_render_profile, default_voice_binding = self._build_default_configuration(
+            plan.request,
+            projected_voice=projected_binding,
         )
-        render_job_logger.info(
-            "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
-            resolved_context.voice_id,
-            plan.context.reference_context_id,
-            (time.perf_counter() - context_started) * 1000,
-        )
-        default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
         plan.render_profiles = [default_render_profile]
         plan.voice_bindings = [default_voice_binding]
         plan.default_render_profile_id = default_render_profile.render_profile_id
@@ -1482,9 +2209,13 @@ class RenderJobService:
             progress=PREPARE_START_PROGRESS,
             message="正在准备编辑作业。",
         )
-        if self._should_prepare_edit_reference_context(plan):
+        projected_binding = self._resolve_projected_binding_for_initialize_request(plan.request)
+        if self._should_prepare_edit_reference_context(plan) and self._can_build_local_reference_context(projected_binding):
             plan.context = self._gateway.build_reference_context(
-                self._build_resolved_context_from_request(plan.request),
+                self._build_resolved_context_from_request(
+                    plan.request,
+                    projected_voice=projected_binding,
+                ),
                 progress_callback=self._build_prepare_progress_callback(
                     job_id=plan.job_id,
                     default_message="正在准备编辑作业。",
@@ -1538,291 +2269,11 @@ class RenderJobService:
             return split_text_segments_zh_period(raw_text)
         raise ValueError(f"Unsupported segment_boundary_mode '{segment_boundary_mode}'.")
 
-    def _start_inference_tracking(self, plan: RenderPlan, *, total_segments: int, message: str) -> None:
-        if self._inference_runtime is None or total_segments <= 0 or plan.inference_task_id is not None:
-            return
-        try:
-            task_id = self._inference_runtime.start_task(message=message)
-        except RuntimeError as exc:
-            render_job_logger.warning("failed to start inference tracking for render job {}: {}", plan.job_id, exc)
-            return
-        plan.inference_task_id = task_id
-        plan.inference_total_segments = total_segments
-        self._inference_runtime.update_progress(
-            task_id=task_id,
-            status="preparing",
-            progress=0.0,
-            message=message,
-            current_segment=0,
-            total_segments=total_segments,
-        )
-
-    def _build_segment_progress_callback(
-        self,
-        plan: RenderPlan,
-        *,
-        current_segment_index: int,
-        total_segments: int,
-    ) -> Callable[[dict], None]:
-        def _progress_callback(event: dict) -> None:
-            if self._inference_runtime is None or plan.inference_task_id is None or total_segments <= 0:
-                return
-
-            raw_progress = event.get("progress")
-            if isinstance(raw_progress, (int, float)):
-                local_progress = max(0.0, min(1.0, float(raw_progress)))
-                global_progress = ((current_segment_index - 1) + local_progress) / total_segments
-            else:
-                global_progress = None
-
-            raw_status = event.get("status")
-            mapped_status = raw_status if raw_status in {"preparing", "inferencing", "cancelling"} else None
-            mapped_current_segment = max(0, current_segment_index - 1)
-            if raw_status == "completed":
-                mapped_status = "inferencing"
-                mapped_current_segment = current_segment_index
-
-            raw_message = event.get("message")
-            self._inference_runtime.update_progress(
-                task_id=plan.inference_task_id,
-                status=mapped_status,
-                progress=global_progress,
-                message=raw_message if isinstance(raw_message, str) else None,
-                current_segment=mapped_current_segment,
-                total_segments=total_segments,
-            )
-
-        return _progress_callback
-
-    def _complete_inference_tracking(self, plan: RenderPlan, *, message: str) -> None:
-        if self._inference_runtime is None or plan.inference_task_id is None:
-            return
-        self._inference_runtime.mark_completed(task_id=plan.inference_task_id, message=message)
-        plan.inference_task_id = None
-
-    def _fail_inference_tracking(self, plan: RenderPlan, message: str) -> None:
-        if self._inference_runtime is None or plan.inference_task_id is None:
-            return
-        self._inference_runtime.mark_failed(task_id=plan.inference_task_id, message=message)
-        plan.inference_task_id = None
-
     def _cancel_inference_tracking(self, plan: RenderPlan, message: str) -> None:
         if self._inference_runtime is None or plan.inference_task_id is None:
             return
         self._inference_runtime.mark_cancelled(task_id=plan.inference_task_id, message=message)
         plan.inference_task_id = None
-
-    def _render(self, plan: RenderPlan) -> None:
-        assert plan.context is not None
-        self._runtime.update_job(
-            plan.job_id,
-            status="rendering",
-            progress=PREPARE_END_PROGRESS,
-            message="正在渲染段级资产。",
-        )
-        total_segments = len(plan.segments)
-        self._start_inference_tracking(plan, total_segments=total_segments, message="正在准备本次推理")
-        try:
-            for index, segment in enumerate(plan.segments, start=1):
-                segment_started = time.perf_counter()
-                asset = self._gateway.render_segment_base(
-                    segment,
-                    plan.context,
-                    progress_callback=self._build_segment_progress_callback(
-                        plan,
-                        current_segment_index=index,
-                        total_segments=total_segments,
-                    ),
-                )
-                render_elapsed_ms = (time.perf_counter() - segment_started) * 1000
-                plan.segment_assets[segment.segment_id] = asset
-                segment.render_asset_id = asset.render_asset_id
-                segment.assembled_audio_span = (0, asset.audio_sample_count)
-                segment.render_status = "ready"
-                segment.effective_duration_samples = asset.audio_sample_count
-                write_started = time.perf_counter()
-                self._write_segment_asset(plan.job_id, asset)
-                write_elapsed_ms = (time.perf_counter() - write_started) * 1000
-                render_job_logger.info(
-                    "initialize segment completed segment_id={} index={}/{} render_ms={:.2f} write_ms={:.2f} total_ms={:.2f}",
-                    segment.segment_id,
-                    index,
-                    total_segments,
-                    render_elapsed_ms,
-                    write_elapsed_ms,
-                    (time.perf_counter() - segment_started) * 1000,
-                )
-                self._runtime.update_job(
-                    plan.job_id,
-                    current_segment_index=index,
-                    total_segment_count=total_segments,
-                    progress=build_render_segment_progress(
-                        completed_segments=index,
-                        total_segments=total_segments,
-                        start_progress=PREPARE_END_PROGRESS,
-                        end_progress=0.6,
-                    ),
-                    message=f"已完成第 {index}/{total_segments} 段渲染。",
-                )
-                self._runtime.emit_event(
-                    plan.job_id,
-                    "segment_completed",
-                    {
-                        "segment_id": segment.segment_id,
-                        "order_key": segment.order_key,
-                        "render_asset_id": asset.render_asset_id,
-                        "render_status": segment.render_status,
-                        "effective_duration_samples": segment.effective_duration_samples,
-                    },
-                )
-                control_action = self._get_control_action(plan.job_id)
-                if control_action is not None:
-                    self._commit_partial_after_segment(plan, status=control_action)
-        except _PartialRenderCommitted:
-            raise
-        except Exception as exc:
-            self._fail_inference_tracking(plan, str(exc))
-            raise
-        else:
-            self._complete_inference_tracking(plan, message="本次推理已完成")
-
-        config_snapshot = self._build_temporary_snapshot(plan)
-        for edge in plan.edges:
-            self._ensure_not_cancelled(plan.job_id)
-            left_asset = plan.segment_assets[edge.left_segment_id]
-            right_asset = plan.segment_assets[edge.right_segment_id]
-            resolved_edge = self._render_config_resolver.resolve_edge(snapshot=config_snapshot, edge_id=edge.edge_id)
-            boundary_asset = self._gateway.render_boundary_asset(
-                left_asset,
-                right_asset,
-                edge.model_copy(update={"boundary_strategy": resolved_edge.effective_boundary_strategy}),
-                plan.context,
-            )
-            plan.boundary_assets[edge.edge_id] = boundary_asset
-            edge.effective_boundary_strategy = resolved_edge.effective_boundary_strategy
-            edge.boundary_sample_count = boundary_asset.boundary_sample_count
-            edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
-            self._write_boundary_asset(plan.job_id, boundary_asset)
-        self._persist_runtime_job(plan.job_id)
-
-    def _render_edit(self, plan: RenderPlan) -> None:
-        if plan.skip_render:
-            return
-
-        if not plan.compose_only:
-            self._runtime.update_job(
-                plan.job_id,
-                status="rendering",
-                progress=PREPARE_END_PROGRESS,
-                message="正在重渲染受影响资产。",
-            )
-
-        config_snapshot = self._build_temporary_snapshot(plan)
-        total_targets = len(plan.target_segment_ids)
-        target_total = max(1, total_targets)
-        completed_targets = 0
-        self._start_inference_tracking(plan, total_segments=total_targets, message="正在准备本次推理")
-        try:
-            for segment in plan.segments:
-                if segment.segment_id in plan.target_segment_ids:
-                    completed_targets += 1
-                    context = self._get_segment_context(plan=plan, snapshot=config_snapshot, segment=segment)
-                    asset = self._gateway.render_segment_base(
-                        segment,
-                        context,
-                        progress_callback=self._build_segment_progress_callback(
-                            plan,
-                            current_segment_index=completed_targets,
-                            total_segments=target_total,
-                        ),
-                    )
-                    segment.render_asset_id = asset.render_asset_id
-                    segment.assembled_audio_span = (0, asset.audio_sample_count)
-                    segment.render_status = "ready"
-                    segment.effective_duration_samples = asset.audio_sample_count
-                    self._write_segment_asset(plan.job_id, asset)
-                    plan.segment_assets[segment.segment_id] = asset
-                    self._runtime.update_job(
-                        plan.job_id,
-                        current_segment_index=completed_targets,
-                        total_segment_count=len(plan.target_segment_ids),
-                        progress=build_render_segment_progress(
-                            completed_segments=completed_targets,
-                            total_segments=target_total,
-                            start_progress=PREPARE_END_PROGRESS,
-                            end_progress=0.45,
-                        ),
-                        message=f"已重渲染 {completed_targets}/{len(plan.target_segment_ids)} 个目标段。",
-                    )
-                    self._runtime.emit_event(
-                        plan.job_id,
-                        "segment_completed",
-                        {
-                            "segment_id": segment.segment_id,
-                            "order_key": segment.order_key,
-                            "render_asset_id": asset.render_asset_id,
-                            "render_status": segment.render_status,
-                            "effective_duration_samples": segment.effective_duration_samples,
-                        },
-                    )
-                    control_action = self._get_control_action(plan.job_id)
-                    if control_action is not None:
-                        self._commit_partial_after_segment(plan, status=control_action)
-                else:
-                    if segment.render_asset_id is None:
-                        raise EditSessionNotFoundError(f"Segment '{segment.segment_id}' asset is missing.")
-                    asset = self._asset_store.load_segment_asset(segment.render_asset_id)
-                    plan.segment_assets[segment.segment_id] = asset
-                segment.assembled_audio_span = (0, asset.audio_sample_count)
-                segment.effective_duration_samples = asset.audio_sample_count
-        except _PartialRenderCommitted:
-            raise
-        except Exception as exc:
-            self._fail_inference_tracking(plan, str(exc))
-            raise
-        else:
-            self._complete_inference_tracking(plan, message="本次推理已完成")
-
-        for edge in plan.edges:
-            self._ensure_not_cancelled(plan.job_id)
-            left_asset = plan.segment_assets[edge.left_segment_id]
-            right_asset = plan.segment_assets[edge.right_segment_id]
-            resolved_edge = self._render_config_resolver.resolve_edge(snapshot=config_snapshot, edge_id=edge.edge_id)
-            effective_boundary_strategy = resolved_edge.effective_boundary_strategy
-            if edge.edge_id in plan.target_edge_ids:
-                if plan.job_kind in {"segment_swap", "segment_reorder"}:
-                    boundary_asset = self._build_fallback_boundary_asset(
-                        left_asset,
-                        right_asset,
-                        edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
-                    )
-                else:
-                    boundary_context = self._get_segment_context(
-                        plan=plan,
-                        snapshot=config_snapshot,
-                        segment=next(item for item in plan.segments if item.segment_id == edge.left_segment_id),
-                    )
-                    boundary_asset = self._gateway.render_boundary_asset(
-                        left_asset,
-                        right_asset,
-                        edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
-                        boundary_context,
-                    )
-                self._write_boundary_asset(plan.job_id, boundary_asset)
-            else:
-                boundary_asset = self._load_or_rebuild_boundary_asset(
-                    plan=plan,
-                    snapshot=config_snapshot,
-                    edge=edge,
-                    left_asset=left_asset,
-                    right_asset=right_asset,
-                    effective_boundary_strategy=effective_boundary_strategy,
-                )
-            plan.boundary_assets[edge.edge_id] = boundary_asset
-            edge.effective_boundary_strategy = effective_boundary_strategy
-            edge.boundary_sample_count = boundary_asset.boundary_sample_count
-            edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
-        self._persist_runtime_job(plan.job_id)
 
     def _load_or_rebuild_boundary_asset(
         self,
@@ -1833,7 +2284,13 @@ class RenderJobService:
         left_asset: SegmentRenderAssetPayload,
         right_asset: SegmentRenderAssetPayload,
         effective_boundary_strategy: str,
-    ) -> BoundaryAssetPayload:
+    ) -> tuple[BoundaryAssetPayload, str]:
+        effective_boundary_strategy = self._resolve_boundary_strategy_for_assets(
+            edge=edge,
+            left_asset=left_asset,
+            right_asset=right_asset,
+            effective_boundary_strategy=effective_boundary_strategy,
+        )
         boundary_asset_id = build_boundary_asset_id(
             left_segment_id=edge.left_segment_id,
             left_render_version=left_asset.render_version,
@@ -1843,7 +2300,7 @@ class RenderJobService:
             boundary_strategy=effective_boundary_strategy,
         )
         try:
-            return self._asset_store.load_boundary_asset(boundary_asset_id)
+            return self._asset_store.load_boundary_asset(boundary_asset_id), effective_boundary_strategy
         except FileNotFoundError:
             render_job_logger.warning(
                 "boundary asset missing; rebuilding boundary_asset_id={} edge_id={} left_render_version={} right_render_version={} edge_version={} strategy={}",
@@ -1855,6 +2312,21 @@ class RenderJobService:
                 effective_boundary_strategy,
             )
 
+        if effective_boundary_strategy == "crossfade_only":
+            crossfade_boundary_asset_id = build_boundary_asset_id(
+                left_segment_id=edge.left_segment_id,
+                left_render_version=left_asset.render_version,
+                right_segment_id=edge.right_segment_id,
+                right_render_version=right_asset.render_version,
+                edge_version=edge.edge_version,
+                boundary_strategy="crossfade_only",
+            )
+            if crossfade_boundary_asset_id != boundary_asset_id:
+                try:
+                    return self._asset_store.load_boundary_asset(crossfade_boundary_asset_id), effective_boundary_strategy
+                except FileNotFoundError:
+                    pass
+
         boundary_context = self._get_segment_context(
             plan=plan,
             snapshot=snapshot,
@@ -1863,137 +2335,95 @@ class RenderJobService:
         boundary_asset = self._gateway.render_boundary_asset(
             left_asset,
             right_asset,
-            edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
+            edge.model_copy(
+                update={
+                    "boundary_strategy": effective_boundary_strategy,
+                    "effective_boundary_strategy": effective_boundary_strategy,
+                }
+            ),
             boundary_context,
         )
         self._write_boundary_asset(plan.job_id, boundary_asset)
-        return boundary_asset
+        return boundary_asset, effective_boundary_strategy
 
-    def _build_fallback_boundary_asset(
+    @staticmethod
+    def _boundary_strategy_requires_enhanced_assets(boundary_strategy: str) -> bool:
+        return boundary_strategy in {"enhanced", "latent_overlap_then_equal_power_crossfade"}
+
+    @classmethod
+    def _collect_boundary_asset_gaps(
+        cls,
+        *,
+        asset: SegmentRenderAssetPayload,
+        side: str,
+        require_right_margin_frames: bool,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if asset.decoder_frame_count <= 0:
+            reasons.append(f"{side}_decoder_frames_missing")
+        if not asset.semantic_tokens:
+            reasons.append(f"{side}_semantic_tokens_missing")
+        if not asset.phone_ids:
+            reasons.append(f"{side}_phone_ids_missing")
+        if require_right_margin_frames and (
+            asset.trace is None or not isinstance(asset.trace, dict) or "right_margin_frames" not in asset.trace
+        ):
+            reasons.append(f"{side}_right_margin_frames_missing")
+        return reasons
+
+    def _resolve_boundary_strategy_for_assets(
         self,
+        *,
+        edge: EditableEdge,
         left_asset: SegmentRenderAssetPayload,
         right_asset: SegmentRenderAssetPayload,
-        edge: EditableEdge,
-    ) -> BoundaryAssetPayload:
-        left_margin = left_asset.right_margin_audio.astype(np.float32, copy=False)
-        right_margin = right_asset.left_margin_audio.astype(np.float32, copy=False)
-        if left_margin.size == 0:
-            boundary_audio = right_margin.copy()
-        elif right_margin.size == 0:
-            boundary_audio = left_margin.copy()
-        else:
-            overlap = min(int(left_margin.size), int(right_margin.size))
-            prefix = left_margin[:-overlap]
-            suffix = right_margin[overlap:]
-            theta = np.linspace(0.0, np.pi / 2.0, overlap, endpoint=True, dtype=np.float32)
-            crossfaded = (np.cos(theta) * left_margin[-overlap:] + np.sin(theta) * right_margin[:overlap]).astype(
-                np.float32,
-                copy=False,
-            )
-            boundary_audio = np.concatenate([prefix, crossfaded, suffix]).astype(np.float32, copy=False)
-        return BoundaryAssetPayload(
-            boundary_asset_id=build_boundary_asset_id(
-                left_segment_id=edge.left_segment_id,
-                left_render_version=left_asset.render_version,
-                right_segment_id=edge.right_segment_id,
-                right_render_version=right_asset.render_version,
-                edge_version=edge.edge_version,
-                boundary_strategy=edge.boundary_strategy,
+        effective_boundary_strategy: str,
+    ) -> str:
+        if not self._boundary_strategy_requires_enhanced_assets(effective_boundary_strategy):
+            return effective_boundary_strategy
+        downgrade_reasons = [
+            *self._collect_boundary_asset_gaps(
+                asset=left_asset,
+                side="left",
+                require_right_margin_frames=True,
             ),
-            left_segment_id=edge.left_segment_id,
-            left_render_version=left_asset.render_version,
-            right_segment_id=edge.right_segment_id,
-            right_render_version=right_asset.render_version,
-            edge_version=edge.edge_version,
-            boundary_strategy=edge.boundary_strategy,
-            boundary_sample_count=int(boundary_audio.size),
-            boundary_audio=boundary_audio,
-            trace={"boundary_kind": "fallback_equal_power_crossfade"},
+            *self._collect_boundary_asset_gaps(
+                asset=right_asset,
+                side="right",
+                require_right_margin_frames=False,
+            ),
+        ]
+        if not downgrade_reasons:
+            return effective_boundary_strategy
+        render_job_logger.warning(
+            "boundary strategy downgraded due to asset capability mismatch edge_id={} left_asset_id={} right_asset_id={} requested_strategy={} applied_strategy={} reasons={}",
+            edge.edge_id,
+            left_asset.render_asset_id,
+            right_asset.render_asset_id,
+            effective_boundary_strategy,
+            "crossfade_only",
+            downgrade_reasons,
         )
+        return "crossfade_only"
 
-    def _compose(self, plan: RenderPlan) -> None:
-        if plan.skip_compose:
-            return
-        self._ensure_not_cancelled(plan.job_id)
-        plan.changed_block_asset_ids.clear()
-        compose_message = "正在装配 block 与文档音频。"
-        if plan.timeline_reflow_required:
-            if plan.earliest_changed_order_key is not None:
-                compose_message = (
-                    f"正在装配 block 与文档音频，将从第 {plan.earliest_changed_order_key} 段起"
-                    f"按 {plan.change_reason or 'edit'} 重排时间线。"
-                )
-            else:
-                compose_message = f"正在装配 block 与文档音频，按 {plan.change_reason or 'edit'} 重排时间线。"
-        self._runtime.update_job(plan.job_id, status="composing", progress=0.7, message=compose_message)
-        plan.blocks = self._block_planner.build_blocks(plan.segments)
-        self._runtime.update_job(plan.job_id, total_block_count=len(plan.blocks))
-        previous_timeline = self._load_previous_timeline(plan)
-
-        for index, block in enumerate(plan.blocks, start=1):
-            block_segments = [plan.segment_assets[segment_id] for segment_id in block.segment_ids]
-            block_edges = [
-                edge
-                for edge in plan.edges
-                if edge.left_segment_id in block.segment_ids and edge.right_segment_id in block.segment_ids
-            ]
-            block_boundaries = [plan.boundary_assets[edge.edge_id] for edge in block_edges if edge.edge_id in plan.boundary_assets]
-            force_dirty = (
-                plan.job_kind == "initialize"
-                or block.block_id in plan.target_block_ids
-                or bool(plan.target_segment_ids.intersection(block.segment_ids))
-                or any(edge.edge_id in plan.target_edge_ids for edge in block_edges)
-            )
-            reusable_block_asset_id = None
-            if not force_dirty:
-                reusable_block_asset_id = self._resolve_reusable_block_asset_id(
-                    previous_timeline=previous_timeline,
-                    block=block,
-                    block_segments=block_segments,
-                    block_edges=block_edges,
-                    block_boundaries=block_boundaries,
-                )
-            if reusable_block_asset_id is None:
-                block_asset = self._composition_builder.compose_block(
-                    segments=block_segments,
-                    boundaries=block_boundaries,
-                    edges=block_edges,
-                    block_id=block.block_id,
-                )
-                self._write_block_asset(plan.job_id, block_asset)
-                plan.changed_block_asset_ids.add(block_asset.block_asset_id)
-            else:
-                block_asset = self._asset_store.load_block_asset(reusable_block_asset_id)
-            plan.block_assets.append(block_asset)
-            self._runtime.update_job(
-                plan.job_id,
-                current_block_index=index,
-                total_block_count=len(plan.blocks),
-                progress=0.7 + 0.15 * (index / max(1, len(plan.blocks))),
-                message=f"已完成第 {index}/{len(plan.blocks)} 个 block 装配。",
-            )
-            self._runtime.emit_event(
-                plan.job_id,
-                "block_completed",
-                {
-                    "block_asset_id": block_asset.block_asset_id,
-                    "segment_ids": list(block_asset.segment_ids),
-                    "audio_sample_count": block_asset.audio_sample_count,
-                },
-            )
-
-        temporary_snapshot = self._build_temporary_snapshot(plan)
-        plan.timeline_manifest, playback_map = self._timeline_manifest_service.build(
-            snapshot=temporary_snapshot,
-            blocks=plan.block_assets,
-            sample_rate=self._composition_builder._sample_rate,
-        )
-        span_by_segment_id = {entry.segment_id: entry.audio_sample_span for entry in playback_map.entries}
-        for segment in plan.segments:
-            span = span_by_segment_id.get(segment.segment_id)
-            segment.assembled_audio_span = span
-            segment.effective_duration_samples = None if span is None else max(0, span[1] - span[0])
-        self._persist_runtime_job(plan.job_id)
+    def _load_segment_asset_for_boundary_reuse(
+        self,
+        *,
+        base_render_asset_id: str | None,
+        fallback_render_asset_id: str | None,
+        existing_asset: SegmentRenderAssetPayload | None,
+    ) -> SegmentRenderAssetPayload | None:
+        preferred_asset_id = base_render_asset_id or fallback_render_asset_id
+        if preferred_asset_id is None:
+            return None
+        if existing_asset is not None and existing_asset.render_asset_id == preferred_asset_id:
+            return existing_asset
+        try:
+            return self._asset_store.load_segment_asset(preferred_asset_id)
+        except FileNotFoundError:
+            if fallback_render_asset_id is None or fallback_render_asset_id == preferred_asset_id:
+                return None
+            return self._asset_store.load_segment_asset(fallback_render_asset_id)
 
     def _commit(self, plan: RenderPlan) -> None:
         assert plan.timeline_manifest is not None
@@ -2171,41 +2601,6 @@ class RenderJobService:
             return None
         return self._asset_store.load_timeline_manifest(current_snapshot.timeline_manifest_id)
 
-    def _resolve_reusable_block_asset_id(
-        self,
-        *,
-        previous_timeline: TimelineManifest | None,
-        block: RenderBlock,
-        block_segments: list[SegmentRenderAssetPayload],
-        block_edges: list[EditableEdge],
-        block_boundaries: list[BoundaryAssetPayload],
-    ) -> str | None:
-        if previous_timeline is None:
-            return None
-        segment_ids = list(block.segment_ids)
-        previous_entry = next(
-            (
-                entry
-                for entry in previous_timeline.block_entries
-                if entry.segment_ids == segment_ids
-            ),
-            None,
-        )
-        if previous_entry is None:
-            return None
-        try:
-            previous_asset = self._asset_store.load_block_asset(previous_entry.block_asset_id)
-        except (FileNotFoundError, ValueError):
-            return None
-        if not self._block_matches_existing_asset(
-            existing_asset=previous_asset,
-            block_segments=block_segments,
-            block_edges=block_edges,
-            block_boundaries=block_boundaries,
-        ):
-            return None
-        return previous_entry.block_asset_id
-
     @staticmethod
     def _collect_changed_block_asset_ids(
         *,
@@ -2237,60 +2632,6 @@ class RenderJobService:
             changed_block_asset_ids=committed_block_asset_ids,
         )
         return committed_block_asset_ids
-
-    def _block_matches_existing_asset(
-        self,
-        *,
-        existing_asset: BlockCompositionAssetPayload,
-        block_segments: list[SegmentRenderAssetPayload],
-        block_edges: list[EditableEdge],
-        block_boundaries: list[BoundaryAssetPayload],
-    ) -> bool:
-        if existing_asset.segment_ids != [segment.segment_id for segment in block_segments]:
-            return False
-        existing_segment_keys = [
-            (entry.segment_id, entry.render_asset_id)
-            for entry in existing_asset.segment_entries
-        ]
-        current_segment_keys = [
-            (segment.segment_id, segment.render_asset_id)
-            for segment in block_segments
-        ]
-        if existing_segment_keys != current_segment_keys:
-            return False
-
-        boundary_by_pair = {
-            (boundary.left_segment_id, boundary.right_segment_id): boundary for boundary in block_boundaries
-        }
-        existing_edge_keys = [
-            (
-                entry.edge_id,
-                entry.left_segment_id,
-                entry.right_segment_id,
-                entry.boundary_strategy,
-                entry.effective_boundary_strategy,
-                entry.pause_duration_seconds,
-                max(0, entry.boundary_sample_span[1] - entry.boundary_sample_span[0]),
-                max(0, entry.pause_sample_span[1] - entry.pause_sample_span[0]),
-            )
-            for entry in existing_asset.edge_entries
-        ]
-        current_edge_keys = []
-        for edge in block_edges:
-            boundary = boundary_by_pair.get((edge.left_segment_id, edge.right_segment_id))
-            current_edge_keys.append(
-                (
-                    edge.edge_id,
-                    edge.left_segment_id,
-                    edge.right_segment_id,
-                    edge.boundary_strategy,
-                    edge.effective_boundary_strategy or edge.boundary_strategy,
-                    edge.pause_duration_seconds,
-                    0 if boundary is None else boundary.boundary_sample_count,
-                    int(self._composition_builder._sample_rate * edge.pause_duration_seconds),
-                )
-            )
-        return existing_edge_keys == current_edge_keys
 
     def _build_segments(
         self,
@@ -2459,6 +2800,7 @@ class RenderJobService:
                     "audio_sample_span": list(entry.audio_sample_span),
                     "order_key": entry.order_key,
                     "render_asset_id": entry.render_asset_id,
+                    "base_render_asset_id": entry.base_render_asset_id,
                 }
                 for entry in asset.segment_entries
             ],
@@ -2519,6 +2861,8 @@ class RenderJobService:
         active_session = self._repository.get_active_session()
         if active_session is None:
             raise EditSessionNotFoundError("Active edit session not found.")
+        self._persist_completed_prefix_segment_assets(plan)
+        self._emit_missing_segment_events_for_completed_prefix(plan)
         working_snapshot = self._build_temporary_snapshot(plan)
         segments_by_id = {segment.segment_id: segment for segment in working_snapshot.segments}
         checkpoint, partial_snapshot = self._checkpoint_service.save_partial_head(
@@ -2609,6 +2953,39 @@ class RenderJobService:
             message=terminal_message,
         )
 
+    def _persist_completed_prefix_segment_assets(self, plan: RenderPlan) -> None:
+        for segment in sorted(plan.segments, key=lambda item: item.order_key):
+            if segment.render_asset_id is None or segment.render_status != "ready":
+                break
+            asset = plan.segment_assets.get(segment.segment_id)
+            if asset is None:
+                continue
+            segment_asset_path = self._asset_store.segment_asset_path(segment.render_asset_id)
+            metadata_path = segment_asset_path / "metadata.json"
+            audio_path = segment_asset_path / "audio.wav"
+            if metadata_path.exists() and audio_path.exists():
+                continue
+            self._write_segment_asset(plan.job_id, asset)
+
+    def _emit_missing_segment_events_for_completed_prefix(self, plan: RenderPlan) -> None:
+        for segment in sorted(plan.segments, key=lambda item: item.order_key):
+            if segment.render_asset_id is None or segment.render_status != "ready":
+                break
+            if segment.segment_id in plan.emitted_segment_ids:
+                continue
+            self._runtime.emit_event(
+                plan.job_id,
+                "segment_completed",
+                {
+                    "segment_id": segment.segment_id,
+                    "order_key": segment.order_key,
+                    "render_asset_id": segment.render_asset_id,
+                    "render_status": segment.render_status,
+                    "effective_duration_samples": segment.effective_duration_samples,
+                },
+            )
+            plan.emitted_segment_ids.add(segment.segment_id)
+
     def _ensure_not_cancelled(self, job_id: str) -> None:
         job = self._runtime.get_job(job_id)
         if job is not None and job.cancel_requested:
@@ -2641,14 +3018,21 @@ class RenderJobService:
             committed_timeline_manifest_id=job.committed_timeline_manifest_id,
             committed_playable_sample_span=job.committed_playable_sample_span,
             changed_block_asset_ids=list(job.changed_block_asset_ids),
+            adapter_error=job.adapter_error,
             checkpoint_id=job.checkpoint_id,
             resume_token=job.resume_token,
             updated_at=job.updated_at,
         )
         self._repository.save_render_job(record)
 
-    def _mark_terminal(self, job_id: str, *, status: str, message: str) -> None:
-        self._runtime.update_job(job_id, status=status, progress=1.0 if status == "completed" else 0.0, message=message)
+    def _mark_terminal(self, job_id: str, *, status: str, message: str, adapter_error=None) -> None:
+        self._runtime.update_job(
+            job_id,
+            status=status,
+            progress=1.0 if status == "completed" else 0.0,
+            message=message,
+            adapter_error=adapter_error,
+        )
         self._persist_runtime_job(job_id)
 
     @staticmethod
@@ -2738,6 +3122,7 @@ class RenderJobService:
             change_reason=impact.change_reason,
             skip_render=skip_render,
             skip_compose=skip_compose,
+            execution_mode="block_first",
         )
         self._repository.upsert_active_session(
             active_session.model_copy(
@@ -2897,17 +3282,69 @@ class RenderJobService:
         ).voice_binding.voice_binding_id
 
     @staticmethod
-    def _build_default_configuration(request: InitializeEditSessionRequest) -> tuple[RenderProfile, VoiceBinding]:
+    def _get_voice_binding(snapshot: DocumentSnapshot, voice_binding_id: str | None) -> VoiceBinding:
+        if voice_binding_id is None:
+            raise EditSessionNotFoundError("Voice binding not found.")
+        binding = next((item for item in snapshot.voice_bindings if item.voice_binding_id == voice_binding_id), None)
+        if binding is None:
+            raise EditSessionNotFoundError(f"Voice binding '{voice_binding_id}' not found.")
+        return binding
+
+    @staticmethod
+    def _resolve_group_assigned_voice_binding_id(snapshot: DocumentSnapshot, group_id: str) -> str | None:
+        group = next((item for item in snapshot.groups if item.group_id == group_id), None)
+        if group is None:
+            raise EditSessionNotFoundError(f"Segment group '{group_id}' not found.")
+        return group.voice_binding_id or snapshot.default_voice_binding_id
+
+    @staticmethod
+    def _resolve_group_assigned_render_profile_id(snapshot: DocumentSnapshot, group_id: str) -> str | None:
+        group = next((item for item in snapshot.groups if item.group_id == group_id), None)
+        if group is None:
+            raise EditSessionNotFoundError(f"Segment group '{group_id}' not found.")
+        return group.render_profile_id or snapshot.default_render_profile_id
+
+    def _resolve_projected_voice_for_binding_patch(
+        self,
+        *,
+        base_binding: VoiceBinding,
+        patch: VoiceBindingPatchRequest,
+    ):
+        refresh_projected_fields = (
+            (patch.voice_id is not None and patch.voice_id != base_binding.voice_id)
+            or (patch.model_key is not None and patch.model_key != base_binding.model_key)
+        )
+        if not refresh_projected_fields:
+            return None
+        effective_binding_ref = patch.binding_ref or base_binding.binding_ref
+        if effective_binding_ref is not None:
+            return self._resolve_projected_binding_for_binding_ref(effective_binding_ref)
+        return None
+
+    @staticmethod
+    def _build_default_configuration(
+        request: InitializeEditSessionRequest,
+        projected_voice=None,
+    ) -> tuple[RenderProfile, VoiceBinding]:
         voice_binding = VoiceBinding(
             voice_binding_id=f"binding-session-{uuid4().hex}",
             scope="session",
+            binding_ref=request.binding_ref,
             voice_id=request.voice_id,
             model_key=request.model_id,
+            model_instance_id=getattr(projected_voice, "model_instance_id", None),
+            preset_id=getattr(projected_voice, "preset_id", None),
+            gpt_path=getattr(projected_voice, "gpt_path", None),
+            sovits_path=getattr(projected_voice, "sovits_path", None),
         )
         reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
         if request.reference_source == "custom":
             reference_overrides_by_binding[
-                build_binding_key(voice_id=voice_binding.voice_id, model_key=voice_binding.model_key)
+                build_binding_key(
+                    binding_ref=voice_binding.binding_ref,
+                    voice_id=voice_binding.voice_id,
+                    model_key=voice_binding.model_key,
+                )
             ] = ReferenceBindingOverride(
                 session_reference_asset_id=None,
                 reference_audio_path=request.reference_audio_path,
@@ -2987,6 +3424,26 @@ class RenderJobService:
                 voice_binding_id=resolved.voice_binding.voice_binding_id,
                 voice_id=resolved.voice_binding.voice_id,
                 model_key=resolved.voice_binding.model_key,
+                adapter_id=(
+                    resolved.resolved_model_binding.adapter_id
+                    if resolved.resolved_model_binding is not None
+                    else None
+                ),
+                model_instance_id=(
+                    resolved.resolved_model_binding.model_instance_id
+                    if resolved.resolved_model_binding is not None
+                    else resolved.voice_binding.model_instance_id
+                ),
+                preset_id=(
+                    resolved.resolved_model_binding.preset_id
+                    if resolved.resolved_model_binding is not None
+                    else resolved.voice_binding.preset_id
+                ),
+                binding_fingerprint=(
+                    resolved.resolved_model_binding.binding_fingerprint
+                    if resolved.resolved_model_binding is not None
+                    else resolved.model_cache_key
+                ),
                 gpt_path=resolved.voice_binding.gpt_path,
                 sovits_path=resolved.voice_binding.sovits_path,
                 speaker_meta=dict(resolved.voice_binding.speaker_meta),
@@ -3014,7 +3471,10 @@ class RenderJobService:
         return context
 
     @staticmethod
-    def _build_resolved_context_from_request(request: InitializeEditSessionRequest) -> ResolvedRenderContext:
+    def _build_resolved_context_from_request(
+        request: InitializeEditSessionRequest,
+        projected_voice=None,
+    ) -> ResolvedRenderContext:
         return ResolvedRenderContext(
             voice_id=request.voice_id,
             model_key=request.model_id,
@@ -3023,9 +3483,13 @@ class RenderJobService:
             reference_language=request.reference_language or "",
             reference_scope="session_override" if request.reference_source == "custom" else "voice_preset",
             reference_identity=(
-                f"{request.voice_id}:{request.model_id}"
+                build_binding_key(
+                    binding_ref=request.binding_ref,
+                    voice_id=request.voice_id,
+                    model_key=request.model_id,
+                )
                 if request.reference_source == "custom"
-                else f"{request.voice_id}:preset"
+                else f"{build_binding_key(binding_ref=request.binding_ref, voice_id=request.voice_id, model_key=request.model_id)}:preset"
             ),
             speed=request.speed,
             top_k=request.top_k,
@@ -3036,8 +3500,37 @@ class RenderJobService:
                 voice_binding_id="binding-session-default",
                 voice_id=request.voice_id,
                 model_key=request.model_id,
+                model_instance_id=getattr(projected_voice, "model_instance_id", None),
+                preset_id=getattr(projected_voice, "preset_id", None),
+                gpt_path=getattr(projected_voice, "gpt_path", None),
+                sovits_path=getattr(projected_voice, "sovits_path", None),
             ),
             render_profile_id="profile-session-default",
+        )
+
+    def _resolve_projected_binding_for_initialize_request(self, request: InitializeEditSessionRequest):
+        return self._resolve_projected_binding_for_binding_ref(request.binding_ref)
+
+    def _resolve_projected_binding_for_binding_ref(self, binding_ref):
+        try:
+            resolved_binding = self._session_service.resolve_binding_reference(binding_ref)
+        except Exception:
+            return None
+        return SimpleNamespace(
+            model_instance_id=resolved_binding.get("model_instance_id"),
+            preset_id=binding_ref.preset_id,
+            gpt_path=resolved_binding.get("gpt_path"),
+            sovits_path=resolved_binding.get("sovits_path"),
+            voice_id=resolved_binding.get("voice_id"),
+            model_key=resolved_binding.get("model_key"),
+        )
+
+    @staticmethod
+    def _can_build_local_reference_context(projected_voice) -> bool:
+        return bool(
+            projected_voice is not None
+            and getattr(projected_voice, "gpt_path", None)
+            and getattr(projected_voice, "sovits_path", None)
         )
 
     @staticmethod

@@ -486,8 +486,7 @@ export function buildDefaultBackendOptions(
 	const productRoot = target.productRoot ?? target.bootstrapRoot ?? target.runtimeRoot;
 	const appCoreRoot = target.appCoreRoot ?? target.resourcesDir;
 	const runtimeLayerRoot = target.runtimeRoot;
-	const modelsRoot = target.modelsRoot ?? target.resourcesDir;
-	const pretrainedModelsRoot = target.pretrainedModelsRoot ?? target.resourcesDir;
+	const supportAssetsRoot = target.supportAssetsRoot ?? target.resourcesDir;
 	const pythonPathEntries = [appCoreRoot, target.gptSovitsDir];
 	const runtimePythonDir = path.dirname(target.runtimePython);
 	const packagedPathEntries = buildPackagedBackendPathEntries(runtimePythonDir);
@@ -520,8 +519,8 @@ export function buildDefaultBackendOptions(
 			NEO_TTS_RUNTIME_DESCRIPTOR: target.runtimeDescriptorPath ?? "",
 			NEO_TTS_APP_CORE_ROOT: appCoreRoot,
 			NEO_TTS_RUNTIME_ROOT: runtimeLayerRoot,
-			NEO_TTS_MODELS_ROOT: modelsRoot,
-			NEO_TTS_PRETRAINED_MODELS_ROOT: pretrainedModelsRoot,
+			NEO_TTS_MODELS_ROOT: supportAssetsRoot,
+			NEO_TTS_PRETRAINED_MODELS_ROOT: supportAssetsRoot,
 			NEO_TTS_RESOURCES_ROOT: appCoreRoot,
 			NEO_TTS_GPT_SOVITS_ROOT: target.gptSovitsDir,
 			NEO_TTS_USER_DATA_ROOT: target.userDataDir,

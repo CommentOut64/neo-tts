@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
 import type {
+  BlockAdapterErrorPayload,
   ExportJobResponse,
   RenderJob,
   RenderJobCommittedPayload,
@@ -160,6 +161,28 @@ function buildCommittedSignature(payload: RenderJobCommittedPayload) {
   return JSON.stringify(payload);
 }
 
+function formatAdapterErrorMessage(adapterError: BlockAdapterErrorPayload | null | undefined): string | null {
+  if (!adapterError) {
+    return null;
+  }
+  const providerStatus = typeof adapterError.details?.provider_http_status === "number"
+    ? adapterError.details.provider_http_status
+    : null;
+  const providerMessage = typeof adapterError.details?.provider_message === "string"
+    ? adapterError.details.provider_message
+    : null;
+  const retryAfterMs = typeof adapterError.details?.retry_after_ms === "number"
+    ? adapterError.details.retry_after_ms
+    : null;
+  const segments = [
+    adapterError.message || adapterError.error_code,
+    providerStatus !== null ? `HTTP ${providerStatus}` : null,
+    providerMessage,
+    retryAfterMs && retryAfterMs > 0 ? `建议 ${Math.ceil(retryAfterMs / 1000)}s 后重试` : null,
+  ].filter((item): item is string => typeof item === "string" && item.length > 0);
+  return segments.length > 0 ? segments.join(" | ") : null;
+}
+
 function applyCommittedPayload(
   payload: RenderJobCommittedPayload,
   fallbackJobId: string | null,
@@ -189,20 +212,22 @@ function buildTrackedJobSnapshot(
   job: TrackedRenderJob,
   options: Pick<TrackJobOptions, "preservedProgress" | "preservedMessage"> = {},
 ): TrackedRenderJob {
+  const adapterErrorMessage = formatAdapterErrorMessage(job.adapter_error);
   return {
     ...job,
     progress: Math.max(job.progress ?? 0, options.preservedProgress ?? 0),
-    message: job.message || options.preservedMessage || "",
+    message: adapterErrorMessage || job.message || options.preservedMessage || "",
   };
 }
 
 function mergeTrackedJobSnapshot(job: TrackedRenderJob): TrackedRenderJob {
   const previousJob = currentRenderJob.value;
+  const adapterErrorMessage = formatAdapterErrorMessage(job.adapter_error);
   return {
     ...(previousJob ?? {}),
     ...job,
     progress: Math.max(previousJob?.progress ?? 0, job.progress ?? 0),
-    message: job.message || previousJob?.message || "",
+    message: adapterErrorMessage || job.message || previousJob?.message || "",
   };
 }
 
@@ -643,7 +668,8 @@ export function useRuntimeState() {
         }
 
         const keepPausedContext = settledStatus === "paused";
-        if (isTerminalRenderStatus(settledStatus)) {
+        const keepFailedJobSnapshot = settledStatus === "failed";
+        if (isTerminalRenderStatus(settledStatus) && !keepFailedJobSnapshot) {
           currentRenderJob.value = null;
         }
         if (!keepPausedContext) {

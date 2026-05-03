@@ -74,6 +74,7 @@ def test_checkpoint_service_saves_partial_head_and_working_snapshot(tmp_path):
 
     stored_checkpoint = service._repository.get_checkpoint(checkpoint.checkpoint_id)  # noqa: SLF001
     working_snapshot = service._repository.get_snapshot(checkpoint.working_snapshot_id)  # noqa: SLF001
+    partial_timeline = service._asset_store.load_timeline_manifest(checkpoint.timeline_manifest_id)  # noqa: SLF001
 
     assert checkpoint.status == "paused"
     assert checkpoint.resume_token is not None
@@ -83,6 +84,8 @@ def test_checkpoint_service_saves_partial_head_and_working_snapshot(tmp_path):
     assert working_snapshot is not None
     assert len(partial_snapshot.segments) == 1
     assert len(working_snapshot.segments) == 2
+    assert len(partial_timeline.segment_entries) == 1
+    assert len(partial_timeline.block_entries) == 1
 
 
 def test_checkpoint_service_uses_effective_segment_context_when_backfilling_partial_boundaries(tmp_path):

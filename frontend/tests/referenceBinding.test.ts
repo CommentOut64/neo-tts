@@ -4,38 +4,65 @@ import {
   resolveBindingReferenceState,
   resolveReferenceSelectionBySource,
   resolveReferenceSelectionForBinding,
+  buildReferenceBindingKey,
 } from "../src/features/reference-binding";
-import type { VoiceProfile } from "../src/types/tts";
+import type { RegistryBindingOption } from "../src/types/ttsRegistry";
 
-const voices: VoiceProfile[] = [
+const bindingRef = {
+  workspace_id: "ws_gpt_sovits",
+  main_model_id: "voice-a",
+  submodel_id: "default",
+  preset_id: "default",
+} as const;
+
+const bindingOptions: RegistryBindingOption[] = [
   {
-    name: "voice-a",
-    gpt_path: "voices/a.ckpt",
-    sovits_path: "voices/a.pth",
-    ref_audio: "voices/a.wav",
-    ref_text: "voice-a-preset",
-    ref_lang: "zh",
-    description: "",
-    defaults: {
-      speed: 1,
-      top_k: 15,
-      top_p: 1,
-      temperature: 1,
-      pause_length: 0.3,
-    },
-    managed: true,
+    bindingKey: "ws_gpt_sovits:voice-a:default:default",
+    bindingRef,
+    workspaceId: "ws_gpt_sovits",
+    workspaceDisplayName: "GPT-SoVITS",
+    familyId: "gpt_sovits_local",
+    familyRouteSlug: "gpt-sovits-local",
+    familyDisplayName: "GPT-SoVITS Local",
+    adapterId: "gpt_sovits_local",
+    mainModelId: "voice-a",
+    mainModelDisplayName: "voice-a",
+    submodelId: "default",
+    submodelDisplayName: "default",
+    presetId: "default",
+    presetDisplayName: "default",
+    label: "GPT-SoVITS / voice-a",
+    status: "ready",
+    referenceAudioPath: "voices/a.wav",
+    referenceText: "voice-a-preset",
+    referenceLanguage: "zh",
+    defaults: {},
+    fixedFields: {},
   },
 ];
 
 describe("reference-binding", () => {
+  it("正式 binding_key 改为 workspace/main/submodel/preset 四元组", () => {
+    expect(
+      buildReferenceBindingKey({
+        bindingRef: {
+          workspace_id: "ws_gpt_sovits",
+          main_model_id: "voice-a",
+          submodel_id: "default",
+          preset_id: "default",
+        },
+      }),
+    ).toBe("ws_gpt_sovits:voice-a:default:default");
+  });
+
   it("preset 模式会回到当前音色预设文本和语言，而不是继续沿用旧 custom 缓存", () => {
     expect(
       resolveReferenceSelectionBySource({
-        voiceId: "voice-a",
+        bindingRef,
         source: "preset",
-        voices,
+        bindingOptions,
         selections: {
-          "voice-a:gpt-sovits-v2": {
+          "ws_gpt_sovits:voice-a:default:default": {
             source: "custom",
             custom_ref_path: "managed/_temp_refs/custom.wav",
             ref_text: "old-custom-text",
@@ -44,7 +71,7 @@ describe("reference-binding", () => {
         },
       }),
     ).toEqual({
-      bindingKey: "voice-a:gpt-sovits-v2",
+      bindingKey: "ws_gpt_sovits:voice-a:default:default",
       selection: {
         source: "preset",
         session_reference_asset_id: null,
@@ -58,10 +85,10 @@ describe("reference-binding", () => {
   it("binding 已缓存 custom 时，切换回该音色仍恢复 custom 选择", () => {
     expect(
       resolveReferenceSelectionForBinding({
-        voiceId: "voice-a",
-        voices,
+        bindingRef,
+        bindingOptions,
         selections: {
-          "voice-a:gpt-sovits-v2": {
+          "ws_gpt_sovits:voice-a:default:default": {
             source: "custom",
             custom_ref_path: "managed/_temp_refs/custom.wav",
             ref_text: "old-custom-text",
@@ -70,7 +97,7 @@ describe("reference-binding", () => {
         },
       }),
     ).toEqual({
-      bindingKey: "voice-a:gpt-sovits-v2",
+      bindingKey: "ws_gpt_sovits:voice-a:default:default",
       selection: {
         source: "custom",
         custom_ref_path: "managed/_temp_refs/custom.wav",
@@ -83,10 +110,10 @@ describe("reference-binding", () => {
   it("binding 缓存里即使残留 preset 条目，也会重新对齐到当前音色预设", () => {
     expect(
       resolveReferenceSelectionForBinding({
-        voiceId: "voice-a",
-        voices,
+        bindingRef,
+        bindingOptions,
         selections: {
-          "voice-a:gpt-sovits-v2": {
+          "ws_gpt_sovits:voice-a:default:default": {
             source: "preset",
             custom_ref_path: "managed/_temp_refs/should-not-survive.wav",
             ref_text: "stale-text",
@@ -95,7 +122,7 @@ describe("reference-binding", () => {
         },
       }),
     ).toEqual({
-      bindingKey: "voice-a:gpt-sovits-v2",
+      bindingKey: "ws_gpt_sovits:voice-a:default:default",
       selection: {
         source: "preset",
         session_reference_asset_id: null,
@@ -110,12 +137,11 @@ describe("reference-binding", () => {
     expect(
       resolveBindingReferenceState({
         binding: {
-          voice_id: "voice-a",
-          model_key: "gpt-sovits-v2",
+          binding_ref: bindingRef,
         },
         profile: {
           reference_overrides_by_binding: {
-            "voice-a:gpt-sovits-v2": {
+            "ws_gpt_sovits:voice-a:default:default": {
               session_reference_asset_id: "session-ref-1",
               reference_identity: "doc-1:session-ref-1",
               reference_audio_fingerprint: "audio-fp-1",
@@ -126,12 +152,12 @@ describe("reference-binding", () => {
             },
           },
         },
-        voices,
+        bindingOptions,
       }),
     ).toEqual({
       source: "custom",
       reference_scope: "session_override",
-      binding_key: "voice-a:gpt-sovits-v2",
+      binding_key: "ws_gpt_sovits:voice-a:default:default",
       reference_identity: "doc-1:session-ref-1",
       session_reference_asset_id: "session-ref-1",
       reference_audio_fingerprint: "audio-fp-1",

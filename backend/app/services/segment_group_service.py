@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from backend.app.core.exceptions import EditSessionNotFoundError
 from backend.app.schemas.edit_session import (
+    BindingReference,
     DocumentSnapshot,
     ReferenceBindingOverride,
     RenderProfile,
@@ -101,6 +102,7 @@ class SegmentGroupService:
         patch: VoiceBindingPatchRequest,
         *,
         snapshot: DocumentSnapshot,
+        projected_voice: object | None = None,
     ) -> GroupMutationResult:
         groups = [group.model_copy(deep=True) for group in snapshot.groups]
         group_index = next((index for index, group in enumerate(groups) if group.group_id == group_id), None)
@@ -111,6 +113,7 @@ class SegmentGroupService:
             scope="group",
             patch=patch,
             base_binding_id=groups[group_index].voice_binding_id or snapshot.default_voice_binding_id,
+            projected_voice=projected_voice,
         )
         groups = [group.model_copy(deep=True) for group in next_snapshot.groups]
         group = groups[group_index].model_copy(update={"voice_binding_id": binding.voice_binding_id})
@@ -139,12 +142,14 @@ class SegmentGroupService:
         patch: VoiceBindingPatchRequest,
         *,
         snapshot: DocumentSnapshot,
+        projected_voice: object | None = None,
     ) -> DocumentSnapshot:
         next_snapshot, binding = self.create_voice_binding(
             snapshot=snapshot,
             scope="session",
             patch=patch,
             base_binding_id=snapshot.default_voice_binding_id,
+            projected_voice=projected_voice,
         )
         return next_snapshot.model_copy(deep=True, update={"default_voice_binding_id": binding.voice_binding_id})
 
@@ -204,16 +209,60 @@ class SegmentGroupService:
         scope: str,
         patch: VoiceBindingPatchRequest,
         base_binding_id: str | None,
+        projected_voice: object | None = None,
     ) -> tuple[DocumentSnapshot, VoiceBinding]:
         base = SegmentGroupService._get_voice_binding(snapshot=snapshot, voice_binding_id=base_binding_id)
+        refresh_projected_fields = (
+            patch.binding_ref is not None
+            or (patch.binding_ref is None and base.binding_ref is not None)
+            or (
+                patch.binding_ref is not None
+                and base.binding_ref is not None
+                and patch.binding_ref != base.binding_ref
+            )
+            or
+            (patch.voice_id is not None and patch.voice_id != base.voice_id)
+            or (patch.model_key is not None and patch.model_key != base.model_key)
+        )
         next_binding = base.model_copy(
             update={
                 "voice_binding_id": f"binding-{scope}-{uuid4().hex}",
                 "scope": scope,
+                "binding_ref": patch.binding_ref if patch.binding_ref is not None else base.binding_ref,
                 "voice_id": patch.voice_id if patch.voice_id is not None else base.voice_id,
                 "model_key": patch.model_key if patch.model_key is not None else base.model_key,
-                "sovits_path": patch.sovits_path if patch.sovits_path is not None else base.sovits_path,
-                "gpt_path": patch.gpt_path if patch.gpt_path is not None else base.gpt_path,
+                "model_instance_id": SegmentGroupService._resolve_projected_binding_field(
+                    explicit_value=(
+                        patch.model_instance_id
+                        if patch._legacy_extra_value("model_instance_id") is not None
+                        else None
+                    ),
+                    projected_value=SegmentGroupService._read_projected_value(projected_voice, "model_instance_id"),
+                    base_value=base.model_instance_id,
+                    refresh_projected_fields=refresh_projected_fields,
+                ),
+                "preset_id": SegmentGroupService._resolve_projected_binding_field(
+                    explicit_value=(
+                        patch.preset_id
+                        if patch._legacy_extra_value("preset_id") is not None
+                        else None
+                    ),
+                    projected_value=SegmentGroupService._read_projected_value(projected_voice, "preset_id"),
+                    base_value=base.preset_id,
+                    refresh_projected_fields=refresh_projected_fields,
+                ),
+                "sovits_path": SegmentGroupService._resolve_projected_binding_field(
+                    explicit_value=patch.sovits_path,
+                    projected_value=SegmentGroupService._read_projected_value(projected_voice, "sovits_path"),
+                    base_value=base.sovits_path,
+                    refresh_projected_fields=refresh_projected_fields,
+                ),
+                "gpt_path": SegmentGroupService._resolve_projected_binding_field(
+                    explicit_value=patch.gpt_path,
+                    projected_value=SegmentGroupService._read_projected_value(projected_voice, "gpt_path"),
+                    base_value=base.gpt_path,
+                    refresh_projected_fields=refresh_projected_fields,
+                ),
                 "speaker_meta": patch.speaker_meta if patch.speaker_meta is not None else dict(base.speaker_meta),
             }
         )
@@ -221,6 +270,34 @@ class SegmentGroupService:
             snapshot.model_copy(deep=True, update={"voice_bindings": [*snapshot.voice_bindings, next_binding]}),
             next_binding,
         )
+
+    @staticmethod
+    def _resolve_projected_binding_field(
+        *,
+        explicit_value: str | None,
+        projected_value: str | None,
+        base_value: str | None,
+        refresh_projected_fields: bool,
+    ) -> str | None:
+        if explicit_value is not None:
+            return explicit_value
+        if projected_value:
+            return projected_value
+        if refresh_projected_fields:
+            return None
+        return base_value
+
+    @staticmethod
+    def _read_projected_value(projected_voice: object | None, field_name: str) -> str | None:
+        if projected_voice is None:
+            return None
+        if isinstance(projected_voice, dict):
+            raw_value = projected_voice.get(field_name)
+        else:
+            raw_value = getattr(projected_voice, field_name, None)
+        if raw_value is None:
+            return None
+        return str(raw_value)
 
     @staticmethod
     def _get_render_profile(*, snapshot: DocumentSnapshot, render_profile_id: str | None) -> RenderProfile:

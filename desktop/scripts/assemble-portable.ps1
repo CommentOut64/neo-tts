@@ -313,11 +313,7 @@ foreach ($requiredPath in @(
         (Join-Path $appRuntimeRoot "backend"),
         (Join-Path $appRuntimeRoot "frontend-dist"),
         (Join-Path $appRuntimeRoot "config"),
-        (Join-Path $appRuntimeRoot "GPT_SoVITS"),
-        (Join-Path $appRuntimeRoot "tools"),
-        (Join-Path $appRuntimeRoot "runtime"),
-        (Join-Path $appRuntimeRoot "models"),
-        (Join-Path $appRuntimeRoot "pretrained_models")
+        (Join-Path $appRuntimeRoot "python-runtime")
     )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Portable assembly prerequisite missing: $requiredPath"
@@ -336,17 +332,19 @@ if ([string]::IsNullOrWhiteSpace($stateRootName) -or [string]::IsNullOrWhiteSpac
 }
 
 $runtimeVersion = if ([string]::IsNullOrWhiteSpace($RuntimeVersionOverride)) {
-    [string]$profileConfig.layeredPackages.runtimeVersion
+    [string]$profileConfig.layeredPackages.pythonRuntimeVersion
 }
 else {
     $RuntimeVersionOverride
 }
-$modelsVersion = [string]$profileConfig.layeredPackages.modelsVersion
-$pretrainedModelsVersion = [string]$profileConfig.layeredPackages.pretrainedModelsVersion
+$adapterSystemVersion = [string]$profileConfig.layeredPackages.adapterSystemVersion
+$supportAssetsVersion = [string]$profileConfig.layeredPackages.supportAssetsVersion
+$seedModelPackagesVersion = [string]$profileConfig.layeredPackages.seedModelPackagesVersion
 foreach ($requiredValue in @(
-        @{ Label = "runtimeVersion"; Value = $runtimeVersion },
-        @{ Label = "modelsVersion"; Value = $modelsVersion },
-        @{ Label = "pretrainedModelsVersion"; Value = $pretrainedModelsVersion }
+        @{ Label = "pythonRuntimeVersion"; Value = $runtimeVersion },
+        @{ Label = "adapterSystemVersion"; Value = $adapterSystemVersion },
+        @{ Label = "supportAssetsVersion"; Value = $supportAssetsVersion },
+        @{ Label = "seedModelPackagesVersion"; Value = $seedModelPackagesVersion }
     )) {
     if ([string]::IsNullOrWhiteSpace([string]$requiredValue.Value)) {
         throw "Portable profile metadata is missing layeredPackages.$($requiredValue.Label)."
@@ -372,15 +370,23 @@ $portableMarkerPath = Join-Path $portableRootPath $portableMarkerName
 $portableExePath = Join-Path $portableRootPath "NeoTTS.exe"
 $portableUpdateAgentExePath = Join-Path $portableRootPath "NeoTTSUpdateAgent.exe"
 $portableDataPath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.userDataRoot)
+$portableConfigPath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.configRoot)
+$portableTtsRegistryPath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.ttsRegistryRoot)
+$portableCachePath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.cacheRoot)
 $portableExportsPath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.exportsRoot)
+$portableLogsPath = Resolve-RootRelativePath -RootPath $portableRootPath -ConfiguredPath ([string]$portableFlavor.userDataPolicy.logsRoot)
 
 $bootstrapPackageRoot = Join-Path (Join-Path $packagesRootPath "bootstrap") ([string]$packageJson.version)
 $updateAgentPackageRoot = Join-Path (Join-Path $packagesRootPath "update-agent") ([string]$packageJson.version)
 $shellPackageRoot = Join-Path (Join-Path $packagesRootPath "shell") $releaseId
 $appCorePackageRoot = Join-Path (Join-Path $packagesRootPath "app-core") $releaseId
-$runtimePackageRoot = Join-Path (Join-Path $packagesRootPath "runtime") $runtimeVersion
-$modelsPackageRoot = Join-Path (Join-Path $packagesRootPath "models") $modelsVersion
-$pretrainedModelsPackageRoot = Join-Path (Join-Path $packagesRootPath "pretrained-models") $pretrainedModelsVersion
+$runtimePackageRoot = Join-Path (Join-Path $packagesRootPath "python-runtime") $runtimeVersion
+$adapterSystemPackageRoot = Join-Path (Join-Path $packagesRootPath "adapter-system") $adapterSystemVersion
+$supportAssetsPackageRoot = Join-Path (Join-Path $packagesRootPath "support-assets") $supportAssetsVersion
+$seedModelPackagesPackageRoot = Join-Path (Join-Path $packagesRootPath "seed-model-packages") $seedModelPackagesVersion
+$adapterSystemSourceRoot = Join-Path $appRuntimeRoot "adapter-system"
+$supportAssetsSourceRoot = Join-Path $appRuntimeRoot "support-assets"
+$seedModelPackagesSourceRoot = Join-Path $appRuntimeRoot "seed-model-packages"
 $currentStatePath = Join-Path $stateRootPath "current.json"
 
 Write-Host "[assemble-portable] Preparing portable root..."
@@ -392,7 +398,11 @@ Ensure-Directory -Path $portableRootPath
 Ensure-Directory -Path $stateRootPath
 Ensure-Directory -Path $packagesRootPath
 Ensure-Directory -Path $portableDataPath
+Ensure-Directory -Path $portableConfigPath
+Ensure-Directory -Path $portableTtsRegistryPath
+Ensure-Directory -Path $portableCachePath
 Ensure-Directory -Path $portableExportsPath
+Ensure-Directory -Path $portableLogsPath
 
 Write-Utf8File -Path $portableMarkerPath -Content ""
 Copy-PortableItem -SourcePath $bootstrapExePath -DestinationPath $portableExePath
@@ -406,12 +416,19 @@ Ensure-Directory -Path $updateAgentPackageRoot
 Copy-PortableItem -SourcePath $bootstrapExePath -DestinationPath (Join-Path $bootstrapPackageRoot "NeoTTS.exe")
 Copy-PortableItem -SourcePath $updateAgentExePath -DestinationPath (Join-Path $updateAgentPackageRoot "NeoTTSUpdateAgent.exe")
 Copy-ShellPayload -SourceRoot $winUnpackedRoot -DestinationRoot $shellPackageRoot
-foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
+foreach ($directoryName in @("backend", "frontend-dist", "config")) {
     Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot $directoryName) -DestinationPath (Join-Path $appCorePackageRoot $directoryName)
 }
-Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "runtime") -DestinationPath (Join-Path $runtimePackageRoot "runtime")
-Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "models") -DestinationPath (Join-Path $modelsPackageRoot "models")
-Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "pretrained_models") -DestinationPath (Join-Path $pretrainedModelsPackageRoot "pretrained_models")
+Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "python-runtime") -DestinationPath (Join-Path $runtimePackageRoot "python-runtime")
+if (Test-Path -LiteralPath $adapterSystemSourceRoot) {
+    Copy-DirectoryContents -SourcePath $adapterSystemSourceRoot -DestinationPath (Join-Path $adapterSystemPackageRoot "adapter-system")
+}
+if (Test-Path -LiteralPath $supportAssetsSourceRoot) {
+    Copy-DirectoryContents -SourcePath $supportAssetsSourceRoot -DestinationPath (Join-Path $supportAssetsPackageRoot "support-assets")
+}
+if (Test-Path -LiteralPath $seedModelPackagesSourceRoot) {
+    Copy-DirectoryContents -SourcePath $seedModelPackagesSourceRoot -DestinationPath (Join-Path $seedModelPackagesPackageRoot "seed-model-packages")
+}
 
 $currentState = [ordered]@{
     schemaVersion    = 1
@@ -423,13 +440,18 @@ $currentState = [ordered]@{
         "update-agent"      = [ordered]@{ version = [string]$packageJson.version }
         shell               = [ordered]@{ version = $releaseId }
         "app-core"          = [ordered]@{ version = $releaseId }
-        runtime             = [ordered]@{ version = $runtimeVersion }
-        models              = [ordered]@{ version = $modelsVersion }
-        "pretrained-models" = [ordered]@{ version = $pretrainedModelsVersion }
+        "python-runtime"    = [ordered]@{ version = $runtimeVersion }
+        "adapter-system"    = [ordered]@{ version = $adapterSystemVersion }
+        "support-assets"    = [ordered]@{ version = $supportAssetsVersion }
+        "seed-model-packages" = [ordered]@{ version = $seedModelPackagesVersion }
     }
     paths            = [ordered]@{
-        userDataRoot = [string]$portableFlavor.userDataPolicy.userDataRoot
-        exportsRoot  = [string]$portableFlavor.userDataPolicy.exportsRoot
+        userDataRoot    = [string]$portableFlavor.userDataPolicy.userDataRoot
+        configRoot      = [string]$portableFlavor.userDataPolicy.configRoot
+        ttsRegistryRoot = [string]$portableFlavor.userDataPolicy.ttsRegistryRoot
+        cacheRoot       = [string]$portableFlavor.userDataPolicy.cacheRoot
+        exportsRoot     = [string]$portableFlavor.userDataPolicy.exportsRoot
+        logsRoot        = [string]$portableFlavor.userDataPolicy.logsRoot
     }
 }
 Write-Utf8File -Path $currentStatePath -Content ($currentState | ConvertTo-Json -Depth 20)
@@ -439,29 +461,30 @@ foreach ($requiredPath in @(
         $portableUpdateAgentExePath,
         $portableMarkerPath,
         $portableDataPath,
+        $portableConfigPath,
+        $portableTtsRegistryPath,
+        $portableCachePath,
         $portableExportsPath,
+        $portableLogsPath,
         $currentStatePath,
         (Join-Path $bootstrapPackageRoot "NeoTTS.exe"),
         (Join-Path $updateAgentPackageRoot "NeoTTSUpdateAgent.exe"),
         (Join-Path $shellPackageRoot "NeoTTSApp.exe"),
         (Join-Path $appCorePackageRoot "backend"),
-        (Join-Path $runtimePackageRoot "runtime\python\python.exe"),
-        (Join-Path $modelsPackageRoot "models\builtin"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\config.json"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\preprocessor_config.json"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-hubert-base\pytorch_model.bin"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\config.json"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\pytorch_model.bin"),
-        (Join-Path $modelsPackageRoot "models\builtin\chinese-roberta-wwm-ext-large\tokenizer.json"),
-        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2-e4.ckpt"),
-        (Join-Path $modelsPackageRoot "models\builtin\neuro2\neuro2_e4_s424.pth"),
-        (Join-Path $modelsPackageRoot "models\builtin\neuro2\audio1.wav"),
-        (Join-Path $pretrainedModelsPackageRoot "pretrained_models"),
-        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\sv\pretrained_eres2netv2w24s4ep4.ckpt"),
-        (Join-Path $pretrainedModelsPackageRoot "pretrained_models\fast_langdetect\lid.176.bin")
+        (Join-Path $runtimePackageRoot "python-runtime\python\python.exe")
     )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
         throw "Portable assembly validation failed: missing $requiredPath"
+    }
+}
+
+foreach ($optionalPackagePath in @(
+        (Join-Path $adapterSystemPackageRoot "adapter-system\gpt-sovits"),
+        (Join-Path $supportAssetsPackageRoot "support-assets\gpt-sovits"),
+        (Join-Path $seedModelPackagesPackageRoot "seed-model-packages")
+    )) {
+    if ((Test-Path -LiteralPath (Split-Path -Parent $optionalPackagePath)) -and -not (Test-Path -LiteralPath $optionalPackagePath)) {
+        throw "Portable assembly validation failed: missing $optionalPackagePath"
     }
 }
 

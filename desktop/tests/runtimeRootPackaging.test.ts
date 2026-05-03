@@ -12,15 +12,21 @@ describe("runtime root packaging", () => {
 
     expect(portableFlavor).toContain('"stateRoot": "state"');
     expect(portableFlavor).toContain('"packagesRoot": "packages"');
+    expect(portableFlavor).toContain('"configRoot": "./data/config"');
+    expect(portableFlavor).toContain('"ttsRegistryRoot": "./data/tts-registry"');
+    expect(portableFlavor).toContain('"cacheRoot": "./data/cache"');
+    expect(portableFlavor).toContain('"exportsRoot": "./data/exports"');
+    expect(portableFlavor).toContain('"logsRoot": "./data/logs"');
 
     expect(portableAssembly).toContain("current.json");
     expect(portableAssembly).toContain('"bootstrap"');
     expect(portableAssembly).toContain('"update-agent"');
     expect(portableAssembly).toContain('"shell"');
     expect(portableAssembly).toContain('"app-core"');
-    expect(portableAssembly).toContain('"runtime"');
-    expect(portableAssembly).toContain('"models"');
-    expect(portableAssembly).toContain('"pretrained-models"');
+    expect(portableAssembly).toContain('"python-runtime"');
+    expect(portableAssembly).toContain('"adapter-system"');
+    expect(portableAssembly).toContain('"support-assets"');
+    expect(portableAssembly).toContain('"seed-model-packages"');
     expect(portableAssembly).toContain("packages");
     expect(portableAssembly).toContain("state");
   });

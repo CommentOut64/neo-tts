@@ -1,4 +1,5 @@
 import type {
+  BindingReference,
   EditSessionSnapshot,
   EditableSegment,
   EditableEdge,
@@ -7,8 +8,8 @@ import type {
   TimelineManifest,
   VoiceBinding,
 } from "@/types/editSession";
-import type { VoiceProfile } from "@/types/tts";
 import { resolveBindingReferenceState } from "@/features/reference-binding";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
 
 import type { ParameterPanelScopeContext } from "./resolveParameterScope";
 
@@ -42,6 +43,7 @@ export interface ResolvedParameterPanelValues {
     noise_scale: MaybeMixed<number>;
   };
   voiceBinding: {
+    binding_ref: MaybeMixed<BindingReference>;
     voice_id: MaybeMixed<string>;
     model_key: MaybeMixed<string>;
     gpt_path: MaybeMixed<string>;
@@ -90,6 +92,7 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
       noise_scale: null,
     },
     voiceBinding: {
+      binding_ref: null,
       voice_id: null,
       model_key: null,
       gpt_path: null,
@@ -112,6 +115,31 @@ function resolveBindingById(
   bindingId: string | null | undefined,
 ): VoiceBinding | null {
   return bindingId ? bindingById.get(bindingId) ?? null : null;
+}
+
+function toBindingKey(bindingRef: BindingReference | null | undefined): string | null {
+  if (!bindingRef) {
+    return null;
+  }
+  return [
+    bindingRef.workspace_id,
+    bindingRef.main_model_id,
+    bindingRef.submodel_id,
+    bindingRef.preset_id,
+  ].join(":");
+}
+
+function pickMixedBindingReference(
+  values: Array<BindingReference | null | undefined>,
+): BindingReference | MixedValue | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const normalized = values.map((value) => value ?? null);
+  const firstKey = toBindingKey(normalized[0]);
+  const isSame = normalized.every((value) => toBindingKey(value) === firstKey);
+  return isSame ? normalized[0] : MIXED_VALUE;
 }
 
 function pickReferenceState(
@@ -145,7 +173,7 @@ export function resolveEffectiveParameters(input: {
   renderProfiles: RenderProfile[];
   voiceBindings: VoiceBinding[];
   edges: EditableEdge[];
-  voices: VoiceProfile[];
+  bindingOptions: RegistryBindingOption[];
 }): ResolvedParameterPanelValues {
   const result = buildEmptyResolvedValues();
   const profileById = new Map(
@@ -192,6 +220,7 @@ export function resolveEffectiveParameters(input: {
         noise_scale: profile?.noise_scale ?? null,
       },
       voiceBinding: {
+        binding_ref: binding?.binding_ref ?? null,
         voice_id: binding?.voice_id ?? null,
         model_key: binding?.model_key ?? null,
         gpt_path: binding?.gpt_path ?? null,
@@ -200,7 +229,7 @@ export function resolveEffectiveParameters(input: {
       reference: resolveBindingReferenceState({
         binding,
         profile,
-        voices: input.voices,
+        bindingOptions: input.bindingOptions,
       }),
     };
   }
@@ -249,7 +278,7 @@ export function resolveEffectiveParameters(input: {
     resolveBindingReferenceState({
       binding: pair.binding,
       profile: pair.profile,
-      voices: input.voices,
+      bindingOptions: input.bindingOptions,
     }),
   );
 
@@ -263,6 +292,7 @@ export function resolveEffectiveParameters(input: {
       noise_scale: pickMixed(profiles.map((profile) => profile.noise_scale)),
     },
     voiceBinding: {
+      binding_ref: pickMixedBindingReference(bindings.map((binding) => binding.binding_ref ?? null)),
       voice_id: pickMixed(bindings.map((binding) => binding.voice_id)),
       model_key: pickMixed(bindings.map((binding) => binding.model_key)),
       gpt_path: pickMixed(bindings.map((binding) => binding.gpt_path)),

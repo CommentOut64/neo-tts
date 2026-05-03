@@ -148,14 +148,82 @@ describe("packaging performance scripts", () => {
     const portable = readFileSync(path.join(process.cwd(), "scripts", "assemble-portable.ps1"), "utf-8");
 
     for (const source of [integrated, portable]) {
-      expect(source).toContain("chinese-hubert-base\\pytorch_model.bin");
-      expect(source).toContain("chinese-roberta-wwm-ext-large\\tokenizer.json");
-      expect(source).toContain("pretrained_models\\sv\\pretrained_eres2netv2w24s4ep4.ckpt");
-      expect(source).toContain("pretrained_models\\fast_langdetect\\lid.176.bin");
-      expect(source).toContain("models\\builtin\\neuro2\\neuro2-e4.ckpt");
-      expect(source).toContain("models\\builtin\\neuro2\\neuro2_e4_s424.pth");
-      expect(source).toContain("models\\builtin\\neuro2\\audio1.wav");
+      expect(source).toContain("adapter-system\\gpt-sovits");
+      expect(source).toContain("support-assets\\gpt-sovits");
+      expect(source).toContain("seed-model-packages");
+      expect(source).not.toContain("models\\builtin\\neuro2\\neuro2-e4.ckpt");
+      expect(source).not.toContain("models\\builtin\\neuro2\\neuro2_e4_s424.pth");
+      expect(source).not.toContain("models\\builtin\\neuro2\\audio1.wav");
+      expect(source).not.toContain("pretrained_models\\sv\\pretrained_eres2netv2w24s4ep4.ckpt");
+      expect(source).not.toContain("pretrained_models\\fast_langdetect\\lid.176.bin");
     }
+  });
+
+  it("uses portable-first package metadata and data roots", () => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(process.cwd(), "packaging", "manifests", "base.v1.json"), "utf-8"),
+    ) as {
+      entries: Array<{ source: string; destination: string; layerPackage: string; required: boolean }>;
+    };
+    const profile = JSON.parse(
+      readFileSync(path.join(process.cwd(), "packaging", "profiles", "default.v1.json"), "utf-8"),
+    ) as {
+      layeredPackages: Record<string, string>;
+      seedModelPackages?: unknown[];
+      builtinVoices?: unknown[];
+    };
+    const flavor = JSON.parse(
+      readFileSync(path.join(process.cwd(), "packaging", "flavors", "portable.v1.json"), "utf-8"),
+    ) as {
+      userDataPolicy: Record<string, string>;
+    };
+    const updatePolicy = JSON.parse(
+      readFileSync(path.join(process.cwd(), "packaging", "update-package-policy.json"), "utf-8"),
+    ) as {
+      includePackages: Record<string, boolean>;
+    };
+
+    expect(profile.layeredPackages).toEqual({
+      pythonRuntimeVersion: expect.any(String),
+      adapterSystemVersion: expect.any(String),
+      supportAssetsVersion: expect.any(String),
+      seedModelPackagesVersion: expect.any(String),
+    });
+    expect(profile.builtinVoices ?? []).toHaveLength(0);
+    expect(Array.isArray(profile.seedModelPackages)).toBe(true);
+
+    expect(
+      manifest.entries.some(
+        (entry) => entry.source === "GPT_SoVITS" && entry.layerPackage === "adapter-system" && entry.required === false,
+      ),
+    ).toBe(true);
+    expect(
+      manifest.entries.some(
+        (entry) =>
+          entry.source === "pretrained_models/chinese-hubert-base" &&
+          entry.layerPackage === "support-assets" &&
+          entry.destination.includes("support-assets/gpt-sovits"),
+      ),
+    ).toBe(true);
+    expect(
+      manifest.entries.some((entry) => entry.layerPackage === "models" || entry.layerPackage === "pretrained-models"),
+    ).toBe(false);
+
+    expect(flavor.userDataPolicy).toEqual({
+      userDataRoot: "./data",
+      configRoot: "./data/config",
+      ttsRegistryRoot: "./data/tts-registry",
+      cacheRoot: "./data/cache",
+      exportsRoot: "./data/exports",
+      logsRoot: "./data/logs",
+    });
+
+    expect(updatePolicy.includePackages).toEqual({
+      "python-runtime": true,
+      "adapter-system": true,
+      "support-assets": true,
+      "seed-model-packages": false,
+    });
   });
 
   it("auto-detects CUDA-suffixed portable roots for offline update acceptance", () => {

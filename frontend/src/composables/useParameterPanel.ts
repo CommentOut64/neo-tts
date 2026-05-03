@@ -31,6 +31,7 @@ import {
   type ParameterPanelScopeContext,
 } from "@/components/workspace/parameter-panel/resolveParameterScope";
 import type {
+  BindingReference,
   EdgeUpdateBody,
   ReferenceAudioUploadResponse,
   ReferenceBindingOverridePatch,
@@ -39,7 +40,8 @@ import type {
   VoiceBinding,
   VoiceBindingPatch,
 } from "@/types/editSession";
-import type { VoiceProfile } from "@/types/tts";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
+import { buildReferenceBindingKey } from "@/features/reference-binding";
 
 const scopeContext = ref<ParameterPanelScopeContext>({
   scope: "session",
@@ -69,7 +71,7 @@ const acceptedSelectionSnapshot = ref<SelectionSnapshot>({
 });
 const lastStableScopeKey = ref<string | null>(null);
 const lastStableResolvedValues = ref<ResolvedParameterPanelValues | null>(null);
-const availableVoices = ref<VoiceProfile[]>([]);
+const availableBindings = ref<RegistryBindingOption[]>([]);
 const referenceSourceIntent = ref<"preset" | "custom" | null>(null);
 
 type ParameterPanelResolvedStatus = "ready" | "resolving" | "unresolved";
@@ -126,6 +128,7 @@ function buildEmptyResolvedValues(): ResolvedParameterPanelValues {
       noise_scale: null,
     },
     voiceBinding: {
+      binding_ref: null,
       voice_id: null,
       model_key: null,
       gpt_path: null,
@@ -183,8 +186,10 @@ function hasResolvedValues(
     values.renderProfile.top_p !== null &&
     values.renderProfile.temperature !== null &&
     values.renderProfile.noise_scale !== null &&
-    values.voiceBinding.voice_id !== null &&
-    values.voiceBinding.model_key !== null
+    (
+      values.voiceBinding.binding_ref !== null ||
+      (values.voiceBinding.voice_id !== null && values.voiceBinding.model_key !== null)
+    )
   );
 }
 
@@ -196,8 +201,8 @@ function isConcreteString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function setVoices(voices: VoiceProfile[]) {
-  availableVoices.value = [...voices];
+function setBindings(bindings: RegistryBindingOption[]) {
+  availableBindings.value = [...bindings];
 }
 
 export function useParameterPanel() {
@@ -243,7 +248,7 @@ export function useParameterPanel() {
       renderProfiles: editSession.renderProfiles.value,
       voiceBindings: editSession.voiceBindings.value,
       edges: editSession.edges.value,
-      voices: availableVoices.value,
+      bindingOptions: availableBindings.value,
     }),
   );
 
@@ -409,11 +414,17 @@ export function useParameterPanel() {
     value: VoiceBindingPatch[K],
   ) {
     referenceSourceIntent.value = null;
-    const isSameAsOriginal =
-      value ===
+    const originalValue =
       resolvedValues.value.voiceBinding[
         key as keyof typeof resolvedValues.value.voiceBinding
       ];
+    const isSameAsOriginal =
+      key === "binding_ref"
+        ? isSameBindingReference(
+            value as BindingReference | null | undefined,
+            originalValue as BindingReference | null | undefined,
+          )
+        : value === originalValue;
     const nextBinding = { ...draftPatch.value.voiceBinding, [key]: value };
     if (isSameAsOriginal) {
       delete nextBinding[key];
@@ -572,6 +583,11 @@ export function useParameterPanel() {
 
   function getActiveBindingKey(): string | null {
     const displayBinding = displayValues.value.voiceBinding;
+    if (displayBinding.binding_ref && !isMixedValue(displayBinding.binding_ref)) {
+      return buildReferenceBindingKey({
+        bindingRef: displayBinding.binding_ref,
+      });
+    }
     if (
       !isConcreteString(displayBinding.voice_id) ||
       !isConcreteString(displayBinding.model_key) ||
@@ -867,7 +883,8 @@ export function useParameterPanel() {
         ? cloneScopeContext(pendingScopeContext.value)
         : null,
     ),
-    setVoices,
+    setBindings,
+    setVoices: setBindings,
     updateRenderProfileField,
     updateVoiceBindingField,
     updateReferenceSource,
@@ -913,10 +930,13 @@ function buildDisplayReference(input: {
   draftReferenceOverride: ReferenceBindingOverridePatch | null;
 }): ResolvedParameterPanelValues["reference"] {
   if (
-    !isConcreteString(input.displayBinding.voice_id) ||
-    !isConcreteString(input.displayBinding.model_key) ||
-    isMixedValue(input.displayBinding.voice_id) ||
-    isMixedValue(input.displayBinding.model_key)
+    (input.displayBinding.binding_ref === null || isMixedValue(input.displayBinding.binding_ref))
+    && (
+      !isConcreteString(input.displayBinding.voice_id) ||
+      !isConcreteString(input.displayBinding.model_key) ||
+      isMixedValue(input.displayBinding.voice_id) ||
+      isMixedValue(input.displayBinding.model_key)
+    )
   ) {
     return input.base.reference;
   }
@@ -931,6 +951,9 @@ function buildDisplayReference(input: {
   const resolvedStates = baseProfiles.map((profile) =>
     resolveBindingReferenceState({
       binding: {
+        binding_ref: input.displayBinding.binding_ref === MIXED_VALUE
+          ? null
+          : input.displayBinding.binding_ref,
         voice_id: input.displayBinding.voice_id,
         model_key: input.displayBinding.model_key,
       } as VoiceBinding,
@@ -938,7 +961,7 @@ function buildDisplayReference(input: {
         profile,
         input.draftReferenceOverride,
       ),
-      voices: availableVoices.value,
+      bindingOptions: availableBindings.value,
     }),
   );
   const resolved = pickDisplayReferenceState(resolvedStates);
@@ -958,6 +981,15 @@ function buildDisplayReference(input: {
   }
 
   return resolved;
+}
+
+function isSameBindingReference(
+  left: BindingReference | null | undefined,
+  right: BindingReference | null | undefined,
+): boolean {
+  const leftKey = left ? buildReferenceBindingKey({ bindingRef: left }) : null;
+  const rightKey = right ? buildReferenceBindingKey({ bindingRef: right }) : null;
+  return leftKey === rightKey;
 }
 
 function resolveScopeRenderProfiles(input: {

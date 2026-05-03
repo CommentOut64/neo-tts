@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -78,7 +80,29 @@ func NewStateStore(rootDir string) StateStore {
 }
 
 func (store StateStore) LoadCurrent() (CurrentState, error) {
-	return loadJSON[CurrentState](store.currentPath())
+	current, err := loadJSON[CurrentState](store.currentPath())
+	if err != nil {
+		fallback, ok, fallbackErr := store.loadValidatedLastKnownGood()
+		if fallbackErr != nil {
+			return CurrentState{}, fallbackErr
+		}
+		if ok {
+			return fallback, nil
+		}
+		return CurrentState{}, err
+	}
+
+	if err := validateCurrentState(store.rootDir, current); err != nil {
+		fallback, ok, fallbackErr := store.loadValidatedLastKnownGood()
+		if fallbackErr != nil {
+			return CurrentState{}, fallbackErr
+		}
+		if ok {
+			return fallback, nil
+		}
+		return CurrentState{}, err
+	}
+	return current, nil
 }
 
 func (store StateStore) SaveCurrent(state CurrentState) (string, error) {
@@ -216,4 +240,37 @@ func deleteIfExists(path string) error {
 		return nil
 	}
 	return err
+}
+
+func (store StateStore) loadValidatedLastKnownGood() (CurrentState, bool, error) {
+	lastKnownGood, err := store.LoadLastKnownGood()
+	if err != nil {
+		return CurrentState{}, false, err
+	}
+	if err := validateCurrentState(store.rootDir, lastKnownGood); err != nil {
+		return CurrentState{}, false, nil
+	}
+	return lastKnownGood, lastKnownGood.ReleaseID != "", nil
+}
+
+func validateCurrentState(rootDir string, state CurrentState) error {
+	if strings.TrimSpace(state.ReleaseID) == "" {
+		return nil
+	}
+	for packageID, packageState := range state.Packages {
+		root := strings.TrimSpace(packageState.Root)
+		if root == "" && strings.TrimSpace(packageState.Version) != "" {
+			root = filepath.Join(filepath.Clean(rootDir), "packages", packageID, packageState.Version)
+		}
+		if root == "" {
+			return fmt.Errorf("package %q does not have a resolved root", packageID)
+		}
+		if !isValidatedPackageID(packageID) {
+			continue
+		}
+		if err := validateStagedPackage(packageID, filepath.Clean(root)); err != nil {
+			return fmt.Errorf("package %q is unavailable: %w", packageID, err)
+		}
+	}
+	return nil
 }

@@ -677,6 +677,9 @@ function Initialize-InstalledRuntimeRoot {
         [string]$PretrainedModelsVersion,
 
         [Parameter(Mandatory = $true)]
+        [string]$SeedModelPackagesVersion,
+
+        [Parameter(Mandatory = $true)]
         [string]$StateRootName,
 
         [Parameter(Mandatory = $true)]
@@ -695,11 +698,7 @@ function Initialize-InstalledRuntimeRoot {
             (Join-Path $appRuntimeRoot "backend"),
             (Join-Path $appRuntimeRoot "frontend-dist"),
             (Join-Path $appRuntimeRoot "config"),
-            (Join-Path $appRuntimeRoot "GPT_SoVITS"),
-            (Join-Path $appRuntimeRoot "tools"),
-            (Join-Path $appRuntimeRoot "runtime"),
-            (Join-Path $appRuntimeRoot "models"),
-            (Join-Path $appRuntimeRoot "pretrained_models")
+            (Join-Path $appRuntimeRoot "python-runtime")
         )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Installed runtime root prerequisite missing: $requiredPath"
@@ -724,21 +723,29 @@ function Initialize-InstalledRuntimeRoot {
     $updateAgentPackageRoot = Join-Path (Join-Path $packagesRootPath "update-agent") $PackageVersion
     $shellPackageRoot = Join-Path (Join-Path $packagesRootPath "shell") $ReleaseId
     $appCorePackageRoot = Join-Path (Join-Path $packagesRootPath "app-core") $ReleaseId
-    $runtimePackageRoot = Join-Path (Join-Path $packagesRootPath "runtime") $RuntimeVersion
-    $modelsPackageRoot = Join-Path (Join-Path $packagesRootPath "models") $ModelsVersion
-    $pretrainedModelsPackageRoot = Join-Path (Join-Path $packagesRootPath "pretrained-models") $PretrainedModelsVersion
+    $runtimePackageRoot = Join-Path (Join-Path $packagesRootPath "python-runtime") $RuntimeVersion
+    $adapterSystemPackageRoot = Join-Path (Join-Path $packagesRootPath "adapter-system") $ModelsVersion
+    $supportAssetsPackageRoot = Join-Path (Join-Path $packagesRootPath "support-assets") $PretrainedModelsVersion
+    $seedModelPackagesPackageRoot = Join-Path (Join-Path $packagesRootPath "seed-model-packages") $SeedModelPackagesVersion
 
     Ensure-Directory -Path $bootstrapPackageRoot
     Ensure-Directory -Path $updateAgentPackageRoot
     Copy-Item -LiteralPath $BootstrapExePath -Destination (Join-Path $bootstrapPackageRoot "NeoTTS.exe") -Force
     Copy-Item -LiteralPath $UpdateAgentExePath -Destination (Join-Path $updateAgentPackageRoot "NeoTTSUpdateAgent.exe") -Force
     Copy-ShellPayload -SourceRoot $WinUnpackedRoot -DestinationRoot $shellPackageRoot
-    foreach ($directoryName in @("backend", "frontend-dist", "config", "GPT_SoVITS", "tools")) {
+    foreach ($directoryName in @("backend", "frontend-dist", "config")) {
         Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot $directoryName) -DestinationPath (Join-Path $appCorePackageRoot $directoryName)
     }
-    Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "runtime") -DestinationPath (Join-Path $runtimePackageRoot "runtime")
-    Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "models") -DestinationPath (Join-Path $modelsPackageRoot "models")
-    Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "pretrained_models") -DestinationPath (Join-Path $pretrainedModelsPackageRoot "pretrained_models")
+    Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "python-runtime") -DestinationPath (Join-Path $runtimePackageRoot "python-runtime")
+    if (Test-Path -LiteralPath (Join-Path $appRuntimeRoot "adapter-system")) {
+        Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "adapter-system") -DestinationPath (Join-Path $adapterSystemPackageRoot "adapter-system")
+    }
+    if (Test-Path -LiteralPath (Join-Path $appRuntimeRoot "support-assets")) {
+        Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "support-assets") -DestinationPath (Join-Path $supportAssetsPackageRoot "support-assets")
+    }
+    if (Test-Path -LiteralPath (Join-Path $appRuntimeRoot "seed-model-packages")) {
+        Copy-DirectoryContents -SourcePath (Join-Path $appRuntimeRoot "seed-model-packages") -DestinationPath (Join-Path $seedModelPackagesPackageRoot "seed-model-packages")
+    }
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -760,8 +767,9 @@ if ([string]::IsNullOrWhiteSpace($packageVersion)) {
 }
 $releaseId = Get-NormalizedReleaseId -Value $packageVersion
 $runtimeVersion = [string]$cudaRuntimeMetadata.runtimeVersion
-$modelsVersion = [string]$profileConfig.layeredPackages.modelsVersion
-$pretrainedModelsVersion = [string]$profileConfig.layeredPackages.pretrainedModelsVersion
+$modelsVersion = [string]$profileConfig.layeredPackages.adapterSystemVersion
+$pretrainedModelsVersion = [string]$profileConfig.layeredPackages.supportAssetsVersion
+$seedModelPackagesVersion = [string]$profileConfig.layeredPackages.seedModelPackagesVersion
 $portableStateRootName = [string]$portableFlavor.runtimeLayout.stateRoot
 $portablePackagesRootName = [string]$portableFlavor.runtimeLayout.packagesRoot
 $installedStateRootName = [string]$installedFlavor.runtimeLayout.stateRoot
@@ -819,9 +827,10 @@ Ensure-Directory -Path $buildMetadataRoot
 Ensure-Directory -Path $releaseRoot
 
 foreach ($requiredValue in @(
-        @{ Label = "layeredPackages.runtimeVersion"; Value = $runtimeVersion },
-        @{ Label = "layeredPackages.modelsVersion"; Value = $modelsVersion },
-        @{ Label = "layeredPackages.pretrainedModelsVersion"; Value = $pretrainedModelsVersion },
+        @{ Label = "layeredPackages.pythonRuntimeVersion"; Value = $runtimeVersion },
+        @{ Label = "layeredPackages.adapterSystemVersion"; Value = $modelsVersion },
+        @{ Label = "layeredPackages.supportAssetsVersion"; Value = $pretrainedModelsVersion },
+        @{ Label = "layeredPackages.seedModelPackagesVersion"; Value = $seedModelPackagesVersion },
         @{ Label = "portable runtimeLayout.stateRoot"; Value = $portableStateRootName },
         @{ Label = "portable runtimeLayout.packagesRoot"; Value = $portablePackagesRootName },
         @{ Label = "installed runtimeLayout.stateRoot"; Value = $installedStateRootName },
@@ -1124,6 +1133,7 @@ else {
         -RuntimeVersion $runtimeVersion `
         -ModelsVersion $modelsVersion `
         -PretrainedModelsVersion $pretrainedModelsVersion `
+        -SeedModelPackagesVersion $seedModelPackagesVersion `
         -StateRootName $installedStateRootName `
         -PackagesRootName $installedPackagesRootName `
         -TutorialPath $tutorialTargetPath
@@ -1161,17 +1171,10 @@ else {
             (Join-Path $installedRootPath $installedStateRootName),
             (Join-Path $installedRootPath "$installedPackagesRootName\shell\$releaseId\NeoTTSApp.exe"),
             (Join-Path $installedRootPath "$installedPackagesRootName\app-core\$releaseId\backend"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\config.json"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\preprocessor_config.json"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-hubert-base\pytorch_model.bin"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\config.json"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\pytorch_model.bin"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\chinese-roberta-wwm-ext-large\tokenizer.json"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\neuro2-e4.ckpt"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\neuro2_e4_s424.pth"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\models\$modelsVersion\models\builtin\neuro2\audio1.wav"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\pretrained-models\$pretrainedModelsVersion\pretrained_models\sv\pretrained_eres2netv2w24s4ep4.ckpt"),
-            (Join-Path $installedRootPath "$installedPackagesRootName\pretrained-models\$pretrainedModelsVersion\pretrained_models\fast_langdetect\lid.176.bin"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\python-runtime\$runtimeVersion\python-runtime\python\python.exe"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\adapter-system\$modelsVersion\adapter-system\gpt-sovits"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\support-assets\$pretrainedModelsVersion\support-assets\gpt-sovits"),
+            (Join-Path $installedRootPath "$installedPackagesRootName\seed-model-packages"),
             $installerPath
         )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {

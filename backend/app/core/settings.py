@@ -21,7 +21,11 @@ class AppSettings:
     runtime_root: Path | None = None
     models_root: Path | None = None
     pretrained_models_root: Path | None = None
+    gpt_sovits_root: Path | None = None
+    gpt_sovits_adapter_installed: bool | None = None
     user_data_root: Path | None = None
+    tts_registry_root: Path | None = None
+    cache_root: Path | None = None
     logs_dir: Path | None = None
     builtin_voices_config_path: Path | None = None
     user_models_dir: Path | None = None
@@ -32,6 +36,7 @@ class AppSettings:
     edit_session_assets_dir: Path = Path("storage/edit_session/assets")
     edit_session_exports_dir: Path = Path("storage/edit_session/exports")
     edit_session_staging_ttl_seconds: int = 3600
+    auto_migrate_legacy_voices_on_start: bool = False
     cnhubert_base_path: Path = Path("pretrained_models/chinese-hubert-base")
     bert_path: Path = Path("pretrained_models/chinese-roberta-wwm-ext-large")
     preload_on_start: bool = False
@@ -39,6 +44,14 @@ class AppSettings:
     gpu_offload_enabled: bool = True
     gpu_min_free_mb: int = 2048
     gpu_reserve_mb_for_load: int = 4096
+    external_http_default_max_concurrent_requests: int = 1
+    external_http_default_requests_per_minute: int | None = None
+    external_http_default_tokens_per_minute: int | None = None
+    external_http_default_retry_on_429: bool = False
+    external_http_default_max_retry_attempts: int = 0
+    external_http_default_retry_backoff_ms: int = 500
+    external_http_default_max_retry_backoff_ms: int = 5_000
+    external_http_default_acquire_timeout_ms: int = 30_000
 
     def __post_init__(self) -> None:
         resolved_project_root = self.project_root.resolve()
@@ -68,10 +81,30 @@ class AppSettings:
             if self.pretrained_models_root is not None
             else app_core_root
         )
+        gpt_sovits_root = (
+            self.gpt_sovits_root.resolve()
+            if self.gpt_sovits_root is not None
+            else (resources_root / "GPT_SoVITS").resolve()
+        )
+        gpt_sovits_adapter_installed = (
+            self.gpt_sovits_adapter_installed
+            if self.gpt_sovits_adapter_installed is not None
+            else gpt_sovits_root.is_dir()
+        )
         user_data_root = (
             self.user_data_root.resolve()
             if self.user_data_root is not None
             else (resolved_project_root / "storage").resolve()
+        )
+        tts_registry_root = (
+            self.tts_registry_root.resolve()
+            if self.tts_registry_root is not None
+            else (user_data_root / "tts-registry").resolve()
+        )
+        cache_root = (
+            self.cache_root.resolve()
+            if self.cache_root is not None
+            else (user_data_root / "cache").resolve()
         )
         default_logs_dir = (
             (resolved_project_root / "logs").resolve()
@@ -87,7 +120,11 @@ class AppSettings:
         user_models_dir = (
             self.user_models_dir.resolve()
             if self.user_models_dir is not None
-            else (user_data_root / "models").resolve()
+            else (
+                (user_data_root / "models").resolve()
+                if distribution_kind == "development"
+                else (tts_registry_root / "models").resolve()
+            )
         )
 
         object.__setattr__(self, "project_root", resolved_project_root)
@@ -98,33 +135,70 @@ class AppSettings:
         object.__setattr__(self, "runtime_root", runtime_root)
         object.__setattr__(self, "models_root", models_root)
         object.__setattr__(self, "pretrained_models_root", pretrained_models_root)
+        object.__setattr__(self, "gpt_sovits_root", gpt_sovits_root)
+        object.__setattr__(self, "gpt_sovits_adapter_installed", bool(gpt_sovits_adapter_installed))
         object.__setattr__(self, "resources_root", resources_root)
         object.__setattr__(self, "user_data_root", user_data_root)
+        object.__setattr__(self, "tts_registry_root", tts_registry_root)
+        object.__setattr__(self, "cache_root", cache_root)
         object.__setattr__(self, "logs_dir", logs_dir)
         object.__setattr__(self, "builtin_voices_config_path", builtin_voices_config_path)
         object.__setattr__(self, "user_models_dir", user_models_dir)
         object.__setattr__(self, "voices_config_path", _resolve_path(self.voices_config_path, base=resolved_project_root))
-        object.__setattr__(self, "managed_voices_dir", _resolve_path(self.managed_voices_dir, base=resolved_project_root))
+        default_managed_voices_dir = Path("storage/managed_voices")
+        if distribution_kind != "development" and self.managed_voices_dir == default_managed_voices_dir:
+            managed_voices_dir = (tts_registry_root / "managed_voices").resolve()
+        else:
+            managed_voices_dir = _resolve_path(self.managed_voices_dir, base=resolved_project_root)
+        object.__setattr__(self, "managed_voices_dir", managed_voices_dir)
         object.__setattr__(
             self,
             "synthesis_results_dir",
-            _resolve_path(self.synthesis_results_dir, base=resolved_project_root),
+            (
+                (cache_root / "synthesis_results").resolve()
+                if distribution_kind != "development" and self.synthesis_results_dir == Path("storage/synthesis_results")
+                else _resolve_path(self.synthesis_results_dir, base=resolved_project_root)
+            ),
         )
         object.__setattr__(
             self,
             "inference_params_cache_file",
-            _resolve_path(self.inference_params_cache_file, base=resolved_project_root),
+            (
+                (cache_root / "inference" / "params_cache.json").resolve()
+                if distribution_kind != "development"
+                and self.inference_params_cache_file == Path("storage/inference/params_cache.json")
+                else _resolve_path(self.inference_params_cache_file, base=resolved_project_root)
+            ),
         )
-        object.__setattr__(self, "edit_session_db_file", _resolve_path(self.edit_session_db_file, base=resolved_project_root))
+        object.__setattr__(
+            self,
+            "edit_session_db_file",
+            (
+                (user_data_root / "edit-session" / "session.db").resolve()
+                if distribution_kind != "development"
+                and self.edit_session_db_file == Path("storage/edit_session/session.db")
+                else _resolve_path(self.edit_session_db_file, base=resolved_project_root)
+            ),
+        )
         object.__setattr__(
             self,
             "edit_session_assets_dir",
-            _resolve_path(self.edit_session_assets_dir, base=resolved_project_root),
+            (
+                (user_data_root / "edit-session" / "assets").resolve()
+                if distribution_kind != "development"
+                and self.edit_session_assets_dir == Path("storage/edit_session/assets")
+                else _resolve_path(self.edit_session_assets_dir, base=resolved_project_root)
+            ),
         )
         object.__setattr__(
             self,
             "edit_session_exports_dir",
-            _resolve_path(self.edit_session_exports_dir, base=resolved_project_root),
+            (
+                (user_data_root / "exports").resolve()
+                if distribution_kind != "development"
+                and self.edit_session_exports_dir == Path("storage/edit_session/exports")
+                else _resolve_path(self.edit_session_exports_dir, base=resolved_project_root)
+            ),
         )
         object.__setattr__(self, "cnhubert_base_path", _resolve_path(self.cnhubert_base_path, base=resources_root))
         object.__setattr__(self, "bert_path", _resolve_path(self.bert_path, base=resources_root))
@@ -209,6 +283,9 @@ def get_settings() -> AppSettings:
     runtime_root_env = os.environ.get("NEO_TTS_RUNTIME_ROOT")
     models_root_env = os.environ.get("NEO_TTS_MODELS_ROOT")
     pretrained_models_root_env = os.environ.get("NEO_TTS_PRETRAINED_MODELS_ROOT")
+    gpt_sovits_root_env = os.environ.get("NEO_TTS_GPT_SOVITS_ROOT")
+    model_registry_root_env = os.environ.get("NEO_TTS_MODEL_REGISTRY_ROOT")
+    support_assets_root_env = os.environ.get("NEO_TTS_SUPPORT_ASSETS_ROOT")
     user_data_root_env = os.environ.get("NEO_TTS_USER_DATA_ROOT")
     exports_root_env = os.environ.get("NEO_TTS_EXPORTS_ROOT")
     logs_root_env = os.environ.get("NEO_TTS_LOGS_ROOT")
@@ -224,6 +301,7 @@ def get_settings() -> AppSettings:
     bert_path_env = os.environ.get("BERT_PATH") or os.environ.get("GPT_SOVITS_BERT_PATH")
     preload_on_start_env = os.environ.get("GPT_SOVITS_PRELOAD_ON_START")
     preload_voices_env = os.environ.get("GPT_SOVITS_PRELOAD_VOICES")
+    auto_migrate_legacy_voices_on_start_env = os.environ.get("NEO_TTS_AUTO_MIGRATE_LEGACY_VOICES_ON_START")
     gpu_offload_enabled_env = os.environ.get("GPT_SOVITS_GPU_OFFLOAD_ENABLED")
     gpu_min_free_mb_env = os.environ.get("GPT_SOVITS_GPU_MIN_FREE_MB")
     gpu_reserve_mb_for_load_env = os.environ.get("GPT_SOVITS_GPU_RESERVE_MB_FOR_LOAD")
@@ -242,6 +320,7 @@ def get_settings() -> AppSettings:
         runtime_root = _resolve_from_env(runtime_root_env, default=project_root)
         models_root = _resolve_from_env(models_root_env, default=project_root)
         pretrained_models_root = _resolve_from_env(pretrained_models_root_env, default=project_root)
+        gpt_sovits_root = Path(gpt_sovits_root_env) if gpt_sovits_root_env else app_core_root / "GPT_SoVITS"
         user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "storage")
         logs_dir = _resolve_from_env(logs_root_env, default=project_root / "logs")
         builtin_voices_config_path = app_core_root / "config" / "voices.json"
@@ -288,54 +367,61 @@ def get_settings() -> AppSettings:
         )
         resources_root = app_core_root
         runtime_root = _resolve_from_env(runtime_root_env, default=app_core_root)
-        models_root = _resolve_from_env(models_root_env, default=app_core_root)
+        user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "data")
+        tts_registry_root = _resolve_from_env(model_registry_root_env, default=user_data_root / "tts-registry")
+        support_assets_root = _resolve_from_env(support_assets_root_env, default=app_core_root)
+        models_root = _resolve_from_env(models_root_env, default=tts_registry_root)
         pretrained_models_root = _resolve_from_env(
             pretrained_models_root_env,
-            default=app_core_root,
+            default=support_assets_root / "support-assets" / "shared",
         )
-        user_data_root = _resolve_from_env(user_data_root_env, default=project_root / "data")
+        gpt_sovits_root = Path(gpt_sovits_root_env) if gpt_sovits_root_env else app_core_root / "GPT_SoVITS"
+        cache_root = user_data_root / "cache"
         logs_dir = _resolve_from_env(logs_root_env, default=user_data_root / "logs")
         builtin_voices_config_path = app_core_root / "config" / "voices.json"
         voices_config_path = (
             Path(voices_config_env) if voices_config_env else user_data_root / "config" / "voices.json"
         )
         managed_voices_dir = (
-            Path(managed_voices_dir_env) if managed_voices_dir_env else user_data_root / "managed_voices"
+            Path(managed_voices_dir_env) if managed_voices_dir_env else tts_registry_root / "managed_voices"
         )
         synthesis_results_dir = (
-            Path(synthesis_results_dir_env) if synthesis_results_dir_env else user_data_root / "synthesis_results"
+            Path(synthesis_results_dir_env) if synthesis_results_dir_env else cache_root / "synthesis_results"
         )
         inference_params_cache_file = (
             Path(inference_params_cache_file_env)
             if inference_params_cache_file_env
-            else user_data_root / "inference" / "params_cache.json"
+            else cache_root / "inference" / "params_cache.json"
         )
         edit_session_db_file = (
-            Path(edit_session_db_file_env) if edit_session_db_file_env else user_data_root / "edit_session" / "session.db"
+            Path(edit_session_db_file_env) if edit_session_db_file_env else user_data_root / "edit-session" / "session.db"
         )
         edit_session_assets_dir = (
-            Path(edit_session_assets_dir_env) if edit_session_assets_dir_env else user_data_root / "edit_session" / "assets"
+            Path(edit_session_assets_dir_env) if edit_session_assets_dir_env else user_data_root / "edit-session" / "assets"
         )
-        exports_root = _resolve_from_env(exports_root_env, default=project_root / "exports")
+        exports_root = _resolve_from_env(exports_root_env, default=user_data_root / "exports")
         edit_session_exports_dir = Path(edit_session_exports_dir_env) if edit_session_exports_dir_env else exports_root
-        user_models_dir = user_data_root / "models"
+        user_models_dir = tts_registry_root / "models"
         cnhubert_base_path = (
             Path(cnhubert_path_env)
             if cnhubert_path_env
-            else models_root / "models" / "builtin" / "chinese-hubert-base"
+            else support_assets_root / "support-assets" / "gpt-sovits" / "chinese-hubert-base"
         )
         bert_path = (
             Path(bert_path_env)
             if bert_path_env
-            else models_root / "models" / "builtin" / "chinese-roberta-wwm-ext-large"
+            else support_assets_root / "support-assets" / "gpt-sovits" / "chinese-roberta-wwm-ext-large"
         )
 
     edit_session_staging_ttl_seconds = int(edit_session_staging_ttl_env or 3600)
-    # 开发态默认预加载，打包态默认关闭（可通过环境变量显式开启），
-    # 避免桌面应用启动阶段被模型导入/预热阻塞。
-    preload_default = distribution_kind == "development"
+    # 正式模型链已切到 tts-registry，legacy voice 预加载只能显式开启。
+    preload_default = False
     preload_on_start = _parse_bool_env(preload_on_start_env, default=preload_default)
     preload_voice_ids = _parse_csv_env(preload_voices_env, default=("neuro2",))
+    auto_migrate_legacy_voices_on_start = _parse_bool_env(
+        auto_migrate_legacy_voices_on_start_env,
+        default=False,
+    )
     gpu_offload_enabled = _parse_bool_env(gpu_offload_enabled_env, default=True)
     gpu_min_free_mb = int(gpu_min_free_mb_env or 2048)
     gpu_reserve_mb_for_load = int(gpu_reserve_mb_for_load_env or 4096)
@@ -353,7 +439,10 @@ def get_settings() -> AppSettings:
         runtime_root=runtime_root,
         models_root=models_root,
         pretrained_models_root=pretrained_models_root,
+        gpt_sovits_root=gpt_sovits_root,
         user_data_root=user_data_root,
+        tts_registry_root=tts_registry_root if distribution_kind != "development" else None,
+        cache_root=cache_root if distribution_kind != "development" else None,
         logs_dir=logs_dir,
         builtin_voices_config_path=builtin_voices_config_path,
         user_models_dir=user_models_dir,
@@ -364,6 +453,7 @@ def get_settings() -> AppSettings:
         edit_session_assets_dir=edit_session_assets_dir,
         edit_session_exports_dir=edit_session_exports_dir,
         edit_session_staging_ttl_seconds=edit_session_staging_ttl_seconds,
+        auto_migrate_legacy_voices_on_start=auto_migrate_legacy_voices_on_start,
         cnhubert_base_path=cnhubert_base_path,
         bert_path=bert_path,
         preload_on_start=preload_on_start,

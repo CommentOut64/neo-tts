@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useParameterPanel } from "@/composables/useParameterPanel";
 import { useWorkspaceProcessing } from "@/composables/useWorkspaceProcessing";
 import { useWorkspaceReorderDraft } from "@/composables/useWorkspaceReorderDraft";
-import type { VoiceProfile } from "@/types/tts";
+import type { RegistryBindingOption } from "@/types/ttsRegistry";
 import { shouldConfirmGlobalParameterSubmit } from "./parameter-panel/resolveParameterScope";
 
 import BatchParameterPanel from "./BatchParameterPanel.vue";
@@ -16,7 +16,7 @@ import SegmentParameterPanel from "./SegmentParameterPanel.vue";
 import SessionParameterPanel from "./SessionParameterPanel.vue";
 
 const props = defineProps<{
-  voices: VoiceProfile[];
+  bindings: RegistryBindingOption[];
 }>();
 
 const panel = useParameterPanel();
@@ -111,9 +111,9 @@ async function handleDiscardAndContinue() {
           @submit="handleSubmit"
         />
 
-        <SessionParameterPanel v-if="scope === 'session'" :voices="props.voices" />
-        <SegmentParameterPanel v-else-if="scope === 'segment'" :voices="props.voices" />
-        <BatchParameterPanel v-else-if="scope === 'batch'" :voices="props.voices" />
+        <SessionParameterPanel v-if="scope === 'session'" :bindings="props.bindings" />
+        <SegmentParameterPanel v-else-if="scope === 'segment'" :bindings="props.bindings" />
+        <BatchParameterPanel v-else-if="scope === 'batch'" :bindings="props.bindings" />
         <EdgeParameterPanel v-else />
 
         <ParameterDraftConfirm

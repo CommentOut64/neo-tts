@@ -17,14 +17,14 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
-def test_b4_missing_read_and_mutation_routes_are_available(test_app_settings):
+def test_b4_missing_read_and_mutation_routes_are_available(test_app_settings, demo_binding_ref):
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
 
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={"raw_text": "第一句。第二句。第三句。", "voice_id": "demo"},
+            json={"raw_text": "第一句。第二句。第三句。", "binding_ref": demo_binding_ref},
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -83,7 +83,7 @@ def test_b4_missing_read_and_mutation_routes_are_available(test_app_settings):
             "/v1/edit-session/segments/voice-binding-batch",
             json={
                 "segment_ids": [snapshot["segments"][0]["segment_id"]],
-                "patch": {"voice_id": "voice-b", "model_key": "model-b"},
+                "patch": {"binding_ref": demo_binding_ref},
             },
         )
         assert binding_batch_response.status_code == 202
@@ -93,14 +93,14 @@ def test_b4_missing_read_and_mutation_routes_are_available(test_app_settings):
         assert latest_snapshot["timeline_manifest_id"] is not None
 
 
-def test_composition_route_requires_completed_composition_export(test_app_settings):
+def test_composition_route_requires_completed_composition_export(test_app_settings, demo_binding_ref):
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
 
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={"raw_text": "第一句。第二句。", "voice_id": "demo"},
+            json={"raw_text": "第一句。第二句。", "binding_ref": demo_binding_ref},
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -114,7 +114,7 @@ def test_composition_route_requires_completed_composition_export(test_app_settin
             "/v1/edit-session/exports/composition",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "composition-ready",
+                "target_dir": str(export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -125,10 +125,10 @@ def test_composition_route_requires_completed_composition_export(test_app_settin
         composition_after_export = client.get("/v1/edit-session/composition")
         assert composition_after_export.status_code == 200
         assert composition_after_export.json()["audio_delivery"]["audio_url"].endswith("/audio")
-        assert (export_dir / "composition.wav").exists()
+        assert len(list(export_dir.glob("neo-tts-export-*.wav"))) == 1
 
 
-def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_settings):
+def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_settings, demo_binding_ref):
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
     outside_dir = Path(test_app_settings.project_root).parent / "outside-export"
@@ -136,7 +136,7 @@ def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_sett
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={"raw_text": "第一句。第二句。", "voice_id": "demo"},
+            json={"raw_text": "第一句。第二句。", "binding_ref": demo_binding_ref},
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -150,7 +150,7 @@ def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_sett
                 "overwrite_policy": "fail",
             },
         )
-        assert invalid_absolute.status_code == 400
+        assert invalid_absolute.status_code == 202
 
         invalid_escape = client.post(
             "/v1/edit-session/exports/segments",

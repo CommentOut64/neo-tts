@@ -23,34 +23,41 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
         document_id="doc-1",
         snapshot_kind="head",
         document_version=3,
-        raw_text="甲。乙。丙。",
-        normalized_text="甲。乙。丙。",
         segments=[
             EditableSegment(
                 segment_id="seg-1",
                 document_id="doc-1",
                 order_key=1,
-                raw_text="甲。",
-                normalized_text="甲。",
+                stem="甲",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
                 render_asset_id="render-1",
             ),
             EditableSegment(
                 segment_id="seg-2",
                 document_id="doc-1",
                 order_key=2,
-                raw_text="乙。",
-                normalized_text="乙。",
+                stem="乙",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
                 render_asset_id="render-2",
             ),
             EditableSegment(
                 segment_id="seg-3",
                 document_id="doc-1",
                 order_key=3,
-                raw_text="丙。",
-                normalized_text="丙。",
+                stem="丙",
                 text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
                 render_asset_id="render-3",
             ),
         ],
@@ -80,18 +87,28 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
             sample_rate=4,
             audio=np.asarray([0.1] * 6, dtype=np.float32),
             audio_sample_count=6,
+            segment_alignment_mode="exact",
+            join_report_summary={
+                "requested_policy": "natural",
+                "applied_mode": "natural",
+                "enhancement_applied": True,
+            },
             segment_entries=[
                 SegmentCompositionEntry(
                     segment_id="seg-1",
                     audio_sample_span=(0, 2),
                     order_key=1,
                     render_asset_id="render-1",
+                    precision="exact",
+                    source="adapter_exact",
                 ),
                 SegmentCompositionEntry(
                     segment_id="seg-2",
                     audio_sample_span=(4, 6),
                     order_key=2,
                     render_asset_id="render-2",
+                    precision="exact",
+                    source="adapter_exact",
                 ),
             ],
             edge_entries=[
@@ -124,12 +141,15 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
             sample_rate=4,
             audio=np.asarray([0.2, 0.3], dtype=np.float32),
             audio_sample_count=2,
+            segment_alignment_mode="estimated",
             segment_entries=[
                 SegmentCompositionEntry(
                     segment_id="seg-3",
                     audio_sample_span=(0, 2),
                     order_key=3,
                     render_asset_id="render-3",
+                    precision="estimated",
+                    source="system_estimated",
                 )
             ],
             edge_entries=[],
@@ -151,12 +171,23 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
     assert [entry.block_asset_id for entry in timeline.block_entries] == ["block-asset-1", "block-asset-2"]
     assert timeline.block_entries[0].start_sample == 0
     assert timeline.block_entries[0].end_sample == 6
+    assert timeline.block_entries[0].segment_alignment_mode == "exact"
+    assert timeline.block_entries[0].join_report_summary == {
+        "requested_policy": "natural",
+        "applied_mode": "natural",
+        "enhancement_applied": True,
+    }
     assert timeline.block_entries[1].start_sample == 6
     assert timeline.block_entries[1].end_sample == 8
+    assert timeline.block_entries[1].segment_alignment_mode == "estimated"
     assert [entry.segment_id for entry in timeline.segment_entries] == ["seg-1", "seg-2", "seg-3"]
     assert timeline.segment_entries[0].start_sample == 0
+    assert timeline.segment_entries[0].alignment_precision == "exact"
+    assert timeline.segment_entries[0].source == "adapter_exact"
     assert timeline.segment_entries[1].start_sample == 4
     assert timeline.segment_entries[2].start_sample == 6
+    assert timeline.segment_entries[2].alignment_precision == "estimated"
+    assert timeline.segment_entries[2].source == "system_estimated"
     assert timeline.edge_entries[0].boundary_start_sample == 2
     assert timeline.edge_entries[0].boundary_end_sample == 3
     assert timeline.edge_entries[0].pause_start_sample == 3
@@ -173,4 +204,181 @@ def test_build_timeline_manifest_reflows_absolute_spans_and_playback_map():
     assert playback_map.document_version == 3
     assert [entry.segment_id for entry in playback_map.entries] == ["seg-1", "seg-2", "seg-3"]
     assert playback_map.entries[1].audio_sample_span == (4, 6)
+
+
+def test_build_timeline_manifest_reflows_only_dirty_block_suffix_when_previous_timeline_is_available():
+    service = TimelineManifestService()
+    snapshot = DocumentSnapshot(
+        snapshot_id="snap-head-2",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=4,
+        segments=[
+            EditableSegment(
+                segment_id="seg-1",
+                document_id="doc-1",
+                order_key=1,
+                stem="甲",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-1",
+            ),
+            EditableSegment(
+                segment_id="seg-2",
+                document_id="doc-1",
+                order_key=2,
+                stem="乙",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-2",
+            ),
+            EditableSegment(
+                segment_id="seg-3",
+                document_id="doc-1",
+                order_key=3,
+                stem="丙",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-3",
+            ),
+            EditableSegment(
+                segment_id="seg-4",
+                document_id="doc-1",
+                order_key=4,
+                stem="丁",
+                text_language="zh",
+                terminal_raw="。",
+                terminal_source="original",
+                detected_language="zh",
+                inference_exclusion_reason="none",
+                render_asset_id="render-4",
+            ),
+        ],
+        edges=[],
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    stable_prefix_block = BlockCompositionAssetPayload(
+        block_id="logical-block-1",
+        block_asset_id="block-asset-1",
+        segment_ids=["seg-1", "seg-2"],
+        sample_rate=4,
+        audio=np.asarray([0.1] * 4, dtype=np.float32),
+        audio_sample_count=4,
+        segment_alignment_mode="exact",
+        segment_entries=[
+            SegmentCompositionEntry(
+                segment_id="seg-1",
+                audio_sample_span=(0, 2),
+                order_key=1,
+                render_asset_id="render-1",
+                precision="exact",
+                source="adapter_exact",
+            ),
+            SegmentCompositionEntry(
+                segment_id="seg-2",
+                audio_sample_span=(2, 4),
+                order_key=2,
+                render_asset_id="render-2",
+                precision="exact",
+                source="adapter_exact",
+            ),
+        ],
+    )
+    old_changed_block = BlockCompositionAssetPayload(
+        block_id="logical-block-2",
+        block_asset_id="block-asset-2-old",
+        segment_ids=["seg-3"],
+        sample_rate=4,
+        audio=np.asarray([0.2, 0.2], dtype=np.float32),
+        audio_sample_count=2,
+        segment_alignment_mode="exact",
+        segment_entries=[
+            SegmentCompositionEntry(
+                segment_id="seg-3",
+                audio_sample_span=(0, 2),
+                order_key=3,
+                render_asset_id="render-3",
+                precision="exact",
+                source="adapter_exact",
+            ),
+        ],
+    )
+    trailing_block = BlockCompositionAssetPayload(
+        block_id="logical-block-3",
+        block_asset_id="block-asset-3",
+        segment_ids=["seg-4"],
+        sample_rate=4,
+        audio=np.asarray([0.3, 0.3], dtype=np.float32),
+        audio_sample_count=2,
+        segment_alignment_mode="exact",
+        segment_entries=[
+            SegmentCompositionEntry(
+                segment_id="seg-4",
+                audio_sample_span=(0, 2),
+                order_key=4,
+                render_asset_id="render-4",
+                precision="exact",
+                source="adapter_exact",
+            ),
+        ],
+    )
+    previous_timeline, _ = service.build(
+        snapshot=snapshot,
+        blocks=[stable_prefix_block, old_changed_block, trailing_block],
+        sample_rate=4,
+    )
+    new_changed_block = BlockCompositionAssetPayload(
+        block_id="logical-block-2",
+        block_asset_id="block-asset-2-new",
+        segment_ids=["seg-3"],
+        sample_rate=4,
+        audio=np.asarray([0.5, 0.5, 0.5, 0.5], dtype=np.float32),
+        audio_sample_count=4,
+        segment_alignment_mode="exact",
+        segment_entries=[
+            SegmentCompositionEntry(
+                segment_id="seg-3",
+                audio_sample_span=(0, 4),
+                order_key=3,
+                render_asset_id="render-3b",
+                precision="exact",
+                source="adapter_exact",
+            ),
+        ],
+    )
+
+    timeline, playback_map = service.build(
+        snapshot=snapshot,
+        blocks=[stable_prefix_block, new_changed_block, trailing_block],
+        sample_rate=4,
+        previous_timeline=previous_timeline,
+        reflow_from_order_key=3,
+    )
+
+    assert [entry.block_asset_id for entry in timeline.block_entries] == [
+        "block-asset-1",
+        "block-asset-2-new",
+        "block-asset-3",
+    ]
+    assert timeline.block_entries[0].start_sample == 0
+    assert timeline.block_entries[0].end_sample == 4
+    assert timeline.block_entries[1].start_sample == 4
+    assert timeline.block_entries[1].end_sample == 8
+    assert timeline.block_entries[2].start_sample == 8
+    assert timeline.block_entries[2].end_sample == 10
+    assert [entry.audio_sample_span for entry in playback_map.entries] == [
+        (0, 2),
+        (2, 4),
+        (4, 8),
+        (8, 10),
+    ]
 

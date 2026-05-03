@@ -1,5 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
+import type { BindingReference } from "../src/types/editSession";
+import type { RegistryBindingOption } from "../src/types/ttsRegistry";
+
+function createBindingRef(mainModelId: string): BindingReference {
+  return {
+    workspace_id: "ws-demo",
+    main_model_id: mainModelId,
+    submodel_id: "default",
+    preset_id: "default",
+  };
+}
 
 const {
   editSessionMock,
@@ -99,7 +110,7 @@ const {
         temperature: 0.9,
         noise_scale: 0.4,
         reference_overrides_by_binding: {
-          "voice-a:voice-a": {
+          "ws-demo:voice-a:default:default": {
             reference_audio_path: "seg.wav",
             reference_text: "单段自定义",
             reference_language: "en",
@@ -115,6 +126,7 @@ const {
       {
         voice_binding_id: "binding-session",
         scope: "session",
+        binding_ref: createBindingRef("voice-default"),
         voice_id: "voice-default",
         model_key: "voice-default",
         gpt_path: "default.ckpt",
@@ -124,6 +136,7 @@ const {
       {
         voice_binding_id: "binding-seg-1",
         scope: "segment",
+        binding_ref: createBindingRef("voice-a"),
         voice_id: "voice-a",
         model_key: "voice-a",
         gpt_path: "a.ckpt",
@@ -180,58 +193,76 @@ const {
   })(),
 }));
 
-function createVoices() {
+function createBindingOptions(): RegistryBindingOption[] {
   return [
     {
-      name: "voice-default",
-      gpt_path: "default.ckpt",
-      sovits_path: "default.pth",
-      ref_audio: "default-preset.wav",
-      ref_text: "默认预设",
-      ref_lang: "zh",
-      description: "默认音色",
-      defaults: {
-        speed: 1,
-        top_k: 15,
-        top_p: 1,
-        temperature: 1,
-        pause_length: 0.3,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-default:default:default",
+      bindingRef: createBindingRef("voice-default"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-default",
+      mainModelDisplayName: "voice-default",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-default",
+      status: "ready",
+      referenceAudioPath: "default-preset.wav",
+      referenceText: "默认预设",
+      referenceLanguage: "zh",
+      defaults: {},
+      fixedFields: {},
     },
     {
-      name: "voice-a",
-      gpt_path: "a.ckpt",
-      sovits_path: "a.pth",
-      ref_audio: "voice-a-preset.wav",
-      ref_text: "音色A预设",
-      ref_lang: "en",
-      description: "音色 A",
-      defaults: {
-        speed: 1.1,
-        top_k: 20,
-        top_p: 0.8,
-        temperature: 0.9,
-        pause_length: 0.35,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-a:default:default",
+      bindingRef: createBindingRef("voice-a"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-a",
+      mainModelDisplayName: "voice-a",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-a",
+      status: "ready",
+      referenceAudioPath: "voice-a-preset.wav",
+      referenceText: "音色A预设",
+      referenceLanguage: "en",
+      defaults: {},
+      fixedFields: {},
     },
     {
-      name: "voice-b",
-      gpt_path: "b.ckpt",
-      sovits_path: "b.pth",
-      ref_audio: "voice-b-preset.wav",
-      ref_text: "音色B预设",
-      ref_lang: "ja",
-      description: "音色 B",
-      defaults: {
-        speed: 1.2,
-        top_k: 25,
-        top_p: 0.7,
-        temperature: 1,
-        pause_length: 0.4,
-      },
-      managed: true,
+      bindingKey: "ws-demo:voice-b:default:default",
+      bindingRef: createBindingRef("voice-b"),
+      workspaceId: "ws-demo",
+      workspaceDisplayName: "Demo Workspace",
+      familyId: "gpt_sovits_local",
+      familyRouteSlug: "gpt-sovits-local",
+      familyDisplayName: "GPT-SoVITS Local",
+      adapterId: "gpt_sovits_local",
+      mainModelId: "voice-b",
+      mainModelDisplayName: "voice-b",
+      submodelId: "default",
+      submodelDisplayName: "default",
+      presetId: "default",
+      presetDisplayName: "default",
+      label: "Demo Workspace / voice-b",
+      status: "ready",
+      referenceAudioPath: "voice-b-preset.wav",
+      referenceText: "音色B预设",
+      referenceLanguage: "ja",
+      defaults: {},
+      fixedFields: {},
     },
   ];
 }
@@ -391,7 +422,7 @@ describe("useParameterPanel", () => {
         temperature: 0.9,
         noise_scale: 0.4,
         reference_overrides_by_binding: {
-          "voice-a:voice-a": {
+          "ws-demo:voice-a:default:default": {
             reference_audio_path: "seg.wav",
             reference_text: "单段自定义",
             reference_language: "en",
@@ -422,6 +453,7 @@ describe("useParameterPanel", () => {
       {
         voice_binding_id: "binding-session",
         scope: "session",
+        binding_ref: createBindingRef("voice-default"),
         voice_id: "voice-default",
         model_key: "voice-default",
         gpt_path: "default.ckpt",
@@ -431,6 +463,7 @@ describe("useParameterPanel", () => {
       {
         voice_binding_id: "binding-seg-1",
         scope: "segment",
+        binding_ref: createBindingRef("voice-a"),
         voice_id: "voice-a",
         model_key: "voice-a",
         gpt_path: "a.ckpt",
@@ -440,6 +473,7 @@ describe("useParameterPanel", () => {
       {
         voice_binding_id: "binding-seg-2",
         scope: "segment",
+        binding_ref: createBindingRef("voice-b"),
         voice_id: "voice-b",
         model_key: "voice-b",
         gpt_path: "b.ckpt",
@@ -575,27 +609,21 @@ describe("useParameterPanel", () => {
     const panel = useParameterPanel();
     const selection = useSegmentSelection();
 
-    (panel as any).setVoices(createVoices());
+    (panel as any).setBindings(createBindingOptions());
     selection.select("seg-1");
     await nextTick();
 
     expect((panel.displayValues.value as any).reference.source).toBe("custom");
     expect((panel.displayValues.value as any).reference.reference_text).toBe("单段自定义");
 
-    panel.updateVoiceBindingField("voice_id", "voice-b");
-    panel.updateVoiceBindingField("model_key", "voice-b");
-    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
-    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    panel.updateVoiceBindingField("binding_ref", createBindingRef("voice-b"));
     await nextTick();
 
     expect((panel.displayValues.value as any).reference.source).toBe("preset");
     expect((panel.displayValues.value as any).reference.reference_audio_path).toBe("voice-b-preset.wav");
     expect((panel.displayValues.value as any).reference.reference_text).toBe("音色B预设");
 
-    panel.updateVoiceBindingField("voice_id", "voice-a");
-    panel.updateVoiceBindingField("model_key", "voice-a");
-    panel.updateVoiceBindingField("gpt_path", "a.ckpt");
-    panel.updateVoiceBindingField("sovits_path", "a.pth");
+    panel.updateVoiceBindingField("binding_ref", createBindingRef("voice-a"));
     await nextTick();
 
     expect((panel.displayValues.value as any).reference.source).toBe("custom");
@@ -609,7 +637,7 @@ describe("useParameterPanel", () => {
     const panel = useParameterPanel();
     const selection = useSegmentSelection();
 
-    (panel as any).setVoices(createVoices());
+    (panel as any).setBindings(createBindingOptions());
     selection.select("seg-1");
     await nextTick();
 
@@ -618,22 +646,19 @@ describe("useParameterPanel", () => {
 
     expect(apiMock.commitSegmentRenderProfile).toHaveBeenCalledWith("seg-1", {
       reference_override: {
-        binding_key: "voice-a:voice-a",
+        binding_key: "ws-demo:voice-a:default:default",
         operation: "clear",
       },
     });
   });
 
-  it("同次切音色并写自定义参考时，会用新 binding key 提交 upsert", async () => {
+  it("同次切模型 binding 并写自定义参考时，会用新 binding key 提交 upsert", async () => {
     const { useParameterPanel } = await import("../src/composables/useParameterPanel");
     const panel = useParameterPanel();
 
-    (panel as any).setVoices(createVoices());
+    (panel as any).setBindings(createBindingOptions());
 
-    panel.updateVoiceBindingField("voice_id", "voice-b");
-    panel.updateVoiceBindingField("model_key", "voice-b");
-    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
-    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    panel.updateVoiceBindingField("binding_ref", createBindingRef("voice-b"));
     (panel as any).updateReferenceSource("custom");
     (panel as any).updateReferenceField("reference_audio_path", "voice-b-custom.wav");
     (panel as any).updateReferenceField("reference_text", "音色B自定义");
@@ -641,17 +666,14 @@ describe("useParameterPanel", () => {
     await panel.submitDraft();
 
     expect(apiMock.commitSessionVoiceBinding).toHaveBeenCalledWith({
-      voice_id: "voice-b",
-      model_key: "voice-b",
-      gpt_path: "b.ckpt",
-      sovits_path: "b.pth",
+      binding_ref: createBindingRef("voice-b"),
     });
     expect(apiMock.commitSessionRenderProfile).toHaveBeenCalledWith({
       reference_override: {
-        binding_key: "voice-b:voice-b",
+        binding_key: "ws-demo:voice-b:default:default",
         operation: "upsert",
         session_reference_asset_id: null,
-        reference_identity: "voice-b:voice-b",
+        reference_identity: "ws-demo:voice-b:default:default",
         reference_audio_fingerprint: null,
         reference_audio_path: "voice-b-custom.wav",
         reference_text: "音色B自定义",
@@ -665,7 +687,7 @@ describe("useParameterPanel", () => {
     const { useParameterPanel } = await import("../src/composables/useParameterPanel");
     const panel = useParameterPanel();
 
-    (panel as any).setVoices(createVoices());
+    (panel as any).setBindings(createBindingOptions());
     (panel as any).applyUploadedReferenceAudio({
       reference_asset_id: "session-ref-1",
       reference_scope: "session_override",
@@ -680,7 +702,7 @@ describe("useParameterPanel", () => {
 
     expect(apiMock.commitSessionRenderProfile).toHaveBeenCalledWith({
       reference_override: {
-        binding_key: "voice-default:voice-default",
+        binding_key: "ws-demo:voice-default:default:default",
         operation: "upsert",
         session_reference_asset_id: "session-ref-1",
         reference_identity: "doc-1:session-ref-1",
@@ -705,7 +727,7 @@ describe("useParameterPanel", () => {
         ...editSessionMock.renderProfiles.value[1],
         reference_overrides_by_binding: {
           ...editSessionMock.renderProfiles.value[1].reference_overrides_by_binding,
-          "voice-b:voice-b": {
+          "ws-demo:voice-b:default:default": {
             reference_audio_path: "seg-b.wav",
             reference_text: "段一切到B后的自定义",
             reference_language: "ja",
@@ -715,7 +737,7 @@ describe("useParameterPanel", () => {
       editSessionMock.renderProfiles.value[2],
     ];
 
-    (panel as any).setVoices(createVoices());
+    (panel as any).setBindings(createBindingOptions());
     selection.select("seg-1");
     selection.toggleSelect("seg-2");
     await nextTick();
@@ -723,10 +745,7 @@ describe("useParameterPanel", () => {
     expect(panel.scopeContext.value.scope).toBe("batch");
     expect((panel.displayValues.value as any).reference.source).toBe("__MIXED__");
 
-    panel.updateVoiceBindingField("voice_id", "voice-b");
-    panel.updateVoiceBindingField("model_key", "voice-b");
-    panel.updateVoiceBindingField("gpt_path", "b.ckpt");
-    panel.updateVoiceBindingField("sovits_path", "b.pth");
+    panel.updateVoiceBindingField("binding_ref", createBindingRef("voice-b"));
     await nextTick();
 
     expect((panel.displayValues.value as any).reference.source).toBe("__MIXED__");
