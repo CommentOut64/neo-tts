@@ -1,13 +1,13 @@
 from backend.app.core.settings import get_settings
 
 
-def test_get_settings_defaults_to_preloading_neuro2(monkeypatch):
+def test_get_settings_disables_preload_by_default_even_in_development(monkeypatch):
     monkeypatch.delenv("GPT_SOVITS_PRELOAD_ON_START", raising=False)
     monkeypatch.delenv("GPT_SOVITS_PRELOAD_VOICES", raising=False)
 
     settings = get_settings()
 
-    assert settings.preload_on_start is True
+    assert settings.preload_on_start is False
     assert settings.preload_voice_ids == ("neuro2",)
 
 

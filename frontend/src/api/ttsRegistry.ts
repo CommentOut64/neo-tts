@@ -10,6 +10,7 @@ import type {
   PatchRegistryPresetPayload,
   PatchRegistrySubmodelPayload,
   PatchRegistryWorkspacePayload,
+  ImportRegistryWorkspaceModelPackagePayload,
   PutRegistrySubmodelSecretsPayload,
   TtsRegistryDeleteResult,
   TtsRegistryAdapterDefinition,
@@ -18,6 +19,7 @@ import type {
   TtsRegistryPresetRecord,
   TtsRegistrySubmodelConnectivityCheckResult,
   TtsRegistrySubmodelRecord,
+  TtsRegistryWorkspaceImportResult,
   TtsRegistryWorkspaceRecord,
   TtsRegistryWorkspaceSummary,
   TtsRegistryWorkspaceTree,
@@ -196,6 +198,17 @@ export async function deleteRegistryPreset(
 ): Promise<TtsRegistryDeleteResult> {
   const { data } = await axios.delete<TtsRegistryDeleteResult>(
     `/v1/tts-registry/workspaces/${workspaceId}/main-models/${mainModelId}/submodels/${submodelId}/presets/${presetId}`,
+  )
+  return data
+}
+
+export async function importRegistryWorkspaceModelPackage(
+  workspaceId: string,
+  payload: ImportRegistryWorkspaceModelPackagePayload,
+): Promise<TtsRegistryWorkspaceImportResult> {
+  const { data } = await axios.post<TtsRegistryWorkspaceImportResult>(
+    `/v1/tts-registry/workspaces/${workspaceId}/imports/model-package`,
+    payload,
   )
   return data
 }

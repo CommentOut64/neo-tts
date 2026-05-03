@@ -24,14 +24,12 @@ from backend.app.core.settings import AppSettings, get_settings
 from backend.app.main import create_app
 from backend.app.schemas.edit_session import BindingReference
 from backend.app.text.segment_standardizer import build_segment_display_text
-from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
-from backend.app.tts_registry.migration_service import TtsRegistryMigrationService
-from backend.app.tts_registry.secret_store import SecretStore
-from backend.app.tts_registry.workspace_service import WorkspaceService
-from backend.app.tts_registry.workspace_store import WorkspaceStore
+from backend.app.tts_registry.gpt_sovits_binding_bootstrap import ensure_gpt_sovits_binding_for_voice
 
 REAL_MODEL_VOICE_ID = "neuro2"
-REAL_MODEL_WORKSPACE_ID = "ws_legacy_gpt_sovits"
+REAL_MODEL_WORKSPACE_ID = "ws_real_gpt_sovits"
+REAL_MODEL_WORKSPACE_SLUG = "real-gpt-sovits"
+REAL_MODEL_WORKSPACE_DISPLAY_NAME = "Real GPT-SoVITS"
 REAL_MODEL_TEXT_LANGUAGE = "zh"
 REAL_MODEL_SEGMENT_BOUNDARY_MODE = "zh_period"
 REAL_MODEL_TTS_TEXT = (
@@ -102,39 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_workspace_service(settings: AppSettings) -> WorkspaceService:
-    registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-    return WorkspaceService(
-        adapter_store=build_default_adapter_definition_store(
-            enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
-        ),
-        workspace_store=WorkspaceStore(registry_root),
-        secret_store=SecretStore(registry_root),
-    )
-
-
 def _ensure_real_model_binding(settings: AppSettings) -> tuple[BindingReference, dict[str, object]]:
-    workspace_service = _build_workspace_service(settings)
-    binding_ref = BindingReference(
-        workspace_id=REAL_MODEL_WORKSPACE_ID,
-        main_model_id=REAL_MODEL_VOICE_ID,
-        submodel_id="default",
-        preset_id="default",
-    )
     try:
-        resolved = workspace_service.resolve_binding_reference(binding_ref)
-    except LookupError:
-        registry_root = settings.tts_registry_root or (settings.user_data_root / "tts-registry")
-        migration_service = TtsRegistryMigrationService(
-            workspace_service=workspace_service,
-            registry_root=registry_root,
+        _, binding_ref, resolved = ensure_gpt_sovits_binding_for_voice(
+            settings=settings,
+            workspace_slug=REAL_MODEL_WORKSPACE_SLUG,
+            workspace_display_name=REAL_MODEL_WORKSPACE_DISPLAY_NAME,
+            voice_id=REAL_MODEL_VOICE_ID,
+            allow_legacy_bootstrap=True,
         )
-        created = migration_service.migrate_legacy_voices_file(
-            voices_config_path=settings.voices_config_path,
-        )
-        if not any(item.get("legacy_voice_id") == REAL_MODEL_VOICE_ID for item in created):
-            raise RuntimeError(f"缺少预设 voice '{REAL_MODEL_VOICE_ID}'，无法迁移为正式 binding_ref。")
-        resolved = workspace_service.resolve_binding_reference(binding_ref)
+    except LookupError as exc:
+        raise RuntimeError(f"缺少预设 voice '{REAL_MODEL_VOICE_ID}'，无法建立正式 binding_ref。") from exc
     return binding_ref, resolved
 
 

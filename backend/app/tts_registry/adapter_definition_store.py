@@ -57,9 +57,9 @@ def build_default_adapter_definition_store(
                 display_name="GPT-SoVITS Local",
                 route_slug="gpt-sovits-local",
                 supports_main_models=True,
-                supports_submodels=False,
+                supports_submodels=True,
                 supports_presets=True,
-                auto_singleton_submodel=True,
+                auto_singleton_submodel=False,
                 auto_singleton_preset=False,
                 workspace_form_schema=[],
                 main_model_form_schema=[
@@ -72,15 +72,46 @@ def build_default_adapter_definition_store(
                         required=True,
                     )
                 ],
-                submodel_form_schema=[],
+                submodel_form_schema=[
+                    RegistryFieldDefinition(
+                        field_key="gpt_weight.path",
+                        label="GPT 权重路径",
+                        scope="submodel",
+                        visibility="required",
+                        input_kind="text",
+                        required=True,
+                    ),
+                    RegistryFieldDefinition(
+                        field_key="sovits_weight.path",
+                        label="SoVITS 权重路径",
+                        scope="submodel",
+                        visibility="required",
+                        input_kind="text",
+                        required=True,
+                    ),
+                ],
                 preset_form_schema=[
+                    RegistryFieldDefinition(
+                        field_key="reference_audio.path",
+                        label="参考音频路径",
+                        scope="preset",
+                        visibility="optional",
+                        input_kind="text",
+                    ),
                     RegistryFieldDefinition(
                         field_key="reference_text",
                         label="参考文本",
                         scope="preset",
                         visibility="optional",
                         input_kind="textarea",
-                    )
+                    ),
+                    RegistryFieldDefinition(
+                        field_key="reference_language",
+                        label="参考语言",
+                        scope="preset",
+                        visibility="optional",
+                        input_kind="text",
+                    ),
                 ],
             )
         ]

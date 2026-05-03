@@ -10,6 +10,7 @@ const emit = defineEmits<{
   back: [];
   editWorkspace: [];
   deleteWorkspace: [];
+  importModelPackage: [];
 }>();
 </script>
 
@@ -31,6 +32,14 @@ const emit = defineEmits<{
     </div>
     <div class="flex shrink-0 items-center gap-2">
       <el-button plain @click="emit('back')">返回模型中心</el-button>
+      <el-button
+        v-if="workspaceSummary?.adapter_id === 'gpt_sovits_local'"
+        type="primary"
+        plain
+        @click="emit('importModelPackage')"
+      >
+        导入模型包
+      </el-button>
       <el-button text @click="emit('editWorkspace')">编辑工作区</el-button>
       <el-button text type="danger" @click="emit('deleteWorkspace')">删除工作区</el-button>
     </div>

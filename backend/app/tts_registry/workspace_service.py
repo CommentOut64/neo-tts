@@ -116,6 +116,7 @@ class WorkspaceService:
         display_name: str,
         source_type: str = "builtin",
         main_model_metadata: dict[str, Any] | None = None,
+        shared_assets: dict[str, Any] | None = None,
     ) -> MainModelRecord:
         workspace = self._require_workspace(workspace_id)
         family = self._adapter_store.require_family(workspace.adapter_id, workspace.family_id)
@@ -128,6 +129,7 @@ class WorkspaceService:
             status="ready",
             source_type=source_type,  # type: ignore[arg-type]
             main_model_metadata=dict(main_model_metadata or {}),
+            shared_assets=dict(shared_assets or {}),
             default_submodel_id=default_submodel_id,
             created_at=timestamp,
             updated_at=timestamp,
@@ -144,6 +146,7 @@ class WorkspaceService:
         display_name: str | None = None,
         status: str | None = None,
         main_model_metadata: dict[str, Any] | None = None,
+        shared_assets: dict[str, Any] | None = None,
         default_submodel_id: str | None = None,
     ) -> MainModelRecord:
         current = self._require_main_model(workspace_id, main_model_id)
@@ -156,6 +159,7 @@ class WorkspaceService:
                     if main_model_metadata is not None
                     else dict(current.main_model_metadata)
                 ),
+                "shared_assets": dict(shared_assets) if shared_assets is not None else dict(current.shared_assets),
                 "default_submodel_id": default_submodel_id if default_submodel_id is not None else current.default_submodel_id,
                 "updated_at": _now_iso(),
             }
@@ -464,7 +468,8 @@ class WorkspaceService:
         main_model = self._require_main_model(workspace_id, main_model_id)
         submodel = self._require_submodel(workspace_id, main_model_id, submodel_id)
         preset = self._require_preset(workspace_id, main_model_id, submodel_id, preset_id)
-        resolved_assets = dict(submodel.instance_assets)
+        resolved_assets = dict(main_model.shared_assets)
+        resolved_assets.update(submodel.instance_assets)
         resolved_assets.update(preset.preset_assets)
         voice_id = main_model_id if preset_id == "default" else f"{main_model_id}__{preset_id}"
         model_key = f"{workspace_id}:{main_model_id}:{submodel_id}"

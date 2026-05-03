@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 
 from backend.app.tts_registry.adapter_definition_store import AdapterDefinitionStore, build_default_adapter_definition_store
 from backend.app.tts_registry.binding_catalog_service import BindingCatalogService
+from backend.app.tts_registry.gpt_sovits_facade import GPTSoVITSRegistryFacade
+from backend.app.tts_registry.model_import_service import ModelImportService
+from backend.app.tts_registry.model_registry import ModelRegistry
 from backend.app.tts_registry.secret_store import SecretStore
 from backend.app.tts_registry.types import BindingCatalogResponse, WorkspaceSummaryView
 from backend.app.tts_registry.workspace_service import WorkspaceService
@@ -39,12 +42,14 @@ class CreateMainModelRequest(BaseModel):
     display_name: str
     source_type: Literal["local_package", "external_api", "builtin"] = "builtin"
     main_model_metadata: dict[str, Any] = Field(default_factory=dict)
+    shared_assets: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateMainModelRequest(BaseModel):
     display_name: str | None = None
     status: Literal["ready", "disabled", "invalid", "pending_delete"] | None = None
     main_model_metadata: dict[str, Any] | None = None
+    shared_assets: dict[str, Any] | None = None
     default_submodel_id: str | None = None
 
 
@@ -89,6 +94,11 @@ class UpdateWorkspacePresetRequest(BaseModel):
     preset_assets: dict[str, Any] | None = None
 
 
+class ImportWorkspaceModelPackageRequest(BaseModel):
+    source_path: str
+    storage_mode: Literal["managed", "external"] = "managed"
+
+
 def _resolve_registry_root(request: Request):
     settings = request.app.state.settings
     return (settings.tts_registry_root or (settings.user_data_root / "tts-registry")).resolve()
@@ -107,6 +117,13 @@ def _build_secret_store(request: Request) -> SecretStore:
     return SecretStore(_resolve_registry_root(request))
 
 
+def _build_model_registry(request: Request) -> ModelRegistry:
+    shared = getattr(request.app.state, "model_registry", None)
+    if shared is not None:
+        return shared
+    return ModelRegistry(_resolve_registry_root(request))
+
+
 def _build_workspace_service(request: Request) -> WorkspaceService:
     return WorkspaceService(
         adapter_store=_build_adapter_store(request),
@@ -117,6 +134,21 @@ def _build_workspace_service(request: Request) -> WorkspaceService:
 
 def _build_binding_catalog_service(request: Request) -> BindingCatalogService:
     return BindingCatalogService(workspace_service=_build_workspace_service(request))
+
+
+def _build_model_import_service(request: Request) -> ModelImportService:
+    return ModelImportService(
+        adapter_store=_build_adapter_store(request),
+        model_registry=_build_model_registry(request),
+        secret_store=_build_secret_store(request),
+    )
+
+
+def _build_gpt_sovits_facade(request: Request) -> GPTSoVITSRegistryFacade:
+    return GPTSoVITSRegistryFacade(
+        workspace_service=_build_workspace_service(request),
+        model_import_service=_build_model_import_service(request),
+    )
 
 
 @router.get("/adapters")
@@ -166,6 +198,23 @@ def create_workspace(request: Request, body: CreateWorkspaceRequest) -> Workspac
     )
 
 
+@router.post("/workspaces/{workspace_id}/imports/model-package", status_code=status.HTTP_201_CREATED)
+def import_workspace_model_package(
+    request: Request,
+    workspace_id: str,
+    body: ImportWorkspaceModelPackageRequest,
+) -> dict[str, Any]:
+    workspace_service = _build_workspace_service(request)
+    workspace = next(item for item in workspace_service.list_workspaces() if item.workspace_id == workspace_id)
+    if workspace.adapter_id != "gpt_sovits_local":
+        raise ValueError(f"Workspace '{workspace_id}' does not support GPT-SoVITS package import.")
+    return _build_gpt_sovits_facade(request).import_model_package_to_workspace(
+        workspace_id=workspace_id,
+        source_path=body.source_path,
+        storage_mode=body.storage_mode,
+    ).model_dump(mode="json")
+
+
 @router.get("/workspaces/{workspace_id}")
 def get_workspace(request: Request, workspace_id: str) -> dict[str, Any]:
     return _build_workspace_service(request).get_workspace_tree(workspace_id).model_dump(mode="json")
@@ -208,6 +257,7 @@ def create_workspace_main_model(
         display_name=body.display_name,
         source_type=body.source_type,
         main_model_metadata=body.main_model_metadata,
+        shared_assets=body.shared_assets,
     ).model_dump(mode="json")
 
 
@@ -233,6 +283,7 @@ def patch_workspace_main_model(
         display_name=body.display_name,
         status=body.status,
         main_model_metadata=body.main_model_metadata,
+        shared_assets=body.shared_assets,
         default_submodel_id=body.default_submodel_id,
     ).model_dump(mode="json")
 

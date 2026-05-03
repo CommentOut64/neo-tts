@@ -1,5 +1,5 @@
 import { computed, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 
 import {
@@ -14,6 +14,7 @@ import {
   fetchAdapterFamilies,
   fetchRegistryWorkspaceTree,
   fetchRegistryWorkspaces,
+  importRegistryWorkspaceModelPackage,
   patchRegistryMainModel,
   patchRegistryPreset,
   patchRegistrySubmodel,
@@ -429,6 +430,38 @@ export function useModelWorkspaceAdmin() {
       nextSummary.slug !== currentWorkspaceSlug
     ) {
       await router.replace(buildModelWorkspaceRouteLocation(nextSummary));
+    }
+  }
+
+  async function openImportModelPackageDialog() {
+    if (!workspaceSummary.value || workspaceSummary.value.adapter_id !== "gpt_sovits_local") {
+      return;
+    }
+    try {
+      const { value } = await ElMessageBox.prompt("请输入 GPT-SoVITS 模型包目录或压缩包路径。", "导入模型包", {
+        confirmButtonText: "开始导入",
+        cancelButtonText: "取消",
+        inputPlaceholder: "F:/models/demo-package",
+      });
+      const sourcePath = String(value ?? "").trim();
+      if (!sourcePath) {
+        return;
+      }
+      const imported = await importRegistryWorkspaceModelPackage(workspaceSummary.value.workspace_id, {
+        source_path: sourcePath,
+        storage_mode: "managed",
+      });
+      await refreshWorkspaceTree({
+        selectedMainModelId: imported.main_model.main_model_id,
+        selectedSubmodelId: imported.submodels[0]?.submodel_id ?? null,
+      });
+      ElMessage.success(`模型包已导入：${imported.main_model.display_name}`);
+    } catch (error) {
+      if (error === "cancel" || error === "close") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "导入模型包失败";
+      ElMessage.error(message);
     }
   }
 
@@ -1041,6 +1074,7 @@ export function useModelWorkspaceAdmin() {
     selectMainModel,
     selectSubmodel,
     openModelHub,
+    openImportModelPackageDialog,
     openWorkspaceEditDialog,
     closeWorkspaceDialog,
     submitWorkspaceDialog,

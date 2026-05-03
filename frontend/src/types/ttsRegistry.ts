@@ -179,6 +179,7 @@ export interface TtsRegistryMainModelRecord {
   status: Extract<RegistryStatus, "ready" | "disabled" | "invalid" | "pending_delete">;
   source_type: "local_package" | "external_api" | "builtin";
   main_model_metadata: Record<string, unknown>;
+  shared_assets: Record<string, unknown>;
   default_submodel_id: string | null;
   created_at?: string;
   updated_at?: string;
@@ -212,12 +213,14 @@ export interface CreateRegistryMainModelPayload {
   display_name: string;
   source_type?: "local_package" | "external_api" | "builtin";
   main_model_metadata?: Record<string, unknown>;
+  shared_assets?: Record<string, unknown>;
 }
 
 export interface PatchRegistryMainModelPayload {
   display_name?: string;
   status?: Extract<RegistryStatus, "ready" | "disabled" | "invalid" | "pending_delete">;
   main_model_metadata?: Record<string, unknown>;
+  shared_assets?: Record<string, unknown>;
   default_submodel_id?: string | null;
 }
 
@@ -279,6 +282,17 @@ export interface TtsRegistryDeleteResult {
   main_model_id?: string;
   submodel_id?: string;
   preset_id?: string;
+}
+
+export interface ImportRegistryWorkspaceModelPackagePayload {
+  source_path: string;
+  storage_mode?: "managed" | "external";
+}
+
+export interface TtsRegistryWorkspaceImportResult {
+  main_model: TtsRegistryMainModelRecord;
+  submodels: TtsRegistrySubmodelRecord[];
+  presets: TtsRegistryPresetRecord[];
 }
 
 export function buildBindingKey(bindingRef: BindingReference): string {

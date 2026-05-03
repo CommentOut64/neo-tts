@@ -80,6 +80,8 @@ def _preload_configured_voices(app: FastAPI, model_cache) -> None:
 
 
 def _migrate_legacy_voices_if_needed(settings, workspace_service: WorkspaceService, registry_root: Path) -> None:
+    if not getattr(settings, "auto_migrate_legacy_voices_on_start", False):
+        return
     voices_config_path = settings.voices_config_path
     if not voices_config_path.exists():
         return
