@@ -99,6 +99,7 @@ class ResolvedModelBinding(BaseModel):
     resolved_assets: dict[str, Any] = Field(default_factory=dict, description="adapter 可消费资产映射。")
     resolved_reference: dict[str, Any] | None = Field(default=None, description="解析后的最终参考。")
     resolved_parameters: dict[str, Any] = Field(default_factory=dict, description="解析后的稳定参数。")
+    preset_defaults: dict[str, Any] = Field(default_factory=dict, description="preset 默认字段。")
     secret_handles: dict[str, str] = Field(default_factory=dict, description="secret store handle 映射。")
     endpoint: dict[str, Any] | None = Field(default=None, description="外部 provider endpoint 配置。")
     account_binding: dict[str, Any] = Field(default_factory=dict, description="外部 provider 非 secret 账号绑定。")

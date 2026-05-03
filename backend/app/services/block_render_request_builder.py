@@ -90,8 +90,10 @@ class BlockRenderRequestBuilder:
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
         render_scope: RenderScope = "block",
+        force_single_request_block_ids: set[str] | None = None,
     ) -> ExecutionPlan:
         formal_block_plans: list[FormalBlockPlan] = []
+        forced_block_ids = force_single_request_block_ids or set()
         for block in blocks:
             prepared_segments = [
                 _PreparedSegment(segment=resolved_segments[segment_id].segment, resolved=resolved_segments[segment_id])
@@ -108,6 +110,7 @@ class BlockRenderRequestBuilder:
                 previous_timeline=previous_timeline,
                 reuse_policy=reuse_policy,
                 render_scope=render_scope,
+                force_single_request=block.block_id in forced_block_ids,
             )
             formal_block_plans.append(
                 FormalBlockPlan(
@@ -135,7 +138,23 @@ class BlockRenderRequestBuilder:
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
         render_scope: RenderScope,
+        force_single_request: bool = False,
     ) -> list[BlockRenderRequest]:
+        if force_single_request:
+            return [
+                self._build_request_for_scoped_chunk(
+                    snapshot=snapshot,
+                    block=block,
+                    scoped_chunk=ordered_segments,
+                    resolved_edges=resolved_edges,
+                    target_segment_ids=target_segment_ids,
+                    target_edge_ids=target_edge_ids,
+                    previous_timeline=previous_timeline,
+                    reuse_policy=reuse_policy,
+                    render_scope=render_scope,
+                )
+            ]
+
         requests: list[BlockRenderRequest] = []
         cursor = 0
         while cursor < len(ordered_segments):
@@ -149,95 +168,120 @@ class BlockRenderRequestBuilder:
                 render_scope=render_scope,
             )
             for scoped_chunk in scoped_windows:
-                first_binding = scoped_chunk[0].resolved.resolved_model_binding
-                if first_binding is None:
-                    raise AdapterRegistry.build_model_required_error()
-                adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
-                chunk_segment_ids = [item.segment.segment_id for item in scoped_chunk]
-                request_block = self._build_request_block(scoped_chunk, block)
-                edge_controls = self._build_edge_controls(
-                    chunk=scoped_chunk,
-                    snapshot=snapshot,
-                    resolved_edges=resolved_edges,
-                )
-                join_policy = self._resolve_join_policy(edge_controls)
-                dirty_context = self._build_dirty_context(
-                    chunk_segment_ids=chunk_segment_ids,
-                    edge_controls=edge_controls,
-                    target_segment_ids=target_segment_ids,
-                    target_edge_ids=target_edge_ids,
-                    previous_timeline=previous_timeline,
-                    reuse_policy=reuse_policy,
-                    adapter_definition=adapter_definition,
-                )
-                top_level_reference = first_binding.resolved_reference or {}
-                boundary_contexts = self._build_boundary_contexts(
-                    edge_controls=edge_controls,
-                    snapshot=snapshot,
-                )
-                reusable_source_assets = self._build_reusable_source_assets(
-                    chunk=scoped_chunk,
-                    target_segment_ids=target_segment_ids,
-                )
                 requests.append(
-                    BlockRenderRequest(
-                        request_id=self._build_request_id(
-                            document_id=snapshot.document_id,
-                            block_id=request_block.block_id,
-                            binding_fingerprint=first_binding.binding_fingerprint,
-                        ),
-                        document_id=snapshot.document_id,
-                        execution_unit_id=self._build_execution_unit_id(
-                            document_id=snapshot.document_id,
-                            formal_block_id=block.block_id,
-                            execution_segment_ids=chunk_segment_ids,
-                            render_scope=render_scope,
-                        ),
-                        formal_block_id=block.block_id,
+                    self._build_request_for_scoped_chunk(
+                        snapshot=snapshot,
+                        block=block,
+                        scoped_chunk=scoped_chunk,
+                        resolved_edges=resolved_edges,
+                        target_segment_ids=target_segment_ids,
+                        target_edge_ids=target_edge_ids,
+                        previous_timeline=previous_timeline,
+                        reuse_policy=reuse_policy,
                         render_scope=render_scope,
-                        escalated_from_scope=None,
-                        block=request_block,
-                        model_binding=first_binding,
-                        voice={
-                            "voice_id": scoped_chunk[0].resolved.voice_binding.voice_id,
-                            "voice_binding_id": scoped_chunk[0].resolved.voice_binding.voice_binding_id,
-                        },
-                        model={
-                            "model_key": scoped_chunk[0].resolved.voice_binding.model_key,
-                            "model_instance_id": scoped_chunk[0].resolved.voice_binding.model_instance_id,
-                            "preset_id": scoped_chunk[0].resolved.voice_binding.preset_id,
-                        },
-                        reference={
-                            "reference_id": top_level_reference.get("reference_id", ""),
-                        },
-                        synthesis=dict(first_binding.resolved_parameters),
-                        requested_alignment_mode="exact",
-                        join_policy=join_policy,
-                        requested_join_policy=join_policy,
-                        effective_join_policy=join_policy,
-                        edge_controls=edge_controls,
-                        boundary_contexts=boundary_contexts,
-                        reusable_source_assets=reusable_source_assets,
-                        dirty_context=dirty_context,
-                        resolved_reference=dict(top_level_reference),
-                        resolved_parameters=dict(first_binding.resolved_parameters),
-                        allowed_degradation=normalize_degradation_policy(
-                            requested_mode="exact",
-                            allowed_modes=["exact", "estimated", "block_only"],
-                        ),
-                        allowed_scope_escalation=normalize_scope_policy(
-                            render_scope=render_scope,
-                            allowed_scopes=["segment", "block"] if render_scope == "segment" else ["block"],
-                        ),
-                        adapter_options=self._build_adapter_options(
-                            first_binding=first_binding,
-                            request_block=request_block,
-                            document_id=snapshot.document_id,
-                        ),
-                        block_policy=self._default_block_policy,
                     )
                 )
         return requests
+
+    def _build_request_for_scoped_chunk(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        block: RenderBlock,
+        scoped_chunk: list[_PreparedSegment],
+        resolved_edges: dict[str, ResolvedEdgeConfig],
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+        previous_timeline: TimelineManifest | None,
+        reuse_policy: str,
+        render_scope: RenderScope,
+    ) -> BlockRenderRequest:
+        first_binding = scoped_chunk[0].resolved.resolved_model_binding
+        if first_binding is None:
+            raise AdapterRegistry.build_model_required_error()
+        adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
+        chunk_segment_ids = [item.segment.segment_id for item in scoped_chunk]
+        request_block = self._build_request_block(scoped_chunk, block)
+        edge_controls = self._build_edge_controls(
+            chunk=scoped_chunk,
+            snapshot=snapshot,
+            resolved_edges=resolved_edges,
+        )
+        join_policy = self._resolve_join_policy(edge_controls)
+        dirty_context = self._build_dirty_context(
+            chunk_segment_ids=chunk_segment_ids,
+            edge_controls=edge_controls,
+            target_segment_ids=target_segment_ids,
+            target_edge_ids=target_edge_ids,
+            previous_timeline=previous_timeline,
+            reuse_policy=reuse_policy,
+            adapter_definition=adapter_definition,
+        )
+        top_level_reference = first_binding.resolved_reference or {}
+        boundary_contexts = self._build_boundary_contexts(
+            edge_controls=edge_controls,
+            snapshot=snapshot,
+        )
+        reusable_source_assets = self._build_reusable_source_assets(
+            chunk=scoped_chunk,
+            target_segment_ids=target_segment_ids,
+        )
+        return BlockRenderRequest(
+            request_id=self._build_request_id(
+                document_id=snapshot.document_id,
+                block_id=request_block.block_id,
+                binding_fingerprint=first_binding.binding_fingerprint,
+            ),
+            document_id=snapshot.document_id,
+            execution_unit_id=self._build_execution_unit_id(
+                document_id=snapshot.document_id,
+                formal_block_id=block.block_id,
+                execution_segment_ids=chunk_segment_ids,
+                render_scope=render_scope,
+            ),
+            formal_block_id=block.block_id,
+            render_scope=render_scope,
+            escalated_from_scope=None,
+            block=request_block,
+            model_binding=first_binding,
+            voice={
+                "voice_id": scoped_chunk[0].resolved.voice_binding.voice_id,
+                "voice_binding_id": scoped_chunk[0].resolved.voice_binding.voice_binding_id,
+            },
+            model={
+                "model_key": scoped_chunk[0].resolved.voice_binding.model_key,
+                "model_instance_id": scoped_chunk[0].resolved.voice_binding.model_instance_id,
+                "preset_id": scoped_chunk[0].resolved.voice_binding.preset_id,
+            },
+            reference={
+                "reference_id": top_level_reference.get("reference_id", ""),
+            },
+            synthesis=dict(first_binding.resolved_parameters),
+            requested_alignment_mode="exact",
+            join_policy=join_policy,
+            requested_join_policy=join_policy,
+            effective_join_policy=join_policy,
+            edge_controls=edge_controls,
+            boundary_contexts=boundary_contexts,
+            reusable_source_assets=reusable_source_assets,
+            dirty_context=dirty_context,
+            resolved_reference=dict(top_level_reference),
+            resolved_parameters=dict(first_binding.resolved_parameters),
+            allowed_degradation=normalize_degradation_policy(
+                requested_mode="exact",
+                allowed_modes=["exact", "estimated", "block_only"],
+            ),
+            allowed_scope_escalation=normalize_scope_policy(
+                render_scope=render_scope,
+                allowed_scopes=["segment", "block"] if render_scope == "segment" else ["block"],
+            ),
+            adapter_options=self._build_adapter_options(
+                first_binding=first_binding,
+                request_block=request_block,
+                document_id=snapshot.document_id,
+            ),
+            block_policy=self._default_block_policy,
+        )
 
     @staticmethod
     def _build_adapter_options(

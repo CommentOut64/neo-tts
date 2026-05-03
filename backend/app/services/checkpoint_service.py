@@ -95,6 +95,7 @@ class CheckpointService:
         )
         blocks = self._block_planner.build_blocks(completed_segments)
         block_assets = []
+        timeline_sample_rate: int | None = None
         for block in blocks:
             block_segments = [segment_assets[segment_id] for segment_id in block.segment_ids]
             block_edges = [
@@ -115,6 +116,8 @@ class CheckpointService:
             )
             self._write_block_asset(block_asset)
             block_assets.append(block_asset)
+            if timeline_sample_rate is None:
+                timeline_sample_rate = block_asset.sample_rate
 
         next_document_version = self._resolve_next_document_version(
             active_session=active_session,
@@ -134,7 +137,7 @@ class CheckpointService:
         timeline_manifest, _ = self._timeline_manifest_service.build(
             snapshot=partial_snapshot,
             blocks=block_assets,
-            sample_rate=self._composition_builder._sample_rate,  # noqa: SLF001
+            sample_rate=timeline_sample_rate if timeline_sample_rate is not None else self._composition_builder._sample_rate,  # noqa: SLF001
         )
         self._asset_store.write_formal_json_atomic(
             f"timelines/{timeline_manifest.timeline_manifest_id}/manifest.json",
@@ -213,7 +216,7 @@ class CheckpointService:
                 update={
                     "effective_boundary_strategy": resolved_edge.effective_boundary_strategy,
                     "boundary_sample_count": boundary_asset.boundary_sample_count,
-                    "pause_sample_count": int(self._composition_builder._sample_rate * edge.pause_duration_seconds),  # noqa: SLF001
+                    "pause_sample_count": int(boundary_asset.sample_rate * edge.pause_duration_seconds),
                 },
             )
             edge.effective_boundary_strategy = updated_edge.effective_boundary_strategy
@@ -263,7 +266,7 @@ class CheckpointService:
 
     def _write_boundary_asset(self, asset: BoundaryAssetPayload) -> None:
         wav_bytes = build_wav_bytes(
-            self._composition_builder._sample_rate,  # noqa: SLF001
+            asset.sample_rate,
             float_audio_chunk_to_pcm16_bytes(asset.boundary_audio.astype(np.float32, copy=False)),
         )
         self._asset_store.write_formal_bytes_atomic(f"boundaries/{asset.boundary_asset_id}/audio.wav", wav_bytes)
@@ -276,6 +279,7 @@ class CheckpointService:
                 "right_segment_id": asset.right_segment_id,
                 "right_render_version": asset.right_render_version,
                 "edge_version": asset.edge_version,
+                "sample_rate": asset.sample_rate,
                 "boundary_strategy": asset.boundary_strategy,
                 "boundary_sample_count": asset.boundary_sample_count,
                 "trace": asset.trace,
@@ -294,6 +298,7 @@ class CheckpointService:
                 "block_id": asset.block_id,
                 "block_asset_id": asset.block_asset_id,
                 "segment_ids": asset.segment_ids,
+                "sample_rate": asset.sample_rate,
                 "audio_sample_count": asset.audio_sample_count,
                 "segment_entries": [
                     {

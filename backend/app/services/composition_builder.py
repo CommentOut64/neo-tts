@@ -23,6 +23,21 @@ class CompositionBuilder:
     def __init__(self, *, sample_rate: int = 32000) -> None:
         self._sample_rate = sample_rate
 
+    @staticmethod
+    def _resolve_uniform_sample_rate(
+        sample_rates: list[int],
+        *,
+        context: str,
+        fallback_sample_rate: int,
+    ) -> int:
+        filtered = [int(sample_rate) for sample_rate in sample_rates if int(sample_rate) > 0]
+        if not filtered:
+            return fallback_sample_rate
+        first_sample_rate = filtered[0]
+        if any(sample_rate != first_sample_rate for sample_rate in filtered[1:]):
+            raise ValueError(f"{context} sample rates must match exactly.")
+        return first_sample_rate
+
     def compose_block(
         self,
         segments: list[SegmentRenderAssetPayload],
@@ -38,6 +53,18 @@ class CompositionBuilder:
     ) -> BlockCompositionAssetPayload:
         if not segments:
             raise ValueError("compose_block requires at least one segment asset.")
+
+        block_sample_rate = self._resolve_uniform_sample_rate(
+            [segment.sample_rate for segment in segments],
+            context="segment asset",
+            fallback_sample_rate=self._sample_rate,
+        )
+        if boundaries:
+            self._resolve_uniform_sample_rate(
+                [boundary.sample_rate for boundary in boundaries] + [block_sample_rate],
+                context="block asset",
+                fallback_sample_rate=block_sample_rate,
+            )
 
         logical_block_id = block_id or f"block-{uuid4().hex}"
         effective_alignment_mode = segment_alignment_mode or "exact"
@@ -75,10 +102,10 @@ class CompositionBuilder:
                     block_id=logical_block_id,
                     segments=segment_entries,
                     edges=[],
-                    sample_rate=self._sample_rate,
+                    sample_rate=block_sample_rate,
                 ),
                 segment_ids=[only_segment.segment_id],
-                sample_rate=self._sample_rate,
+                sample_rate=block_sample_rate,
                 audio=audio,
                 audio_sample_count=int(audio.size),
                 segment_entries=segment_entries,
@@ -126,7 +153,7 @@ class CompositionBuilder:
             right_segment = segments[index + 1]
             boundary = boundary_map.get((edge.left_segment_id, edge.right_segment_id))
             boundary_audio = boundary.boundary_audio if boundary is not None else None
-            pause_audio = self._pause_audio(edge.pause_duration_seconds)
+            pause_audio = self._pause_audio(edge.pause_duration_seconds, sample_rate=block_sample_rate)
             owned_audio = right_segment.core_audio
             if index == len(edges) - 1:
                 owned_audio = np.concatenate([owned_audio, right_segment.right_margin_audio]).astype(
@@ -205,10 +232,10 @@ class CompositionBuilder:
                 block_id=logical_block_id,
                 segments=segment_entries,
                 edges=edge_entries,
-                sample_rate=self._sample_rate,
+                sample_rate=block_sample_rate,
             ),
             segment_ids=[segment.segment_id for segment in segments],
-            sample_rate=self._sample_rate,
+            sample_rate=block_sample_rate,
             audio=audio.astype(np.float32, copy=False),
             audio_sample_count=int(audio.size),
             segment_entries=segment_entries,
@@ -225,6 +252,11 @@ class CompositionBuilder:
         document_version: int,
         blocks: list[BlockCompositionAssetPayload],
     ) -> DocumentCompositionManifestPayload:
+        document_sample_rate = self._resolve_uniform_sample_rate(
+            [block.sample_rate for block in blocks],
+            context="block composition asset",
+            fallback_sample_rate=self._sample_rate,
+        )
         block_spans: dict[str, tuple[int, int]] = {}
         segment_entries: list[SegmentCompositionEntry] = []
         audio_parts: list[np.ndarray] = []
@@ -255,7 +287,7 @@ class CompositionBuilder:
             composition_manifest_id=f"composition-{uuid4().hex}",
             document_id=document_id,
             document_version=document_version,
-            sample_rate=self._sample_rate,
+            sample_rate=document_sample_rate,
             audio_sample_count=int(audio.size),
             playable_sample_span=(0, int(audio.size)),
             block_ids=[block.block_asset_id for block in blocks],
@@ -279,21 +311,21 @@ class CompositionBuilder:
             return PreviewPayload(
                 preview_asset_id=f"preview-segment-{segment_asset.render_asset_id}",
                 preview_kind="segment",
-                sample_rate=self._sample_rate,
+                sample_rate=segment_asset.sample_rate,
                 audio=self._full_segment_audio(segment_asset),
             )
         if boundary_asset is not None:
             return PreviewPayload(
                 preview_asset_id=f"preview-edge-{boundary_asset.boundary_asset_id}",
                 preview_kind="edge",
-                sample_rate=self._sample_rate,
+                sample_rate=boundary_asset.sample_rate,
                 audio=boundary_asset.boundary_audio.astype(np.float32, copy=False),
             )
         assert block_asset is not None
         return PreviewPayload(
             preview_asset_id=f"preview-block-{block_asset.block_asset_id}",
             preview_kind="block",
-            sample_rate=self._sample_rate,
+            sample_rate=block_asset.sample_rate,
             audio=block_asset.audio.astype(np.float32, copy=False),
         )
 
@@ -303,10 +335,10 @@ class CompositionBuilder:
             copy=False,
         )
 
-    def _pause_audio(self, pause_duration_seconds: float) -> np.ndarray:
+    def _pause_audio(self, pause_duration_seconds: float, *, sample_rate: int) -> np.ndarray:
         if pause_duration_seconds <= 0:
             return np.zeros(0, dtype=np.float32)
-        return np.zeros(int(self._sample_rate * pause_duration_seconds), dtype=np.float32)
+        return np.zeros(int(sample_rate * pause_duration_seconds), dtype=np.float32)
 
     @staticmethod
     def _resolve_segment_entry_asset_id(

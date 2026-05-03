@@ -45,6 +45,10 @@ class FormalBlockAssembler:
         previous_timeline: TimelineManifest | None,
     ) -> BlockCompositionAssetPayload:
         block_segments = [segment_assets[segment_id] for segment_id in block.segment_ids]
+        block_sample_rate = self._resolve_block_sample_rate(
+            block_segments=block_segments,
+            boundary_assets=list(boundary_assets.values()),
+        )
         segment_by_id = {segment.segment_id: segment for segment in segments}
         block_edges = [
             edge
@@ -84,9 +88,9 @@ class FormalBlockAssembler:
             boundary_assets[edge.edge_id] = boundary_asset
             edge.effective_boundary_strategy = effective_boundary_strategy
             edge.boundary_sample_count = boundary_asset.boundary_sample_count
-            edge.pause_sample_count = int(self._composition_builder._sample_rate * edge.pause_duration_seconds)
+            edge.pause_sample_count = int(block_sample_rate * edge.pause_duration_seconds)
             block_boundaries.append(boundary_asset)
-        block_asset = self._composition_builder.compose_block(
+        block_asset = CompositionBuilder(sample_rate=block_sample_rate).compose_block(
             segments=block_segments,
             boundaries=block_boundaries,
             edges=block_edges,
@@ -108,3 +112,19 @@ class FormalBlockAssembler:
         )
         self._write_block_asset(job_id, block_asset)
         return block_asset
+
+    @staticmethod
+    def _resolve_block_sample_rate(
+        *,
+        block_segments: list[SegmentRenderAssetPayload],
+        boundary_assets: list[BoundaryAssetPayload],
+    ) -> int:
+        sample_rates = [segment.sample_rate for segment in block_segments]
+        sample_rates.extend(boundary.sample_rate for boundary in boundary_assets)
+        filtered = [int(sample_rate) for sample_rate in sample_rates if int(sample_rate) > 0]
+        if not filtered:
+            raise ValueError("Formal block assemble requires a resolved sample rate.")
+        first_sample_rate = filtered[0]
+        if any(sample_rate != first_sample_rate for sample_rate in filtered[1:]):
+            raise ValueError("Formal block assets must share the same sample rate.")
+        return first_sample_rate

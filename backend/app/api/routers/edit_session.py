@@ -20,6 +20,7 @@ from backend.app.inference.editable_gateway import (
 )
 from backend.app.inference.adapters import ExternalHttpTtsAdapter
 from backend.app.inference.adapters import GPTSoVITSLocalAdapter
+from backend.app.inference.adapters import Qwen3TTSLocalAdapter
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.external_http_rate_limiter import ExternalHttpLimitConfig
 from backend.app.schemas.edit_session import (
@@ -101,13 +102,16 @@ GONE_RESPONSE = {
 
 
 class _UnavailableEditableBackend:
-    def build_reference_context(self, request):
+    def build_reference_context(self, request, *, progress_callback=None):
+        del request, progress_callback
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
     def render_segment_base(self, segment, context, *, progress_callback=None):
+        del segment, context, progress_callback
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
     def render_boundary_asset(self, left_asset, right_asset, edge, context):
+        del left_asset, right_asset, edge, context
         raise RuntimeError("Editable inference backend is unavailable for read-only operations.")
 
 
@@ -136,6 +140,7 @@ def _build_workspace_service(request: Request) -> WorkspaceService:
     return WorkspaceService(
         adapter_store=build_default_adapter_definition_store(
             enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+            enable_qwen3_tts_local=getattr(request.app.state.settings, "qwen3_tts_adapter_installed", False),
         ),
         workspace_store=WorkspaceStore(_build_model_registry(request).root_dir),
         secret_store=_build_secret_store(request),
@@ -162,6 +167,7 @@ def _build_adapter_registry(request: Request) -> AdapterRegistry:
         return shared
     store = build_default_adapter_definition_store(
         enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+        enable_qwen3_tts_local=getattr(request.app.state.settings, "qwen3_tts_adapter_installed", False),
     )
     registry = AdapterRegistry()
     for definition in store.list_definitions():
@@ -188,6 +194,17 @@ def _build_block_adapter_selector(request: Request):
                 secret_store=kwargs["secret_store"],
                 rate_limiter=request.app.state.external_http_rate_limiter,
                 default_limit_config=_build_external_http_default_limit_config(request),
+            )
+        if adapter_id == "qwen3_tts_local":
+            runtime = getattr(request.app.state, "qwen3_tts_runtime", None)
+            if runtime is None:
+                raise RuntimeError("Qwen3-TTS runtime is unavailable.")
+            return Qwen3TTSLocalAdapter(
+                runtime=runtime,
+                composition_builder=kwargs.get("composition_builder"),
+                reusable_asset_accessor=kwargs.get("asset_store"),
+                cancellation_checker=kwargs.get("cancellation_checker"),
+                segment_asset_callback=kwargs.get("segment_asset_callback"),
             )
         raise AdapterRegistry.build_model_required_error(adapter_id=adapter_id)
 
@@ -241,6 +258,9 @@ def _build_editable_gateway(
     if resolved_binding_ref is None:
         raise LookupError("当前会话缺少 binding_ref，无法构建 editable gateway。")
     resolved_binding = workspace_service.resolve_binding_reference(resolved_binding_ref)
+    adapter_id = resolved_binding.get("adapter_id")
+    if adapter_id not in {None, "gpt_sovits_local"}:
+        return EditableInferenceGateway(_UnavailableEditableBackend())
     default_gpt_path = resolved_binding.get("gpt_path")
     default_sovits_path = resolved_binding.get("sovits_path")
     if not isinstance(default_gpt_path, str) or not isinstance(default_sovits_path, str):

@@ -245,6 +245,7 @@ class RenderJobService:
             secret_store=secret_store,
             workspace_service=session_service,
         )
+        self._adapter_registry = adapter_registry or AdapterRegistry()
         self._secret_store = secret_store
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._block_render_request_builder = block_render_request_builder
@@ -1540,6 +1541,11 @@ class RenderJobService:
         }
         previous_timeline = self._load_previous_timeline(plan)
         planned_blocks = self._block_planner.build_blocks(plan.segments)
+        force_single_request_block_ids = self._collect_force_single_request_block_ids(
+            plan=plan,
+            blocks=planned_blocks,
+            resolved_segments=resolved_segments,
+        )
         execution_plan = self._block_render_request_builder.build_execution_plan(
             snapshot=temporary_snapshot,
             blocks=planned_blocks,
@@ -1550,6 +1556,7 @@ class RenderJobService:
             previous_timeline=previous_timeline,
             reuse_policy="force_full_render" if plan.job_kind == "initialize" else "prefer_reuse",
             render_scope="block" if plan.job_kind == "initialize" else "segment",
+            force_single_request_block_ids=force_single_request_block_ids,
         )
         plan.blocks = [formal_block_plan.formal_block for formal_block_plan in execution_plan.formal_blocks]
         plan.block_assets = []
@@ -1795,6 +1802,38 @@ class RenderJobService:
             previous_timeline=previous_timeline,
         )
 
+    def _collect_force_single_request_block_ids(
+        self,
+        *,
+        plan: RenderPlan,
+        blocks: list[RenderBlock],
+        resolved_segments: dict[str, object],
+    ) -> set[str]:
+        if plan.job_kind != "initialize":
+            return set()
+
+        forced_block_ids: set[str] = set()
+        for block in blocks:
+            adapter_ids = {
+                resolved_segments[segment_id].resolved_model_binding.adapter_id
+                for segment_id in block.segment_ids
+                if resolved_segments[segment_id].resolved_model_binding is not None
+            }
+            if len(adapter_ids) != 1:
+                continue
+            adapter_id = next(iter(adapter_ids))
+            adapter_definition = self._adapter_registry.require(adapter_id)
+            if (
+                not adapter_definition.capabilities.exact_segment_output
+                or not self._adapter_supports_readonly_formal_block_recompose(adapter_id)
+            ):
+                forced_block_ids.add(block.block_id)
+        return forced_block_ids
+
+    @staticmethod
+    def _adapter_supports_readonly_formal_block_recompose(adapter_id: str | None) -> bool:
+        return adapter_id in {None, "gpt_sovits_local"}
+
     def _load_previous_block_asset_for_recompose(
         self,
         *,
@@ -1892,6 +1931,7 @@ class RenderJobService:
             right_segment_id=edge.right_segment_id,
             right_render_version=right_asset.render_version,
             edge_version=edge.edge_version,
+            sample_rate=previous_block_asset.sample_rate,
             boundary_strategy=effective_boundary_strategy,
             boundary_sample_count=int(boundary_audio.size),
             boundary_audio=boundary_audio,
@@ -2725,14 +2765,14 @@ class RenderJobService:
             np.float32,
             copy=False,
         )
-        wav_bytes = build_wav_bytes(self._composition_builder._sample_rate, float_audio_chunk_to_pcm16_bytes(audio))
+        wav_bytes = build_wav_bytes(asset.sample_rate, float_audio_chunk_to_pcm16_bytes(audio))
         self._asset_store.write_formal_bytes_atomic(f"segments/{asset.render_asset_id}/audio.wav", wav_bytes)
         render_job_logger.info(
             "segment asset persisted render_asset_id={} segment_id={} render_version={} sample_rate={} audio_sample_count={} core_sample_count={} left_margin_sample_count={} right_margin_sample_count={}",
             asset.render_asset_id,
             asset.segment_id,
             asset.render_version,
-            self._composition_builder._sample_rate,
+            asset.sample_rate,
             asset.audio_sample_count,
             asset.core_sample_count,
             asset.left_margin_sample_count,
@@ -2742,6 +2782,7 @@ class RenderJobService:
             "render_asset_id": asset.render_asset_id,
             "segment_id": asset.segment_id,
             "render_version": asset.render_version,
+            "sample_rate": asset.sample_rate,
             "semantic_tokens": asset.semantic_tokens,
             "phone_ids": asset.phone_ids,
             "decoder_frame_count": asset.decoder_frame_count,
@@ -2756,7 +2797,7 @@ class RenderJobService:
     def _write_boundary_asset(self, job_id: str, asset: BoundaryAssetPayload) -> None:
         del job_id
         wav_bytes = build_wav_bytes(
-            self._composition_builder._sample_rate,
+            asset.sample_rate,
             float_audio_chunk_to_pcm16_bytes(asset.boundary_audio.astype(np.float32, copy=False)),
         )
         self._asset_store.write_formal_bytes_atomic(f"boundaries/{asset.boundary_asset_id}/audio.wav", wav_bytes)
@@ -2767,6 +2808,7 @@ class RenderJobService:
             "right_segment_id": asset.right_segment_id,
             "right_render_version": asset.right_render_version,
             "edge_version": asset.edge_version,
+            "sample_rate": asset.sample_rate,
             "boundary_strategy": asset.boundary_strategy,
             "boundary_sample_count": asset.boundary_sample_count,
             "trace": asset.trace,
