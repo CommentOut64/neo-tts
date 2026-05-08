@@ -7,7 +7,13 @@ import json
 import numpy as np
 
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
-from backend.app.inference.block_adapter_types import BlockRenderRequest, BlockRenderResult, SegmentOutput, SegmentSpan
+from backend.app.inference.block_adapter_types import (
+    BlockRenderRequest,
+    BlockRenderResult,
+    EdgeControl,
+    SegmentOutput,
+    SegmentSpan,
+)
 from backend.app.inference.editable_types import (
     BlockCompositionAssetPayload,
     BlockMarkerEntry,
@@ -84,6 +90,7 @@ class BlockRenderAssetPersister:
             spans=result.segment_spans,
             audio_sample_count=result.audio_sample_count,
             alignment_mode=result.segment_alignment_mode,
+            has_incoming_prefix=request.incoming_edge_control is not None,
         )
         output_by_segment_id = {output.segment_id: output for output in result.segment_outputs}
         block_asset_id = self._build_block_asset_id(
@@ -483,10 +490,25 @@ class BlockRenderAssetPersister:
         ordered_spans: list[SegmentSpan],
         sample_rate: int,
     ) -> list[EdgeCompositionEntry]:
-        if len(ordered_spans) < 2:
+        if not ordered_spans:
             return []
         span_by_segment_id = {span.segment_id: span for span in ordered_spans}
         edge_entries: list[EdgeCompositionEntry] = []
+        if request.incoming_edge_control is not None:
+            edge_entries.append(
+                self._build_prefix_edge_entry(
+                    edge_control=request.incoming_edge_control,
+                    right_span=ordered_spans[0],
+                    sample_rate=sample_rate,
+                    requested_boundary_strategy=(
+                        request.incoming_boundary_context.requested_boundary_strategy
+                        if request.incoming_boundary_context is not None
+                        else "crossfade_only"
+                    ),
+                )
+            )
+        if len(ordered_spans) < 2:
+            return edge_entries
         for edge_control in request.edge_controls:
             left_span = span_by_segment_id.get(edge_control.left_segment_id)
             right_span = span_by_segment_id.get(edge_control.right_segment_id)
@@ -513,6 +535,33 @@ class BlockRenderAssetPersister:
                 )
             )
         return edge_entries
+
+    @staticmethod
+    def _build_prefix_edge_entry(
+        *,
+        edge_control: EdgeControl,
+        right_span: SegmentSpan,
+        sample_rate: int,
+        requested_boundary_strategy: str,
+    ) -> EdgeCompositionEntry:
+        pause_sample_count = max(0, int(sample_rate * edge_control.pause_duration_seconds))
+        pause_end = right_span.sample_start
+        pause_start = max(0, pause_end - pause_sample_count)
+        boundary_start = 0
+        boundary_end = pause_start
+        effective_boundary_strategy = requested_boundary_strategy
+        if boundary_end <= boundary_start:
+            effective_boundary_strategy = "crossfade_only"
+        return EdgeCompositionEntry(
+            edge_id=edge_control.edge_id,
+            left_segment_id=edge_control.left_segment_id,
+            right_segment_id=edge_control.right_segment_id,
+            boundary_strategy=requested_boundary_strategy,
+            effective_boundary_strategy=effective_boundary_strategy,
+            pause_duration_seconds=edge_control.pause_duration_seconds,
+            boundary_sample_span=(boundary_start, boundary_end),
+            pause_sample_span=(pause_start, pause_end),
+        )
 
     @staticmethod
     def _build_marker_entries(
@@ -573,6 +622,7 @@ class BlockRenderAssetPersister:
         spans: list[SegmentSpan],
         audio_sample_count: int,
         alignment_mode: str,
+        has_incoming_prefix: bool,
     ) -> list[SegmentSpan]:
         if alignment_mode == "block_only":
             if spans:
@@ -592,8 +642,8 @@ class BlockRenderAssetPersister:
                 raise ValueError(f"Segment span for '{span.segment_id}' is outside block audio range.")
             if span.sample_start < previous_end:
                 raise ValueError(f"Segment span for '{span.segment_id}' overlaps a previous span.")
-            if index == 0 and alignment_mode == "exact" and span.sample_start != 0:
-                raise ValueError("Exact segment spans must start at sample 0.")
+            if index == 0 and alignment_mode == "exact" and span.sample_start != 0 and not has_incoming_prefix:
+                raise ValueError("Exact segment spans without incoming edge must start at sample 0.")
             previous_end = span.sample_end
         if alignment_mode == "exact" and ordered_spans[-1].sample_end != audio_sample_count:
             raise ValueError("Exact segment spans must cover the full block audio.")

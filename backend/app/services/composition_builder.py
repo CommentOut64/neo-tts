@@ -50,6 +50,8 @@ class CompositionBuilder:
         join_report_summary: dict | None = None,
         segment_entry_asset_ids: dict[str, str | None] | None = None,
         segment_entry_base_asset_ids: dict[str, str | None] | None = None,
+        incoming_boundary: BoundaryAssetPayload | None = None,
+        incoming_edge: EditableEdge | None = None,
     ) -> BlockCompositionAssetPayload:
         if not segments:
             raise ValueError("compose_block requires at least one segment asset.")
@@ -65,16 +67,37 @@ class CompositionBuilder:
                 context="block asset",
                 fallback_sample_rate=block_sample_rate,
             )
+        if incoming_boundary is not None:
+            self._resolve_uniform_sample_rate(
+                [incoming_boundary.sample_rate, block_sample_rate],
+                context="incoming block edge",
+                fallback_sample_rate=block_sample_rate,
+            )
 
         logical_block_id = block_id or f"block-{uuid4().hex}"
         effective_alignment_mode = segment_alignment_mode or "exact"
         if len(segments) == 1:
             only_segment = segments[0]
+            audio_parts: list[np.ndarray] = []
+            edge_entries: list[EdgeCompositionEntry] = []
+            marker_entries = [BlockMarkerEntry(marker_type="block_start", sample=0, related_id=logical_block_id)]
+            cursor = self._append_edge_audio_prefix(
+                audio_parts=audio_parts,
+                edge_entries=edge_entries,
+                marker_entries=marker_entries,
+                edge=incoming_edge,
+                boundary=incoming_boundary,
+                cursor=0,
+                sample_rate=block_sample_rate,
+            )
             audio = self._full_segment_audio(only_segment)
+            segment_start = cursor
+            segment_end = segment_start + int(audio.size)
+            audio_parts.append(audio)
             segment_entries = [
                 SegmentCompositionEntry(
                     segment_id=only_segment.segment_id,
-                    audio_sample_span=(0, int(audio.size)),
+                    audio_sample_span=(segment_start, segment_end),
                     render_asset_id=self._resolve_segment_entry_asset_id(
                         only_segment.segment_id,
                         only_segment.render_asset_id,
@@ -89,29 +112,31 @@ class CompositionBuilder:
                     source="adapter_exact",
                 )
             ]
-            marker_entries = [
-                BlockMarkerEntry(marker_type="block_start", sample=0, related_id=logical_block_id),
-                BlockMarkerEntry(marker_type="segment_start", sample=0, related_id=only_segment.segment_id),
-                BlockMarkerEntry(marker_type="segment_end", sample=int(audio.size), related_id=only_segment.segment_id),
-                BlockMarkerEntry(marker_type="block_end", sample=int(audio.size), related_id=logical_block_id),
-            ]
+            marker_entries.extend(
+                [
+                    BlockMarkerEntry(marker_type="segment_start", sample=segment_start, related_id=only_segment.segment_id),
+                    BlockMarkerEntry(marker_type="segment_end", sample=segment_end, related_id=only_segment.segment_id),
+                    BlockMarkerEntry(marker_type="block_end", sample=segment_end, related_id=logical_block_id),
+                ]
+            )
+            block_audio = np.concatenate(audio_parts) if audio_parts else np.zeros(0, dtype=np.float32)
             return BlockCompositionAssetPayload(
                 block_id=logical_block_id,
                 block_asset_id=block_asset_id
                 or self._build_block_asset_id(
                     block_id=logical_block_id,
                     segments=segment_entries,
-                    edges=[],
+                    edges=edge_entries,
                     sample_rate=block_sample_rate,
                 ),
                 segment_ids=[only_segment.segment_id],
                 sample_rate=block_sample_rate,
-                audio=audio,
-                audio_sample_count=int(audio.size),
+                audio=block_audio.astype(np.float32, copy=False),
+                audio_sample_count=int(block_audio.size),
                 segment_entries=segment_entries,
                 segment_alignment_mode=effective_alignment_mode,
                 join_report_summary=join_report_summary,
-                edge_entries=[],
+                edge_entries=edge_entries,
                 marker_entries=marker_entries,
             )
 
@@ -122,17 +147,26 @@ class CompositionBuilder:
         marker_entries: list[BlockMarkerEntry] = [
             BlockMarkerEntry(marker_type="block_start", sample=0, related_id=logical_block_id)
         ]
-        cursor = 0
+        cursor = self._append_edge_audio_prefix(
+            audio_parts=audio_parts,
+            edge_entries=edge_entries,
+            marker_entries=marker_entries,
+            edge=incoming_edge,
+            boundary=incoming_boundary,
+            cursor=0,
+            sample_rate=block_sample_rate,
+        )
 
         first = segments[0]
         first_owned_audio = np.concatenate([first.left_margin_audio, first.core_audio]).astype(np.float32, copy=False)
         audio_parts.append(first_owned_audio)
-        cursor = int(first_owned_audio.size)
-        marker_entries.append(BlockMarkerEntry(marker_type="segment_start", sample=0, related_id=first.segment_id))
+        first_start = cursor
+        cursor += int(first_owned_audio.size)
+        marker_entries.append(BlockMarkerEntry(marker_type="segment_start", sample=first_start, related_id=first.segment_id))
         segment_entries.append(
             SegmentCompositionEntry(
                 segment_id=first.segment_id,
-                audio_sample_span=(0, cursor),
+                audio_sample_span=(first_start, cursor),
                 render_asset_id=self._resolve_segment_entry_asset_id(
                     first.segment_id,
                     first.render_asset_id,
@@ -339,6 +373,55 @@ class CompositionBuilder:
         if pause_duration_seconds <= 0:
             return np.zeros(0, dtype=np.float32)
         return np.zeros(int(sample_rate * pause_duration_seconds), dtype=np.float32)
+
+    def _append_edge_audio_prefix(
+        self,
+        *,
+        audio_parts: list[np.ndarray],
+        edge_entries: list[EdgeCompositionEntry],
+        marker_entries: list[BlockMarkerEntry],
+        edge: EditableEdge | None,
+        boundary: BoundaryAssetPayload | None,
+        cursor: int,
+        sample_rate: int,
+    ) -> int:
+        if edge is None:
+            return cursor
+
+        boundary_audio = None if boundary is None else boundary.boundary_audio.astype(np.float32, copy=False)
+        pause_audio = self._pause_audio(edge.pause_duration_seconds, sample_rate=sample_rate)
+        boundary_start = cursor
+        boundary_end = boundary_start + (0 if boundary_audio is None else int(boundary_audio.size))
+        pause_start = boundary_end
+        pause_end = pause_start + int(pause_audio.size)
+
+        if boundary_audio is not None and boundary_audio.size > 0:
+            audio_parts.append(boundary_audio)
+            cursor += int(boundary_audio.size)
+        if pause_audio.size > 0:
+            audio_parts.append(pause_audio)
+            cursor += int(pause_audio.size)
+
+        edge_entries.append(
+            EdgeCompositionEntry(
+                edge_id=edge.edge_id,
+                left_segment_id=edge.left_segment_id,
+                right_segment_id=edge.right_segment_id,
+                boundary_strategy=edge.boundary_strategy,
+                effective_boundary_strategy=edge.effective_boundary_strategy or edge.boundary_strategy,
+                pause_duration_seconds=edge.pause_duration_seconds,
+                boundary_sample_span=(boundary_start, boundary_end),
+                pause_sample_span=(pause_start, pause_end),
+            )
+        )
+        if pause_end > pause_start:
+            marker_entries.append(
+                BlockMarkerEntry(marker_type="edge_gap_start", sample=pause_start, related_id=edge.edge_id)
+            )
+            marker_entries.append(
+                BlockMarkerEntry(marker_type="edge_gap_end", sample=pause_end, related_id=edge.edge_id)
+            )
+        return cursor
 
     @staticmethod
     def _resolve_segment_entry_asset_id(

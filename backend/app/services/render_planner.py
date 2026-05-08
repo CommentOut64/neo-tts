@@ -107,16 +107,13 @@ class RenderPlanner:
         if edge is None:
             raise LookupError(f"Edge '{edge_id}' not found in after_snapshot.")
 
-        changed_segment_ids = {edge.left_segment_id, edge.right_segment_id}
+        changed_segment_ids = {edge.right_segment_id}
         return TargetedRenderPlan(
             target_segment_ids=set(),
             target_edge_ids=set() if pause_only else {edge.edge_id},
             target_block_ids=self._collect_block_ids(after_snapshot, changed_segment_ids),
             compose_only=pause_only,
-            earliest_changed_order_key=min(
-                self._segment_order_key(after_snapshot, edge.left_segment_id),
-                self._segment_order_key(after_snapshot, edge.right_segment_id),
-            ),
+            earliest_changed_order_key=self._segment_order_key(after_snapshot, edge.right_segment_id),
             timeline_reflow_required=True,
             change_reason="edge_pause_update" if pause_only else "edge_boundary_update",
         )

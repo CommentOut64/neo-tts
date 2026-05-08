@@ -19,10 +19,9 @@ from backend.app.inference.block_adapter_types import (
 from backend.app.inference.editable_types import RenderBlock
 from backend.app.schemas.edit_session import DocumentSnapshot, EditableSegment, TimelineManifest
 from backend.app.services.render_execution_plan import (
+    ExecutionBlockPlan,
     ExecutionBoundaryContext,
     ExecutionPlan,
-    ExecutionUnit,
-    FormalBlockPlan,
     build_degradation_policy,
     build_scope_policy,
     normalize_degradation_policy,
@@ -74,8 +73,7 @@ class BlockRenderRequestBuilder:
             render_scope=render_scope,
         )
         requests: list[BlockRenderRequest] = []
-        for formal_block_plan in execution_plan.formal_blocks:
-            requests.extend(unit.request for unit in formal_block_plan.execution_units)
+        requests.extend(block.request for block in execution_plan.blocks)
         return requests
 
     def build_execution_plan(
@@ -90,10 +88,8 @@ class BlockRenderRequestBuilder:
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
         render_scope: RenderScope = "block",
-        force_single_request_block_ids: set[str] | None = None,
     ) -> ExecutionPlan:
-        formal_block_plans: list[FormalBlockPlan] = []
-        forced_block_ids = force_single_request_block_ids or set()
+        execution_blocks: list[ExecutionBlockPlan] = []
         for block in blocks:
             prepared_segments = [
                 _PreparedSegment(segment=resolved_segments[segment_id].segment, resolved=resolved_segments[segment_id])
@@ -110,21 +106,14 @@ class BlockRenderRequestBuilder:
                 previous_timeline=previous_timeline,
                 reuse_policy=reuse_policy,
                 render_scope=render_scope,
-                force_single_request=block.block_id in forced_block_ids,
             )
-            formal_block_plans.append(
-                FormalBlockPlan(
-                    formal_block=block,
-                    execution_units=tuple(
-                        self._build_execution_unit(
-                            request=request,
-                            formal_block=block,
-                        )
-                        for request in requests
-                    ),
+            execution_blocks.extend(
+                self._build_execution_block(
+                    request=request,
                 )
+                for request in requests
             )
-        return ExecutionPlan(formal_blocks=tuple(formal_block_plans))
+        return ExecutionPlan(blocks=tuple(execution_blocks))
 
     def _build_block_requests(
         self,
@@ -138,23 +127,7 @@ class BlockRenderRequestBuilder:
         previous_timeline: TimelineManifest | None,
         reuse_policy: str,
         render_scope: RenderScope,
-        force_single_request: bool = False,
     ) -> list[BlockRenderRequest]:
-        if force_single_request:
-            return [
-                self._build_request_for_scoped_chunk(
-                    snapshot=snapshot,
-                    block=block,
-                    scoped_chunk=ordered_segments,
-                    resolved_edges=resolved_edges,
-                    target_segment_ids=target_segment_ids,
-                    target_edge_ids=target_edge_ids,
-                    previous_timeline=previous_timeline,
-                    reuse_policy=reuse_policy,
-                    render_scope=render_scope,
-                )
-            ]
-
         requests: list[BlockRenderRequest] = []
         cursor = 0
         while cursor < len(ordered_segments):
@@ -208,6 +181,16 @@ class BlockRenderRequestBuilder:
             resolved_edges=resolved_edges,
         )
         join_policy = self._resolve_join_policy(edge_controls)
+        incoming_edge_control = self._build_incoming_edge_control(
+            block=block,
+            chunk=scoped_chunk,
+            snapshot=snapshot,
+            resolved_edges=resolved_edges,
+        )
+        incoming_boundary_context = self._build_incoming_boundary_context(
+            incoming_edge_control=incoming_edge_control,
+            snapshot=snapshot,
+        )
         dirty_context = self._build_dirty_context(
             chunk_segment_ids=chunk_segment_ids,
             edge_controls=edge_controls,
@@ -233,13 +216,12 @@ class BlockRenderRequestBuilder:
                 binding_fingerprint=first_binding.binding_fingerprint,
             ),
             document_id=snapshot.document_id,
-            execution_unit_id=self._build_execution_unit_id(
+            block_execution_id=self._build_block_execution_id(
                 document_id=snapshot.document_id,
-                formal_block_id=block.block_id,
+                block_id=request_block.block_id,
                 execution_segment_ids=chunk_segment_ids,
                 render_scope=render_scope,
             ),
-            formal_block_id=block.block_id,
             render_scope=render_scope,
             escalated_from_scope=None,
             block=request_block,
@@ -261,6 +243,8 @@ class BlockRenderRequestBuilder:
             join_policy=join_policy,
             requested_join_policy=join_policy,
             effective_join_policy=join_policy,
+            incoming_edge_control=incoming_edge_control,
+            incoming_boundary_context=incoming_boundary_context,
             edge_controls=edge_controls,
             boundary_contexts=boundary_contexts,
             reusable_source_assets=reusable_source_assets,
@@ -493,6 +477,40 @@ class BlockRenderRequestBuilder:
         return controls
 
     @staticmethod
+    def _build_incoming_edge_control(
+        *,
+        block: RenderBlock,
+        chunk: list[_PreparedSegment],
+        snapshot: DocumentSnapshot,
+        resolved_edges: dict[str, ResolvedEdgeConfig],
+    ) -> EdgeControl | None:
+        if not chunk:
+            return None
+        first_segment_id = chunk[0].segment.segment_id
+        if first_segment_id == block.segment_ids[0]:
+            return None
+        incoming_edge = next(
+            (edge for edge in snapshot.edges if edge.right_segment_id == first_segment_id),
+            None,
+        )
+        if incoming_edge is None:
+            return None
+        resolved_edge = resolved_edges.get(incoming_edge.edge_id)
+        effective_strategy = (
+            resolved_edge.effective_boundary_strategy
+            if resolved_edge is not None
+            else incoming_edge.boundary_strategy
+        )
+        return EdgeControl(
+            edge_id=incoming_edge.edge_id,
+            left_segment_id=incoming_edge.left_segment_id,
+            right_segment_id=incoming_edge.right_segment_id,
+            pause_duration_seconds=incoming_edge.pause_duration_seconds,
+            join_policy_override=BlockRenderRequestBuilder._map_join_policy(effective_strategy),
+            locked=incoming_edge.boundary_strategy_locked,
+        )
+
+    @staticmethod
     def _build_boundary_contexts(
         *,
         edge_controls: list[EdgeControl],
@@ -521,6 +539,33 @@ class BlockRenderRequestBuilder:
         return contexts
 
     @staticmethod
+    def _build_incoming_boundary_context(
+        *,
+        incoming_edge_control: EdgeControl | None,
+        snapshot: DocumentSnapshot,
+    ) -> BoundaryContext | None:
+        if incoming_edge_control is None:
+            return None
+        snapshot_edge = next(
+            (edge for edge in snapshot.edges if edge.edge_id == incoming_edge_control.edge_id),
+            None,
+        )
+        requested_boundary_strategy = (
+            snapshot_edge.boundary_strategy
+            if snapshot_edge is not None
+            else "crossfade_only"
+        )
+        return BoundaryContext(
+            edge_id=incoming_edge_control.edge_id,
+            left_segment_id=incoming_edge_control.left_segment_id,
+            right_segment_id=incoming_edge_control.right_segment_id,
+            pause_duration_seconds=incoming_edge_control.pause_duration_seconds,
+            requested_boundary_strategy=requested_boundary_strategy,
+            join_policy=incoming_edge_control.join_policy_override or "natural",
+            locked=incoming_edge_control.locked,
+        )
+
+    @staticmethod
     def _build_reusable_source_assets(
         *,
         chunk: list[_PreparedSegment],
@@ -546,14 +591,13 @@ class BlockRenderRequestBuilder:
         return descriptors
 
     @staticmethod
-    def _build_execution_unit(
+    def _build_execution_block(
         *,
         request: BlockRenderRequest,
-        formal_block: RenderBlock,
-    ) -> ExecutionUnit:
-        return ExecutionUnit(
-            execution_unit_id=request.execution_unit_id,
-            formal_block_id=formal_block.block_id,
+    ) -> ExecutionBlockPlan:
+        return ExecutionBlockPlan(
+            block_execution_id=request.block_execution_id,
+            block_id=request.block.block_id,
             request=request,
             segment_ids=tuple(request.block.segment_ids),
             boundary_contexts=tuple(
@@ -657,17 +701,17 @@ class BlockRenderRequestBuilder:
         return f"req-{digest}"
 
     @staticmethod
-    def _build_execution_unit_id(
+    def _build_block_execution_id(
         *,
         document_id: str,
-        formal_block_id: str,
+        block_id: str,
         execution_segment_ids: list[str],
         render_scope: RenderScope,
     ) -> str:
         digest = hashlib.sha1(
-            f"{document_id}|{formal_block_id}|{render_scope}|{','.join(execution_segment_ids)}".encode("utf-8")
+            f"{document_id}|{block_id}|{render_scope}|{','.join(execution_segment_ids)}".encode("utf-8")
         ).hexdigest()[:12]
-        return f"unit-{digest}"
+        return f"block-exec-{digest}"
 
     @staticmethod
     def _build_child_block_id(segment_ids: list[str]) -> str:

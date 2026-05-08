@@ -11,7 +11,6 @@ from backend.app.inference.block_adapter_types import (
     ReusableSourceAssetDescriptor,
     SegmentAlignmentMode,
 )
-from backend.app.inference.editable_types import RenderBlock
 
 
 @dataclass(frozen=True)
@@ -32,9 +31,9 @@ class ExecutionBoundaryContext:
 
 
 @dataclass(frozen=True)
-class ExecutionUnit:
-    execution_unit_id: str
-    formal_block_id: str
+class ExecutionBlockPlan:
+    block_execution_id: str
+    block_id: str
     request: BlockRenderRequest
     segment_ids: tuple[str, ...]
     boundary_contexts: tuple[ExecutionBoundaryContext, ...] = field(default_factory=tuple)
@@ -44,24 +43,11 @@ class ExecutionUnit:
 
 
 @dataclass(frozen=True)
-class FormalBlockPlan:
-    formal_block: RenderBlock
-    execution_units: tuple[ExecutionUnit, ...]
-
-    @property
-    def formal_block_id(self) -> str:
-        return self.formal_block.block_id
-
-
-@dataclass(frozen=True)
 class ExecutionPlan:
-    formal_blocks: tuple[FormalBlockPlan, ...]
+    blocks: tuple[ExecutionBlockPlan, ...] = field(default_factory=tuple)
 
-    def iter_execution_units(self) -> list[ExecutionUnit]:
-        units: list[ExecutionUnit] = []
-        for formal_block in self.formal_blocks:
-            units.extend(formal_block.execution_units)
-        return units
+    def iter_blocks(self) -> list[ExecutionBlockPlan]:
+        return list(self.blocks)
 
 
 def build_scope_policy(request: BlockRenderRequest) -> ScopeEscalationPolicy:
