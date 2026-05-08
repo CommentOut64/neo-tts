@@ -118,8 +118,7 @@ def test_block_render_request_serializes_scope_and_join_policy_protocol():
 
     assert payload["render_scope"] == "segment"
     assert payload["escalated_from_scope"] is None
-    assert payload["execution_unit_id"] == "req-1"
-    assert payload["formal_block_id"] == "block-1"
+    assert payload["block_execution_id"] == "req-1"
     assert payload["requested_join_policy"] == "prefer_enhanced"
     assert payload["effective_join_policy"] == "preserve_pause"
     assert payload["requested_alignment_mode"] == "exact"

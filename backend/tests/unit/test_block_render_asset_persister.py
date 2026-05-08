@@ -11,6 +11,8 @@ from backend.app.inference.block_adapter_types import (
     BlockRenderResult,
     BlockRequestBlock,
     BlockRequestSegment,
+    BoundaryContext,
+    EdgeControl,
     JoinReport,
     ResolvedModelBinding,
     SegmentOutput,
@@ -297,6 +299,65 @@ def test_persister_persists_reusable_base_assets_alongside_exact_formal_outputs(
         ("seg-1", "base-seg-1"),
         ("seg-2", "base-seg-2"),
     ]
+
+
+def test_persister_allows_exact_prefix_before_first_segment_when_block_owns_incoming_edge(tmp_path: Path):
+    store = _build_store(tmp_path)
+    persister = BlockRenderAssetPersister(asset_store=store)
+    request = _build_request().model_copy(
+        update={
+            "incoming_edge_control": EdgeControl(
+                edge_id="edge-before-seg-1",
+                left_segment_id="seg-0",
+                right_segment_id="seg-1",
+                pause_duration_seconds=0.25,
+                join_policy_override="preserve_pause",
+            ),
+            "incoming_boundary_context": BoundaryContext(
+                edge_id="edge-before-seg-1",
+                left_segment_id="seg-0",
+                right_segment_id="seg-1",
+                pause_duration_seconds=0.25,
+                requested_boundary_strategy="latent_overlap_then_equal_power_crossfade",
+                join_policy="preserve_pause",
+            ),
+        }
+    )
+    result = _build_exact_result().model_copy(
+        update={
+            "audio": [0.01, 0.02, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            "audio_sample_count": 10,
+            "segment_outputs": [
+                SegmentOutput(
+                    segment_id="seg-1",
+                    sample_span=SegmentSpan(segment_id="seg-1", sample_start=2, sample_end=5, precision="exact"),
+                    source="adapter_exact",
+                ),
+                SegmentOutput(
+                    segment_id="seg-2",
+                    sample_span=SegmentSpan(segment_id="seg-2", sample_start=5, sample_end=10, precision="exact"),
+                    source="adapter_exact",
+                ),
+            ],
+            "segment_spans": [
+                SegmentSpan(segment_id="seg-1", sample_start=2, sample_end=5, precision="exact"),
+                SegmentSpan(segment_id="seg-2", sample_start=5, sample_end=10, precision="exact"),
+            ],
+        }
+    )
+
+    persisted = persister.persist(
+        job_id="job-prefix",
+        request=request,
+        result=result,
+        block_render_cache_key="cache-prefix",
+    )
+
+    assert persisted.timeline_block.segment_entries[0].audio_sample_span == (2, 5)
+    assert persisted.timeline_block.segment_entries[1].audio_sample_span == (5, 10)
+    assert persisted.timeline_block.edge_entries[0].edge_id == "edge-before-seg-1"
+    assert persisted.timeline_block.edge_entries[0].boundary_sample_span == (0, 1)
+    assert persisted.timeline_block.edge_entries[0].pause_sample_span == (1, 2)
 
 
 def test_persister_does_not_create_formal_segment_audio_for_estimated_or_block_only(tmp_path: Path):

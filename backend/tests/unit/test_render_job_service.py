@@ -54,7 +54,7 @@ from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
-from backend.app.services.render_execution_plan import ExecutionPlan, ExecutionUnit, FormalBlockPlan
+from backend.app.services.render_execution_plan import ExecutionBlockPlan, ExecutionPlan
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
 from backend.app.tts_registry.model_registry import ModelRegistry
@@ -658,6 +658,30 @@ def _build_service(
     )
 
 
+def _single_execution_block_plan(
+    service: RenderJobService,
+    execution_plan: ExecutionPlan,
+) -> ExecutionBlockPlan:
+    assert len(execution_plan.blocks) == 1
+    execution_block = execution_plan.blocks[0]
+    rebuilt_block = service._build_render_block_from_request_block(execution_block.request.block)  # noqa: SLF001
+    assert rebuilt_block.block_id == execution_block.request.block.block_id
+    return execution_block
+
+
+def _incoming_edge_payload_from_request(request, chunk_ids: list[str]):
+    first_segment_id = chunk_ids[0]
+    incoming_edge_control = next(
+        (control for control in request.edge_controls if control.right_segment_id == first_segment_id),
+        None,
+    )
+    incoming_boundary_context = next(
+        (context for context in request.boundary_contexts if context.right_segment_id == first_segment_id),
+        None,
+    )
+    return incoming_edge_control, incoming_boundary_context
+
+
 def test_run_transaction_routes_initialize_to_block_first_pipeline(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     steps: list[str] = []
@@ -808,7 +832,7 @@ def test_block_first_initialize_commits_head_timeline_block_assets_and_reusable_
         assert service._asset_store.segment_asset_path(segment.base_render_asset_id).exists()  # noqa: SLF001
 
 
-def test_block_first_initialize_keeps_non_exact_adapter_formal_block_atomic_even_if_execution_plan_split_is_requested(tmp_path):
+def test_block_first_initialize_allows_non_exact_adapter_execution_block_split_when_editable_backend_is_unavailable(tmp_path):
     service = _build_service(
         tmp_path,
         editable_backend=_UnavailableEditableBackend(),
@@ -826,31 +850,24 @@ def test_block_first_initialize_keeps_non_exact_adapter_formal_block_atomic_even
     )
 
     original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
-    observed_execution_unit_counts: list[int] = []
+    observed_execution_block_counts: list[int] = []
 
     def _force_split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        force_single_request_block_ids = kwargs.get("force_single_request_block_ids") or set()
-        if formal_block_plan.formal_block.block_id in force_single_request_block_ids:
-            observed_execution_unit_counts.append(len(formal_block_plan.execution_units))
-            return execution_plan
-
-        assert len(formal_block_plan.execution_units) == 1
-        original_unit = formal_block_plan.execution_units[0]
-        request = original_unit.request
+        original_block = _single_execution_block_plan(service, execution_plan)
+        request = original_block.request
         segments = list(request.block.segments)
         assert len(segments) == 3
 
         split_requests = []
         for chunk_index, chunk_segments in enumerate((segments[:2], segments[2:]), start=1):
             chunk_ids = [segment.segment_id for segment in chunk_segments]
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(request, chunk_ids)
             split_requests.append(
                 request.model_copy(
                     update={
                         "request_id": f"{request.request_id}-chunk-{chunk_index}",
-                        "execution_unit_id": f"{request.execution_unit_id}-chunk-{chunk_index}",
+                        "block_execution_id": f"{request.block_execution_id}-chunk-{chunk_index}",
                         "block": request.block.model_copy(
                             update={
                                 "block_id": f"{request.block.block_id}-chunk-{chunk_index}",
@@ -871,6 +888,8 @@ def test_block_first_initialize_keeps_non_exact_adapter_formal_block_atomic_even
                             for context in request.boundary_contexts
                             if context.left_segment_id in chunk_ids and context.right_segment_id in chunk_ids
                         ],
+                        "incoming_edge_control": incoming_edge_control,
+                        "incoming_boundary_context": incoming_boundary_context,
                         "reusable_source_assets": [
                             asset
                             for asset in request.reusable_source_assets
@@ -880,19 +899,13 @@ def test_block_first_initialize_keeps_non_exact_adapter_formal_block_atomic_even
                 )
             )
 
-        observed_execution_unit_counts.append(len(split_requests))
+        observed_execution_block_counts.append(len(split_requests))
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(
-                        service._block_render_request_builder._build_execution_unit(  # noqa: SLF001
-                            request=split_request,
-                            formal_block=formal_block_plan.formal_block,
-                        )
-                        for split_request in split_requests
-                    ),
-                ),
+            blocks=tuple(
+                    service._block_render_request_builder._build_execution_block(  # noqa: SLF001
+                        request=split_request,
+                    )
+                for split_request in split_requests
             )
         )
 
@@ -903,14 +916,19 @@ def test_block_first_initialize_keeps_non_exact_adapter_formal_block_atomic_even
     snapshot = service.get_snapshot()
     timeline = service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)  # noqa: SLF001
 
-    assert observed_execution_unit_counts == [1]
+    assert observed_execution_block_counts == [2]
     assert snapshot.session_status == "ready"
     assert snapshot.active_job is None
     assert snapshot.document_version == 1
-    assert len(timeline.block_entries) == 1
+    assert len(timeline.block_entries) == 2
+    second_block = timeline.block_entries[1]
+    third_segment_entry = next(entry for entry in timeline.segment_entries if entry.segment_id == snapshot.segments[2].segment_id)
+    incoming_edge_entry = next(entry for entry in timeline.edge_entries if entry.right_segment_id == snapshot.segments[2].segment_id)
+    assert third_segment_entry.start_sample > second_block.start_sample
+    assert incoming_edge_entry.pause_end_sample == third_segment_entry.start_sample
 
 
-def test_block_first_initialize_keeps_qwen_adapter_formal_block_atomic_when_editable_backend_is_unavailable(tmp_path):
+def test_block_first_initialize_allows_qwen_execution_block_split_when_editable_backend_is_unavailable(tmp_path):
     service = _build_service(
         tmp_path,
         editable_backend=_UnavailableEditableBackend(),
@@ -928,31 +946,24 @@ def test_block_first_initialize_keeps_qwen_adapter_formal_block_atomic_when_edit
     )
 
     original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
-    observed_execution_unit_counts: list[int] = []
+    observed_execution_block_counts: list[int] = []
 
     def _force_split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        force_single_request_block_ids = kwargs.get("force_single_request_block_ids") or set()
-        if formal_block_plan.formal_block.block_id in force_single_request_block_ids:
-            observed_execution_unit_counts.append(len(formal_block_plan.execution_units))
-            return execution_plan
-
-        assert len(formal_block_plan.execution_units) == 1
-        original_unit = formal_block_plan.execution_units[0]
-        request = original_unit.request
+        original_block = _single_execution_block_plan(service, execution_plan)
+        request = original_block.request
         segments = list(request.block.segments)
         assert len(segments) == 3
 
         split_requests = []
         for chunk_index, chunk_segments in enumerate((segments[:2], segments[2:]), start=1):
             chunk_ids = [segment.segment_id for segment in chunk_segments]
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(request, chunk_ids)
             split_requests.append(
                 request.model_copy(
                     update={
                         "request_id": f"{request.request_id}-chunk-{chunk_index}",
-                        "execution_unit_id": f"{request.execution_unit_id}-chunk-{chunk_index}",
+                        "block_execution_id": f"{request.block_execution_id}-chunk-{chunk_index}",
                         "block": request.block.model_copy(
                             update={
                                 "block_id": f"{request.block.block_id}-chunk-{chunk_index}",
@@ -973,6 +984,8 @@ def test_block_first_initialize_keeps_qwen_adapter_formal_block_atomic_when_edit
                             for context in request.boundary_contexts
                             if context.left_segment_id in chunk_ids and context.right_segment_id in chunk_ids
                         ],
+                        "incoming_edge_control": incoming_edge_control,
+                        "incoming_boundary_context": incoming_boundary_context,
                         "reusable_source_assets": [
                             asset
                             for asset in request.reusable_source_assets
@@ -982,19 +995,13 @@ def test_block_first_initialize_keeps_qwen_adapter_formal_block_atomic_when_edit
                 )
             )
 
-        observed_execution_unit_counts.append(len(split_requests))
+        observed_execution_block_counts.append(len(split_requests))
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(
-                        service._block_render_request_builder._build_execution_unit(  # noqa: SLF001
-                            request=split_request,
-                            formal_block=formal_block_plan.formal_block,
-                        )
-                        for split_request in split_requests
-                    ),
-                ),
+            blocks=tuple(
+                    service._block_render_request_builder._build_execution_block(  # noqa: SLF001
+                        request=split_request,
+                    )
+                for split_request in split_requests
             )
         )
 
@@ -1003,14 +1010,20 @@ def test_block_first_initialize_keeps_qwen_adapter_formal_block_atomic_when_edit
     service.run_initialize_job(accepted.job.job_id)
 
     snapshot = service.get_snapshot()
+    timeline = service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)  # noqa: SLF001
     job = service.get_job(accepted.job.job_id)
 
-    assert observed_execution_unit_counts == [1]
+    assert observed_execution_block_counts == [2]
     assert job is not None
     assert job.status == "completed"
     assert snapshot.session_status == "ready"
     assert snapshot.active_job is None
     assert snapshot.document_version == 1
+    second_block = timeline.block_entries[1]
+    third_segment_entry = next(entry for entry in timeline.segment_entries if entry.segment_id == snapshot.segments[2].segment_id)
+    incoming_edge_entry = next(entry for entry in timeline.edge_entries if entry.right_segment_id == snapshot.segments[2].segment_id)
+    assert third_segment_entry.start_sample > second_block.start_sample
+    assert incoming_edge_entry.pause_end_sample == third_segment_entry.start_sample
 
 
 def test_build_default_configuration_writes_custom_reference_into_binding_override_map():
@@ -1899,7 +1912,7 @@ def test_segment_swap_does_not_build_reference_context_again(tmp_path, monkeypat
     assert build_context_calls == 0
 
 
-def test_segment_reorder_only_builds_boundary_context_when_boundary_asset_must_be_rebuilt(tmp_path, monkeypatch):
+def test_segment_reorder_does_not_build_boundary_context_again_under_flat_execution_blocks(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -2206,17 +2219,18 @@ def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_
 
     def _split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        assert len(formal_block_plan.execution_units) == 1
-        original_unit = formal_block_plan.execution_units[0]
-        split_units: list[ExecutionUnit] = []
-        for segment in original_unit.request.block.segments:
-            split_request = original_unit.request.model_copy(
+        original_block = _single_execution_block_plan(service, execution_plan)
+        split_units: list[ExecutionBlockPlan] = []
+        for segment in original_block.request.block.segments:
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(
+                original_block.request,
+                [segment.segment_id],
+            )
+            split_request = original_block.request.model_copy(
                 update={
-                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
-                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
-                    "block": original_unit.request.block.model_copy(
+                    "request_id": f"{original_block.request.request_id}-{segment.segment_id}",
+                    "block_execution_id": f"{original_block.request.block_execution_id}-{segment.segment_id}",
+                    "block": original_block.request.block.model_copy(
                         update={
                             "block_id": f"block-{segment.segment_id}",
                             "segment_ids": [segment.segment_id],
@@ -2228,32 +2242,29 @@ def test_block_first_boundary_rebuild_uses_base_render_assets_when_exact_assets_
                     ),
                     "edge_controls": [],
                     "boundary_contexts": [],
+                    "incoming_edge_control": incoming_edge_control,
+                    "incoming_boundary_context": incoming_boundary_context,
                     "reusable_source_assets": [
                         asset
-                        for asset in original_unit.request.reusable_source_assets
+                        for asset in original_block.request.reusable_source_assets
                         if asset.segment_id == segment.segment_id
                     ],
                 }
             )
             split_units.append(
-                ExecutionUnit(
-                    execution_unit_id=split_request.execution_unit_id,
-                    formal_block_id=formal_block_plan.formal_block_id,
+                ExecutionBlockPlan(
+                    block_execution_id=split_request.block_execution_id,
+                    block_id=split_request.block.block_id,
                     request=split_request,
                     segment_ids=(segment.segment_id,),
                     boundary_contexts=(),
                     reusable_source_assets=tuple(split_request.reusable_source_assets),
-                    scope_policy=original_unit.scope_policy,
-                    degradation_policy=original_unit.degradation_policy,
+                    scope_policy=original_block.scope_policy,
+                    degradation_policy=original_block.degradation_policy,
                 )
             )
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(split_units),
-                ),
-            )
+            blocks=tuple(split_units)
         )
 
     monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
@@ -2338,16 +2349,18 @@ def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, m
 
     def _split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        original_unit = formal_block_plan.execution_units[0]
-        split_units: list[ExecutionUnit] = []
-        for segment in original_unit.request.block.segments:
-            split_request = original_unit.request.model_copy(
+        original_block = _single_execution_block_plan(service, execution_plan)
+        split_units: list[ExecutionBlockPlan] = []
+        for segment in original_block.request.block.segments:
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(
+                original_block.request,
+                [segment.segment_id],
+            )
+            split_request = original_block.request.model_copy(
                 update={
-                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
-                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
-                    "block": original_unit.request.block.model_copy(
+                    "request_id": f"{original_block.request.request_id}-{segment.segment_id}",
+                    "block_execution_id": f"{original_block.request.block_execution_id}-{segment.segment_id}",
+                    "block": original_block.request.block.model_copy(
                         update={
                             "block_id": f"block-{segment.segment_id}",
                             "segment_ids": [segment.segment_id],
@@ -2359,32 +2372,29 @@ def test_block_first_initialize_persists_callback_base_render_assets(tmp_path, m
                     ),
                     "edge_controls": [],
                     "boundary_contexts": [],
+                    "incoming_edge_control": incoming_edge_control,
+                    "incoming_boundary_context": incoming_boundary_context,
                     "reusable_source_assets": [
                         asset
-                        for asset in original_unit.request.reusable_source_assets
+                        for asset in original_block.request.reusable_source_assets
                         if asset.segment_id == segment.segment_id
                     ],
                 }
             )
             split_units.append(
-                ExecutionUnit(
-                    execution_unit_id=split_request.execution_unit_id,
-                    formal_block_id=formal_block_plan.formal_block_id,
+                ExecutionBlockPlan(
+                    block_execution_id=split_request.block_execution_id,
+                    block_id=split_request.block.block_id,
                     request=split_request,
                     segment_ids=(segment.segment_id,),
                     boundary_contexts=(),
                     reusable_source_assets=tuple(split_request.reusable_source_assets),
-                    scope_policy=original_unit.scope_policy,
-                    degradation_policy=original_unit.degradation_policy,
+                    scope_policy=original_block.scope_policy,
+                    degradation_policy=original_block.degradation_policy,
                 )
             )
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(split_units),
-                ),
-            )
+            blocks=tuple(split_units)
         )
 
     monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
@@ -2465,16 +2475,18 @@ def test_block_first_boundary_rebuild_downgrades_to_crossfade_only_when_only_exa
 
     def _split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        original_unit = formal_block_plan.execution_units[0]
-        split_units: list[ExecutionUnit] = []
-        for segment in original_unit.request.block.segments:
-            split_request = original_unit.request.model_copy(
+        original_block = _single_execution_block_plan(service, execution_plan)
+        split_units: list[ExecutionBlockPlan] = []
+        for segment in original_block.request.block.segments:
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(
+                original_block.request,
+                [segment.segment_id],
+            )
+            split_request = original_block.request.model_copy(
                 update={
-                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
-                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
-                    "block": original_unit.request.block.model_copy(
+                    "request_id": f"{original_block.request.request_id}-{segment.segment_id}",
+                    "block_execution_id": f"{original_block.request.block_execution_id}-{segment.segment_id}",
+                    "block": original_block.request.block.model_copy(
                         update={
                             "block_id": f"block-{segment.segment_id}",
                             "segment_ids": [segment.segment_id],
@@ -2486,32 +2498,29 @@ def test_block_first_boundary_rebuild_downgrades_to_crossfade_only_when_only_exa
                     ),
                     "edge_controls": [],
                     "boundary_contexts": [],
+                    "incoming_edge_control": incoming_edge_control,
+                    "incoming_boundary_context": incoming_boundary_context,
                     "reusable_source_assets": [
                         asset
-                        for asset in original_unit.request.reusable_source_assets
+                        for asset in original_block.request.reusable_source_assets
                         if asset.segment_id == segment.segment_id
                     ],
                 }
             )
             split_units.append(
-                ExecutionUnit(
-                    execution_unit_id=split_request.execution_unit_id,
-                    formal_block_id=formal_block_plan.formal_block_id,
+                ExecutionBlockPlan(
+                    block_execution_id=split_request.block_execution_id,
+                    block_id=split_request.block.block_id,
                     request=split_request,
                     segment_ids=(segment.segment_id,),
                     boundary_contexts=(),
                     reusable_source_assets=tuple(split_request.reusable_source_assets),
-                    scope_policy=original_unit.scope_policy,
-                    degradation_policy=original_unit.degradation_policy,
+                    scope_policy=original_block.scope_policy,
+                    degradation_policy=original_block.degradation_policy,
                 )
             )
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(split_units),
-                ),
-            )
+            blocks=tuple(split_units)
         )
 
     monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
@@ -2905,7 +2914,7 @@ def test_cancel_job_requests_runtime_cancel(tmp_path):
     assert job.status == "cancel_requested"
 
 
-def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_partial(tmp_path, monkeypatch):
+def test_initialize_job_cancel_after_first_execution_block_becomes_cancelled_partial(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(
         InitializeEditSessionRequest(
@@ -2913,21 +2922,23 @@ def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_part
             voice_id="demo",
         )
     )
+    initial_head_snapshot_id = service._repository.get_active_session().head_snapshot_id  # noqa: SLF001
     original_build_execution_plan = service._block_render_request_builder.build_execution_plan  # noqa: SLF001
 
     def _split_initialize_execution_plan(**kwargs):
         execution_plan = original_build_execution_plan(**kwargs)
-        assert len(execution_plan.formal_blocks) == 1
-        formal_block_plan = execution_plan.formal_blocks[0]
-        assert len(formal_block_plan.execution_units) == 1
-        original_unit = formal_block_plan.execution_units[0]
-        split_units: list[ExecutionUnit] = []
-        for segment in original_unit.request.block.segments:
-            split_request = original_unit.request.model_copy(
+        original_block = _single_execution_block_plan(service, execution_plan)
+        split_units: list[ExecutionBlockPlan] = []
+        for segment in original_block.request.block.segments:
+            incoming_edge_control, incoming_boundary_context = _incoming_edge_payload_from_request(
+                original_block.request,
+                [segment.segment_id],
+            )
+            split_request = original_block.request.model_copy(
                 update={
-                    "request_id": f"{original_unit.request.request_id}-{segment.segment_id}",
-                    "execution_unit_id": f"{original_unit.request.execution_unit_id}-{segment.segment_id}",
-                    "block": original_unit.request.block.model_copy(
+                    "request_id": f"{original_block.request.request_id}-{segment.segment_id}",
+                    "block_execution_id": f"{original_block.request.block_execution_id}-{segment.segment_id}",
+                    "block": original_block.request.block.model_copy(
                         update={
                             "block_id": f"block-{segment.segment_id}",
                             "segment_ids": [segment.segment_id],
@@ -2939,37 +2950,34 @@ def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_part
                     ),
                     "edge_controls": [],
                     "boundary_contexts": [],
+                    "incoming_edge_control": incoming_edge_control,
+                    "incoming_boundary_context": incoming_boundary_context,
                     "reusable_source_assets": [
                         asset
-                        for asset in original_unit.request.reusable_source_assets
+                        for asset in original_block.request.reusable_source_assets
                         if asset.segment_id == segment.segment_id
                     ],
                 }
             )
             split_units.append(
-                ExecutionUnit(
-                    execution_unit_id=split_request.execution_unit_id,
-                    formal_block_id=formal_block_plan.formal_block_id,
+                ExecutionBlockPlan(
+                    block_execution_id=split_request.block_execution_id,
+                    block_id=split_request.block.block_id,
                     request=split_request,
                     segment_ids=(segment.segment_id,),
                     boundary_contexts=(),
                     reusable_source_assets=tuple(split_request.reusable_source_assets),
-                    scope_policy=original_unit.scope_policy,
-                    degradation_policy=original_unit.degradation_policy,
+                    scope_policy=original_block.scope_policy,
+                    degradation_policy=original_block.degradation_policy,
                 )
             )
         return ExecutionPlan(
-            formal_blocks=(
-                FormalBlockPlan(
-                    formal_block=formal_block_plan.formal_block,
-                    execution_units=tuple(split_units),
-                ),
-            )
+            blocks=tuple(split_units)
         )
 
     cancel_requested = False
 
-    class _CancelAfterFirstExecutionUnitAdapter(_FakeBlockAdapter):
+    class _CancelAfterFirstExecutionBlockAdapter(_FakeBlockAdapter):
         def render_block(self, request):
             nonlocal cancel_requested
             result = super().render_block(request)
@@ -2980,7 +2988,7 @@ def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_part
             return result
 
     monkeypatch.setattr(service._block_render_request_builder, "build_execution_plan", _split_initialize_execution_plan)  # noqa: SLF001
-    service._block_adapter_selector = lambda adapter_id, **kwargs: _CancelAfterFirstExecutionUnitAdapter(
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _CancelAfterFirstExecutionBlockAdapter(
         cancellation_checker=kwargs.get("cancellation_checker"),
         segment_asset_callback=kwargs.get("segment_asset_callback"),
     )  # noqa: SLF001
@@ -2989,11 +2997,14 @@ def test_initialize_job_cancel_after_first_execution_unit_becomes_cancelled_part
 
     job = service.get_job(accepted.job.job_id)
     checkpoint = service._checkpoint_service.get_current_checkpoint(accepted.job.document_id)  # noqa: SLF001
+    active_session = service._repository.get_active_session()  # noqa: SLF001
 
     assert job is not None
     assert job.status == "cancelled_partial"
     assert checkpoint is not None
     assert checkpoint.status == "cancelled_partial"
+    assert active_session is not None
+    assert active_session.head_snapshot_id == initial_head_snapshot_id
 
 
 def test_create_resume_job_accepts_resumable_checkpoint(tmp_path):
@@ -3024,12 +3035,11 @@ def test_create_resume_job_accepts_resumable_checkpoint(tmp_path):
             document_id=checkpoint.document_id,
             job_id=checkpoint.job_id,
             document_version=checkpoint.document_version,
-            head_snapshot_id=checkpoint.head_snapshot_id,
-            timeline_manifest_id=checkpoint.timeline_manifest_id,
+            partial_snapshot_id=checkpoint.partial_snapshot_id,
+            partial_timeline_manifest_id=checkpoint.partial_timeline_manifest_id,
             working_snapshot_id=checkpoint.working_snapshot_id,
-            next_segment_cursor=checkpoint.next_segment_cursor,
-            completed_segment_ids=list(checkpoint.completed_segment_ids),
-            remaining_segment_ids=list(checkpoint.remaining_segment_ids),
+            completed_blocks=list(checkpoint.completed_blocks),
+            remaining_blocks=list(checkpoint.remaining_blocks),
             status="resumable",
             resume_token=checkpoint.resume_token,
             updated_at=checkpoint.updated_at,
