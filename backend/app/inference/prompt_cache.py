@@ -74,6 +74,17 @@ class PromptCache:
         with self._lock:
             return len(self._entries)
 
+    def delete(self, key: PromptCacheKey) -> bool:
+        with self._lock:
+            removed = self._entries.pop(key, None)
+            return removed is not None
+
+    def clear(self) -> int:
+        with self._lock:
+            removed_count = len(self._entries)
+            self._entries.clear()
+            return removed_count
+
     @staticmethod
     def _normalize_entry(entry: PromptCacheEntry) -> PromptCacheEntry:
         return PromptCacheEntry(

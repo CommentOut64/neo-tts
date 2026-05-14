@@ -10,6 +10,7 @@ from backend.app.services.edit_session_runtime import EditSessionRuntime
 from backend.app.services.inference_residual_service import InferenceResidualService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.owner_control_client import OwnerControlClient
+from backend.app.services.session_prepared_context_service import SessionPreparedContextService
 
 
 class AppExitService:
@@ -23,6 +24,7 @@ class AppExitService:
         residual_service: InferenceResidualService,
         model_cache: Any | None = None,
         editable_inference_gateway_cache: dict[tuple[str, str], Any] | None = None,
+        session_prepared_context_service: SessionPreparedContextService | None = None,
         owner_control_client: OwnerControlClient | None = None,
     ) -> None:
         self._settings = settings
@@ -32,6 +34,7 @@ class AppExitService:
         self._residual_service = residual_service
         self._model_cache = model_cache
         self._editable_inference_gateway_cache = editable_inference_gateway_cache
+        self._session_prepared_context_service = session_prepared_context_service
         self._owner_control_client = owner_control_client or OwnerControlClient(
             origin=settings.owner_control_origin,
             token=settings.owner_control_token,
@@ -76,6 +79,8 @@ class AppExitService:
             return False
 
     def _release_inference_resources(self) -> None:
+        if self._session_prepared_context_service is not None:
+            self._session_prepared_context_service.clear_all()
         if self._editable_inference_gateway_cache:
             for gateway in list(self._editable_inference_gateway_cache.values()):
                 clear_backend = getattr(gateway, "clear_backend", None)

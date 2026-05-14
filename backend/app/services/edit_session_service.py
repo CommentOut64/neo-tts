@@ -24,6 +24,7 @@ from backend.app.schemas.edit_session import (
 )
 from backend.app.services.edit_asset_store import EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
+from backend.app.services.session_prepared_context_service import SessionPreparedContextService
 from backend.app.services.session_reference_asset_service import (
     SessionReferenceAsset,
     SessionReferenceAssetService,
@@ -44,11 +45,13 @@ class EditSessionService:
         runtime: EditSessionRuntime,
         workspace_service: WorkspaceService | None = None,
         session_reference_asset_service: SessionReferenceAssetService | None = None,
+        session_prepared_context_service: SessionPreparedContextService | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
         self._runtime = runtime
         self._workspace_service = workspace_service
+        self._session_prepared_context_service = session_prepared_context_service
         self._session_reference_asset_service = session_reference_asset_service or SessionReferenceAssetService(
             assets_root=asset_store.assets_root
         )
@@ -363,10 +366,13 @@ class EditSessionService:
 
     def delete_session(self) -> None:
         active_session = self._repository.get_active_session()
+        active_document_id = active_session.document_id if active_session is not None else None
         active_job_id = active_session.active_job_id if active_session is not None else None
         if active_job_id is not None:
             self._runtime.request_cancel(active_job_id)
             self._runtime.wait_for_job_terminal(active_job_id)
+        if active_document_id is not None and self._session_prepared_context_service is not None:
+            self._session_prepared_context_service.clear_session(active_document_id)
         self._repository.clear()
         self._asset_store.clear_all()
         self._runtime.reset()

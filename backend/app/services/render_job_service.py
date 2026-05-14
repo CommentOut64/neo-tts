@@ -112,8 +112,10 @@ from backend.app.text.segment_standardizer import (
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.block_adapter_types import BoundaryResult, SegmentScopeUnsupported
+from backend.app.inference.prepared_context_types import PreparedContextDescriptor, PreparedContextEntry
 from backend.app.tts_registry.model_registry import ModelRegistry
 from backend.app.tts_registry.secret_store import SecretStore
+from backend.app.services.session_prepared_context_service import SessionPreparedContextService
 
 render_job_logger = get_logger("render_job_service")
 
@@ -222,6 +224,7 @@ class RenderJobService:
         block_render_request_builder: BlockRenderRequestBuilder | None = None,
         block_render_asset_persister: BlockRenderAssetPersister | None = None,
         block_adapter_selector: Callable[..., object] | None = None,
+        session_prepared_context_service: SessionPreparedContextService | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -254,6 +257,7 @@ class RenderJobService:
         self._block_render_request_builder = block_render_request_builder
         self._block_render_asset_persister = block_render_asset_persister
         self._block_adapter_selector = block_adapter_selector
+        self._session_prepared_context_service = session_prepared_context_service
         self._render_asset_lifecycle = RenderAssetLifecycle(
             repository=repository,
             asset_store=asset_store,
@@ -820,11 +824,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="session_render_profile_commit",
+        )
+        return response
 
     def commit_patch_session_voice_binding(self, patch: VoiceBindingPatchRequest) -> ConfigurationCommitResponse:
         self._assert_can_commit_configuration()
@@ -839,11 +850,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="session_voice_binding_commit",
+        )
+        return response
 
     def commit_patch_segment_render_profile(
         self,
@@ -868,11 +886,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="segment_render_profile_commit",
+        )
+        return response
 
     def commit_patch_segment_voice_binding(
         self,
@@ -901,11 +926,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="segment_voice_binding_commit",
+        )
+        return response
 
     def commit_patch_segments_render_profile_batch(
         self,
@@ -929,11 +961,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="segment_render_profile_batch_commit",
+        )
+        return response
 
     def commit_patch_segments_voice_binding_batch(
         self,
@@ -961,11 +1000,18 @@ class RenderJobService:
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
         )
-        return self._session_service.commit_configuration_snapshot(
+        response = self._session_service.commit_configuration_snapshot(
             before_snapshot=before_snapshot,
             after_snapshot=after_snapshot,
             pending_segment_ids=changed_segment_ids,
         )
+        self._schedule_prepared_context_prewarm(
+            snapshot=after_snapshot,
+            target_segment_ids=changed_segment_ids,
+            target_edge_ids=set(),
+            reason="segment_voice_binding_batch_commit",
+        )
+        return response
 
     def create_rerender_segment_job(self, segment_id: str) -> RenderJobAcceptedResponse:
         before_snapshot = self._session_service.get_head_snapshot()
@@ -1614,7 +1660,7 @@ class RenderJobService:
                 )
                 escalated_to_block_scope = False
                 try:
-                    result = adapter.render_block(request)
+                    result = self._render_block_with_prepared_contexts(adapter=adapter, request=request)
                     result = self._prefix_incoming_edge_on_block_result(
                         plan=plan,
                         snapshot=temporary_snapshot,
@@ -1666,7 +1712,10 @@ class RenderJobService:
                                 request_state=request_state,
                             ),
                         )
-                        escalated_result = escalated_adapter.render_block(escalated_request)
+                        escalated_result = self._render_block_with_prepared_contexts(
+                            adapter=escalated_adapter,
+                            request=escalated_request,
+                        )
                         escalated_result = self._prefix_incoming_edge_on_block_result(
                             plan=plan,
                             snapshot=temporary_snapshot,
@@ -2313,6 +2362,219 @@ class RenderJobService:
             cancellation_checker=kwargs.get("cancellation_checker"),
             segment_asset_callback=kwargs.get("segment_asset_callback"),
         )
+
+    def _schedule_prepared_context_prewarm(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+        reason: str,
+    ) -> None:
+        if (
+            self._session_prepared_context_service is None
+            or self._block_render_request_builder is None
+            or not snapshot.segments
+        ):
+            return
+        snapshot_copy = snapshot.model_copy(deep=True)
+        segment_ids = set(target_segment_ids)
+        edge_ids = set(target_edge_ids)
+
+        def _runner() -> None:
+            try:
+                self._run_prepared_context_prewarm(
+                    snapshot=snapshot_copy,
+                    target_segment_ids=segment_ids,
+                    target_edge_ids=edge_ids,
+                    reason=reason,
+                )
+            except Exception as exc:
+                render_job_logger.warning(
+                    "prepared context prewarm failed session_id={} prepared_context_reason={} error={}",
+                    snapshot_copy.document_id,
+                    reason,
+                    str(exc),
+                )
+
+        if self._run_jobs_in_background:
+            worker = threading.Thread(target=_runner, daemon=True)
+            worker.start()
+            return
+        _runner()
+
+    def _run_prepared_context_prewarm(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+        reason: str,
+    ) -> None:
+        request = self._build_prepared_context_prewarm_request(
+            snapshot=snapshot,
+            target_segment_ids=target_segment_ids,
+            target_edge_ids=target_edge_ids,
+        )
+        if request is None:
+            render_job_logger.info(
+                "prepared context prewarm skipped session_id={} prepared_context_reason={} detail=no_request",
+                snapshot.document_id,
+                reason,
+            )
+            return
+        adapter = self._select_block_adapter(request.model_binding.adapter_id)
+        prepared_contexts = self._resolve_prepared_contexts_for_adapter(
+            adapter=adapter,
+            request=request,
+            reason=reason,
+        )
+        if prepared_contexts is None:
+            render_job_logger.info(
+                "prepared context prewarm skipped session_id={} adapter_id={} prepared_context_reason={} detail=adapter_unsupported",
+                snapshot.document_id,
+                request.model_binding.adapter_id,
+                reason,
+            )
+            return
+        render_job_logger.info(
+            "prepared context prewarm completed session_id={} adapter_id={} prepared_context_reason={} prepared_context_count={}",
+            snapshot.document_id,
+            request.model_binding.adapter_id,
+            reason,
+            len(prepared_contexts),
+        )
+
+    def _build_prepared_context_prewarm_request(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+    ):
+        if self._block_render_request_builder is None or not snapshot.segments:
+            return None
+        resolved_segments = {
+            segment.segment_id: self._render_config_resolver.resolve_segment(
+                snapshot=snapshot,
+                segment_id=segment.segment_id,
+            )
+            for segment in snapshot.segments
+        }
+        resolved_edges = {
+            edge.edge_id: self._render_config_resolver.resolve_edge(
+                snapshot=snapshot,
+                edge_id=edge.edge_id,
+            )
+            for edge in snapshot.edges
+        }
+        previous_timeline = None
+        if snapshot.timeline_manifest_id:
+            previous_timeline = self._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id)
+        effective_target_segment_ids = set(target_segment_ids) or {snapshot.segments[0].segment_id}
+        execution_plan = self._block_render_request_builder.build_execution_plan(
+            snapshot=snapshot,
+            blocks=self._block_planner.build_blocks(snapshot.segments),
+            resolved_segments=resolved_segments,
+            resolved_edges=resolved_edges,
+            target_segment_ids=effective_target_segment_ids,
+            target_edge_ids=set(target_edge_ids),
+            previous_timeline=previous_timeline,
+            reuse_policy="prefer_reuse",
+            render_scope="segment",
+        )
+        execution_blocks = list(execution_plan.blocks)
+        if not execution_blocks:
+            return None
+        return execution_blocks[0].request
+
+    def _render_block_with_prepared_contexts(self, *, adapter: object, request) -> BlockRenderResult:
+        prepared_contexts = self._resolve_prepared_contexts_for_adapter(
+            adapter=adapter,
+            request=request,
+            reason="render",
+        )
+        if prepared_contexts is None:
+            return adapter.render_block(request)
+        return adapter.render_block(request, prepared_contexts=prepared_contexts)
+
+    def _resolve_prepared_contexts_for_adapter(
+        self,
+        *,
+        adapter: object,
+        request,
+        reason: str,
+    ) -> dict[str, PreparedContextEntry] | None:
+        if self._session_prepared_context_service is None:
+            return None
+        describe = getattr(adapter, "describe_prepared_contexts", None)
+        build = getattr(adapter, "build_prepared_context", None)
+        if not callable(describe) or not callable(build):
+            return None
+        descriptors = describe(request)
+        if not descriptors:
+            return {}
+        normalized_descriptors = [
+            descriptor
+            if isinstance(descriptor, PreparedContextDescriptor)
+            else PreparedContextDescriptor(**descriptor)
+            for descriptor in descriptors
+        ]
+        prepared_contexts: dict[str, PreparedContextEntry] = {}
+        for descriptor in normalized_descriptors:
+            cached_entry = self._session_prepared_context_service.get(
+                session_id=request.document_id,
+                cache_key=descriptor.cache_key,
+            )
+            if cached_entry is not None:
+                prepared_contexts[descriptor.cache_key] = cached_entry
+                stats = self._session_prepared_context_service.stats()
+                render_job_logger.info(
+                    "prepared context resolved session_id={} adapter_id={} prepared_context_key={} prepared_context_result=hit prepared_context_reason={} prepared_context_count={} prepared_context_total_bytes={}",
+                    request.document_id,
+                    descriptor.adapter_id,
+                    descriptor.cache_key,
+                    reason,
+                    stats.entry_count,
+                    stats.total_estimated_bytes,
+                )
+                continue
+            build_started = time.perf_counter()
+            entry = self._build_prepared_context_entry(
+                build=build,
+                request=request,
+                descriptor=descriptor,
+            )
+            self._session_prepared_context_service.put(
+                session_id=request.document_id,
+                entry=entry,
+            )
+            prepared_contexts[descriptor.cache_key] = entry
+            stats = self._session_prepared_context_service.stats()
+            render_job_logger.info(
+                "prepared context resolved session_id={} adapter_id={} prepared_context_key={} prepared_context_result=miss prepared_context_reason={} prepared_context_build_ms={:.2f} prepared_context_estimated_bytes={} prepared_context_count={} prepared_context_total_bytes={}",
+                request.document_id,
+                descriptor.adapter_id,
+                descriptor.cache_key,
+                reason,
+                (time.perf_counter() - build_started) * 1000,
+                max(0, int(entry.estimated_bytes)),
+                stats.entry_count,
+                stats.total_estimated_bytes,
+            )
+        return prepared_contexts
+
+    @staticmethod
+    def _build_prepared_context_entry(
+        *,
+        build,
+        request,
+        descriptor: PreparedContextDescriptor,
+    ) -> PreparedContextEntry:
+        entry = build(request, descriptor)
+        if isinstance(entry, PreparedContextEntry):
+            return entry
+        return PreparedContextEntry(**entry)
 
     def _prepare(self, plan: RenderPlan) -> None:
         self._ensure_not_cancelled(plan.job_id)

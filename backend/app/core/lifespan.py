@@ -9,7 +9,6 @@ from fastapi import FastAPI
 
 from backend.app.core.logging import get_logger
 from backend.app.core.path_resolution import resolve_runtime_path
-from backend.app.inference.qwen3_tts_runtime import Qwen3TTSRuntime
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.tts_registry.adapter_definition_store import build_default_adapter_definition_store
@@ -27,6 +26,7 @@ from backend.app.services.export_service import ExportService
 from backend.app.inference.external_http_rate_limiter import ExternalHttpRateLimiter
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
+from backend.app.services.session_prepared_context_service import SessionPreparedContextService
 from backend.app.services.synthesis_result_store import SynthesisResultStore
 
 lifespan_logger = get_logger("lifespan")
@@ -147,16 +147,16 @@ async def app_lifespan(app: FastAPI):
         enable_gpt_sovits_local=getattr(settings, "gpt_sovits_adapter_installed", True),
         enable_qwen3_tts_local=getattr(settings, "qwen3_tts_adapter_installed", False),
     )
-    qwen3_tts_runtime = (
-        Qwen3TTSRuntime(
+    qwen3_tts_runtime = None
+    if getattr(settings, "qwen3_tts_adapter_installed", False):
+        from backend.app.inference.qwen3_tts_runtime import Qwen3TTSRuntime
+
+        qwen3_tts_runtime = Qwen3TTSRuntime(
             qwen3_tts_root=getattr(settings, "qwen3_tts_root", None),
             default_device=getattr(settings, "qwen3_tts_default_device", "cuda:0"),
             default_dtype=getattr(settings, "qwen3_tts_default_dtype", "bfloat16"),
             default_attn_implementation=getattr(settings, "qwen3_tts_default_attn_implementation", "flash_attention_2"),
         )
-        if getattr(settings, "qwen3_tts_adapter_installed", False)
-        else None
-    )
     workspace_service = WorkspaceService(
         adapter_store=adapter_definition_store,
         workspace_store=workspace_store,
@@ -168,6 +168,7 @@ async def app_lifespan(app: FastAPI):
     block_render_asset_persister = BlockRenderAssetPersister(asset_store=edit_asset_store)
     external_http_rate_limiter = ExternalHttpRateLimiter()
     edit_session_runtime = EditSessionRuntime()
+    session_prepared_context_service = SessionPreparedContextService()
     edit_session_export_service = ExportService(
         repository=edit_session_repository,
         asset_store=edit_asset_store,
@@ -195,6 +196,7 @@ async def app_lifespan(app: FastAPI):
     app.state.block_render_asset_persister = block_render_asset_persister
     app.state.external_http_rate_limiter = external_http_rate_limiter
     app.state.edit_session_runtime = edit_session_runtime
+    app.state.session_prepared_context_service = session_prepared_context_service
     app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service
     app.state.edit_session_cleanup_task = cleanup_task

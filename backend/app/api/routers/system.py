@@ -50,6 +50,7 @@ def _build_app_exit_service(request: Request) -> AppExitService:
         residual_service=_build_inference_residual_service(request),
         model_cache=getattr(request.app.state, "model_cache", None),
         editable_inference_gateway_cache=getattr(request.app.state, "editable_inference_gateway_cache", None),
+        session_prepared_context_service=getattr(request.app.state, "session_prepared_context_service", None),
     )
 
 def _open_folder_dialog(initial_dir: str | None = None) -> str | None:

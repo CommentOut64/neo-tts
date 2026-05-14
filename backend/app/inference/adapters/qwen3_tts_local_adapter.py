@@ -20,8 +20,9 @@ from backend.app.inference.block_adapter_types import (
     SegmentOutput,
     SegmentSpan,
 )
+from backend.app.inference.prepared_context_types import PreparedContextDescriptor, PreparedContextEntry
 from backend.app.inference.editable_types import SegmentRenderAssetPayload, build_render_asset_id, fingerprint_inference_config
-from backend.app.inference.qwen3_tts_runtime import Qwen3TTSSegmentRequest, Qwen3TTSRuntime
+from backend.app.inference.qwen3_tts_runtime import Qwen3TTSPreparedContext, Qwen3TTSSegmentRequest, Qwen3TTSRuntime
 from backend.app.services.composition_builder import CompositionBuilder
 
 
@@ -64,7 +65,50 @@ class Qwen3TTSLocalAdapter:
             cancellable=True,
         )
 
-    def render_block(self, request: BlockRenderRequest) -> BlockRenderResult:
+    def describe_prepared_contexts(self, request: BlockRenderRequest) -> list[PreparedContextDescriptor]:
+        descriptors_by_key: dict[str, PreparedContextDescriptor] = {}
+        for prepared in [self._prepare_segment(request_segment) for request_segment in request.block.segments]:
+            runtime_request = self._build_runtime_request(prepared)
+            cache_key = self._build_prepared_context_cache_key(runtime_request)
+            descriptors_by_key.setdefault(
+                cache_key,
+                PreparedContextDescriptor(
+                    adapter_id=prepared.model_binding.adapter_id,
+                    cache_key=cache_key,
+                    debug_summary={
+                        "binding_fingerprint": prepared.model_binding.binding_fingerprint,
+                        "generation_mode": runtime_request.generation_mode,
+                    },
+                ),
+            )
+        return list(descriptors_by_key.values())
+
+    def build_prepared_context(
+        self,
+        request: BlockRenderRequest,
+        descriptor: PreparedContextDescriptor,
+    ) -> PreparedContextEntry:
+        for prepared in [self._prepare_segment(request_segment) for request_segment in request.block.segments]:
+            runtime_request = self._build_runtime_request(prepared)
+            cache_key = self._build_prepared_context_cache_key(runtime_request)
+            if cache_key != descriptor.cache_key:
+                continue
+            prepared_context = self._runtime.build_prepared_context(runtime_request)
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload=prepared_context,
+                estimated_bytes=self._estimate_prepared_context_bytes(prepared_context),
+                debug_summary=dict(descriptor.debug_summary),
+            )
+        raise LookupError(f"Prepared context descriptor '{descriptor.cache_key}' was not resolved from request.")
+
+    def render_block(
+        self,
+        request: BlockRenderRequest,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None = None,
+    ) -> BlockRenderResult:
         self._raise_if_cancelled()
         prepared_segments = [self._prepare_segment(request_segment) for request_segment in request.block.segments]
         reusable_state = self._load_reusable_assets(request=request)
@@ -79,7 +123,15 @@ class Qwen3TTSLocalAdapter:
                 reused_segment_ids.append(prepared.request_segment.segment_id)
                 self._notify_segment_asset(reusable_asset, prepared.request_segment, reused=True)
                 continue
-            runtime_result = self._runtime.render_segment(self._build_runtime_request(prepared))
+            runtime_request = self._build_runtime_request(prepared)
+            prepared_context = self._resolve_prepared_context(
+                prepared_contexts=prepared_contexts,
+                runtime_request=runtime_request,
+            )
+            runtime_result = self._runtime.render_segment(
+                runtime_request,
+                prepared_context=prepared_context,
+            )
             sample_rate = runtime_result.sample_rate if sample_rate is None else sample_rate
             if runtime_result.sample_rate != sample_rate:
                 raise ValueError("Qwen3-TTS segment sample rates must match within one block.")
@@ -212,6 +264,64 @@ class Qwen3TTSLocalAdapter:
                 if key not in {"device", "dtype", "attn_implementation"}
             },
         )
+
+    @staticmethod
+    def _build_prepared_context_cache_key(runtime_request: Qwen3TTSSegmentRequest) -> str:
+        payload = {
+            "model_dir": runtime_request.model_dir,
+            "generation_mode": runtime_request.generation_mode,
+            "language": runtime_request.language,
+            "speaker": runtime_request.speaker,
+            "instruct": runtime_request.instruct,
+            "reference_audio_path": runtime_request.reference_audio_path,
+            "reference_text": runtime_request.reference_text,
+            "top_k": runtime_request.top_k,
+            "top_p": runtime_request.top_p,
+            "temperature": runtime_request.temperature,
+            "device": runtime_request.device,
+            "dtype": runtime_request.dtype,
+            "attn_implementation": runtime_request.attn_implementation,
+            "extra_generate_kwargs": runtime_request.extra_generate_kwargs,
+        }
+        return fingerprint_inference_config(payload)
+
+    def _resolve_prepared_context(
+        self,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None,
+        runtime_request: Qwen3TTSSegmentRequest,
+    ) -> Qwen3TTSPreparedContext | None:
+        if not prepared_contexts:
+            return None
+        cache_key = self._build_prepared_context_cache_key(runtime_request)
+        entry = prepared_contexts.get(cache_key)
+        if entry is None:
+            return None
+        payload = entry.payload
+        if isinstance(payload, Qwen3TTSPreparedContext):
+            return payload
+        if isinstance(payload, dict):
+            return Qwen3TTSPreparedContext(**payload)
+        return payload
+
+    @staticmethod
+    def _estimate_prepared_context_bytes(prepared_context: Qwen3TTSPreparedContext) -> int:
+        text_fields = [
+            prepared_context.model_dir,
+            prepared_context.generation_mode,
+            prepared_context.language,
+            prepared_context.speaker,
+            prepared_context.instruct,
+            prepared_context.reference_audio_path,
+            prepared_context.reference_text,
+            prepared_context.device,
+            prepared_context.dtype,
+            prepared_context.attn_implementation,
+        ]
+        total = sum(len(value.encode("utf-8")) for value in text_fields if isinstance(value, str))
+        total += len(prepared_context.extra_generate_kwargs) * 32
+        total += 24
+        return max(total, 1)
 
     def _build_segment_asset(
         self,

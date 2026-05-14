@@ -36,6 +36,24 @@ class Qwen3TTSSegmentRequest:
 
 
 @dataclass(frozen=True)
+class Qwen3TTSPreparedContext:
+    model_dir: str
+    generation_mode: GenerationMode
+    language: str | None = None
+    speaker: str | None = None
+    instruct: str | None = None
+    reference_audio_path: str | None = None
+    reference_text: str | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    temperature: float | None = None
+    device: str | None = None
+    dtype: str | None = None
+    attn_implementation: str | None = None
+    extra_generate_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Qwen3TTSSegmentResult:
     segment_id: str
     audio: np.ndarray
@@ -105,46 +123,70 @@ class Qwen3TTSRuntime:
             self._model_handles[cache_key] = handle
             return handle
 
-    def render_segment(self, request: Qwen3TTSSegmentRequest) -> Qwen3TTSSegmentResult:
-        handle = self.get_model_handle(
+    def build_prepared_context(self, request: Qwen3TTSSegmentRequest) -> Qwen3TTSPreparedContext:
+        return Qwen3TTSPreparedContext(
             model_dir=request.model_dir,
+            generation_mode=request.generation_mode,
+            language=request.language,
+            speaker=request.speaker,
+            instruct=request.instruct,
+            reference_audio_path=request.reference_audio_path,
+            reference_text=request.reference_text,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            temperature=request.temperature,
             device=request.device,
             dtype=request.dtype,
             attn_implementation=request.attn_implementation,
+            extra_generate_kwargs=dict(request.extra_generate_kwargs),
         )
-        generate_kwargs = self._build_generate_kwargs(request)
-        language = request.language or "Auto"
-        if request.generation_mode == "custom_voice":
-            if not request.speaker:
+
+    def render_segment(
+        self,
+        request: Qwen3TTSSegmentRequest,
+        *,
+        prepared_context: Qwen3TTSPreparedContext | None = None,
+    ) -> Qwen3TTSSegmentResult:
+        prepared = prepared_context or self.build_prepared_context(request)
+        handle = self.get_model_handle(
+            model_dir=prepared.model_dir,
+            device=prepared.device,
+            dtype=prepared.dtype,
+            attn_implementation=prepared.attn_implementation,
+        )
+        generate_kwargs = self._build_generate_kwargs(prepared)
+        language = prepared.language or "Auto"
+        if prepared.generation_mode == "custom_voice":
+            if not prepared.speaker:
                 raise ValueError("Qwen3 custom_voice requires speaker.")
             wavs, sample_rate = handle.model.generate_custom_voice(
                 text=request.text,
                 language=language,
-                speaker=request.speaker,
-                instruct=request.instruct or None,
+                speaker=prepared.speaker,
+                instruct=prepared.instruct or None,
                 **generate_kwargs,
             )
-        elif request.generation_mode == "voice_design":
-            if not request.instruct:
+        elif prepared.generation_mode == "voice_design":
+            if not prepared.instruct:
                 raise ValueError("Qwen3 voice_design requires instruct.")
             wavs, sample_rate = handle.model.generate_voice_design(
                 text=request.text,
                 language=language,
-                instruct=request.instruct,
+                instruct=prepared.instruct,
                 **generate_kwargs,
             )
-        elif request.generation_mode == "voice_clone":
-            if not request.reference_audio_path:
+        elif prepared.generation_mode == "voice_clone":
+            if not prepared.reference_audio_path:
                 raise ValueError("Qwen3 voice_clone requires reference_audio_path.")
             wavs, sample_rate = handle.model.generate_voice_clone(
                 text=request.text,
                 language=language,
-                ref_audio=request.reference_audio_path,
-                ref_text=request.reference_text,
+                ref_audio=prepared.reference_audio_path,
+                ref_text=prepared.reference_text,
                 **generate_kwargs,
             )
         else:
-            raise ValueError(f"Unsupported Qwen3 generation_mode '{request.generation_mode}'.")
+            raise ValueError(f"Unsupported Qwen3 generation_mode '{prepared.generation_mode}'.")
         if not wavs:
             raise RuntimeError("Qwen3-TTS returned empty audio.")
         return Qwen3TTSSegmentResult(
@@ -152,7 +194,7 @@ class Qwen3TTSRuntime:
             audio=np.asarray(wavs[0], dtype=np.float32),
             sample_rate=int(sample_rate),
             trace={
-                "generation_mode": request.generation_mode,
+                "generation_mode": prepared.generation_mode,
                 "model_dir": handle.model_dir,
             },
         )
@@ -165,7 +207,7 @@ class Qwen3TTSRuntime:
             raise ImportError("qwen_tts.Qwen3TTSModel is unavailable.")
         return model_cls
 
-    def _build_generate_kwargs(self, request: Qwen3TTSSegmentRequest) -> dict[str, Any]:
+    def _build_generate_kwargs(self, request: Qwen3TTSSegmentRequest | Qwen3TTSPreparedContext) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if request.top_k is not None:
             payload["top_k"] = request.top_k

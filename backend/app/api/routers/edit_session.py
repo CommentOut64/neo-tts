@@ -18,9 +18,8 @@ from backend.app.inference.editable_gateway import (
     LazyEditableInferenceGateway,
     RoutingEditableInferenceGateway,
 )
-from backend.app.inference.adapters import ExternalHttpTtsAdapter
-from backend.app.inference.adapters import GPTSoVITSLocalAdapter
-from backend.app.inference.adapters import Qwen3TTSLocalAdapter
+from backend.app.inference.adapters.external_http_tts_adapter import ExternalHttpTtsAdapter
+from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
 from backend.app.inference.block_adapter_registry import AdapterRegistry
 from backend.app.inference.external_http_rate_limiter import ExternalHttpLimitConfig
 from backend.app.schemas.edit_session import (
@@ -196,6 +195,8 @@ def _build_block_adapter_selector(request: Request):
                 default_limit_config=_build_external_http_default_limit_config(request),
             )
         if adapter_id == "qwen3_tts_local":
+            from backend.app.inference.adapters.qwen3_tts_local_adapter import Qwen3TTSLocalAdapter
+
             runtime = getattr(request.app.state, "qwen3_tts_runtime", None)
             if runtime is None:
                 raise RuntimeError("Qwen3-TTS runtime is unavailable.")
@@ -301,6 +302,7 @@ def _build_edit_session_service(request: Request) -> EditSessionService:
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
         workspace_service=_build_workspace_service(request),
+        session_prepared_context_service=getattr(request.app.state, "session_prepared_context_service", None),
     )
 
 
@@ -319,6 +321,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None, 
         block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
         block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
         block_adapter_selector=_build_block_adapter_selector(request),
+        session_prepared_context_service=getattr(request.app.state, "session_prepared_context_service", None),
     )
 
 
@@ -340,6 +343,7 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         block_render_request_builder=getattr(request.app.state, "block_render_request_builder", None),
         block_render_asset_persister=getattr(request.app.state, "block_render_asset_persister", None),
         block_adapter_selector=_build_block_adapter_selector(request),
+        session_prepared_context_service=getattr(request.app.state, "session_prepared_context_service", None),
         run_jobs_in_background=False,
     )
 

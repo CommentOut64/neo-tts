@@ -18,6 +18,7 @@ from backend.app.inference.block_adapter_types import (
     SegmentOutput,
     SegmentSpan,
 )
+from backend.app.inference.prepared_context_types import PreparedContextDescriptor, PreparedContextEntry
 from backend.app.inference.editable_types import (
     BlockCompositionAssetPayload,
     ResolvedRenderContext,
@@ -96,11 +97,52 @@ class GPTSoVITSLocalAdapter:
             cancellable=True,
         )
 
-    def render_block(self, request: BlockRenderRequest) -> BlockRenderResult:
+    def describe_prepared_contexts(self, request: BlockRenderRequest) -> list[PreparedContextDescriptor]:
+        descriptors_by_key: dict[str, PreparedContextDescriptor] = {}
+        for prepared in [self._prepare_segment(segment) for segment in request.block.segments]:
+            context_key = self._build_context_cache_key(prepared)
+            descriptors_by_key.setdefault(
+                context_key,
+                PreparedContextDescriptor(
+                    adapter_id=prepared.model_binding.adapter_id,
+                    cache_key=context_key,
+                    debug_summary={
+                        "binding_fingerprint": prepared.model_binding.binding_fingerprint,
+                        "reference_id": prepared.reference.get("reference_id"),
+                    },
+                ),
+            )
+        return list(descriptors_by_key.values())
+
+    def build_prepared_context(
+        self,
+        request: BlockRenderRequest,
+        descriptor: PreparedContextDescriptor,
+    ) -> PreparedContextEntry:
+        for prepared in [self._prepare_segment(segment) for segment in request.block.segments]:
+            context_key = self._build_context_cache_key(prepared)
+            if context_key != descriptor.cache_key:
+                continue
+            context = self._editable_gateway.build_reference_context(self._build_resolved_render_context(prepared))
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload=context,
+                estimated_bytes=self._estimate_context_bytes(context),
+                debug_summary=dict(descriptor.debug_summary),
+            )
+        raise LookupError(f"Prepared context descriptor '{descriptor.cache_key}' was not resolved from request.")
+
+    def render_block(
+        self,
+        request: BlockRenderRequest,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None = None,
+    ) -> BlockRenderResult:
         self._raise_if_cancelled()
         prepared_segments = [self._prepare_segment(segment) for segment in request.block.segments]
         reusable_assets = self._load_reusable_assets(request=request, prepared_segments=prepared_segments)
-        contexts: dict[str, Any] = {}
+        contexts: dict[str, Any] = self._seed_contexts(prepared_contexts)
         segment_assets: list[SegmentRenderAssetPayload] = []
         adapter_trace_segments: dict[str, dict[str, Any] | None] = {}
         reused_segment_ids: list[str] = []
@@ -355,6 +397,48 @@ class GPTSoVITSLocalAdapter:
             context = self._editable_gateway.build_reference_context(self._build_resolved_render_context(prepared))
             contexts[context_key] = context
         return context
+
+    @staticmethod
+    def _seed_contexts(prepared_contexts: dict[str, PreparedContextEntry] | None) -> dict[str, Any]:
+        if not prepared_contexts:
+            return {}
+        return {
+            cache_key: entry.payload
+            for cache_key, entry in prepared_contexts.items()
+        }
+
+    @staticmethod
+    def _estimate_context_bytes(context: Any) -> int:
+        total = 0
+        for attr in (
+            "reference_semantic_tokens",
+            "reference_spectrogram",
+            "reference_speaker_embedding",
+            "prompt_bert",
+        ):
+            value = getattr(context, attr, None)
+            total += GPTSoVITSLocalAdapter._estimate_value_bytes(value)
+        prompt_phones = getattr(context, "prompt_phones", None)
+        if isinstance(prompt_phones, list):
+            total += len(prompt_phones) * 4
+        prompt_norm_text = getattr(context, "prompt_norm_text", "")
+        if isinstance(prompt_norm_text, str):
+            total += len(prompt_norm_text.encode("utf-8"))
+        return max(total, 1)
+
+    @staticmethod
+    def _estimate_value_bytes(value: Any) -> int:
+        nbytes = getattr(value, "nbytes", None)
+        if isinstance(nbytes, int):
+            return max(nbytes, 0)
+        element_size = getattr(value, "element_size", None)
+        numel = getattr(value, "numel", None)
+        if callable(element_size) and callable(numel):
+            try:
+                return max(int(element_size() * numel()), 0)
+            except Exception:
+                return 0
+        return 0
 
     @staticmethod
     def _build_resolved_render_context(prepared: _PreparedSegment) -> ResolvedRenderContext:
