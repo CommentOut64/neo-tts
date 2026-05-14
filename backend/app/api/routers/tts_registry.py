@@ -10,6 +10,7 @@ from backend.app.tts_registry.binding_catalog_service import BindingCatalogServi
 from backend.app.tts_registry.gpt_sovits_facade import GPTSoVITSRegistryFacade
 from backend.app.tts_registry.model_import_service import ModelImportService
 from backend.app.tts_registry.model_registry import ModelRegistry
+from backend.app.tts_registry.qwen3_tts_facade import Qwen3TTSRegistryFacade
 from backend.app.tts_registry.secret_store import SecretStore
 from backend.app.tts_registry.types import BindingCatalogResponse, WorkspaceSummaryView
 from backend.app.tts_registry.workspace_service import WorkspaceService
@@ -107,6 +108,7 @@ def _resolve_registry_root(request: Request):
 def _build_adapter_store(request: Request) -> AdapterDefinitionStore:
     return build_default_adapter_definition_store(
         enable_gpt_sovits_local=getattr(request.app.state.settings, "gpt_sovits_adapter_installed", True),
+        enable_qwen3_tts_local=getattr(request.app.state.settings, "qwen3_tts_adapter_installed", False),
     )
 
 
@@ -125,6 +127,9 @@ def _build_model_registry(request: Request) -> ModelRegistry:
 
 
 def _build_workspace_service(request: Request) -> WorkspaceService:
+    shared = getattr(request.app.state, "workspace_service", None)
+    if shared is not None:
+        return shared
     return WorkspaceService(
         adapter_store=_build_adapter_store(request),
         workspace_store=WorkspaceStore(_resolve_registry_root(request)),
@@ -146,6 +151,13 @@ def _build_model_import_service(request: Request) -> ModelImportService:
 
 def _build_gpt_sovits_facade(request: Request) -> GPTSoVITSRegistryFacade:
     return GPTSoVITSRegistryFacade(
+        workspace_service=_build_workspace_service(request),
+        model_import_service=_build_model_import_service(request),
+    )
+
+
+def _build_qwen3_tts_facade(request: Request) -> Qwen3TTSRegistryFacade:
+    return Qwen3TTSRegistryFacade(
         workspace_service=_build_workspace_service(request),
         model_import_service=_build_model_import_service(request),
     )
@@ -206,13 +218,19 @@ def import_workspace_model_package(
 ) -> dict[str, Any]:
     workspace_service = _build_workspace_service(request)
     workspace = next(item for item in workspace_service.list_workspaces() if item.workspace_id == workspace_id)
-    if workspace.adapter_id != "gpt_sovits_local":
-        raise ValueError(f"Workspace '{workspace_id}' does not support GPT-SoVITS package import.")
-    return _build_gpt_sovits_facade(request).import_model_package_to_workspace(
-        workspace_id=workspace_id,
-        source_path=body.source_path,
-        storage_mode=body.storage_mode,
-    ).model_dump(mode="json")
+    if workspace.adapter_id == "gpt_sovits_local":
+        return _build_gpt_sovits_facade(request).import_model_package_to_workspace(
+            workspace_id=workspace_id,
+            source_path=body.source_path,
+            storage_mode=body.storage_mode,
+        ).model_dump(mode="json")
+    if workspace.adapter_id == "qwen3_tts_local":
+        return _build_qwen3_tts_facade(request).import_model_package_to_workspace(
+            workspace_id=workspace_id,
+            source_path=body.source_path,
+            storage_mode=body.storage_mode,
+        ).model_dump(mode="json")
+    raise ValueError(f"Workspace '{workspace_id}' does not support local package import.")
 
 
 @router.get("/workspaces/{workspace_id}")

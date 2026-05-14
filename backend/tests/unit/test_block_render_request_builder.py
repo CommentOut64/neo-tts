@@ -388,7 +388,7 @@ def test_block_render_request_builder_maps_edge_controls_join_policy_and_dirty_c
     assert [asset.segment_id for asset in request.reusable_source_assets] == ["seg-1", "seg-2"]
 
 
-def test_block_render_request_builder_builds_execution_plan_with_formal_block_and_child_execution_units():
+def test_block_render_request_builder_builds_flat_execution_block_plan():
     seg1 = _segment("seg-1", 1, "binding-a")
     seg2 = _segment("seg-2", 2, "binding-a")
     seg3 = _segment("seg-3", 3, "binding-a")
@@ -408,7 +408,7 @@ def test_block_render_request_builder_builds_execution_plan_with_formal_block_an
         edges=[edge12, edge23, edge34],
         voice_bindings=[binding],
     )
-    formal_block = _render_block(["seg-1", "seg-2", "seg-3", "seg-4"])
+    planner_block = _render_block(["seg-1", "seg-2", "seg-3", "seg-4"])
     builder = BlockRenderRequestBuilder(
         adapter_registry=_adapter_registry(
             _adapter_definition("gpt_sovits_local", incremental_render=True, segment_level_voice_binding=True),
@@ -417,7 +417,7 @@ def test_block_render_request_builder_builds_execution_plan_with_formal_block_an
 
     execution_plan = builder.build_execution_plan(
         snapshot=snapshot,
-        blocks=[formal_block],
+        blocks=[planner_block],
         resolved_segments={
             "seg-1": _resolved_segment(seg1, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
             "seg-2": _resolved_segment(seg2, binding, adapter_id="gpt_sovits_local", model_instance_id="model-1", preset_id="preset-1", binding_fingerprint="binding-a", reference_fingerprint="ref-a"),
@@ -436,21 +436,23 @@ def test_block_render_request_builder_builds_execution_plan_with_formal_block_an
         render_scope="segment",
     )
 
-    assert len(execution_plan.formal_blocks) == 1
-    formal_block_plan = execution_plan.formal_blocks[0]
-    assert formal_block_plan.formal_block_id == formal_block.block_id
-    assert [unit.formal_block_id for unit in formal_block_plan.execution_units] == [formal_block.block_id, formal_block.block_id]
-    assert [list(unit.segment_ids) for unit in formal_block_plan.execution_units] == [
+    assert [list(block.segment_ids) for block in execution_plan.blocks] == [
         ["seg-1", "seg-2", "seg-3"],
         ["seg-4"],
     ]
-    assert all(unit.request.formal_block_id == formal_block.block_id for unit in formal_block_plan.execution_units)
-    assert all(unit.request.execution_unit_id.startswith("unit-") for unit in formal_block_plan.execution_units)
-    assert formal_block_plan.execution_units[0].request.block.block_id != formal_block.block_id
-    assert formal_block_plan.execution_units[0].scope_policy is not None
-    assert formal_block_plan.execution_units[0].scope_policy.allowed_scopes == ("segment", "block")
-    assert formal_block_plan.execution_units[0].degradation_policy is not None
-    assert formal_block_plan.execution_units[0].degradation_policy.allowed_modes == ("exact", "estimated", "block_only")
+    assert all(block.block_id == block.request.block.block_id for block in execution_plan.blocks)
+    assert all(block.request.block_execution_id == block.block_execution_id for block in execution_plan.blocks)
+    assert all(block.request.block_execution_id.startswith("block-exec-") for block in execution_plan.blocks)
+    assert execution_plan.blocks[0].request.block.block_id != planner_block.block_id
+    assert execution_plan.blocks[0].request.incoming_edge_control is None
+    assert execution_plan.blocks[1].request.incoming_edge_control is not None
+    assert execution_plan.blocks[1].request.incoming_edge_control.edge_id == edge34.edge_id
+    assert execution_plan.blocks[1].request.incoming_boundary_context is not None
+    assert execution_plan.blocks[1].request.incoming_boundary_context.requested_boundary_strategy == "crossfade_only"
+    assert execution_plan.blocks[0].scope_policy is not None
+    assert execution_plan.blocks[0].scope_policy.allowed_scopes == ("segment", "block")
+    assert execution_plan.blocks[0].degradation_policy is not None
+    assert execution_plan.blocks[0].degradation_policy.allowed_modes == ("exact", "estimated", "block_only")
 
 
 def test_block_render_request_builder_prefers_segment_scope_window_for_dirty_middle_segment():

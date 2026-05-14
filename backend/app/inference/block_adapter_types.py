@@ -99,6 +99,7 @@ class ResolvedModelBinding(BaseModel):
     resolved_assets: dict[str, Any] = Field(default_factory=dict, description="adapter 可消费资产映射。")
     resolved_reference: dict[str, Any] | None = Field(default=None, description="解析后的最终参考。")
     resolved_parameters: dict[str, Any] = Field(default_factory=dict, description="解析后的稳定参数。")
+    preset_defaults: dict[str, Any] = Field(default_factory=dict, description="preset 默认字段。")
     secret_handles: dict[str, str] = Field(default_factory=dict, description="secret store handle 映射。")
     endpoint: dict[str, Any] | None = Field(default=None, description="外部 provider endpoint 配置。")
     account_binding: dict[str, Any] = Field(default_factory=dict, description="外部 provider 非 secret 账号绑定。")
@@ -278,8 +279,7 @@ class SegmentOutput(BaseModel):
 class BlockRenderRequest(BaseModel):
     request_id: str = Field(description="标准请求 ID。")
     document_id: str = Field(description="所属文档 ID。")
-    execution_unit_id: str = Field(default="", description="本次 adapter 执行单元 ID。")
-    formal_block_id: str = Field(default="", description="该执行单元最终归属的 formal block ID。")
+    block_execution_id: str = Field(default="", description="本次最终 block 的执行 ID。")
     render_scope: RenderScope = Field(default="block", description="当前请求的渲染作用域。")
     escalated_from_scope: RenderScope | None = Field(default=None, description="若当前请求由更小作用域升级而来，则记录来源。")
     block: BlockRequestBlock = Field(description="当前 block 结构。")
@@ -293,6 +293,11 @@ class BlockRenderRequest(BaseModel):
     join_policy: JoinPolicy = Field(default="natural", description="块内衔接意图。")
     requested_join_policy: JoinPolicy | None = Field(default=None, description="调用方请求的 join policy。")
     effective_join_policy: JoinPolicy | None = Field(default=None, description="当前 scope 实际执行的 join policy。")
+    incoming_edge_control: EdgeControl | None = Field(default=None, description="当前 block 若拥有入边，则记录该入边控制。")
+    incoming_boundary_context: BoundaryContext | None = Field(
+        default=None,
+        description="当前 block 若拥有入边，则记录该入边边界上下文。",
+    )
     edge_controls: list[EdgeControl] = Field(default_factory=list, description="段间控制输入。")
     boundary_contexts: list[BoundaryContext] = Field(default_factory=list, description="主后端显式整理后的边界上下文。")
     reusable_source_assets: list[ReusableSourceAssetDescriptor] = Field(default_factory=list, description="当前 execution unit 可复用的 source/base 资产描述。")
@@ -307,10 +312,8 @@ class BlockRenderRequest(BaseModel):
 
     @model_validator(mode="after")
     def _hydrate_join_policy_protocol(self) -> "BlockRenderRequest":
-        if not self.execution_unit_id:
-            self.execution_unit_id = self.request_id
-        if not self.formal_block_id:
-            self.formal_block_id = self.block.block_id
+        if not self.block_execution_id:
+            self.block_execution_id = self.request_id
         if self.requested_join_policy is None:
             self.requested_join_policy = self.join_policy
         if self.effective_join_policy is None:

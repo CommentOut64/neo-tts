@@ -76,6 +76,7 @@ class SegmentRenderAssetPayload:
     render_asset_id: str
     segment_id: str
     render_version: int
+    sample_rate: int
     semantic_tokens: list[int]
     phone_ids: list[int]
     decoder_frame_count: int
@@ -97,6 +98,7 @@ class BoundaryAssetPayload:
     right_segment_id: str
     right_render_version: int
     edge_version: int
+    sample_rate: int
     boundary_strategy: str
     boundary_sample_count: int
     boundary_audio: np.ndarray

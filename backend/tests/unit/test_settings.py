@@ -126,3 +126,11 @@ def test_get_settings_marks_gpt_sovits_adapter_available_when_runtime_package_ex
 
     assert settings.gpt_sovits_root == gpt_sovits_root.resolve()
     assert settings.gpt_sovits_adapter_installed is True
+
+
+def test_get_settings_marks_qwen3_adapter_available_when_qwen_tts_package_is_installed(monkeypatch):
+    monkeypatch.delenv("NEO_TTS_QWEN3_TTS_ROOT", raising=False)
+
+    settings = get_settings()
+
+    assert settings.qwen3_tts_adapter_installed is True

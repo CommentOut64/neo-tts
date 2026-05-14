@@ -19,10 +19,9 @@ from backend.app.inference.block_adapter_types import (
 from backend.app.inference.editable_types import RenderBlock
 from backend.app.schemas.edit_session import DocumentSnapshot, EditableSegment, TimelineManifest
 from backend.app.services.render_execution_plan import (
+    ExecutionBlockPlan,
     ExecutionBoundaryContext,
     ExecutionPlan,
-    ExecutionUnit,
-    FormalBlockPlan,
     build_degradation_policy,
     build_scope_policy,
     normalize_degradation_policy,
@@ -74,8 +73,7 @@ class BlockRenderRequestBuilder:
             render_scope=render_scope,
         )
         requests: list[BlockRenderRequest] = []
-        for formal_block_plan in execution_plan.formal_blocks:
-            requests.extend(unit.request for unit in formal_block_plan.execution_units)
+        requests.extend(block.request for block in execution_plan.blocks)
         return requests
 
     def build_execution_plan(
@@ -91,7 +89,7 @@ class BlockRenderRequestBuilder:
         reuse_policy: str,
         render_scope: RenderScope = "block",
     ) -> ExecutionPlan:
-        formal_block_plans: list[FormalBlockPlan] = []
+        execution_blocks: list[ExecutionBlockPlan] = []
         for block in blocks:
             prepared_segments = [
                 _PreparedSegment(segment=resolved_segments[segment_id].segment, resolved=resolved_segments[segment_id])
@@ -109,19 +107,13 @@ class BlockRenderRequestBuilder:
                 reuse_policy=reuse_policy,
                 render_scope=render_scope,
             )
-            formal_block_plans.append(
-                FormalBlockPlan(
-                    formal_block=block,
-                    execution_units=tuple(
-                        self._build_execution_unit(
-                            request=request,
-                            formal_block=block,
-                        )
-                        for request in requests
-                    ),
+            execution_blocks.extend(
+                self._build_execution_block(
+                    request=request,
                 )
+                for request in requests
             )
-        return ExecutionPlan(formal_blocks=tuple(formal_block_plans))
+        return ExecutionPlan(blocks=tuple(execution_blocks))
 
     def _build_block_requests(
         self,
@@ -149,95 +141,131 @@ class BlockRenderRequestBuilder:
                 render_scope=render_scope,
             )
             for scoped_chunk in scoped_windows:
-                first_binding = scoped_chunk[0].resolved.resolved_model_binding
-                if first_binding is None:
-                    raise AdapterRegistry.build_model_required_error()
-                adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
-                chunk_segment_ids = [item.segment.segment_id for item in scoped_chunk]
-                request_block = self._build_request_block(scoped_chunk, block)
-                edge_controls = self._build_edge_controls(
-                    chunk=scoped_chunk,
-                    snapshot=snapshot,
-                    resolved_edges=resolved_edges,
-                )
-                join_policy = self._resolve_join_policy(edge_controls)
-                dirty_context = self._build_dirty_context(
-                    chunk_segment_ids=chunk_segment_ids,
-                    edge_controls=edge_controls,
-                    target_segment_ids=target_segment_ids,
-                    target_edge_ids=target_edge_ids,
-                    previous_timeline=previous_timeline,
-                    reuse_policy=reuse_policy,
-                    adapter_definition=adapter_definition,
-                )
-                top_level_reference = first_binding.resolved_reference or {}
-                boundary_contexts = self._build_boundary_contexts(
-                    edge_controls=edge_controls,
-                    snapshot=snapshot,
-                )
-                reusable_source_assets = self._build_reusable_source_assets(
-                    chunk=scoped_chunk,
-                    target_segment_ids=target_segment_ids,
-                )
                 requests.append(
-                    BlockRenderRequest(
-                        request_id=self._build_request_id(
-                            document_id=snapshot.document_id,
-                            block_id=request_block.block_id,
-                            binding_fingerprint=first_binding.binding_fingerprint,
-                        ),
-                        document_id=snapshot.document_id,
-                        execution_unit_id=self._build_execution_unit_id(
-                            document_id=snapshot.document_id,
-                            formal_block_id=block.block_id,
-                            execution_segment_ids=chunk_segment_ids,
-                            render_scope=render_scope,
-                        ),
-                        formal_block_id=block.block_id,
+                    self._build_request_for_scoped_chunk(
+                        snapshot=snapshot,
+                        block=block,
+                        scoped_chunk=scoped_chunk,
+                        resolved_edges=resolved_edges,
+                        target_segment_ids=target_segment_ids,
+                        target_edge_ids=target_edge_ids,
+                        previous_timeline=previous_timeline,
+                        reuse_policy=reuse_policy,
                         render_scope=render_scope,
-                        escalated_from_scope=None,
-                        block=request_block,
-                        model_binding=first_binding,
-                        voice={
-                            "voice_id": scoped_chunk[0].resolved.voice_binding.voice_id,
-                            "voice_binding_id": scoped_chunk[0].resolved.voice_binding.voice_binding_id,
-                        },
-                        model={
-                            "model_key": scoped_chunk[0].resolved.voice_binding.model_key,
-                            "model_instance_id": scoped_chunk[0].resolved.voice_binding.model_instance_id,
-                            "preset_id": scoped_chunk[0].resolved.voice_binding.preset_id,
-                        },
-                        reference={
-                            "reference_id": top_level_reference.get("reference_id", ""),
-                        },
-                        synthesis=dict(first_binding.resolved_parameters),
-                        requested_alignment_mode="exact",
-                        join_policy=join_policy,
-                        requested_join_policy=join_policy,
-                        effective_join_policy=join_policy,
-                        edge_controls=edge_controls,
-                        boundary_contexts=boundary_contexts,
-                        reusable_source_assets=reusable_source_assets,
-                        dirty_context=dirty_context,
-                        resolved_reference=dict(top_level_reference),
-                        resolved_parameters=dict(first_binding.resolved_parameters),
-                        allowed_degradation=normalize_degradation_policy(
-                            requested_mode="exact",
-                            allowed_modes=["exact", "estimated", "block_only"],
-                        ),
-                        allowed_scope_escalation=normalize_scope_policy(
-                            render_scope=render_scope,
-                            allowed_scopes=["segment", "block"] if render_scope == "segment" else ["block"],
-                        ),
-                        adapter_options=self._build_adapter_options(
-                            first_binding=first_binding,
-                            request_block=request_block,
-                            document_id=snapshot.document_id,
-                        ),
-                        block_policy=self._default_block_policy,
                     )
                 )
         return requests
+
+    def _build_request_for_scoped_chunk(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        block: RenderBlock,
+        scoped_chunk: list[_PreparedSegment],
+        resolved_edges: dict[str, ResolvedEdgeConfig],
+        target_segment_ids: set[str],
+        target_edge_ids: set[str],
+        previous_timeline: TimelineManifest | None,
+        reuse_policy: str,
+        render_scope: RenderScope,
+    ) -> BlockRenderRequest:
+        first_binding = scoped_chunk[0].resolved.resolved_model_binding
+        if first_binding is None:
+            raise AdapterRegistry.build_model_required_error()
+        adapter_definition = self._adapter_registry.require(first_binding.adapter_id)
+        chunk_segment_ids = [item.segment.segment_id for item in scoped_chunk]
+        request_block = self._build_request_block(scoped_chunk, block)
+        edge_controls = self._build_edge_controls(
+            chunk=scoped_chunk,
+            snapshot=snapshot,
+            resolved_edges=resolved_edges,
+        )
+        join_policy = self._resolve_join_policy(edge_controls)
+        incoming_edge_control = self._build_incoming_edge_control(
+            block=block,
+            chunk=scoped_chunk,
+            snapshot=snapshot,
+            resolved_edges=resolved_edges,
+        )
+        incoming_boundary_context = self._build_incoming_boundary_context(
+            incoming_edge_control=incoming_edge_control,
+            snapshot=snapshot,
+        )
+        dirty_context = self._build_dirty_context(
+            chunk_segment_ids=chunk_segment_ids,
+            edge_controls=edge_controls,
+            target_segment_ids=target_segment_ids,
+            target_edge_ids=target_edge_ids,
+            previous_timeline=previous_timeline,
+            reuse_policy=reuse_policy,
+            adapter_definition=adapter_definition,
+        )
+        top_level_reference = first_binding.resolved_reference or {}
+        boundary_contexts = self._build_boundary_contexts(
+            edge_controls=edge_controls,
+            snapshot=snapshot,
+        )
+        reusable_source_assets = self._build_reusable_source_assets(
+            chunk=scoped_chunk,
+            target_segment_ids=target_segment_ids,
+        )
+        return BlockRenderRequest(
+            request_id=self._build_request_id(
+                document_id=snapshot.document_id,
+                block_id=request_block.block_id,
+                binding_fingerprint=first_binding.binding_fingerprint,
+            ),
+            document_id=snapshot.document_id,
+            block_execution_id=self._build_block_execution_id(
+                document_id=snapshot.document_id,
+                block_id=request_block.block_id,
+                execution_segment_ids=chunk_segment_ids,
+                render_scope=render_scope,
+            ),
+            render_scope=render_scope,
+            escalated_from_scope=None,
+            block=request_block,
+            model_binding=first_binding,
+            voice={
+                "voice_id": scoped_chunk[0].resolved.voice_binding.voice_id,
+                "voice_binding_id": scoped_chunk[0].resolved.voice_binding.voice_binding_id,
+            },
+            model={
+                "model_key": scoped_chunk[0].resolved.voice_binding.model_key,
+                "model_instance_id": scoped_chunk[0].resolved.voice_binding.model_instance_id,
+                "preset_id": scoped_chunk[0].resolved.voice_binding.preset_id,
+            },
+            reference={
+                "reference_id": top_level_reference.get("reference_id", ""),
+            },
+            synthesis=dict(first_binding.resolved_parameters),
+            requested_alignment_mode="exact",
+            join_policy=join_policy,
+            requested_join_policy=join_policy,
+            effective_join_policy=join_policy,
+            incoming_edge_control=incoming_edge_control,
+            incoming_boundary_context=incoming_boundary_context,
+            edge_controls=edge_controls,
+            boundary_contexts=boundary_contexts,
+            reusable_source_assets=reusable_source_assets,
+            dirty_context=dirty_context,
+            resolved_reference=dict(top_level_reference),
+            resolved_parameters=dict(first_binding.resolved_parameters),
+            allowed_degradation=normalize_degradation_policy(
+                requested_mode="exact",
+                allowed_modes=["exact", "estimated", "block_only"],
+            ),
+            allowed_scope_escalation=normalize_scope_policy(
+                render_scope=render_scope,
+                allowed_scopes=["segment", "block"] if render_scope == "segment" else ["block"],
+            ),
+            adapter_options=self._build_adapter_options(
+                first_binding=first_binding,
+                request_block=request_block,
+                document_id=snapshot.document_id,
+            ),
+            block_policy=self._default_block_policy,
+        )
 
     @staticmethod
     def _build_adapter_options(
@@ -449,6 +477,40 @@ class BlockRenderRequestBuilder:
         return controls
 
     @staticmethod
+    def _build_incoming_edge_control(
+        *,
+        block: RenderBlock,
+        chunk: list[_PreparedSegment],
+        snapshot: DocumentSnapshot,
+        resolved_edges: dict[str, ResolvedEdgeConfig],
+    ) -> EdgeControl | None:
+        if not chunk:
+            return None
+        first_segment_id = chunk[0].segment.segment_id
+        if first_segment_id == block.segment_ids[0]:
+            return None
+        incoming_edge = next(
+            (edge for edge in snapshot.edges if edge.right_segment_id == first_segment_id),
+            None,
+        )
+        if incoming_edge is None:
+            return None
+        resolved_edge = resolved_edges.get(incoming_edge.edge_id)
+        effective_strategy = (
+            resolved_edge.effective_boundary_strategy
+            if resolved_edge is not None
+            else incoming_edge.boundary_strategy
+        )
+        return EdgeControl(
+            edge_id=incoming_edge.edge_id,
+            left_segment_id=incoming_edge.left_segment_id,
+            right_segment_id=incoming_edge.right_segment_id,
+            pause_duration_seconds=incoming_edge.pause_duration_seconds,
+            join_policy_override=BlockRenderRequestBuilder._map_join_policy(effective_strategy),
+            locked=incoming_edge.boundary_strategy_locked,
+        )
+
+    @staticmethod
     def _build_boundary_contexts(
         *,
         edge_controls: list[EdgeControl],
@@ -477,6 +539,33 @@ class BlockRenderRequestBuilder:
         return contexts
 
     @staticmethod
+    def _build_incoming_boundary_context(
+        *,
+        incoming_edge_control: EdgeControl | None,
+        snapshot: DocumentSnapshot,
+    ) -> BoundaryContext | None:
+        if incoming_edge_control is None:
+            return None
+        snapshot_edge = next(
+            (edge for edge in snapshot.edges if edge.edge_id == incoming_edge_control.edge_id),
+            None,
+        )
+        requested_boundary_strategy = (
+            snapshot_edge.boundary_strategy
+            if snapshot_edge is not None
+            else "crossfade_only"
+        )
+        return BoundaryContext(
+            edge_id=incoming_edge_control.edge_id,
+            left_segment_id=incoming_edge_control.left_segment_id,
+            right_segment_id=incoming_edge_control.right_segment_id,
+            pause_duration_seconds=incoming_edge_control.pause_duration_seconds,
+            requested_boundary_strategy=requested_boundary_strategy,
+            join_policy=incoming_edge_control.join_policy_override or "natural",
+            locked=incoming_edge_control.locked,
+        )
+
+    @staticmethod
     def _build_reusable_source_assets(
         *,
         chunk: list[_PreparedSegment],
@@ -502,14 +591,13 @@ class BlockRenderRequestBuilder:
         return descriptors
 
     @staticmethod
-    def _build_execution_unit(
+    def _build_execution_block(
         *,
         request: BlockRenderRequest,
-        formal_block: RenderBlock,
-    ) -> ExecutionUnit:
-        return ExecutionUnit(
-            execution_unit_id=request.execution_unit_id,
-            formal_block_id=formal_block.block_id,
+    ) -> ExecutionBlockPlan:
+        return ExecutionBlockPlan(
+            block_execution_id=request.block_execution_id,
+            block_id=request.block.block_id,
             request=request,
             segment_ids=tuple(request.block.segment_ids),
             boundary_contexts=tuple(
@@ -613,17 +701,17 @@ class BlockRenderRequestBuilder:
         return f"req-{digest}"
 
     @staticmethod
-    def _build_execution_unit_id(
+    def _build_block_execution_id(
         *,
         document_id: str,
-        formal_block_id: str,
+        block_id: str,
         execution_segment_ids: list[str],
         render_scope: RenderScope,
     ) -> str:
         digest = hashlib.sha1(
-            f"{document_id}|{formal_block_id}|{render_scope}|{','.join(execution_segment_ids)}".encode("utf-8")
+            f"{document_id}|{block_id}|{render_scope}|{','.join(execution_segment_ids)}".encode("utf-8")
         ).hexdigest()[:12]
-        return f"unit-{digest}"
+        return f"block-exec-{digest}"
 
     @staticmethod
     def _build_child_block_id(segment_ids: list[str]) -> str:

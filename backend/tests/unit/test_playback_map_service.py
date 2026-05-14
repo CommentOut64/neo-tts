@@ -25,17 +25,19 @@ def test_rebuild_playback_map_uses_manifest_spans_and_segment_order():
             segment_id="seg-2",
             document_id="doc-1",
             order_key=2,
-            raw_text="第二句。",
-            normalized_text="第二句。",
+            stem="第二句",
             text_language="zh",
+            terminal_raw="。",
+            terminal_source="original",
         ),
         EditableSegment(
             segment_id="seg-1",
             document_id="doc-1",
             order_key=1,
-            raw_text="第一句。",
-            normalized_text="第一句。",
+            stem="第一句",
             text_language="zh",
+            terminal_raw="。",
+            terminal_source="original",
         ),
     ]
 

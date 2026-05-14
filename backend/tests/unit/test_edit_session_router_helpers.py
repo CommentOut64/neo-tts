@@ -2,6 +2,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from backend.app.api.routers.edit_session import _build_editable_gateway
@@ -179,3 +180,47 @@ def test_build_editable_gateway_resolves_managed_weight_paths_relative_to_user_d
         (managed_settings.user_data_root / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()
     )
     assert model_cache.acquired == [(expected_gpt_path, expected_sovits_path)]
+
+
+def test_build_editable_gateway_returns_unavailable_backend_for_non_gpt_local_adapter(test_app_settings):
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=test_app_settings,
+            )
+        )
+    )
+    request.app.state.edit_session_repository = SimpleNamespace(get_active_session=lambda: None)
+    request.app.state.workspace_service = SimpleNamespace(
+        resolve_binding_reference=lambda binding_ref: {
+            "adapter_id": "qwen3_tts_local",
+            "gpt_path": None,
+            "sovits_path": None,
+        }
+    )
+
+    gateway = _build_editable_gateway(
+        request,
+        binding_ref=BindingReference(
+            workspace_id="ws_qwen",
+            main_model_id="qwen3_main",
+            submodel_id="default",
+            preset_id="vivian",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        gateway.build_reference_context(
+            ResolvedRenderContext(
+                voice_id="qwen_voice",
+                model_key="ws_qwen:qwen3_main:default",
+                reference_audio_path="",
+                reference_text="",
+                reference_language="zh",
+                resolved_voice_binding=ResolvedVoiceBinding(
+                    voice_binding_id="binding-qwen",
+                    voice_id="qwen_voice",
+                    model_key="ws_qwen:qwen3_main:default",
+                ),
+            )
+        )

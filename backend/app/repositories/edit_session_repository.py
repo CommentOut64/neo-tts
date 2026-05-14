@@ -532,7 +532,7 @@ class EditSessionRepository:
         if active_session is not None:
             checkpoint = self.get_latest_checkpoint(active_session.document_id)
             if checkpoint is not None:
-                head_snapshot = self.get_snapshot(checkpoint.head_snapshot_id)
+                head_snapshot = self.get_snapshot(checkpoint.partial_snapshot_id)
                 working_snapshot = self.get_snapshot(checkpoint.working_snapshot_id)
                 if head_snapshot is not None:
                     snapshots.append(head_snapshot)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,8 @@ class AppSettings:
     pretrained_models_root: Path | None = None
     gpt_sovits_root: Path | None = None
     gpt_sovits_adapter_installed: bool | None = None
+    qwen3_tts_root: Path | None = None
+    qwen3_tts_adapter_installed: bool | None = None
     user_data_root: Path | None = None
     tts_registry_root: Path | None = None
     cache_root: Path | None = None
@@ -52,6 +55,9 @@ class AppSettings:
     external_http_default_retry_backoff_ms: int = 500
     external_http_default_max_retry_backoff_ms: int = 5_000
     external_http_default_acquire_timeout_ms: int = 30_000
+    qwen3_tts_default_device: str = "cuda:0"
+    qwen3_tts_default_dtype: str = "bfloat16"
+    qwen3_tts_default_attn_implementation: str | None = "flash_attention_2"
 
     def __post_init__(self) -> None:
         resolved_project_root = self.project_root.resolve()
@@ -90,6 +96,12 @@ class AppSettings:
             self.gpt_sovits_adapter_installed
             if self.gpt_sovits_adapter_installed is not None
             else gpt_sovits_root.is_dir()
+        )
+        qwen3_tts_root = self.qwen3_tts_root.resolve() if self.qwen3_tts_root is not None else None
+        qwen3_tts_adapter_installed = (
+            self.qwen3_tts_adapter_installed
+            if self.qwen3_tts_adapter_installed is not None
+            else _detect_qwen3_tts_installation(qwen3_tts_root)
         )
         user_data_root = (
             self.user_data_root.resolve()
@@ -137,6 +149,8 @@ class AppSettings:
         object.__setattr__(self, "pretrained_models_root", pretrained_models_root)
         object.__setattr__(self, "gpt_sovits_root", gpt_sovits_root)
         object.__setattr__(self, "gpt_sovits_adapter_installed", bool(gpt_sovits_adapter_installed))
+        object.__setattr__(self, "qwen3_tts_root", qwen3_tts_root)
+        object.__setattr__(self, "qwen3_tts_adapter_installed", bool(qwen3_tts_adapter_installed))
         object.__setattr__(self, "resources_root", resources_root)
         object.__setattr__(self, "user_data_root", user_data_root)
         object.__setattr__(self, "tts_registry_root", tts_registry_root)
@@ -242,6 +256,12 @@ def _resolve_from_env(raw_value: str | None, *, default: Path) -> Path:
     return default.resolve()
 
 
+def _detect_qwen3_tts_installation(qwen3_tts_root: Path | None) -> bool:
+    if qwen3_tts_root is not None and (qwen3_tts_root / "qwen_tts").is_dir():
+        return True
+    return importlib.util.find_spec("qwen_tts") is not None
+
+
 def _read_desktop_package_version(project_root: Path) -> str | None:
     package_json_path = project_root / "desktop" / "package.json"
     if not package_json_path.is_file():
@@ -284,6 +304,7 @@ def get_settings() -> AppSettings:
     models_root_env = os.environ.get("NEO_TTS_MODELS_ROOT")
     pretrained_models_root_env = os.environ.get("NEO_TTS_PRETRAINED_MODELS_ROOT")
     gpt_sovits_root_env = os.environ.get("NEO_TTS_GPT_SOVITS_ROOT")
+    qwen3_tts_root_env = os.environ.get("NEO_TTS_QWEN3_TTS_ROOT")
     model_registry_root_env = os.environ.get("NEO_TTS_MODEL_REGISTRY_ROOT")
     support_assets_root_env = os.environ.get("NEO_TTS_SUPPORT_ASSETS_ROOT")
     user_data_root_env = os.environ.get("NEO_TTS_USER_DATA_ROOT")
@@ -310,6 +331,9 @@ def get_settings() -> AppSettings:
     owner_control_origin = os.environ.get("NEO_TTS_OWNER_CONTROL_ORIGIN")
     owner_control_token = os.environ.get("NEO_TTS_OWNER_CONTROL_TOKEN")
     owner_session_id = os.environ.get("NEO_TTS_OWNER_SESSION_ID")
+    qwen3_tts_default_device = os.environ.get("NEO_TTS_QWEN3_TTS_DEVICE") or "cuda:0"
+    qwen3_tts_default_dtype = os.environ.get("NEO_TTS_QWEN3_TTS_DTYPE") or "bfloat16"
+    qwen3_tts_default_attn_implementation = os.environ.get("NEO_TTS_QWEN3_TTS_ATTN_IMPLEMENTATION")
     project_root = _resolve_from_env(project_root_env, default=default_project_root)
     app_version = _normalize_app_version(app_version_env, project_root=project_root)
     display_version = _normalize_display_version(display_version_env, app_version)
@@ -440,6 +464,7 @@ def get_settings() -> AppSettings:
         models_root=models_root,
         pretrained_models_root=pretrained_models_root,
         gpt_sovits_root=gpt_sovits_root,
+        qwen3_tts_root=Path(qwen3_tts_root_env) if qwen3_tts_root_env else None,
         user_data_root=user_data_root,
         tts_registry_root=tts_registry_root if distribution_kind != "development" else None,
         cache_root=cache_root if distribution_kind != "development" else None,
@@ -461,4 +486,7 @@ def get_settings() -> AppSettings:
         gpu_offload_enabled=gpu_offload_enabled,
         gpu_min_free_mb=gpu_min_free_mb,
         gpu_reserve_mb_for_load=gpu_reserve_mb_for_load,
+        qwen3_tts_default_device=qwen3_tts_default_device,
+        qwen3_tts_default_dtype=qwen3_tts_default_dtype,
+        qwen3_tts_default_attn_implementation=qwen3_tts_default_attn_implementation or None,
     )

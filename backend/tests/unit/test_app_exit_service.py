@@ -257,9 +257,17 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
         def clear_backend(self) -> None:
             self.clear_calls += 1
 
+    class FakePreparedContextService:
+        def __init__(self) -> None:
+            self.clear_all_calls = 0
+
+        def clear_all(self) -> None:
+            self.clear_all_calls += 1
+
     model_cache = FakeModelCache()
     first_gateway = FakeGateway()
     second_gateway = FakeGateway()
+    prepared_context_service = FakePreparedContextService()
     owner_control_client = Mock()
     owner_control_client.request_shutdown.return_value = False
 
@@ -271,6 +279,7 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
         residual_service=residual_service,
         model_cache=model_cache,
         owner_control_client=owner_control_client,
+        session_prepared_context_service=prepared_context_service,
         editable_inference_gateway_cache={
             ("gpt-a", "sovits-a"): first_gateway,
             ("gpt-b", "sovits-b"): second_gateway,
@@ -283,6 +292,7 @@ def test_prepare_exit_clears_model_cache_and_editable_gateway_backends(tmp_path:
     assert model_cache.clear_calls == 1
     assert first_gateway.clear_calls == 1
     assert second_gateway.clear_calls == 1
+    assert prepared_context_service.clear_all_calls == 1
 
 
 def test_prepare_exit_still_returns_prepared_when_inference_cleanup_times_out(tmp_path: Path):

@@ -339,7 +339,6 @@ class EditAssetStore:
         asset_dir = self.segment_asset_path(render_asset_id)
         metadata = self._read_json(asset_dir / "metadata.json")
         sample_rate, audio = self.load_wav_asset(asset_dir)
-        del sample_rate
         left_count = int(metadata.get("left_margin_sample_count", 0))
         core_count = int(metadata.get("core_sample_count", int(audio.size)))
         right_count = int(metadata.get("right_margin_sample_count", 0))
@@ -349,6 +348,7 @@ class EditAssetStore:
             render_asset_id=metadata.get("render_asset_id", metadata.get("segment_asset_id", render_asset_id)),
             segment_id=metadata["segment_id"],
             render_version=int(metadata.get("render_version", 0)),
+            sample_rate=int(metadata.get("sample_rate", sample_rate)),
             semantic_tokens=list(metadata.get("semantic_tokens", [])),
             phone_ids=list(metadata.get("phone_ids", [])),
             decoder_frame_count=int(metadata.get("decoder_frame_count", 0)),
@@ -366,7 +366,6 @@ class EditAssetStore:
         asset_dir = self.boundary_asset_path(boundary_asset_id)
         metadata = self._read_json(asset_dir / "metadata.json")
         sample_rate, audio = self.load_wav_asset(asset_dir)
-        del sample_rate
         return BoundaryAssetPayload(
             boundary_asset_id=metadata["boundary_asset_id"],
             left_segment_id=metadata["left_segment_id"],
@@ -374,6 +373,7 @@ class EditAssetStore:
             right_segment_id=metadata["right_segment_id"],
             right_render_version=int(metadata["right_render_version"]),
             edge_version=int(metadata["edge_version"]),
+            sample_rate=int(metadata.get("sample_rate", sample_rate)),
             boundary_strategy=metadata["boundary_strategy"],
             boundary_sample_count=int(metadata["boundary_sample_count"]),
             boundary_audio=audio,

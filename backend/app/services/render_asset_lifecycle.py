@@ -142,7 +142,7 @@ class RenderAssetLifecycle:
         if active_session is not None:
             checkpoint = self._repository.get_latest_checkpoint(active_session.document_id)
             if checkpoint is not None:
-                checkpoint_head = self._repository.get_snapshot(checkpoint.head_snapshot_id)
+                checkpoint_head = self._repository.get_snapshot(checkpoint.partial_snapshot_id)
                 checkpoint_working = self._repository.get_snapshot(checkpoint.working_snapshot_id)
                 if checkpoint_head is not None:
                     snapshots.append(checkpoint_head)

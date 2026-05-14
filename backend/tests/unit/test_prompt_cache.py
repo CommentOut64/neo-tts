@@ -113,3 +113,34 @@ def test_prompt_cache_stores_cpu_payload_and_evicts_oldest_entry():
     cached_second = cache.get(second_key)
     assert cached_second is not None
     assert cached_second.prompt_norm_text == "参考文本二。"
+
+
+def test_prompt_cache_can_delete_specific_entry():
+    from backend.app.inference.prompt_cache import PromptCache, PromptCacheEntry, PromptCacheKey
+
+    cache = PromptCache(max_entries=2)
+    key = PromptCacheKey(
+        reference_scope="voice_preset",
+        reference_identity="voice-a:preset",
+        reference_audio_path="ref-1.wav",
+        reference_audio_fingerprint="audio-fp-1",
+        reference_text="参考文本一",
+        reference_text_fingerprint="text-fp-1",
+        reference_language="zh",
+        model_version="v2Pro",
+        inference_config_fingerprint="fp-1",
+    )
+    entry = PromptCacheEntry(
+        reference_semantic_tokens=np.asarray([1, 2, 3], dtype=np.int64),
+        reference_spectrogram_cpu=torch.ones((1, 3, 3), dtype=torch.float32),
+        reference_speaker_embedding_cpu=torch.ones((1, 4), dtype=torch.float32),
+        prompt_phones=[11, 12],
+        prompt_bert_cpu=torch.ones((1024, 2), dtype=torch.float32),
+        prompt_norm_text="参考文本一。",
+    )
+
+    cache.put(key, entry)
+
+    assert cache.delete(key) is True
+    assert cache.get(key) is None
+    assert cache.delete(key) is False

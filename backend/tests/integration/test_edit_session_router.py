@@ -79,6 +79,7 @@ class FakeEditableInferenceBackend:
             render_asset_id=f"render-{segment.segment_id}",
             segment_id=segment.segment_id,
             render_version=1,
+            sample_rate=32000,
             semantic_tokens=[1, 2],
             phone_ids=[11, 12],
             decoder_frame_count=1,
@@ -109,6 +110,7 @@ class FakeEditableInferenceBackend:
             right_segment_id=right_asset.segment_id,
             right_render_version=1,
             edge_version=1,
+            sample_rate=32000,
             boundary_strategy="latent_overlap_then_equal_power_crossfade",
             boundary_sample_count=1,
             boundary_audio=np.asarray([0.9], dtype=np.float32),
@@ -199,7 +201,14 @@ def _segment_display_text(segment_payload: dict) -> str:
     )
 
 
-def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
+def _initialize_payload(raw_text: str, *, binding_ref: dict[str, str]) -> dict[str, object]:
+    return {
+        "raw_text": raw_text,
+        "binding_ref": binding_ref,
+    }
+
+
+def _seed_ready_session(app, *, segment_count: int, binding_ref: dict[str, str]) -> tuple[str, str]:
     repository = app.state.edit_session_repository
     document_id = "doc-seeded"
     segments: list[EditableSegment] = []
@@ -251,7 +260,7 @@ def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
             editable_mode="segment",
             initialize_request=InitializeEditSessionRequest(
                 raw_text="".join(segment.display_text for segment in segments),
-                voice_id="demo",
+                binding_ref=binding_ref,
             ),
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -260,7 +269,7 @@ def _seed_ready_session(app, *, segment_count: int) -> tuple[str, str]:
     return document_id, snapshot.snapshot_id
 
 
-def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings):
+def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
@@ -271,10 +280,7 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
 
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。\n第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。\n第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
@@ -286,10 +292,7 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
 
         conflict = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第三句。", binding_ref=demo_binding_ref),
         )
         assert conflict.status_code == 409
 
@@ -314,17 +317,14 @@ def test_edit_session_initialize_snapshot_delete_and_conflict(test_app_settings)
         assert job_id
 
 
-def test_initialize_route_single_segment_commits_render_asset_and_changed_block_metadata(test_app_settings):
+def test_initialize_route_single_segment_commits_render_asset_and_changed_block_metadata(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
@@ -350,7 +350,7 @@ def test_initialize_route_single_segment_commits_render_asset_and_changed_block_
         assert job_payload["changed_block_asset_ids"] == [timeline_payload["block_entries"][0]["block_asset_id"]]
 
 
-def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignment(test_app_settings):
+def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignment(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     fake_backend = FakeEditableInferenceBackend(gate=gate)
@@ -361,10 +361,7 @@ def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignm
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
 
@@ -377,17 +374,14 @@ def test_initialize_route_defaults_to_block_first_and_exposes_exact_block_alignm
         assert len(fake_adapter.requests) == 1
         assert [entry["segment_alignment_mode"] for entry in timeline_payload["block_entries"]] == ["exact"]
 
-def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_initialize(test_app_settings):
+def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_initialize(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
 
@@ -415,7 +409,7 @@ def test_preview_route_returns_expiring_segment_edge_and_block_assets_after_init
         assert block_preview.json()["audio_delivery"]["expires_at"] is not None
 
 
-def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_settings):
+def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(
@@ -424,10 +418,7 @@ def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
@@ -476,7 +467,7 @@ def test_delete_session_waits_for_active_job_to_cancel_before_clearing(test_app_
 def test_upload_reference_audio_returns_temporary_path(test_app_settings):
     app = create_app(settings=test_app_settings)
     with TestClient(app) as client:
-        _seed_ready_session(app, segment_count=1)
+        _seed_ready_session(app, segment_count=1, binding_ref={"workspace_id": "legacy", "main_model_id": "demo", "submodel_id": "gpt-sovits-v2", "preset_id": "default"})
 
         response = client.post(
             "/v1/edit-session/reference-audio",
@@ -518,7 +509,7 @@ def test_upload_reference_audio_rejects_unsupported_extension(test_app_settings)
     }
 
 
-def test_initialize_route_does_not_construct_real_backend_before_accepted_response(test_app_settings, monkeypatch):
+def test_initialize_route_does_not_construct_real_backend_before_accepted_response(test_app_settings, demo_binding_ref, monkeypatch):
     constructed: list[tuple[str, str, str, str]] = []
     runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
 
@@ -544,27 +535,21 @@ def test_initialize_route_does_not_construct_real_backend_before_accepted_respon
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
 
     assert initialize.status_code == 202
     assert constructed == []
 
 
-def test_edit_session_render_job_events_and_cancel(test_app_settings):
+def test_edit_session_render_job_events_and_cancel(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend(gate=gate))
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/render-jobs",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
@@ -588,7 +573,7 @@ def test_edit_session_render_job_events_and_cancel(test_app_settings):
         gate.set()
 
 
-def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_settings):
+def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_settings, demo_binding_ref):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(
@@ -597,10 +582,7 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/render-jobs",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
@@ -629,17 +611,14 @@ def test_edit_session_event_stream_waits_for_cancelled_terminal_state(test_app_s
         assert set(statuses).issubset({"cancel_requested", "cancelled_partial"})
 
 
-def test_edit_session_segment_crud_and_read_models(test_app_settings):
+def test_edit_session_segment_crud_and_read_models(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第三句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -689,17 +668,14 @@ def test_edit_session_segment_crud_and_read_models(test_app_settings):
         assert len(playback_map.json()["entries"]) == 2
 
 
-def test_edit_session_swap_segments_reorders_and_updates_read_models(test_app_settings):
+def test_edit_session_swap_segments_reorders_and_updates_read_models(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。第三句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -742,17 +718,14 @@ def test_edit_session_swap_segments_reorders_and_updates_read_models(test_app_se
         assert composition.status_code == 404
 
 
-def test_edit_session_reorder_segments_reorders_and_updates_read_models(test_app_settings):
+def test_edit_session_reorder_segments_reorders_and_updates_read_models(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。第三句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -805,16 +778,13 @@ def test_edit_session_reorder_segments_reorders_and_updates_read_models(test_app
         assert "已锁定" in locked_strategy_response.json()["detail"]
 
 
-def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_settings):
+def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_settings, demo_binding_ref):
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。第三句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -836,17 +806,14 @@ def test_edit_session_reorder_segments_rejects_stale_document_version(test_app_s
         assert "document version" in stale_response.json()["detail"]
 
 
-def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings):
+def test_edit_session_segment_edge_preview_and_restore_baseline(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -953,17 +920,14 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
         assert "canonical_text" not in payload["segments"][0]
 
 
-def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings):
+def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -1023,17 +987,14 @@ def test_edit_session_audio_asset_routes_and_debug_asset_metadata(test_app_setti
         assert boundary_audio.status_code == 404
 
 
-def test_preview_audio_returns_410_after_expiration(test_app_settings):
+def test_preview_audio_returns_410_after_expiration(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -1057,7 +1018,11 @@ def test_snapshot_paginates_when_segment_count_reaches_1000(test_app_settings):
     app = create_app(settings=test_app_settings)
 
     with TestClient(app) as client:
-        _seed_ready_session(app, segment_count=1000)
+        _seed_ready_session(
+            app,
+            segment_count=1000,
+            binding_ref={"workspace_id": "legacy", "main_model_id": "demo", "submodel_id": "gpt-sovits-v2", "preset_id": "default"},
+        )
         snapshot = client.get("/v1/edit-session/snapshot")
         assert snapshot.status_code == 200
         payload = snapshot.json()
@@ -1071,16 +1036,13 @@ def test_snapshot_paginates_when_segment_count_reaches_1000(test_app_settings):
         assert len(segments_page.json()["items"]) == 2
 
 
-def test_service_recovers_session_after_app_restart(test_app_settings):
+def test_service_recovers_session_after_app_restart(test_app_settings, demo_binding_ref):
     first_app = create_app(settings=test_app_settings)
     first_app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
     with TestClient(first_app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
@@ -1096,7 +1058,7 @@ def test_service_recovers_session_after_app_restart(test_app_settings):
         assert payload["document_version"] == first_snapshot["document_version"]
 
 
-def test_startup_reconcile_marks_zombie_job_failed_and_clears_active_job(test_app_settings):
+def test_startup_reconcile_marks_zombie_job_failed_and_clears_active_job(test_app_settings, demo_binding_ref):
     repository = EditSessionRepository(
         project_root=test_app_settings.project_root,
         db_file=test_app_settings.edit_session_db_file,
@@ -1119,7 +1081,7 @@ def test_startup_reconcile_marks_zombie_job_failed_and_clears_active_job(test_ap
             document_id="doc-zombie",
             session_status="initializing",
             active_job_id="job-zombie",
-            initialize_request=InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo"),
+            initialize_request=InitializeEditSessionRequest(raw_text="第一句。", binding_ref=demo_binding_ref),
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
@@ -1174,17 +1136,14 @@ def test_startup_reconcile_cleans_orphan_preview_and_expired_staging(test_app_se
     assert not (test_app_settings.edit_session_assets_dir / "staging" / "job-old").exists()
 
 
-def test_edit_session_edges_support_cursor_pagination(test_app_settings):
+def test_edit_session_edges_support_cursor_pagination(test_app_settings, demo_binding_ref):
     backend = FakeEditableInferenceBackend()
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
-            json={
-                "raw_text": "第一句。第二句。第三句。",
-                "voice_id": "demo",
-            },
+            json=_initialize_payload("第一句。第二句。第三句。", binding_ref=demo_binding_ref),
         )
         assert initialize.status_code == 202
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")

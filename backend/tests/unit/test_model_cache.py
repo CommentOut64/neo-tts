@@ -153,8 +153,8 @@ def test_model_cache_resolves_managed_weight_paths_relative_to_user_data_root(tm
 
     assert created == [
         (
-            str((tmp_path / "storage" / "managed_voices" / "demo" / "weights" / "demo.ckpt").resolve()),
-            str((tmp_path / "storage" / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()),
+            str((tmp_path / "storage" / "tts-registry" / "managed_voices" / "demo" / "weights" / "demo.ckpt").resolve()),
+            str((tmp_path / "storage" / "tts-registry" / "managed_voices" / "demo" / "weights" / "demo.pth").resolve()),
             str((tmp_path / "pretrained_models" / "chinese-hubert-base").resolve()),
             str((tmp_path / "pretrained_models" / "chinese-roberta-wwm-ext-large").resolve()),
         )

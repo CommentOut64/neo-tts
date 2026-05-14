@@ -9,6 +9,7 @@ librosa==0.10.2
 numba
 pytorch-lightning>=2.4
 gradio<5
+qwen-tts==0.1.1
 ffmpeg-python
 onnxruntime; platform_machine == "aarch64" or platform_machine == "arm64"
 onnxruntime-gpu; platform_machine == "x86_64" or platform_machine == "AMD64"
@@ -24,7 +25,7 @@ torch==2.7.1
 torchaudio==2.7.1
 modelscope==1.10.0
 sentencepiece
-transformers>=4.43,<=4.50
+transformers==4.57.3
 peft
 chardet
 PyYAML
@@ -46,6 +47,7 @@ torchmetrics<=1.5
 pydantic<=2.10.6
 ctranslate2>=4.0,<5
 huggingface_hub>=0.13
+sox==1.5.0
 tokenizers>=0.13,<1
 av>=11
 tqdm

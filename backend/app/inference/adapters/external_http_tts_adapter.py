@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import wave
 from typing import Any
@@ -11,6 +12,7 @@ import requests
 from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.block_adapter_types import AdapterCapabilities, BlockRenderRequest, BlockRenderResult
 from backend.app.inference.external_http_rate_limiter import ExternalHttpLimitConfig, ExternalHttpRateLimiter
+from backend.app.inference.prepared_context_types import PreparedContextDescriptor, PreparedContextEntry
 from backend.app.tts_registry.secret_store import SecretStore
 
 
@@ -48,8 +50,44 @@ class ExternalHttpTtsAdapter:
             remote_runtime=True,
         )
 
-    def render_block(self, request: BlockRenderRequest) -> BlockRenderResult:
-        payload = self._resolve_payload(request)
+    def describe_prepared_contexts(self, request: BlockRenderRequest) -> list[PreparedContextDescriptor]:
+        skeleton = self._build_payload_skeleton(request)
+        cache_key = self._build_prepared_context_cache_key(skeleton)
+        return [
+            PreparedContextDescriptor(
+                adapter_id=request.model_binding.adapter_id,
+                cache_key=cache_key,
+                debug_summary={
+                    "model_instance_id": request.model_binding.model_instance_id,
+                    "preset_id": request.model_binding.preset_id,
+                },
+            )
+        ]
+
+    def build_prepared_context(
+        self,
+        request: BlockRenderRequest,
+        descriptor: PreparedContextDescriptor,
+    ) -> PreparedContextEntry:
+        skeleton = self._build_payload_skeleton(request)
+        cache_key = self._build_prepared_context_cache_key(skeleton)
+        if cache_key != descriptor.cache_key:
+            raise LookupError(f"Prepared context descriptor '{descriptor.cache_key}' was not resolved from request.")
+        return PreparedContextEntry(
+            adapter_id=descriptor.adapter_id,
+            cache_key=descriptor.cache_key,
+            payload=skeleton,
+            estimated_bytes=self._estimate_payload_bytes(skeleton),
+            debug_summary=dict(descriptor.debug_summary),
+        )
+
+    def render_block(
+        self,
+        request: BlockRenderRequest,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None = None,
+    ) -> BlockRenderResult:
+        payload = self._resolve_payload(request, prepared_contexts=prepared_contexts)
         endpoint = payload.get("endpoint") or {}
         endpoint_url = str(endpoint.get("url") or "").strip()
         if not endpoint_url:
@@ -162,13 +200,52 @@ class ExternalHttpTtsAdapter:
                 },
             ) from exc
 
+    def _resolve_payload(
+        self,
+        request: BlockRenderRequest,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None = None,
+    ) -> dict[str, Any]:
+        skeleton = self._resolve_payload_skeleton(request, prepared_contexts=prepared_contexts)
+        payload = dict(skeleton)
+        payload["text"] = request.block.block_text
+        metadata = dict(payload.get("metadata") or {})
+        metadata["document_id"] = request.document_id
+        metadata["block_id"] = request.block.block_id
+        payload["metadata"] = metadata
+        return payload
+
+    def _resolve_payload_skeleton(
+        self,
+        request: BlockRenderRequest,
+        *,
+        prepared_contexts: dict[str, PreparedContextEntry] | None = None,
+    ) -> dict[str, Any]:
+        if prepared_contexts:
+            descriptors = self.describe_prepared_contexts(request)
+            if descriptors:
+                entry = prepared_contexts.get(descriptors[0].cache_key)
+                if entry is not None and isinstance(entry.payload, dict):
+                    return self._clone_payload_skeleton(entry.payload)
+        return self._build_payload_skeleton(request)
+
     @staticmethod
-    def _resolve_payload(request: BlockRenderRequest) -> dict[str, Any]:
+    def _build_payload_skeleton(request: BlockRenderRequest) -> dict[str, Any]:
         payload = request.adapter_options.get("external_http_tts")
         if isinstance(payload, dict):
-            return payload
+            metadata = dict(payload.get("metadata") or {})
+            metadata.pop("document_id", None)
+            metadata.pop("block_id", None)
+            return {
+                "model_instance_id": payload.get("model_instance_id"),
+                "preset_id": payload.get("preset_id"),
+                "remote_voice_id": payload.get("remote_voice_id"),
+                "endpoint": dict(payload.get("endpoint") or {}),
+                "reference": dict(payload.get("reference") or {}),
+                "synthesis": dict(payload.get("synthesis") or {}),
+                "metadata": metadata,
+            }
         return {
-            "text": request.block.block_text,
             "model_instance_id": request.model_binding.model_instance_id,
             "preset_id": request.model_binding.preset_id,
             "remote_voice_id": request.model_binding.preset_fixed_fields.get("remote_voice_id"),
@@ -180,6 +257,26 @@ class ExternalHttpTtsAdapter:
                 "account_id": request.model_binding.account_binding.get("account_id"),
             },
         }
+
+    @staticmethod
+    def _clone_payload_skeleton(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "model_instance_id": payload.get("model_instance_id"),
+            "preset_id": payload.get("preset_id"),
+            "remote_voice_id": payload.get("remote_voice_id"),
+            "endpoint": dict(payload.get("endpoint") or {}),
+            "reference": dict(payload.get("reference") or {}),
+            "synthesis": dict(payload.get("synthesis") or {}),
+            "metadata": dict(payload.get("metadata") or {}),
+        }
+
+    @staticmethod
+    def _build_prepared_context_cache_key(payload_skeleton: dict[str, Any]) -> str:
+        return json.dumps(payload_skeleton, ensure_ascii=True, sort_keys=True)
+
+    @staticmethod
+    def _estimate_payload_bytes(payload_skeleton: dict[str, Any]) -> int:
+        return max(len(json.dumps(payload_skeleton, ensure_ascii=False, sort_keys=True).encode("utf-8")), 1)
 
     def _resolve_limit_config(self, request: BlockRenderRequest) -> ExternalHttpLimitConfig:
         options = dict(self._default_limit_config.__dict__)

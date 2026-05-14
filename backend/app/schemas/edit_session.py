@@ -584,7 +584,7 @@ class ActiveDocumentState(BaseModel):
 class DocumentSnapshot(BaseModel):
     snapshot_id: str = Field(description="快照 ID。")
     document_id: str = Field(description="文档 ID。")
-    snapshot_kind: Literal["baseline", "head", "staging"] = Field(description="快照类型。")
+    snapshot_kind: Literal["baseline", "head", "staging", "checkpoint_partial"] = Field(description="快照类型。")
     document_version: int = Field(description="该快照对应的文档版本号。")
     segment_ids: list[str] = Field(default_factory=list, description="当前快照内全部段 ID，按顺序排列。")
     edge_ids: list[str] = Field(default_factory=list, description="当前快照内全部边 ID。")
@@ -667,17 +667,24 @@ class RenderJobAcceptedResponse(BaseModel):
     job: RenderJobResponse = Field(description="已接受的 render job 当前状态。")
 
 
+class CheckpointBlockState(BaseModel):
+    block_id: str = Field(description="checkpoint 中记录的执行块 ID。")
+    segment_ids: list[str] = Field(default_factory=list, description="该执行块包含的段 ID 顺序。")
+    start_order_key: int = Field(description="该执行块起始排序键。")
+    end_order_key: int = Field(description="该执行块结束排序键。")
+    estimated_sample_count: int = Field(default=0, ge=0, description="该执行块估计 sample 数。")
+
+
 class CheckpointState(BaseModel):
     checkpoint_id: str = Field(description="checkpoint ID。")
     document_id: str = Field(description="所属文档 ID。")
     job_id: str = Field(description="生成该 checkpoint 的作业 ID。")
-    document_version: int = Field(description="checkpoint 对应的文档版本。")
-    head_snapshot_id: str = Field(description="提交后的 head snapshot ID。")
-    timeline_manifest_id: str = Field(description="checkpoint 对应的 timeline manifest ID。")
+    document_version: int = Field(description="checkpoint 对应的目标文档版本。")
+    partial_snapshot_id: str = Field(description="checkpoint 对应的 partial snapshot ID。")
+    partial_timeline_manifest_id: str = Field(description="checkpoint 对应的 partial timeline manifest ID。")
     working_snapshot_id: str = Field(description="可恢复工作快照 ID。")
-    next_segment_cursor: int = Field(ge=0, description="恢复时下一个待处理段的游标。")
-    completed_segment_ids: list[str] = Field(default_factory=list, description="已完成段 ID 列表。")
-    remaining_segment_ids: list[str] = Field(default_factory=list, description="剩余待完成段 ID 列表。")
+    completed_blocks: list[CheckpointBlockState] = Field(default_factory=list, description="已完成执行块列表。")
+    remaining_blocks: list[CheckpointBlockState] = Field(default_factory=list, description="剩余待完成执行块列表。")
     status: Literal["paused", "cancelled_partial", "resumable"] = Field(description="checkpoint 当前状态。")
     resume_token: str | None = Field(default=None, description="恢复该 checkpoint 的 token。")
     updated_at: datetime = Field(default_factory=_now_utc, description="checkpoint 最后更新时间。")

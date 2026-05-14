@@ -481,6 +481,7 @@ class RenderConfigResolver:
                     "resolved_assets": resolved_assets,
                     "resolved_reference": resolved_reference_payload,
                     "resolved_parameters": resolved_parameters,
+                    "preset_defaults": dict(resolved_binding.get("preset_defaults") or {}),
                     "secret_handles": secret_handles,
                 }
             )
@@ -491,6 +492,7 @@ class RenderConfigResolver:
                 resolved_assets=resolved_assets,
                 resolved_reference=resolved_reference_payload,
                 resolved_parameters=resolved_parameters,
+                preset_defaults=dict(resolved_binding.get("preset_defaults") or {}),
                 secret_handles=secret_handles,
                 endpoint=dict(endpoint) if isinstance(endpoint, dict) else None,
                 account_binding=account_binding,
@@ -533,6 +535,7 @@ class RenderConfigResolver:
                 "resolved_assets": resolved_assets,
                 "resolved_reference": resolved_reference_payload,
                 "resolved_parameters": resolved_parameters,
+                "preset_defaults": dict(preset.defaults),
                 "secret_handles": secret_handles,
             }
         )
@@ -543,6 +546,7 @@ class RenderConfigResolver:
             resolved_assets=resolved_assets,
             resolved_reference=resolved_reference_payload,
             resolved_parameters=resolved_parameters,
+            preset_defaults=dict(preset.defaults),
             secret_handles=secret_handles,
             endpoint=dict(model_instance.endpoint) if isinstance(model_instance.endpoint, dict) else None,
             account_binding=dict(model_instance.account_binding) if isinstance(model_instance.account_binding, dict) else {},

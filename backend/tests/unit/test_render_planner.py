@@ -144,7 +144,29 @@ def test_for_edge_update_pause_only_skips_boundary_rerender_and_marks_compose_on
     assert plan.target_edge_ids == set()
     assert plan.target_block_ids == _block_ids(*segments)
     assert plan.compose_only is True
-    assert plan.earliest_changed_order_key == 1
+    assert plan.earliest_changed_order_key == 2
+    assert plan.timeline_reflow_required is True
+    assert plan.change_reason == "edge_pause_update"
+
+
+def test_for_edge_update_pause_only_targets_only_right_owned_block_under_split_blocks():
+    planner = _planner_with_two_segment_blocks()
+    segments = [_segment("seg-1", 1), _segment("seg-2", 2), _segment("seg-3", 3), _segment("seg-4", 4)]
+    before_edge = _edge("seg-2", "seg-3", edge_version=1)
+    after_edge = before_edge.model_copy(update={"pause_duration_seconds": 0.8})
+
+    plan = planner.for_edge_update(
+        before_snapshot=_snapshot(segments=segments, edges=[_edge("seg-1", "seg-2"), before_edge, _edge("seg-3", "seg-4")]),
+        after_snapshot=_snapshot(segments=segments, edges=[_edge("seg-1", "seg-2"), after_edge, _edge("seg-3", "seg-4")]),
+        edge_id=before_edge.edge_id,
+        pause_only=True,
+    )
+
+    assert plan.target_segment_ids == set()
+    assert plan.target_edge_ids == set()
+    assert plan.target_block_ids == _block_ids(*segments[2:])
+    assert plan.compose_only is True
+    assert plan.earliest_changed_order_key == 3
     assert plan.timeline_reflow_required is True
     assert plan.change_reason == "edge_pause_update"
 
