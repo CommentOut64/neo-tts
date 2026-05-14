@@ -45,10 +45,15 @@ def test_langsegmenter_uses_pretrained_models_root_env_for_fast_langdetect_cache
     sys.modules.pop(module_name, None)
     sys.modules.pop(package_name, None)
 
-    importlib.import_module(module_name)
+    imported_module = importlib.import_module(module_name)
 
     configured_detector = fake_fast_langdetect.infer._default_detector
     assert configured_detector is not None
     assert configured_detector.config.cache_dir == str(
         pretrained_models_root / "pretrained_models" / "fast_langdetect"
     )
+
+    # 避免把绑定了 fake LangSplitter 的模块实例泄漏给后续测试。
+    assert imported_module is not None
+    sys.modules.pop(module_name, None)
+    sys.modules.pop(package_name, None)

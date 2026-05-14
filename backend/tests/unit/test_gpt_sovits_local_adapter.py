@@ -15,6 +15,7 @@ from backend.app.inference.block_adapter_types import (
     EdgeControl,
     ResolvedModelBinding,
 )
+from backend.app.inference.prepared_context_types import PreparedContextEntry
 from backend.app.inference.editable_types import (
     BlockCompositionAssetPayload,
     BoundaryAssetPayload,
@@ -270,6 +271,113 @@ def test_gpt_sovits_local_adapter_capabilities_cover_phase4_contract():
     assert capabilities.supports_segment_level_voice_binding is True
     assert capabilities.supports_pause_only_compose is True
     assert capabilities.supports_cancellation is True
+
+
+def test_gpt_sovits_local_adapter_describe_prepared_contexts_deduplicates_same_binding_and_reference():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ]
+    )
+    gateway = _FakeEditableGateway(
+        segment_assets={
+            "seg-1": _segment_asset(segment_id="seg-1", render_version=1, left=[0.1], core=[0.2], right=[0.3]),
+            "seg-2": _segment_asset(segment_id="seg-2", render_version=1, left=[0.4], core=[0.5], right=[0.6]),
+        },
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    adapter = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+    )
+
+    descriptors = adapter.describe_prepared_contexts(request)
+
+    assert len(descriptors) == 1
+
+
+def test_gpt_sovits_local_adapter_uses_injected_prepared_context_without_rebuilding_reference_context():
+    from backend.app.inference.adapters.gpt_sovits_local_adapter import GPTSoVITSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request(
+                "seg-1",
+                1,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+            _segment_request(
+                "seg-2",
+                2,
+                voice_binding_id="binding-a",
+                voice_id="voice-a",
+                model_key="model-a",
+                model_instance_id="model-a",
+                preset_id="preset-a",
+                binding_fingerprint="binding-a",
+                reference_id="ref-a",
+            ),
+        ]
+    )
+    gateway = _FakeEditableGateway(
+        segment_assets={
+            "seg-1": _segment_asset(segment_id="seg-1", render_version=1, left=[0.1], core=[0.2], right=[0.3]),
+            "seg-2": _segment_asset(segment_id="seg-2", render_version=1, left=[0.4], core=[0.5], right=[0.6]),
+        },
+        boundary_audio_by_edge_id={"edge-seg-1-seg-2": [0.9]},
+    )
+    adapter = GPTSoVITSLocalAdapter(
+        editable_gateway=gateway,
+        composition_builder=CompositionBuilder(sample_rate=4),
+    )
+    prepared_context = SimpleNamespace(reference_identity="ref-a", backend_cache_key=None)
+    prepared_key = adapter.describe_prepared_contexts(request)[0].cache_key
+
+    result = adapter.render_block(
+        request,
+        prepared_contexts={
+            prepared_key: PreparedContextEntry(
+                adapter_id="gpt_sovits_local",
+                cache_key=prepared_key,
+                payload=prepared_context,
+                estimated_bytes=64,
+            )
+        },
+    )
+
+    assert gateway.context_calls == []
+    assert [segment_id for segment_id, context in gateway.segment_calls] == ["seg-1", "seg-2"]
+    assert all(context is prepared_context for _, context in gateway.segment_calls)
+    assert result.join_report is not None
 
 
 def test_gpt_sovits_local_adapter_renders_multi_segment_block_with_exact_spans():

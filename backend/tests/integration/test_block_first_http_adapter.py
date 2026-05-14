@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from fastapi.testclient import TestClient
 
+from backend.app.inference.adapters.external_http_tts_adapter import ExternalHttpTtsAdapter
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.inference.editable_gateway import EditableInferenceGateway
 from backend.app.inference.editable_types import (
@@ -51,6 +52,7 @@ class _FakeEditableInferenceBackend:
             render_asset_id=f"render-{segment.segment_id}",
             segment_id=segment.segment_id,
             render_version=1,
+            sample_rate=32000,
             semantic_tokens=[1, 2],
             phone_ids=[11, 12],
             decoder_frame_count=1,
@@ -81,6 +83,7 @@ class _FakeEditableInferenceBackend:
             right_render_version=1,
             edge_version=1,
             boundary_strategy="latent_overlap_then_equal_power_crossfade",
+            sample_rate=32000,
             boundary_sample_count=1,
             boundary_audio=np.asarray([0.9], dtype=np.float32),
             trace=None,
@@ -148,9 +151,19 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
     raise AssertionError("Condition not met before timeout.")
 
 
+def _read_latest_log_file(log_dir: Path) -> str:
+    files = sorted(log_dir.glob("backend_*.log"))
+    assert files
+    return files[-1].read_text(encoding="utf-8")
+
+
 def _create_external_model(
     client: TestClient,
     *,
+    workspace_slug: str = "remote-workspace",
+    display_name: str = "Remote Workspace",
+    main_model_id: str = "remote-direct",
+    preset_id: str = "voice-a",
     endpoint_url: str = "https://api.example.com/tts",
     adapter_options: dict[str, object] | None = None,
 ) -> dict[str, str]:
@@ -162,8 +175,8 @@ def _create_external_model(
         json={
             "adapter_id": "external_http_tts",
             "family_id": family["family_id"],
-            "display_name": "Remote Workspace",
-            "slug": "remote-workspace",
+            "display_name": display_name,
+            "slug": workspace_slug,
         },
     )
     assert created_workspace.status_code == 201
@@ -172,15 +185,15 @@ def _create_external_model(
     created_main_model = client.post(
         f"/v1/tts-registry/workspaces/{workspace_id}/main-models",
         json={
-            "main_model_id": "remote-direct",
-            "display_name": "Remote Direct",
+            "main_model_id": main_model_id,
+            "display_name": display_name,
             "source_type": "external_api",
         },
     )
     assert created_main_model.status_code == 201
 
     updated_submodel = client.patch(
-        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default",
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/default",
         json={
             "display_name": "Remote Endpoint",
             "endpoint": {"url": endpoint_url},
@@ -195,9 +208,9 @@ def _create_external_model(
     assert updated_submodel.status_code == 200
 
     created_preset = client.post(
-        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default/presets",
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/default/presets",
         json={
-            "preset_id": "voice-a",
+            "preset_id": preset_id,
             "display_name": "Voice A",
             "kind": "remote",
             "fixed_fields": {"remote_voice_id": "voice_a"},
@@ -210,16 +223,16 @@ def _create_external_model(
     assert created_preset.status_code == 201
 
     secret_response = client.put(
-        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/remote-direct/submodels/default/secrets",
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/{main_model_id}/submodels/default/secrets",
         json={"secrets": {"api_key": "top-secret"}},
     )
     assert secret_response.status_code == 200
     assert secret_response.json()["status"] == "ready"
     return {
         "workspace_id": workspace_id,
-        "main_model_id": "remote-direct",
+        "main_model_id": main_model_id,
         "submodel_id": "default",
-        "preset_id": "voice-a",
+        "preset_id": preset_id,
     }
 
 
@@ -300,6 +313,14 @@ def _initialize_local_session(client: TestClient, *, tmp_path: Path) -> str:
         },
     )
     assert created_main_model.status_code == 201
+    created_submodel = client.post(
+        f"/v1/tts-registry/workspaces/{workspace_id}/main-models/demo-gpt-sovits/submodels",
+        json={
+            "submodel_id": "default",
+            "display_name": "Default",
+        },
+    )
+    assert created_submodel.status_code == 201
 
     updated_submodel = client.patch(
         f"/v1/tts-registry/workspaces/{workspace_id}/main-models/demo-gpt-sovits/submodels/default",
@@ -442,6 +463,231 @@ def test_block_first_external_http_adapter_retries_429_using_settings_defaults_a
     )
     assert limiter_state.last_provider_status == 429
     assert limiter_state.last_provider_request_id == "req-429"
+
+
+def test_block_first_external_http_adapter_reuses_prepared_skeleton_across_serial_reruns(
+    test_app_settings,
+    monkeypatch,
+):
+    wav_payload = build_wav_bytes(32000, float_audio_chunk_to_pcm16_bytes([0.1, 0.2, 0.3, 0.4]))
+    session = _QueuedHttpSession(
+        responses=[
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+        ]
+    )
+    prepared_build_calls = 0
+    original_build_prepared_context = ExternalHttpTtsAdapter.build_prepared_context
+
+    def _counted_build_prepared_context(self, request, descriptor):
+        nonlocal prepared_build_calls
+        prepared_build_calls += 1
+        return original_build_prepared_context(self, request, descriptor)
+
+    monkeypatch.setattr(
+        "backend.app.inference.adapters.external_http_tts_adapter.requests.Session",
+        lambda: session,
+    )
+    monkeypatch.setattr(
+        ExternalHttpTtsAdapter,
+        "build_prepared_context",
+        _counted_build_prepared_context,
+    )
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
+    with TestClient(app) as client:
+        remote_binding_ref = _create_external_model(client)
+        first_segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
+        snapshot = client.get("/v1/edit-session/snapshot").json()
+        second_segment_id = snapshot["segments"][1]["segment_id"]
+        initial_prepared_stats = app.state.session_prepared_context_service.stats()
+
+        first_patch = client.patch(
+            f"/v1/edit-session/segments/{first_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
+        )
+        assert first_patch.status_code == 202
+        first_job_id = first_patch.json()["job"]["job_id"]
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{first_job_id}").json()["status"] == "completed")
+
+        second_patch = client.patch(
+            f"/v1/edit-session/segments/{second_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref},
+        )
+        assert second_patch.status_code == 202
+        second_job_id = second_patch.json()["job"]["job_id"]
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{second_job_id}").json()["status"] == "completed")
+
+        prepared_stats = app.state.session_prepared_context_service.stats()
+
+    assert prepared_build_calls == 1
+    assert len(session.requests) == 2
+    assert session.requests[0]["json"]["text"] != session.requests[1]["json"]["text"]
+    assert prepared_stats.entry_count == initial_prepared_stats.entry_count + 1
+
+
+def test_block_first_external_http_adapter_writes_prepared_context_miss_hit_and_binding_switch_miss_logs(
+    test_app_settings,
+    monkeypatch,
+):
+    wav_payload = build_wav_bytes(32000, float_audio_chunk_to_pcm16_bytes([0.1, 0.2, 0.3, 0.4]))
+    session = _QueuedHttpSession(
+        responses=[
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+            _ProviderResponse(
+                status_code=200,
+                body=wav_payload,
+                headers={"Content-Type": "audio/wav"},
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "backend.app.inference.adapters.external_http_tts_adapter.requests.Session",
+        lambda: session,
+    )
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
+    with TestClient(app) as client:
+        remote_binding_ref_a = _create_external_model(
+            client,
+            workspace_slug="remote-workspace-a",
+            display_name="Remote Workspace A",
+            main_model_id="remote-direct-a",
+            endpoint_url="https://api.example.com/tts",
+        )
+        remote_binding_ref_b = _create_external_model(
+            client,
+            workspace_slug="remote-workspace-b",
+            display_name="Remote Workspace B",
+            main_model_id="remote-direct-b",
+            endpoint_url="https://api.example.com/tts/v2",
+        )
+        first_segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
+        snapshot = client.get("/v1/edit-session/snapshot").json()
+        second_segment_id = snapshot["segments"][1]["segment_id"]
+
+        first_patch = client.patch(
+            f"/v1/edit-session/segments/{first_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref_a},
+        )
+        assert first_patch.status_code == 202
+        first_job_id = first_patch.json()["job"]["job_id"]
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{first_job_id}").json()["status"] == "completed")
+
+        second_patch = client.patch(
+            f"/v1/edit-session/segments/{second_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref_a},
+        )
+        assert second_patch.status_code == 202
+        second_job_id = second_patch.json()["job"]["job_id"]
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{second_job_id}").json()["status"] == "completed")
+
+        third_patch = client.patch(
+            f"/v1/edit-session/segments/{first_segment_id}/synthesis-binding",
+            json={"binding_ref": remote_binding_ref_b},
+        )
+        assert third_patch.status_code == 202
+        third_job_id = third_patch.json()["job"]["job_id"]
+        _wait_until(lambda: client.get(f"/v1/edit-session/render-jobs/{third_job_id}").json()["status"] == "completed")
+
+        _wait_until(
+            lambda: 'adapter_id=external_http_tts' in _read_latest_log_file(test_app_settings.project_root / "logs")
+            and 'prepared_context_result=hit' in _read_latest_log_file(test_app_settings.project_root / "logs")
+            and 'https://api.example.com/tts/v2' in _read_latest_log_file(test_app_settings.project_root / "logs")
+        )
+        log_lines = _read_latest_log_file(test_app_settings.project_root / "logs").splitlines()
+
+    prepared_lines = [
+        line
+        for line in log_lines
+        if "prepared context resolved" in line and "adapter_id=external_http_tts" in line
+    ]
+
+    miss_a_index = next(
+        index
+        for index, line in enumerate(prepared_lines)
+        if "prepared_context_result=miss" in line and "prepared_context_reason=render" in line and "https://api.example.com/tts" in line and "https://api.example.com/tts/v2" not in line
+    )
+    hit_a_index = next(
+        index
+        for index, line in enumerate(prepared_lines)
+        if "prepared_context_result=hit" in line and "prepared_context_reason=render" in line and "https://api.example.com/tts" in line and "https://api.example.com/tts/v2" not in line
+    )
+    miss_b_index = next(
+        index
+        for index, line in enumerate(prepared_lines)
+        if "prepared_context_result=miss" in line and "prepared_context_reason=render" in line and "https://api.example.com/tts/v2" in line
+    )
+
+    assert miss_a_index < hit_a_index < miss_b_index
+    assert len(session.requests) == 4
+    assert [request["url"] for request in session.requests] == [
+        "https://api.example.com/tts",
+        "https://api.example.com/tts",
+        "https://api.example.com/tts/v2",
+        "https://api.example.com/tts",
+    ]
+
+
+def test_block_first_external_http_adapter_config_commit_prewarms_without_sending_http_request(
+    test_app_settings,
+    monkeypatch,
+):
+    session = _QueuedHttpSession(responses=[])
+    monkeypatch.setattr(
+        "backend.app.inference.adapters.external_http_tts_adapter.requests.Session",
+        lambda: session,
+    )
+    app = create_app(settings=test_app_settings)
+    app.state.editable_inference_gateway = EditableInferenceGateway(_FakeEditableInferenceBackend())
+    with TestClient(app) as client:
+        remote_binding_ref = _create_external_model(client)
+        first_segment_id = _initialize_local_session(client, tmp_path=test_app_settings.project_root)
+
+        commit_response = client.patch(
+            f"/v1/edit-session/segments/{first_segment_id}/synthesis-binding/config",
+            json={"binding_ref": remote_binding_ref},
+        )
+        assert commit_response.status_code == 200
+        _wait_until(
+            lambda: "prepared context prewarm completed" in _read_latest_log_file(test_app_settings.project_root / "logs")
+            and "prepared_context_reason=segment_voice_binding_commit" in _read_latest_log_file(test_app_settings.project_root / "logs")
+        )
+        content = _read_latest_log_file(test_app_settings.project_root / "logs")
+
+    assert len(session.requests) == 0
+    assert "prepared context resolved" in content
+    assert "adapter_id=external_http_tts" in content
+    assert "prepared_context_result=miss" in content
+    assert "prepared_context_reason=segment_voice_binding_commit" in content
+    assert "prepared context prewarm completed" in content
 
 
 def test_block_first_external_http_adapter_surfaces_provider_error_to_job_and_sse(test_app_settings, monkeypatch):

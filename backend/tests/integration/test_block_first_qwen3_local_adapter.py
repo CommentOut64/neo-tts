@@ -78,15 +78,35 @@ def _build_qwen3_package(package_root: Path) -> Path:
 class _FakeQwenRuntime:
     def __init__(self) -> None:
         self.calls: list[object] = []
+        self.prepared_calls: list[object] = []
 
-    def render_segment(self, request):
-        self.calls.append(request)
+    def build_prepared_context(self, request):
+        self.prepared_calls.append(request)
+        return SimpleNamespace(
+            model_dir=request.model_dir,
+            generation_mode=request.generation_mode,
+            language=request.language,
+            speaker=request.speaker,
+            instruct=request.instruct,
+            reference_audio_path=request.reference_audio_path,
+            reference_text=request.reference_text,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            temperature=request.temperature,
+            device=request.device,
+            dtype=request.dtype,
+            attn_implementation=request.attn_implementation,
+            extra_generate_kwargs=dict(request.extra_generate_kwargs),
+        )
+
+    def render_segment(self, request, *, prepared_context=None):
+        self.calls.append(prepared_context or request)
         value = 0.1 if request.segment_id.endswith("1") else 0.2
         return SimpleNamespace(
             segment_id=request.segment_id,
             audio=np.asarray([value], dtype=np.float32),
             sample_rate=4,
-            trace={"generation_mode": request.generation_mode},
+            trace={"generation_mode": (prepared_context or request).generation_mode},
         )
 
 

@@ -14,6 +14,7 @@ from backend.app.inference.block_adapter_types import (
     ResolvedModelBinding,
 )
 from backend.app.inference.editable_types import BlockCompositionAssetPayload, SegmentCompositionEntry, SegmentRenderAssetPayload
+from backend.app.inference.prepared_context_types import PreparedContextEntry
 from backend.app.services.composition_builder import CompositionBuilder
 
 
@@ -21,9 +22,29 @@ class _FakeQwenRuntime:
     def __init__(self, outputs_by_segment_id: dict[str, tuple[list[float], int]]) -> None:
         self.outputs_by_segment_id = outputs_by_segment_id
         self.calls: list[object] = []
+        self.prepared_build_calls: list[object] = []
 
-    def render_segment(self, request):
-        self.calls.append(request)
+    def build_prepared_context(self, request):
+        self.prepared_build_calls.append(request)
+        return SimpleNamespace(
+            model_dir=request.model_dir,
+            generation_mode=request.generation_mode,
+            language=request.language,
+            speaker=request.speaker,
+            instruct=request.instruct,
+            reference_audio_path=request.reference_audio_path,
+            reference_text=request.reference_text,
+            top_k=request.top_k,
+            top_p=request.top_p,
+            temperature=request.temperature,
+            device=request.device,
+            dtype=request.dtype,
+            attn_implementation=request.attn_implementation,
+            extra_generate_kwargs=dict(request.extra_generate_kwargs),
+        )
+
+    def render_segment(self, request, *, prepared_context=None):
+        self.calls.append((request, prepared_context))
         audio, sample_rate = self.outputs_by_segment_id[request.segment_id]
         return SimpleNamespace(
             segment_id=request.segment_id,
@@ -182,6 +203,80 @@ def test_qwen3_tts_local_adapter_capabilities_cover_phase8_contract():
     assert capabilities.native_join_fusion is False
 
 
+def test_qwen3_tts_local_adapter_describe_prepared_contexts_deduplicates_same_binding_and_reference():
+    from backend.app.inference.adapters.qwen3_tts_local_adapter import Qwen3TTSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request("seg-1", 1, binding_fingerprint="binding-a"),
+            _segment_request("seg-2", 2, binding_fingerprint="binding-a"),
+        ]
+    )
+    runtime = _FakeQwenRuntime(
+        outputs_by_segment_id={
+            "seg-1": ([0.1], 4),
+            "seg-2": ([0.2], 4),
+        }
+    )
+    adapter = Qwen3TTSLocalAdapter(runtime=runtime, composition_builder=CompositionBuilder(sample_rate=4))
+
+    descriptors = adapter.describe_prepared_contexts(request)
+
+    assert len(descriptors) == 1
+
+
+def test_qwen3_tts_local_adapter_uses_injected_prepared_context_for_runtime_calls():
+    from backend.app.inference.adapters.qwen3_tts_local_adapter import Qwen3TTSLocalAdapter
+
+    request = _build_request(
+        segments=[
+            _segment_request("seg-1", 1, binding_fingerprint="binding-a"),
+            _segment_request("seg-2", 2, binding_fingerprint="binding-a"),
+        ]
+    )
+    runtime = _FakeQwenRuntime(
+        outputs_by_segment_id={
+            "seg-1": ([0.1, 0.2], 4),
+            "seg-2": ([0.3], 4),
+        }
+    )
+    adapter = Qwen3TTSLocalAdapter(runtime=runtime, composition_builder=CompositionBuilder(sample_rate=4))
+    prepared_key = adapter.describe_prepared_contexts(request)[0].cache_key
+    prepared_context = SimpleNamespace(
+        model_dir="F:/models/qwen3",
+        generation_mode="custom_voice",
+        language="Chinese",
+        speaker="Vivian",
+        instruct="平静地说",
+        reference_audio_path="F:/refs/demo.wav",
+        reference_text="This is a reference clip.",
+        top_k=20,
+        top_p=0.8,
+        temperature=0.7,
+        device=None,
+        dtype=None,
+        attn_implementation=None,
+        extra_generate_kwargs={},
+    )
+
+    result = adapter.render_block(
+        request,
+        prepared_contexts={
+            prepared_key: PreparedContextEntry(
+                adapter_id="qwen3_tts_local",
+                cache_key=prepared_key,
+                payload=prepared_context,
+                estimated_bytes=64,
+            )
+        },
+    )
+
+    assert runtime.prepared_build_calls == []
+    assert [call[0].segment_id for call in runtime.calls] == ["seg-1", "seg-2"]
+    assert all(call[1] is prepared_context for call in runtime.calls)
+    assert result.join_report is not None
+
+
 def test_qwen3_tts_local_adapter_renders_multi_segment_block_with_exact_spans_and_crossfade_only_boundaries():
     from backend.app.inference.adapters.qwen3_tts_local_adapter import Qwen3TTSLocalAdapter
 
@@ -205,7 +300,7 @@ def test_qwen3_tts_local_adapter_renders_multi_segment_block_with_exact_spans_an
         segment_asset_callback=lambda asset, request_segment, reused: callback_events.append((request_segment.segment_id, reused)),
     ).render_block(request)
 
-    assert [call.segment_id for call in runtime.calls] == ["seg-1", "seg-2"]
+    assert [call[0].segment_id for call in runtime.calls] == ["seg-1", "seg-2"]
     assert callback_events == [("seg-1", False), ("seg-2", False)]
     assert np.allclose(result.audio, [0.1, 0.2, 0.0, 0.0, 0.3])
     assert [(span.segment_id, span.sample_start, span.sample_end) for span in result.segment_spans] == [
@@ -270,7 +365,7 @@ def test_qwen3_tts_local_adapter_reuses_clean_segments_from_previous_block():
 
     assert asset_accessor.loaded_blocks == ["block-asset-old"]
     assert asset_accessor.loaded_segments == [reusable_segment.render_asset_id]
-    assert [call.segment_id for call in runtime.calls] == ["seg-2"]
+    assert [call[0].segment_id for call in runtime.calls] == ["seg-2"]
     assert callback_events == [("seg-1", True), ("seg-2", False)]
     assert np.allclose(result.audio, [0.1, 0.2, 0.0, 0.0, 0.5, 0.6])
 

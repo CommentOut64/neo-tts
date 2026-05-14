@@ -30,6 +30,7 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
+from backend.app.inference.prepared_context_types import PreparedContextDescriptor, PreparedContextEntry
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     BindingReference,
@@ -46,6 +47,7 @@ from backend.app.schemas.edit_session import (
     UpdateEdgeRequest,
     UpdateSegmentRequest,
     VoiceBinding,
+    VoiceBindingPatchRequest,
 )
 from backend.app.services.block_planner import BlockPlanner
 from backend.app.services.block_render_asset_persister import BlockRenderAssetPersister
@@ -57,6 +59,7 @@ from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.render_execution_plan import ExecutionBlockPlan, ExecutionPlan
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
+from backend.app.services.session_prepared_context_service import SessionPreparedContextService
 from backend.app.tts_registry.model_registry import ModelRegistry
 from backend.app.tts_registry.secret_store import SecretStore
 from backend.app.tts_registry.types import ModelInstance, ModelPreset
@@ -2114,6 +2117,354 @@ def test_block_first_pause_only_update_recomposes_dirty_block_without_adapter_in
     assert adapter_calls == []
     assert updated_snapshot.edges[0].pause_duration_seconds == 0.8
     assert timeline.edge_entries[0].pause_duration_seconds == 0.8
+
+
+def test_block_first_render_job_service_reuses_prepared_context_across_same_session_reruns(tmp_path):
+    service = _build_service(tmp_path)
+    service._session_prepared_context_service = SessionPreparedContextService(  # noqa: SLF001
+        max_entries=8,
+        max_total_bytes=1_024,
+    )
+    build_calls: list[str] = []
+    render_context_keys: list[list[str]] = []
+
+    class _PreparedContextAdapter(_FakeBlockAdapter):
+        def describe_prepared_contexts(self, request):
+            return [
+                PreparedContextDescriptor(
+                    adapter_id=request.model_binding.adapter_id,
+                    cache_key=f"{request.model_binding.binding_fingerprint}:shared",
+                    debug_summary={"binding_fingerprint": request.model_binding.binding_fingerprint},
+                )
+            ]
+
+        def build_prepared_context(self, request, descriptor):
+            build_calls.append(descriptor.cache_key)
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload={"prepared": True, "request_id": request.request_id},
+                estimated_bytes=32,
+            )
+
+        def render_block(self, request, *, prepared_contexts=None):
+            render_context_keys.append(sorted((prepared_contexts or {}).keys()))
+            return super().render_block(request)
+
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _PreparedContextAdapter(  # noqa: SLF001
+        cancellation_checker=kwargs.get("cancellation_checker"),
+        segment_asset_callback=kwargs.get("segment_asset_callback"),
+    )
+
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。",
+            voice_id="demo",
+        )
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+
+    rerender = service.create_update_segment_job(
+        snapshot.segments[0].segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句已修改",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+    service.run_edit_job(rerender.job.job_id)
+
+    assert len(build_calls) == 1
+    assert len(render_context_keys) == 2
+    assert render_context_keys[0] == [build_calls[0]]
+    assert render_context_keys[1] == [build_calls[0]]
+
+
+def test_resolve_prepared_contexts_logs_miss_then_hit(tmp_path, monkeypatch):
+    logged_info: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged_info.append((message, args))
+
+        def warning(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            return None
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service = _build_service(tmp_path)
+    service._session_prepared_context_service = SessionPreparedContextService(  # noqa: SLF001
+        max_entries=8,
+        max_total_bytes=1_024,
+    )
+    build_calls: list[str] = []
+
+    class _PreparedContextAdapter(_FakeBlockAdapter):
+        def describe_prepared_contexts(self, request):
+            return [
+                PreparedContextDescriptor(
+                    adapter_id=request.model_binding.adapter_id,
+                    cache_key=f"{request.model_binding.binding_fingerprint}:shared",
+                )
+            ]
+
+        def build_prepared_context(self, request, descriptor):
+            build_calls.append(descriptor.cache_key)
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload={"prepared": True},
+                estimated_bytes=32,
+            )
+
+    accepted = service.create_initialize_job(
+        _initialize_request("第一句。")
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    request = service._block_render_request_builder.build_requests(  # noqa: SLF001
+        snapshot=snapshot,
+        blocks=service._block_planner.build_blocks(snapshot.segments),  # noqa: SLF001
+        resolved_segments={
+            segment.segment_id: service._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)  # noqa: SLF001
+            for segment in snapshot.segments
+        },
+        resolved_edges={
+            edge.edge_id: service._render_config_resolver.resolve_edge(snapshot=snapshot, edge_id=edge.edge_id)  # noqa: SLF001
+            for edge in snapshot.edges
+        },
+        target_segment_ids={snapshot.segments[0].segment_id},
+        target_edge_ids=set(),
+        previous_timeline=service._asset_store.load_timeline_manifest(snapshot.timeline_manifest_id),  # noqa: SLF001
+        reuse_policy="prefer_reuse",
+        render_scope="segment",
+    )[0]
+    adapter = _PreparedContextAdapter()
+
+    first = service._resolve_prepared_contexts_for_adapter(  # noqa: SLF001
+        adapter=adapter,
+        request=request,
+        reason="render",
+    )
+    second = service._resolve_prepared_contexts_for_adapter(  # noqa: SLF001
+        adapter=adapter,
+        request=request,
+        reason="render",
+    )
+
+    assert len(build_calls) == 1
+    assert first is not None and second is not None
+    miss_log = next(item for item in logged_info if "prepared_context_result=miss" in item[0])
+    hit_log = next(item for item in logged_info if "prepared_context_result=hit" in item[0])
+    assert miss_log[1][0] == snapshot.document_id
+    assert miss_log[1][1] == request.model_binding.adapter_id
+    assert miss_log[1][2] == build_calls[0]
+    assert miss_log[1][3] == "render"
+    assert miss_log[1][5] == 32
+    assert miss_log[1][6] == 1
+    assert miss_log[1][7] == 32
+    assert hit_log == (
+        "prepared context resolved session_id={} adapter_id={} prepared_context_key={} prepared_context_result=hit prepared_context_reason={} prepared_context_count={} prepared_context_total_bytes={}",
+        (
+            snapshot.document_id,
+            request.model_binding.adapter_id,
+            build_calls[0],
+            "render",
+            1,
+            32,
+        ),
+    )
+
+
+def test_run_prepared_context_prewarm_logs_completed(tmp_path, monkeypatch):
+    logged_info: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            logged_info.append((message, args))
+
+        def warning(self, message, *args):
+            return None
+
+        def exception(self, message, *args):
+            return None
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service = _build_service(tmp_path)
+    service._session_prepared_context_service = SessionPreparedContextService(  # noqa: SLF001
+        max_entries=8,
+        max_total_bytes=1_024,
+    )
+    build_calls: list[str] = []
+
+    class _PreparedContextAdapter(_FakeBlockAdapter):
+        def describe_prepared_contexts(self, request):
+            return [
+                PreparedContextDescriptor(
+                    adapter_id=request.model_binding.adapter_id,
+                    cache_key=f"{request.model_binding.binding_fingerprint}:shared",
+                )
+            ]
+
+        def build_prepared_context(self, request, descriptor):
+            build_calls.append(descriptor.cache_key)
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload={"prepared": True},
+                estimated_bytes=32,
+            )
+
+    accepted = service.create_initialize_job(
+        _initialize_request("第一句。第二句。")
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    service._block_adapter_selector = lambda adapter_id, **kwargs: _PreparedContextAdapter()  # noqa: SLF001
+
+    service._run_prepared_context_prewarm(  # noqa: SLF001
+        snapshot=snapshot,
+        target_segment_ids={snapshot.segments[0].segment_id},
+        target_edge_ids=set(),
+        reason="session_voice_binding_commit",
+    )
+
+    assert len(build_calls) == 1
+    completed_log = next(item for item in logged_info if item[0].startswith("prepared context prewarm completed"))
+    assert completed_log == (
+        "prepared context prewarm completed session_id={} adapter_id={} prepared_context_reason={} prepared_context_count={}",
+        (
+            snapshot.document_id,
+            "gpt_sovits_local",
+            "session_voice_binding_commit",
+            1,
+        ),
+    )
+
+
+def test_configuration_commit_prewarm_failure_does_not_interrupt_commit(tmp_path, monkeypatch):
+    logged_warnings: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def info(self, message, *args):
+            return None
+
+        def warning(self, message, *args):
+            logged_warnings.append((message, args))
+
+        def exception(self, message, *args):
+            return None
+
+    monkeypatch.setattr("backend.app.services.render_job_service.render_job_logger", _FakeLogger())
+    service = _build_service(tmp_path)
+    service._session_prepared_context_service = SessionPreparedContextService(  # noqa: SLF001
+        max_entries=8,
+        max_total_bytes=1_024,
+    )
+    accepted = service.create_initialize_job(
+        _initialize_request("第一句。第二句。")
+    )
+    service.run_initialize_job(accepted.job.job_id)
+
+    monkeypatch.setattr(
+        service,
+        "_run_prepared_context_prewarm",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("prewarm failed")),
+        raising=False,
+    )
+
+    response = service.commit_patch_session_voice_binding(
+        VoiceBindingPatchRequest(
+            binding_ref=BindingReference(
+                workspace_id="ws_remote",
+                main_model_id="remote",
+                submodel_id="default",
+                preset_id="voice-a",
+            )
+        )
+    )
+    updated_snapshot = service.get_head_snapshot()
+
+    assert response.document_version == updated_snapshot.document_version
+    assert updated_snapshot.default_voice_binding_id is not None
+    assert len(logged_warnings) == 1
+    assert logged_warnings[0] == (
+        "prepared context prewarm failed session_id={} prepared_context_reason={} error={}",
+        (updated_snapshot.document_id, "session_voice_binding_commit", "prewarm failed"),
+    )
+
+
+def test_configuration_commit_prewarm_warms_context_before_first_render(tmp_path):
+    service = _build_service(tmp_path)
+    service._session_prepared_context_service = SessionPreparedContextService(  # noqa: SLF001
+        max_entries=8,
+        max_total_bytes=1_024,
+    )
+    accepted = service.create_initialize_job(
+        _initialize_request("第一句。第二句。")
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    snapshot = service.get_head_snapshot()
+    build_calls: list[str] = []
+    render_context_keys: list[list[str]] = []
+
+    class _PreparedContextAdapter(_FakeBlockAdapter):
+        def describe_prepared_contexts(self, request):
+            return [
+                PreparedContextDescriptor(
+                    adapter_id=request.model_binding.adapter_id,
+                    cache_key=f"{request.model_binding.binding_fingerprint}:shared",
+                    debug_summary={"binding_fingerprint": request.model_binding.binding_fingerprint},
+                )
+            ]
+
+        def build_prepared_context(self, request, descriptor):
+            build_calls.append(descriptor.cache_key)
+            return PreparedContextEntry(
+                adapter_id=descriptor.adapter_id,
+                cache_key=descriptor.cache_key,
+                payload={"prepared": True, "request_id": request.request_id},
+                estimated_bytes=32,
+            )
+
+        def render_block(self, request, *, prepared_contexts=None):
+            render_context_keys.append(sorted((prepared_contexts or {}).keys()))
+            return super().render_block(request)
+
+    service._block_adapter_selector = lambda adapter_id, **kwargs: (  # noqa: SLF001
+        _PreparedContextAdapter(
+            cancellation_checker=kwargs.get("cancellation_checker"),
+            segment_asset_callback=kwargs.get("segment_asset_callback"),
+        )
+        if adapter_id == "external_http_tts"
+        else _FakeBlockAdapter(
+            cancellation_checker=kwargs.get("cancellation_checker"),
+            segment_asset_callback=kwargs.get("segment_asset_callback"),
+        )
+    )
+
+    service.commit_patch_session_voice_binding(
+        VoiceBindingPatchRequest(
+            binding_ref=BindingReference(
+                workspace_id="ws_remote",
+                main_model_id="remote",
+                submodel_id="default",
+                preset_id="voice-a",
+            )
+        )
+    )
+    rerender = service.create_rerender_segment_job(snapshot.segments[0].segment_id)
+    service.run_edit_job(rerender.job.job_id)
+
+    assert len(build_calls) == 1
+    assert render_context_keys
+    assert render_context_keys[0] == [build_calls[0]]
 
 
 def test_block_first_pause_only_update_reuses_boundary_audio_from_previous_block_asset(tmp_path, monkeypatch):

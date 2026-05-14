@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from backend.app.inference.qwen3_tts_runtime import Qwen3TTSSegmentRequest, Qwen3TTSRuntime
+from backend.app.inference.qwen3_tts_runtime import (
+    Qwen3TTSPreparedContext,
+    Qwen3TTSSegmentRequest,
+    Qwen3TTSRuntime,
+)
 
 
 class _FakeModel:
@@ -124,3 +128,43 @@ def test_qwen3_tts_runtime_routes_voice_clone_requests_with_reference_inputs(mon
         }
     ]
     assert np.allclose(result.audio, [0.3, 0.4, 0.5])
+
+
+def test_qwen3_tts_runtime_can_render_with_prepared_context(monkeypatch, tmp_path: Path):
+    fake_module = SimpleNamespace(Qwen3TTSModel=_FakeModel)
+    monkeypatch.setattr("backend.app.inference.qwen3_tts_runtime.importlib.import_module", lambda name: fake_module)
+    runtime = Qwen3TTSRuntime(qwen3_tts_root=tmp_path)
+    request = _request(text="第二次文本", speaker=None, instruct=None, language=None)
+    prepared_context = Qwen3TTSPreparedContext(
+        model_dir=str((tmp_path / "model-a").resolve()),
+        generation_mode="custom_voice",
+        language="Chinese",
+        speaker="Vivian",
+        instruct="平静地说",
+        reference_audio_path=None,
+        reference_text=None,
+        top_k=32,
+        top_p=0.9,
+        temperature=0.7,
+        device=None,
+        dtype=None,
+        attn_implementation=None,
+        extra_generate_kwargs={"max_new_tokens": 512},
+    )
+
+    result = runtime.render_segment(request, prepared_context=prepared_context)
+
+    last_model = runtime._model_handles[next(iter(runtime._model_handles))].model  # noqa: SLF001
+    assert last_model.custom_voice_calls == [
+        {
+            "text": "第二次文本",
+            "language": "Chinese",
+            "speaker": "Vivian",
+            "instruct": "平静地说",
+            "top_k": 32,
+            "top_p": 0.9,
+            "temperature": 0.7,
+            "max_new_tokens": 512,
+        }
+    ]
+    assert np.allclose(result.audio, [0.1, 0.2])

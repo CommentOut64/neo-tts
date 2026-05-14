@@ -6,6 +6,7 @@ import pytest
 import requests
 
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
+from backend.app.inference.prepared_context_types import PreparedContextEntry
 from backend.app.inference.block_adapter_errors import BlockAdapterError
 from backend.app.inference.block_adapter_types import (
     BlockRenderRequest,
@@ -57,7 +58,15 @@ class _FakeSession:
         return next_item
 
 
-def _build_request(secret_handle: str) -> BlockRenderRequest:
+def _build_request(
+    secret_handle: str,
+    *,
+    text: str = "你好，世界。",
+    endpoint_url: str = "https://api.example.com/tts",
+    reference_text: str = "参考文本",
+    synthesis: dict[str, object] | None = None,
+) -> BlockRenderRequest:
+    resolved_synthesis = synthesis or {"speed": 1.0}
     return BlockRenderRequest(
         request_id="req-http-1",
         document_id="doc-1",
@@ -71,11 +80,11 @@ def _build_request(secret_handle: str) -> BlockRenderRequest:
                 BlockRequestSegment(
                     segment_id="seg-1",
                     order_key=1,
-                    text="你好，世界。",
+                    text=text,
                     language="zh",
                 )
             ],
-            block_text="你好，世界。",
+            block_text=text,
         ),
         model_binding=ResolvedModelBinding(
             adapter_id="external_http_tts",
@@ -85,15 +94,15 @@ def _build_request(secret_handle: str) -> BlockRenderRequest:
             resolved_reference={
                 "reference_id": "remote-demo:preset",
                 "audio_uri": "",
-                "text": "参考文本",
+                "text": reference_text,
                 "language": "zh",
                 "source": "preset",
                 "fingerprint": "",
             },
-            resolved_parameters={"speed": 1.0},
+            resolved_parameters=resolved_synthesis,
             secret_handles={"api_key": secret_handle},
             binding_fingerprint="binding-http-1",
-            endpoint={"url": "https://api.example.com/tts"},
+            endpoint={"url": endpoint_url},
             account_binding={"provider": "example", "account_id": "acct-1"},
             preset_fixed_fields={"remote_voice_id": "voice_a"},
             adapter_options={
@@ -104,20 +113,20 @@ def _build_request(secret_handle: str) -> BlockRenderRequest:
         ),
         adapter_options={
             "external_http_tts": {
-                "text": "你好，世界。",
+                "text": text,
                 "model_instance_id": "remote-demo",
                 "preset_id": "voice-a",
                 "remote_voice_id": "voice_a",
-                "endpoint": {"url": "https://api.example.com/tts"},
+                "endpoint": {"url": endpoint_url},
                 "reference": {
                     "reference_id": "remote-demo:preset",
                     "audio_uri": "",
-                    "text": "参考文本",
+                    "text": reference_text,
                     "language": "zh",
                     "source": "preset",
                     "fingerprint": "",
                 },
-                "synthesis": {"speed": 1.0},
+                "synthesis": resolved_synthesis,
                 "metadata": {
                     "provider": "example",
                     "account_id": "acct-1",
@@ -125,6 +134,64 @@ def _build_request(secret_handle: str) -> BlockRenderRequest:
             }
         },
     )
+
+
+def test_external_http_tts_adapter_describes_single_prepared_context_and_ignores_dynamic_text():
+    adapter = ExternalHttpTtsAdapter(
+        secret_store=SecretStore("ignored"),
+        rate_limiter=ExternalHttpRateLimiter(),
+        http_session=_FakeSession(),
+    )
+    base_request = _build_request("secret://remote-demo/api_key", text="第一句。")
+    same_static_request = _build_request("secret://remote-demo/api_key", text="第二句。")
+    changed_endpoint_request = _build_request(
+        "secret://remote-demo/api_key",
+        text="第二句。",
+        endpoint_url="https://api.example.com/tts/v2",
+    )
+
+    base_descriptors = adapter.describe_prepared_contexts(base_request)
+    same_static_descriptors = adapter.describe_prepared_contexts(same_static_request)
+    changed_endpoint_descriptors = adapter.describe_prepared_contexts(changed_endpoint_request)
+
+    assert len(base_descriptors) == 1
+    assert len(same_static_descriptors) == 1
+    assert len(changed_endpoint_descriptors) == 1
+    assert base_descriptors[0].cache_key == same_static_descriptors[0].cache_key
+    assert base_descriptors[0].cache_key != changed_endpoint_descriptors[0].cache_key
+
+
+def test_external_http_tts_adapter_uses_prepared_skeleton_without_storing_secret_plaintext(tmp_path):
+    secret_store = SecretStore(tmp_path / "registry")
+    secret_store.put_model_secrets("remote-demo", {"api_key": "top-secret"})
+    fake_session = _FakeSession(
+        _FakeResponse(
+            status_code=200,
+            content=build_wav_bytes(32000, float_audio_chunk_to_pcm16_bytes([0.1, 0.2, 0.3])),
+        )
+    )
+    adapter = ExternalHttpTtsAdapter(
+        secret_store=secret_store,
+        rate_limiter=ExternalHttpRateLimiter(),
+        http_session=fake_session,
+    )
+    base_request = _build_request("secret://remote-demo/api_key", text="第一句。")
+    descriptor = adapter.describe_prepared_contexts(base_request)[0]
+    prepared_entry = adapter.build_prepared_context(base_request, descriptor)
+    rerun_request = _build_request("secret://remote-demo/api_key", text="第二句。")
+
+    result = adapter.render_block(
+        rerun_request,
+        prepared_contexts={prepared_entry.cache_key: prepared_entry},
+    )
+
+    assert isinstance(prepared_entry, PreparedContextEntry)
+    assert "text" not in prepared_entry.payload
+    assert "top-secret" not in json.dumps(prepared_entry.payload, ensure_ascii=False)
+    assert result.sample_rate == 32000
+    assert fake_session.calls[0]["url"] == "https://api.example.com/tts"
+    assert fake_session.calls[0]["json"]["text"] == "第二句。"
+    assert fake_session.calls[0]["headers"]["Authorization"] == "Bearer top-secret"
 
 
 def test_external_http_tts_adapter_posts_json_payload_and_parses_wav(tmp_path):
