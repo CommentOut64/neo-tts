@@ -45,4 +45,6 @@ desktop/node_modules/
 /llmdoc/
 legacy/
 config/voices.json
-
+AGENTS.md
+/.agents
+/.trellis
