@@ -1,5 +1,6 @@
 import threading
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -69,7 +70,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
             "/v1/edit-session/exports/segments",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "full-smoke-segments",
+                "target_dir": str(segment_export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -78,12 +79,13 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
         _wait_until(
             lambda: client.get(f"/v1/edit-session/exports/{segment_export_job_id}").json()["status"] == "completed"
         )
+        segment_export_job = client.get(f"/v1/edit-session/exports/{segment_export_job_id}").json()
 
         composition_export = client.post(
             "/v1/edit-session/exports/composition",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "full-smoke-composition",
+                "target_dir": str(composition_export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -92,6 +94,7 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
         _wait_until(
             lambda: client.get(f"/v1/edit-session/exports/{composition_export_job_id}").json()["status"] == "completed"
         )
+        composition_export_job = client.get(f"/v1/edit-session/exports/{composition_export_job_id}").json()
 
         playback_map = client.get("/v1/edit-session/playback-map")
         assert playback_map.status_code == 200
@@ -104,7 +107,12 @@ def test_edit_session_full_smoke_covers_timeline_mutation_and_dual_exports(test_
         refreshed_snapshot = client.get("/v1/edit-session/snapshot").json()
         assert refreshed_snapshot["composition_manifest_id"] is not None
 
-    assert (segment_export_dir / "0001.wav").exists()
-    assert (segment_export_dir / "0002.wav").exists()
-    assert (segment_export_dir / "0003.wav").exists()
-    assert (composition_export_dir / "composition.wav").exists()
+        segment_manifest = segment_export_job["output_manifest"]
+        segment_audio_files = [Path(path) for path in segment_manifest["audio_files"]]
+        assert len(segment_audio_files) == len(refreshed_snapshot["segments"])
+        assert all(path.is_relative_to(segment_export_dir) and path.exists() for path in segment_audio_files)
+
+        composition_manifest = composition_export_job["output_manifest"]
+        composition_file = Path(composition_manifest["composition_file"])
+        assert composition_file.parent == composition_export_dir
+        assert composition_file.exists()

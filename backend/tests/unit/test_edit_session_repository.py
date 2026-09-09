@@ -592,7 +592,7 @@ def test_repository_upgrades_legacy_render_profile_reference_fields_on_read(tmp_
     assert loaded.segments[0].display_text == "第一句。"
     assert not hasattr(loaded, "raw_text")
     assert not hasattr(loaded, "normalized_text")
-    assert loaded.render_profiles[0].model_dump(mode="json")["reference_overrides_by_binding"] == {
+    assert loaded.render_profiles[0].model_dump(mode="json", exclude_none=True)["reference_overrides_by_binding"] == {
         "voice-a:model-a": {
             "reference_audio_path": "legacy.wav",
             "reference_text": "遗留参考文本",

@@ -66,7 +66,7 @@ def test_append_creates_new_tail_segments_and_auto_group(test_app_settings):
 
         assert after_snapshot.document_id == before_snapshot.document_id
         assert after_snapshot.document_version == 2
-        assert [segment.raw_text for segment in after_snapshot.segments] == ["第一句。", "第二句。", "第三句。", "第四句。"]
+        assert [segment.display_text for segment in after_snapshot.segments] == ["第一句。", "第二句。", "第三句。", "第四句。"]
         assert [segment.render_asset_id for segment in after_snapshot.segments[:2]] == before_render_asset_ids
         assert len(backend.segment_calls) - before_call_count == 2
 

@@ -52,3 +52,8 @@ def test_langsegmenter_uses_pretrained_models_root_env_for_fast_langdetect_cache
     assert configured_detector.config.cache_dir == str(
         pretrained_models_root / "pretrained_models" / "fast_langdetect"
     )
+
+    # This test imports the module with fakes; remove the newly loaded modules
+    # so later tests import the production implementation instead.
+    sys.modules.pop(module_name, None)
+    sys.modules.pop(package_name, None)

@@ -114,7 +114,7 @@ def test_composition_route_requires_completed_composition_export(test_app_settin
             "/v1/edit-session/exports/composition",
             json={
                 "document_version": snapshot["document_version"],
-                "target_dir": "composition-ready",
+                "target_dir": str(export_dir),
                 "overwrite_policy": "fail",
             },
         )
@@ -122,17 +122,21 @@ def test_composition_route_requires_completed_composition_export(test_app_settin
         export_job_id = create_export.json()["job"]["export_job_id"]
         _wait_until(lambda: client.get(f"/v1/edit-session/exports/{export_job_id}").json()["status"] == "completed")
 
+        export_job = client.get(f"/v1/edit-session/exports/{export_job_id}").json()
+        output_manifest = export_job["output_manifest"]
+
         composition_after_export = client.get("/v1/edit-session/composition")
         assert composition_after_export.status_code == 200
         assert composition_after_export.json()["audio_delivery"]["audio_url"].endswith("/audio")
-        assert (export_dir / "composition.wav").exists()
+        composition_file = Path(output_manifest["composition_file"])
+        assert composition_file.parent == export_dir
+        assert composition_file.exists()
+        assert output_manifest["audio_files"] == [str(composition_file)]
 
 
-def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_settings):
+def test_export_target_dir_must_be_absolute(test_app_settings):
     app = create_app(settings=test_app_settings)
     app.state.editable_inference_gateway = EditableInferenceGateway(FakeEditableInferenceBackend())
-    outside_dir = Path(test_app_settings.project_root).parent / "outside-export"
-
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
@@ -142,16 +146,6 @@ def test_export_target_dir_must_stay_inside_controlled_export_root(test_app_sett
         _wait_until(lambda: client.get("/v1/edit-session/snapshot").json()["session_status"] == "ready")
 
         snapshot = client.get("/v1/edit-session/snapshot").json()
-        invalid_absolute = client.post(
-            "/v1/edit-session/exports/segments",
-            json={
-                "document_version": snapshot["document_version"],
-                "target_dir": str(outside_dir),
-                "overwrite_policy": "fail",
-            },
-        )
-        assert invalid_absolute.status_code == 400
-
         invalid_escape = client.post(
             "/v1/edit-session/exports/segments",
             json={
