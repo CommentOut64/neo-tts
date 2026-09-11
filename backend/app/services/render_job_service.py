@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import json
 import threading
 import time
 from typing import Callable
@@ -31,6 +30,11 @@ from backend.app.inference.editable_types import (
     SegmentRenderAssetPayload,
     build_boundary_asset_id,
 )
+from backend.app.inference.types import InferenceCancelledError
+from backend.app.inference.runtime_errors import map_runtime_error, record_cancellation, runtime_job_diagnostics
+from runtime.gsv.diagnostics import cleanup_operation
+from runtime.gsv.errors import report_failure
+from runtime.gsv import RuntimeFailure
 from backend.app.inference.text_processing import split_text_segments_zh_period
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
@@ -893,6 +897,7 @@ class RenderJobService:
             impact=impact,
         )
 
+    @runtime_job_diagnostics
     def run_initialize_job(self, job_id: str) -> None:
         request = self._queued_requests.get(job_id)
         job = self.get_job(job_id)
@@ -923,7 +928,8 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
-        except _CancelledJobError:
+        except (_CancelledJobError, InferenceCancelledError) as exc:
+            record_cancellation(exc)
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
             except _PartialRenderCommitted:
@@ -939,6 +945,9 @@ class RenderJobService:
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
                 self._mark_session_failed(job.document_id)
+        except RuntimeFailure as exc:
+            self._handle_runtime_failure(plan, exc)
+            self._mark_session_failed(job.document_id)
         except Exception as exc:
             self._log_background_job_failure(
                 job_kind=plan.job_kind,
@@ -953,6 +962,7 @@ class RenderJobService:
         finally:
             self._queued_requests.pop(job_id, None)
 
+    @runtime_job_diagnostics
     def run_edit_job(self, job_id: str) -> None:
         queued_job = self._queued_edit_jobs.get(job_id)
         job = self.get_job(job_id)
@@ -1000,7 +1010,8 @@ class RenderJobService:
                 self._persist_runtime_job(job_id)
         except _PartialRenderCommitted:
             self._persist_runtime_job(job_id)
-        except _CancelledJobError:
+        except (_CancelledJobError, InferenceCancelledError) as exc:
+            record_cancellation(exc)
             try:
                 self._commit_partial_after_segment(plan, status="cancelled_partial")
             except _PartialRenderCommitted:
@@ -1015,6 +1026,8 @@ class RenderJobService:
                 )
                 self._rollback_uncommitted_assets(job_id)
                 self._mark_terminal(job_id, status="failed", message=str(exc))
+        except RuntimeFailure as exc:
+            self._handle_runtime_failure(plan, exc)
         except Exception as exc:
             self._log_background_job_failure(
                 job_kind=plan.job_kind,
@@ -1340,39 +1353,11 @@ class RenderJobService:
         self._commit_edit(plan)
 
     def _prepare(self, plan: RenderPlan) -> None:
-        self._ensure_not_cancelled(plan.job_id)
         self._runtime.update_job(
             plan.job_id,
             status="preparing",
             progress=PREPARE_START_PROGRESS,
             message="正在准备参考上下文。",
-        )
-        resolved_context = self._build_resolved_context_from_request(plan.request)
-        render_job_logger.info(
-            "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
-            resolved_context.voice_id,
-            resolved_context.model_key,
-            resolved_context.reference_audio_path,
-            resolved_context.reference_language,
-            resolved_context.speed,
-            resolved_context.top_k,
-            resolved_context.top_p,
-            resolved_context.temperature,
-            resolved_context.noise_scale,
-        )
-        context_started = time.perf_counter()
-        plan.context = self._gateway.build_reference_context(
-            resolved_context,
-            progress_callback=self._build_prepare_progress_callback(
-                job_id=plan.job_id,
-                default_message="正在准备参考上下文。",
-            ),
-        )
-        render_job_logger.info(
-            "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
-            resolved_context.voice_id,
-            plan.context.reference_context_id,
-            (time.perf_counter() - context_started) * 1000,
         )
         default_render_profile, default_voice_binding = self._build_default_configuration(plan.request)
         plan.render_profiles = [default_render_profile]
@@ -1430,6 +1415,35 @@ class RenderJobService:
             plan.job_id,
             len(plan.edges),
             (time.perf_counter() - build_edges_started) * 1000,
+        )
+        self._ensure_not_cancelled(plan.job_id)
+        resolved_context = self._build_resolved_context_from_request(plan.request)
+        render_job_logger.info(
+            "initialize context resolved voice_id={} model_key={} reference_audio_path={} reference_language={} speed={} top_k={} top_p={} temperature={} noise_scale={}",
+            resolved_context.voice_id,
+            resolved_context.model_key,
+            resolved_context.reference_audio_path,
+            resolved_context.reference_language,
+            resolved_context.speed,
+            resolved_context.top_k,
+            resolved_context.top_p,
+            resolved_context.temperature,
+            resolved_context.noise_scale,
+        )
+        context_started = time.perf_counter()
+        plan.context = self._gateway.build_reference_context(
+            resolved_context,
+            progress_callback=self._build_prepare_progress_callback(
+                job_id=plan.job_id,
+                default_message="正在准备参考上下文。",
+            ),
+            should_cancel=self._build_cancel_checker(plan),
+        )
+        render_job_logger.info(
+            "initialize reference context built voice_id={} reference_context_id={} elapsed_ms={:.2f}",
+            resolved_context.voice_id,
+            plan.context.reference_context_id,
+            (time.perf_counter() - context_started) * 1000,
         )
         render_job_logger.info(
             "initialize runtime sync start job_id={} total_segments={}",
@@ -1489,6 +1503,7 @@ class RenderJobService:
                     job_id=plan.job_id,
                     default_message="正在准备编辑作业。",
                 ),
+                should_cancel=self._build_cancel_checker(plan),
             )
         else:
             self._runtime.update_job(
@@ -1633,6 +1648,7 @@ class RenderJobService:
                         current_segment_index=index,
                         total_segments=total_segments,
                     ),
+                    should_cancel=self._build_cancel_checker(plan),
                 )
                 render_elapsed_ms = (time.perf_counter() - segment_started) * 1000
                 plan.segment_assets[segment.segment_id] = asset
@@ -1680,6 +1696,9 @@ class RenderJobService:
                     self._commit_partial_after_segment(plan, status=control_action)
         except _PartialRenderCommitted:
             raise
+        except InferenceCancelledError as exc:
+            self._cancel_inference_tracking(plan, str(exc))
+            raise _CancelledJobError(str(exc)) from exc
         except Exception as exc:
             self._fail_inference_tracking(plan, str(exc))
             raise
@@ -1697,6 +1716,7 @@ class RenderJobService:
                 right_asset,
                 edge.model_copy(update={"boundary_strategy": resolved_edge.effective_boundary_strategy}),
                 plan.context,
+                should_cancel=self._build_cancel_checker(plan),
             )
             plan.boundary_assets[edge.edge_id] = boundary_asset
             edge.effective_boundary_strategy = resolved_edge.effective_boundary_strategy
@@ -1735,6 +1755,7 @@ class RenderJobService:
                             current_segment_index=completed_targets,
                             total_segments=target_total,
                         ),
+                        should_cancel=self._build_cancel_checker(plan),
                     )
                     segment.render_asset_id = asset.render_asset_id
                     segment.assembled_audio_span = (0, asset.audio_sample_count)
@@ -1777,6 +1798,9 @@ class RenderJobService:
                 segment.effective_duration_samples = asset.audio_sample_count
         except _PartialRenderCommitted:
             raise
+        except InferenceCancelledError as exc:
+            self._cancel_inference_tracking(plan, str(exc))
+            raise _CancelledJobError(str(exc)) from exc
         except Exception as exc:
             self._fail_inference_tracking(plan, str(exc))
             raise
@@ -1807,6 +1831,7 @@ class RenderJobService:
                         right_asset,
                         edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
                         boundary_context,
+                        should_cancel=self._build_cancel_checker(plan),
                     )
                 self._write_boundary_asset(plan.job_id, boundary_asset)
             else:
@@ -1865,6 +1890,7 @@ class RenderJobService:
             right_asset,
             edge.model_copy(update={"boundary_strategy": effective_boundary_strategy}),
             boundary_context,
+            should_cancel=self._build_cancel_checker(plan),
         )
         self._write_boundary_asset(plan.job_id, boundary_asset)
         return boundary_asset
@@ -2514,11 +2540,40 @@ class RenderJobService:
             return "paused"
         return None
 
+    def _build_cancel_checker(self, plan: RenderPlan) -> Callable[[], bool]:
+        def _should_cancel() -> bool:
+            job = self._runtime.get_job(plan.job_id)
+            if job is not None and job.cancel_requested:
+                return True
+            return bool(
+                self._inference_runtime is not None
+                and plan.inference_task_id is not None
+                and self._inference_runtime.should_cancel(plan.inference_task_id)
+            )
+
+        return _should_cancel
+
     def _commit_partial_after_segment(self, plan: RenderPlan, *, status: str) -> None:
-        assert plan.context is not None
         active_session = self._repository.get_active_session()
         if active_session is None:
             raise EditSessionNotFoundError("Active edit session not found.")
+        for segment in plan.segments:
+            if segment.render_status != "ready" or not segment.render_asset_id:
+                break
+            if segment.segment_id not in plan.segment_assets:
+                plan.segment_assets[segment.segment_id] = self._asset_store.load_segment_asset(segment.render_asset_id)
+        if status == "cancelled_partial":
+            # Preserve completed audio without starting more model work after cancellation.
+            for edge in plan.edges:
+                left = plan.segment_assets.get(edge.left_segment_id)
+                right = plan.segment_assets.get(edge.right_segment_id)
+                if left is None or right is None or edge.edge_id in plan.boundary_assets:
+                    continue
+                asset = self._build_fallback_boundary_asset(left, right, edge)
+                plan.boundary_assets[edge.edge_id] = asset
+                edge.effective_boundary_strategy = asset.boundary_strategy
+                edge.boundary_sample_count = asset.boundary_sample_count
+                self._write_boundary_asset(plan.job_id, asset)
         working_snapshot = self._build_temporary_snapshot(plan)
         segments_by_id = {segment.segment_id: segment for segment in working_snapshot.segments}
         checkpoint, partial_snapshot = self._checkpoint_service.save_partial_head(
@@ -2630,6 +2685,8 @@ class RenderJobService:
             status=job.status,
             progress=job.progress,
             message=job.message,
+            error_code=job.error_code,
+            runtime_error=job.runtime_error,
             cancel_requested=job.cancel_requested,
             pause_requested=job.pause_requested,
             current_segment_index=job.current_segment_index,
@@ -2650,6 +2707,22 @@ class RenderJobService:
     def _mark_terminal(self, job_id: str, *, status: str, message: str) -> None:
         self._runtime.update_job(job_id, status=status, progress=1.0 if status == "completed" else 0.0, message=message)
         self._persist_runtime_job(job_id)
+
+    def _handle_runtime_failure(self, plan: RenderPlan, exc: RuntimeFailure) -> None:
+        report_failure(None, exc)
+        _, payload = map_runtime_error(exc.info, job_id=plan.job_id)
+        error = payload["error"]
+        render_job_logger.error(
+            "Runtime render failed job_id={} code={} phase={} checkpoint={}",
+            plan.job_id, error["code"], error["phase"], error["checkpoint"],
+        )
+        self._rollback_uncommitted_assets(plan.job_id)
+        if self._inference_runtime is not None and plan.inference_task_id is not None:
+            self._inference_runtime.mark_failed(task_id=plan.inference_task_id, message=error["message"], runtime_error=error)
+        self._runtime.update_job(plan.job_id, error_code=error["code"], runtime_error=error)
+        self._runtime.emit_event(plan.job_id, "runtime_error", error)
+        self._runtime.emit_event(plan.job_id, "job_failed", {"job_id": plan.job_id, "error_code": error["code"], "message": error["message"]})
+        self._mark_terminal(plan.job_id, status="failed", message=error["message"])
 
     @staticmethod
     def _log_background_job_failure(
@@ -2695,7 +2768,7 @@ class RenderJobService:
         return export_job.output_manifest.composition_manifest_id
 
     def _rollback_uncommitted_assets(self, job_id: str) -> None:
-        self._asset_store.cleanup_staging_job(job_id)
+        cleanup_operation("application.staging_cleanup", lambda: self._asset_store.cleanup_staging_job(job_id), wrap_failure=False)
 
     def _enqueue_edit_job(
         self,
@@ -3009,7 +3082,10 @@ class RenderJobService:
             resolved_context.render_profile_id,
             resolved_context.resolved_voice_binding.voice_binding_id,
         )
-        context = self._gateway.build_reference_context(resolved_context)
+        context = self._gateway.build_reference_context(
+            resolved_context,
+            should_cancel=self._build_cancel_checker(plan),
+        )
         plan.context_cache[cache_key] = context
         return context
 

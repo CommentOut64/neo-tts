@@ -476,6 +476,8 @@ class RenderJobResponse(BaseModel):
     ] = Field(description="render job 当前状态。")
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="当前作业进度，范围 0~1。")
     message: str = Field(default="", description="面向调用方的当前进度说明。")
+    error_code: str | None = Field(default=None, description="Runtime 失败的稳定错误码。")
+    runtime_error: dict[str, Any] | None = Field(default=None, description="Runtime 失败的安全结构化字段。")
     cancel_requested: bool = Field(default=False, description="是否已收到取消请求。")
     pause_requested: bool = Field(default=False, description="是否已收到暂停请求。")
     current_segment_index: int | None = Field(default=None, ge=0, description="当前已处理的段计数。")

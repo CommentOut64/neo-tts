@@ -14,6 +14,7 @@ class InferenceProgressState(BaseModel):
     )
     progress: float = Field(default=0.0, ge=0.0, le=1.0, description="当前推理进度，范围 0~1。")
     message: str = Field(default="", description="面向调用方的当前状态说明。")
+    runtime_error: dict[str, Any] | None = Field(default=None, description="Runtime 失败的安全结构化字段。")
     cancel_requested: bool = Field(default=False, description="是否已收到强制暂停或取消请求。")
     current_segment: int | None = Field(default=None, ge=0, description="当前已完成的分段数。")
     total_segments: int | None = Field(default=None, ge=0, description="本次推理预计处理的总段数。")

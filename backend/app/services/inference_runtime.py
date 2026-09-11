@@ -116,11 +116,12 @@ class InferenceRuntimeController:
             self._state.updated_at = datetime.now(UTC)
             self._broadcast_locked()
 
-    def mark_failed(self, *, task_id: str, message: str) -> None:
+    def mark_failed(self, *, task_id: str, message: str, runtime_error: dict | None = None) -> None:
         with self._lock:
             if self._state.task_id != task_id:
                 return
             self._state.status = "error"
+            self._state.runtime_error = dict(runtime_error) if runtime_error is not None else None
             self._state.message = message
             self._state.cancel_requested = False
             self._state.updated_at = datetime.now(UTC)

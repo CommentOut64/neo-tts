@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from runtime.gsv.diagnostics import cleanup_operation
+
 from dataclasses import replace
 import threading
 from typing import TYPE_CHECKING, Callable, Protocol
@@ -22,6 +24,7 @@ class EditableInferenceBackend(Protocol):
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ReferenceContext: ...
 
     def render_segment_base(
@@ -30,6 +33,7 @@ class EditableInferenceBackend(Protocol):
         context: ReferenceContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SegmentRenderAssetPayload: ...
 
     def render_boundary_asset(
@@ -38,6 +42,8 @@ class EditableInferenceBackend(Protocol):
         right_asset: SegmentRenderAssetPayload,
         edge: EditableEdge,
         context: ReferenceContext,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> BoundaryAssetPayload: ...
 
 
@@ -50,8 +56,13 @@ class EditableInferenceGateway:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ReferenceContext:
-        return self._backend.build_reference_context(resolved_context, progress_callback=progress_callback)
+        return self._backend.build_reference_context(
+            resolved_context,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
 
     def render_segment_base(
         self,
@@ -59,8 +70,14 @@ class EditableInferenceGateway:
         context: ReferenceContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SegmentRenderAssetPayload:
-        return self._backend.render_segment_base(segment, context, progress_callback=progress_callback)
+        return self._backend.render_segment_base(
+            segment,
+            context,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
 
     def render_boundary_asset(
         self,
@@ -68,8 +85,16 @@ class EditableInferenceGateway:
         right_asset: SegmentRenderAssetPayload,
         edge: EditableEdge,
         context: ReferenceContext,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> BoundaryAssetPayload:
-        return self._backend.render_boundary_asset(left_asset, right_asset, edge, context)
+        return self._backend.render_boundary_asset(
+            left_asset,
+            right_asset,
+            edge,
+            context,
+            should_cancel=should_cancel,
+        )
 
 
 class CacheBackedEditableInferenceBackend:
@@ -89,12 +114,17 @@ class CacheBackedEditableInferenceBackend:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ReferenceContext:
         handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
         try:
-            return handle.engine.build_reference_context(resolved_context, progress_callback=progress_callback)
+            return handle.engine.build_reference_context(
+                resolved_context,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+            )
         finally:
-            self._model_cache.release_model_handle(handle.cache_key)
+            cleanup_operation("application.model_handle_release", lambda: self._model_cache.release_model_handle(handle.cache_key), wrap_failure=False)
 
     def render_segment_base(
         self,
@@ -102,12 +132,18 @@ class CacheBackedEditableInferenceBackend:
         context: ReferenceContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SegmentRenderAssetPayload:
         handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
         try:
-            return handle.engine.render_segment_base(segment, context, progress_callback=progress_callback)
+            return handle.engine.render_segment_base(
+                segment,
+                context,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+            )
         finally:
-            self._model_cache.release_model_handle(handle.cache_key)
+            cleanup_operation("application.model_handle_release", lambda: self._model_cache.release_model_handle(handle.cache_key), wrap_failure=False)
 
     def render_boundary_asset(
         self,
@@ -115,12 +151,20 @@ class CacheBackedEditableInferenceBackend:
         right_asset: SegmentRenderAssetPayload,
         edge: EditableEdge,
         context: ReferenceContext,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> BoundaryAssetPayload:
         handle = self._model_cache.acquire_model_handle(gpt_path=self._gpt_path, sovits_path=self._sovits_path)
         try:
-            return handle.engine.render_boundary_asset(left_asset, right_asset, edge, context)
+            return handle.engine.render_boundary_asset(
+                left_asset,
+                right_asset,
+                edge,
+                context,
+                should_cancel=should_cancel,
+            )
         finally:
-            self._model_cache.release_model_handle(handle.cache_key)
+            cleanup_operation("application.model_handle_release", lambda: self._model_cache.release_model_handle(handle.cache_key), wrap_failure=False)
 
 
 class LazyEditableInferenceGateway:
@@ -143,8 +187,13 @@ class LazyEditableInferenceGateway:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ReferenceContext:
-        return self._get_backend().build_reference_context(resolved_context, progress_callback=progress_callback)
+        return self._get_backend().build_reference_context(
+            resolved_context,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
 
     def render_segment_base(
         self,
@@ -152,8 +201,14 @@ class LazyEditableInferenceGateway:
         context: ReferenceContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SegmentRenderAssetPayload:
-        return self._get_backend().render_segment_base(segment, context, progress_callback=progress_callback)
+        return self._get_backend().render_segment_base(
+            segment,
+            context,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
 
     def render_boundary_asset(
         self,
@@ -161,8 +216,16 @@ class LazyEditableInferenceGateway:
         right_asset: SegmentRenderAssetPayload,
         edge: EditableEdge,
         context: ReferenceContext,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> BoundaryAssetPayload:
-        return self._get_backend().render_boundary_asset(left_asset, right_asset, edge, context)
+        return self._get_backend().render_boundary_asset(
+            left_asset,
+            right_asset,
+            edge,
+            context,
+            should_cancel=should_cancel,
+        )
 
     def clear_backend(self) -> None:
         with self._backend_lock:
@@ -215,11 +278,13 @@ class RoutingEditableInferenceGateway:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ReferenceContext:
         cache_key = self._resolve_cache_key(resolved_context)
         context = self._get_gateway(cache_key).build_reference_context(
             resolved_context,
             progress_callback=progress_callback,
+            should_cancel=should_cancel,
         )
         if cache_key is None:
             return context
@@ -231,11 +296,13 @@ class RoutingEditableInferenceGateway:
         context: ReferenceContext,
         *,
         progress_callback: Callable[[dict], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SegmentRenderAssetPayload:
         return self._get_gateway(context.backend_cache_key).render_segment_base(
             segment,
             context,
             progress_callback=progress_callback,
+            should_cancel=should_cancel,
         )
 
     def render_boundary_asset(
@@ -244,12 +311,15 @@ class RoutingEditableInferenceGateway:
         right_asset: SegmentRenderAssetPayload,
         edge: EditableEdge,
         context: ReferenceContext,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> BoundaryAssetPayload:
         return self._get_gateway(context.backend_cache_key).render_boundary_asset(
             left_asset,
             right_asset,
             edge,
             context,
+            should_cancel=should_cancel,
         )
 
     def clear_backend(self) -> None:

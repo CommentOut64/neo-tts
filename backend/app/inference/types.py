@@ -30,7 +30,7 @@ class InferenceRequest(BaseModel):
 
 
 class PreparedSynthesisRequest(InferenceRequest):
-    pass
+    request_id: str | None = None
 
 
 @dataclass

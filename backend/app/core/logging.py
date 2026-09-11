@@ -100,6 +100,9 @@ def configure_logging(project_root: Path | None = None, *, force: bool = False) 
         return log_dir
 
     log_dir.mkdir(parents=True, exist_ok=True)
+    from runtime.gsv.diagnostics import configure_exception_logging
+
+    configure_exception_logging(log_dir)
     log_file, reused_existing_file = _pick_log_file(log_dir)
 
     _base_logger.remove()

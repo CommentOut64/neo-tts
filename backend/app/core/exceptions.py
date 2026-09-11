@@ -3,6 +3,10 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.app.core.logging import get_logger
+from backend.app.inference.runtime_errors import map_runtime_error
+from runtime.gsv import RuntimeFailure
+
 
 class EditSessionNotFoundError(LookupError):
     pass
@@ -29,6 +33,15 @@ class InvalidRangeError(RuntimeError):
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RuntimeFailure)
+    async def _gsv_runtime_error_handler(_: Request, exc: RuntimeFailure) -> JSONResponse:
+        status, payload = map_runtime_error(exc.info)
+        get_logger("gsv_runtime").opt(exception=exc).error(
+            "Runtime request failed request_id={} code={} checkpoint={}",
+            payload["error"]["request_id"], exc.info.error_code, exc.info.checkpoint,
+        )
+        return JSONResponse(status_code=status, content=payload)
+
     @app.exception_handler(LookupError)
     async def _lookup_error_handler(_: Request, exc: LookupError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 import queue
 import time
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from backend.app.core.logging import get_logger
@@ -19,6 +20,11 @@ from backend.app.api.reference_audio_upload import (
 )
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.inference.types import InferenceCancelledError
+from backend.app.inference.runtime_errors import map_runtime_error, record_cancellation, record_runtime_failure
+from runtime.gsv import RuntimeFailure
+
+if TYPE_CHECKING:
+    from backend.app.inference.engine import PyTorchInferenceEngine
 from backend.app.repositories.voice_repository import VoiceRepository
 from backend.app.schemas.inference import (
     CleanupResidualsResponse,
@@ -236,6 +242,7 @@ async def text_to_speech(request: Request) -> Response:
         prepare_started = time.perf_counter()
         tts_service = TtsService()
         prepared_request = tts_service.prepare_request(payload, voice_profile)
+        prepared_request = prepared_request.model_copy(update={"request_id": task_id})
         tts_logger.debug(
             "推理请求组装完成 voice={} elapsed_ms={:.2f}",
             payload.voice,
@@ -286,11 +293,16 @@ async def text_to_speech(request: Request) -> Response:
         if prepared_request.response_format == "wav":
             def _consume_stream() -> list[bytes]:
                 chunks: list[bytes] = []
-                for chunk in stream:
-                    if should_cancel():
-                        raise InferenceCancelledError("Inference cancelled by force pause request.")
-                    if chunk is not None and len(chunk) > 0:
-                        chunks.append(float_audio_chunk_to_pcm16_bytes(chunk))
+                try:
+                    for chunk in stream:
+                        if should_cancel():
+                            raise InferenceCancelledError("Inference cancelled by force pause request.")
+                        if chunk is not None and len(chunk) > 0:
+                            chunks.append(float_audio_chunk_to_pcm16_bytes(chunk))
+                finally:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
                 return chunks
 
             # 在线程池中执行推理，避免阻塞事件循环导致 SSE 进度无法推送
@@ -332,20 +344,39 @@ async def text_to_speech(request: Request) -> Response:
                     task_id,
                     (time.perf_counter() - request_started) * 1000,
                 )
-            except InferenceCancelledError:
+            except InferenceCancelledError as exc:
+                record_cancellation(exc, request_id=task_id)
                 runtime.mark_cancelled(task_id=task_id, message="推理已被强制暂停。")
                 tts_logger.warning("TTS 流式推理被取消 task_id={}", task_id)
                 return
+            except RuntimeFailure as exc:
+                record_runtime_failure(exc, request_id=task_id)
+                _, error_payload = map_runtime_error(exc.info, request_id=task_id)
+                runtime.mark_failed(task_id=task_id, message=exc.info.message, runtime_error=error_payload["error"])
+                tts_logger.error("TTS Runtime stream failed task_id={} code={} checkpoint={}", task_id, exc.info.error_code, exc.info.checkpoint)
+                raise
             except Exception as exc:
                 runtime.mark_failed(task_id=task_id, message=f"流式推理异常: {exc}")
                 tts_logger.exception("TTS 流式推理异常 task_id={}", task_id)
                 raise
             finally:
-                _cleanup_temporary_files(temporary_files)
+                try:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
+                finally:
+                    _cleanup_temporary_files(temporary_files)
 
         response = StreamingResponse(generate_audio(), media_type="audio/mpeg")
         response.headers["X-Inference-Task-Id"] = task_id
         return response
+    except RuntimeFailure as exc:
+        record_runtime_failure(exc, request_id=task_id)
+        status, error_payload = map_runtime_error(exc.info, request_id=task_id)
+        if task_id is not None:
+            runtime.mark_failed(task_id=task_id, message=exc.info.message, runtime_error=error_payload["error"])
+        tts_logger.error("TTS Runtime failed task_id={} code={} checkpoint={}", task_id, exc.info.error_code, exc.info.checkpoint)
+        return JSONResponse(status_code=status, content=error_payload, headers={"X-Inference-Task-Id": error_payload["error"]["request_id"]})
     except LookupError as exc:
         if task_id is not None:
             runtime.mark_failed(task_id=task_id, message=str(exc))
@@ -362,6 +393,7 @@ async def text_to_speech(request: Request) -> Response:
         tts_logger.error("TTS 推理依赖缺失 voice={} detail={}", payload.voice, exc)
         raise HTTPException(status_code=422, detail=f"Inference assets not found: {exc}") from exc
     except InferenceCancelledError as exc:
+        record_cancellation(exc, request_id=task_id)
         if task_id is not None:
             runtime.mark_cancelled(task_id=task_id, message=str(exc))
         tts_logger.warning("TTS 推理被取消 task_id={} detail={}", task_id, exc)
