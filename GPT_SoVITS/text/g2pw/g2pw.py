@@ -25,6 +25,8 @@ class G2PWPinyin(Pinyin):
         v_to_u=False,
         neutral_tone_with_five=False,
         tone_sandhi=False,
+        providers=None,
+        local_files_only=False,
         **kwargs,
     ):
         self._g2pw = G2PWOnnxConverter(
@@ -32,6 +34,8 @@ class G2PWPinyin(Pinyin):
             style="pinyin",
             model_source=model_source,
             enable_non_tradional_chinese=enable_non_tradional_chinese,
+            providers=providers,
+            local_files_only=local_files_only,
         )
         self._converter = Converter(
             self._g2pw,

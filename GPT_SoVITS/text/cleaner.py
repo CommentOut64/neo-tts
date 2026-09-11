@@ -23,7 +23,7 @@ def _prepend_comma_to_short_english_enabled():
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def clean_text(text, language, version=None):
+def clean_text(text, language, version=None, *, pinyin_converter=None):
     if version is None:
         version = os.environ.get("version", "v2")
     if version == "v1":
@@ -38,14 +38,17 @@ def clean_text(text, language, version=None):
         text = " "
     for special_s, special_l, target_symbol in special:
         if special_s in text and language == special_l:
-            return clean_special(text, language, special_s, target_symbol, version)
+            return clean_special(text, language, special_s, target_symbol, version, pinyin_converter=pinyin_converter)
     language_module = __import__("text." + language_module_map[language], fromlist=[language_module_map[language]])
     if hasattr(language_module, "text_normalize"):
         norm_text = language_module.text_normalize(text)
     else:
         norm_text = text
     if language == "zh" or language == "yue":  ##########
-        phones, word2ph = language_module.g2p(norm_text)
+        if language == "zh" and version != "v1" and pinyin_converter is not None:
+            phones, word2ph = language_module.g2p(norm_text, pinyin_converter=pinyin_converter)
+        else:
+            phones, word2ph = language_module.g2p(norm_text)
         assert len(phones) == sum(word2ph)
         assert len(norm_text) == len(word2ph)
     elif language == "en":
@@ -60,7 +63,7 @@ def clean_text(text, language, version=None):
     return phones, word2ph, norm_text
 
 
-def clean_special(text, language, special_s, target_symbol, version=None):
+def clean_special(text, language, special_s, target_symbol, version=None, *, pinyin_converter=None):
     if version is None:
         version = os.environ.get("version", "v2")
     if version == "v1":
@@ -76,7 +79,10 @@ def clean_special(text, language, special_s, target_symbol, version=None):
     text = text.replace(special_s, ",")
     language_module = __import__("text." + language_module_map[language], fromlist=[language_module_map[language]])
     norm_text = language_module.text_normalize(text)
-    phones = language_module.g2p(norm_text)
+    if language == "zh" and version != "v1" and pinyin_converter is not None:
+        phones = language_module.g2p(norm_text, pinyin_converter=pinyin_converter)
+    else:
+        phones = language_module.g2p(norm_text)
     new_ph = []
     for ph in phones[0]:
         assert ph in symbols

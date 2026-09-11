@@ -10,8 +10,8 @@ import kaldi as Kaldi
 
 
 class SV:
-    def __init__(self, device, is_half):
-        pretrained_state = torch.load(sv_path, map_location="cpu", weights_only=False)
+    def __init__(self, device, is_half, model_path=None):
+        pretrained_state = torch.load(model_path or sv_path, map_location="cpu", weights_only=False)
         embedding_model = ERes2NetV2(baseWidth=24, scale=4, expansion=4)
         embedding_model.load_state_dict(pretrained_state)
         embedding_model.eval()

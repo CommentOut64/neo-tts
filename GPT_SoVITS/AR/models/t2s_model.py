@@ -6,7 +6,6 @@ from typing import List, Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torchmetrics.classification import MulticlassAccuracy
 from tqdm import tqdm
 
 from GPT_SoVITS.AR.models.utils import (
@@ -32,6 +31,27 @@ default_config = {
     "phoneme_vocab_size": 512,
     "EOS": 1024,
 }
+
+
+class _TopKAccuracy(nn.Module):
+    """Small inference-safe replacement for the training-only torchmetrics metric."""
+
+    def __init__(self, top_k: int, ignore_index: int) -> None:
+        super().__init__()
+        self.top_k = top_k
+        self.ignore_index = ignore_index
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if logits.ndim != target.ndim + 1:
+            raise ValueError("logits/target dimensions do not match")
+        if logits.shape[1] == target.shape[1] and logits.shape[-1] != target.shape[-1]:
+            logits = logits.transpose(1, 2)
+        predictions = logits.topk(min(self.top_k, logits.shape[-1]), dim=-1).indices
+        matches = predictions.eq(target.unsqueeze(-1))
+        valid = target.ne(self.ignore_index)
+        if not torch.any(valid):
+            return logits.new_zeros(())
+        return matches.any(dim=-1).logical_and(valid).float().sum() / valid.float().sum()
 
 
 # @torch.jit.script ## 使用的话首次推理会非常慢，而且推理速度不稳定
@@ -339,13 +359,7 @@ class Text2SemanticDecoder(nn.Module):
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
         self.loss_fct = nn.CrossEntropyLoss(reduction="sum")
 
-        self.ar_accuracy_metric = MulticlassAccuracy(
-            self.vocab_size,
-            top_k=top_k,
-            average="micro",
-            multidim_average="global",
-            ignore_index=self.EOS,
-        )
+        self.ar_accuracy_metric = _TopKAccuracy(top_k=top_k, ignore_index=self.EOS)
 
         blocks = []
 
@@ -749,9 +763,9 @@ class Text2SemanticDecoder(nn.Module):
             if (self.EOS in samples[:, 0]) or (self.EOS in tokens):  ###如果生成到EOS，则停止
                 l1 = samples[:, 0] == self.EOS
                 l2 = tokens == self.EOS
-                l = l1.logical_or(l2)
-                removed_idx_of_batch_for_y = torch.where(l == True)[0].tolist()
-                reserved_idx_of_batch_for_y = torch.where(l == False)[0]
+                done = l1.logical_or(l2)
+                removed_idx_of_batch_for_y = torch.where(done)[0].tolist()
+                reserved_idx_of_batch_for_y = torch.where(~done)[0]
                 # batch_indexs = torch.tensor(batch_idx_map, device=y.device)[removed_idx_of_batch_for_y]
                 for i in removed_idx_of_batch_for_y:
                     batch_index = batch_idx_map[i]

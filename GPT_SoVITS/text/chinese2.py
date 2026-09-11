@@ -26,10 +26,6 @@ import jieba_fast.posseg as psg
 logger = logging.getLogger(__name__)
 
 
-def correct_pronunciation(word, pinyins):
-    return pinyins
-
-
 def _resolve_g2pw_enabled():
     raw_override = os.environ.get("is_g2pw")
     if raw_override is not None and raw_override.strip() != "":
@@ -42,21 +38,29 @@ def _resolve_g2pw_enabled():
 
 
 is_g2pw = _resolve_g2pw_enabled()
-if is_g2pw:
+g2pw = None
+
+
+def _get_default_g2pw():
+    global g2pw, is_g2pw
+    if not is_g2pw or g2pw is not None:
+        return g2pw
     try:
-        # print("当前使用g2pw进行拼音推理")
-        from text.g2pw import G2PWPinyin, correct_pronunciation as _correct_pronunciation
+        from text.g2pw import G2PWPinyin
 
         g2pw = G2PWPinyin(
-            model_dir="GPT_SoVITS/text/G2PWModel",
-            model_source=os.environ.get("bert_path", "pretrained_models/chinese-roberta-wwm-ext-large"),
+            model_dir=os.path.join(current_file_path, "G2PWModel"),
+            model_source=os.environ.get(
+                "bert_path",
+                os.path.abspath(os.path.join(current_file_path, "..", "..", "pretrained_models", "chinese-roberta-wwm-ext-large")),
+            ),
             v_to_u=False,
             neutral_tone_with_five=True,
         )
-        correct_pronunciation = _correct_pronunciation
     except Exception:
         is_g2pw = False
         logger.warning("g2pw 初始化失败，已降级到 pypinyin。", exc_info=True)
+    return g2pw
 
 rep_map = {
     "：": ",",
@@ -90,10 +94,10 @@ def replace_punctuation(text):
     return replaced_text
 
 
-def g2p(text):
+def g2p(text, *, pinyin_converter=None):
     pattern = r"(?<=[{0}])\s*".format("".join(punctuation))
     sentences = [i for i in re.split(pattern, text) if i.strip() != ""]
-    phones, word2ph = _g2p(sentences)
+    phones, word2ph = _g2p(sentences, pinyin_converter=pinyin_converter)
     return phones, word2ph
 
 
@@ -197,7 +201,11 @@ def _merge_erhua(initials: list[str], finals: list[str], word: str, pos: str) ->
     return new_initials, new_finals
 
 
-def _g2p(segments):
+def _g2p(segments, *, pinyin_converter=None):
+    converter = pinyin_converter if pinyin_converter is not None else _get_default_g2pw()
+    if converter is not None:
+        from text.g2pw import correct_pronunciation
+
     phones_list = []
     word2ph = []
     for seg in segments:
@@ -209,7 +217,7 @@ def _g2p(segments):
         initials = []
         finals = []
 
-        if not is_g2pw:
+        if converter is None:
             for word, pos in seg_cut:
                 if pos == "eng":
                     continue
@@ -224,7 +232,7 @@ def _g2p(segments):
             finals = sum(finals, [])
         else:
             # g2pw采用整句推理
-            pinyins = g2pw.lazy_pinyin(seg, neutral_tone_with_five=True, style=Style.TONE3)
+            pinyins = converter.lazy_pinyin(seg, neutral_tone_with_five=True, style=Style.TONE3)
 
             pre_word_length = 0
             for word, pos in seg_cut:

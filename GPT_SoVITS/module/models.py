@@ -10,7 +10,6 @@ from torch.nn import functional as F
 from GPT_SoVITS.module import commons
 from GPT_SoVITS.module import modules
 from GPT_SoVITS.module import attentions
-from GPT_SoVITS.f5_tts.model import DiT
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from GPT_SoVITS.module.commons import init_weights, get_padding
@@ -1338,6 +1337,8 @@ class SynthesizerTrnV3(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        from GPT_SoVITS.f5_tts.model.backbones.dit import DiT
+
         self.spec_channels = spec_channels
         self.inter_channels = inter_channels
         self.hidden_channels = hidden_channels
@@ -1485,6 +1486,8 @@ class SynthesizerTrnV3b(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        from GPT_SoVITS.f5_tts.model.backbones.dit import DiT
+
         self.spec_channels = spec_channels
         self.inter_channels = inter_channels
         self.hidden_channels = hidden_channels

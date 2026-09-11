@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import onnxruntime
 import requests
-import torch
 from opencc import OpenCC
 from pypinyin import Style, pinyin
 from transformers.models.auto.tokenization_auto import AutoTokenizer
@@ -20,11 +19,6 @@ from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_i
 from .utils import load_config
 
 onnxruntime.set_default_logger_severity(3)
-try:
-    onnxruntime.preload_dlls()
-except:
-    pass
-    # traceback.print_exc()
 warnings.filterwarnings("ignore")
 
 model_version = "1.1"
@@ -86,31 +80,54 @@ class G2PWOnnxConverter:
         style: str = "bopomofo",
         model_source: str = None,
         enable_non_tradional_chinese: bool = False,
+        providers: List[str] = None,
+        local_files_only: bool = False,
     ):
-        uncompress_path = download_and_decompress(model_dir)
+        uncompress_path = model_dir if local_files_only else download_and_decompress(model_dir)
+        if local_files_only:
+            for filename in (
+                "g2pW.onnx", "config.py", "POLYPHONIC_CHARS.txt", "MONOPHONIC_CHARS.txt",
+                "bopomofo_to_pinyin_wo_tune_dict.json", "char_bopomofo_dict.json",
+            ):
+                path = os.path.join(uncompress_path, filename)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(path)
+            if not model_source or not os.path.isabs(model_source) or not os.path.isdir(model_source):
+                raise FileNotFoundError("G2PW requires a local tokenizer directory")
+
+        available_providers = onnxruntime.get_available_providers()
+        selected_providers = list(providers) if providers is not None else (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in available_providers else ["CPUExecutionProvider"]
+        )
+        if not selected_providers or any(provider not in available_providers for provider in selected_providers):
+            raise RuntimeError("Requested G2PW ONNX provider is unavailable")
+        use_cuda = "CUDAExecutionProvider" in selected_providers
+        if use_cuda:
+            try:
+                onnxruntime.preload_dlls()
+            except (AttributeError, OSError, RuntimeError):
+                pass
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        sess_options.intra_op_num_threads = 2 if torch.cuda.is_available() else 0
-        if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
-            self.session_g2pW = onnxruntime.InferenceSession(
-                os.path.join(uncompress_path, "g2pW.onnx"),
-                sess_options=sess_options,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-            )
-        else:
-            self.session_g2pW = onnxruntime.InferenceSession(
-                os.path.join(uncompress_path, "g2pW.onnx"),
-                sess_options=sess_options,
-                providers=["CPUExecutionProvider"],
-            )
+        sess_options.intra_op_num_threads = 2 if use_cuda else 0
+        self.session_g2pW = onnxruntime.InferenceSession(
+            os.path.join(uncompress_path, "g2pW.onnx"),
+            sess_options=sess_options,
+            providers=selected_providers,
+        )
+        if providers is not None:
+            if self.session_g2pW.get_providers()[:len(selected_providers)] != selected_providers:
+                raise RuntimeError("G2PW ONNX session did not activate the requested providers")
+            self.session_g2pW.disable_fallback()
         self.config = load_config(config_path=os.path.join(uncompress_path, "config.py"), use_default=True)
 
         self.model_source = model_source if model_source else self.config.model_source
         self.enable_opencc = enable_non_tradional_chinese
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_source)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_source, local_files_only=local_files_only)
 
         polyphonic_chars_path = os.path.join(uncompress_path, "POLYPHONIC_CHARS.txt")
         monophonic_chars_path = os.path.join(uncompress_path, "MONOPHONIC_CHARS.txt")
