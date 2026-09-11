@@ -12,9 +12,9 @@ from backend.app.inference.asset_fingerprint import fingerprint_file
 from backend.app.inference.types import ModelCacheIdentity, ModelHandle
 
 if TYPE_CHECKING:
-    from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
+    from backend.app.inference.gsv_runtime_adapter import GSVRuntimeEngineAdapter
 
-EngineFactory = Callable[[str, str, str, str], "GPTSoVITSOptimizedInference"]
+EngineFactory = Callable[[str, str, str, str], "GSVRuntimeEngineAdapter"]
 WarmupHook = Callable[[Any], None]
 CudaMemGetInfo = Callable[[], tuple[int, int]]
 model_cache_logger = get_logger("model_cache")
@@ -31,6 +31,8 @@ def build_model_cache_from_settings(*, settings: Any, model_cache_cls: type["PyT
         "gpu_offload_enabled": settings.gpu_offload_enabled,
         "gpu_min_free_mb": settings.gpu_min_free_mb,
         "gpu_reserve_mb_for_load": settings.gpu_reserve_mb_for_load,
+        "inference_device": getattr(settings, "inference_device", "auto"),
+        "inference_dtype": getattr(settings, "inference_dtype", "float32"),
     }
     supported_parameters = inspect.signature(model_cache_cls).parameters
     constructor_kwargs = {
@@ -55,6 +57,8 @@ class PyTorchModelCache:
         gpu_offload_enabled: bool = True,
         gpu_min_free_mb: int = 2048,
         gpu_reserve_mb_for_load: int = 4096,
+        inference_device: str = "auto",
+        inference_dtype: str = "float32",
         cuda_mem_get_info: CudaMemGetInfo | None = None,
     ) -> None:
         self._project_root = project_root
@@ -63,6 +67,8 @@ class PyTorchModelCache:
         self._managed_voices_dir = managed_voices_dir
         self._cnhubert_base_path = self._resolve_path(cnhubert_base_path)
         self._bert_path = self._resolve_path(bert_path)
+        self._inference_device = inference_device
+        self._inference_dtype = inference_dtype
         self._engine_factory = engine_factory or self._build_engine
         self._warmup_hook = warmup_hook
         self._gpu_offload_enabled = gpu_offload_enabled
@@ -160,7 +166,7 @@ class PyTorchModelCache:
                 ensure_on_gpu = getattr(handle.engine, "ensure_on_gpu", None)
                 if callable(ensure_on_gpu):
                     ensure_on_gpu()
-                    handle.resident_device = "cuda"
+                    handle.resident_device = self._detect_resident_device(handle.engine)
             handle.active_count += 1
             handle.last_used_at = time.perf_counter()
             return handle
@@ -177,7 +183,12 @@ class PyTorchModelCache:
 
     def clear(self) -> None:
         with self._lock:
+            handles = tuple(self._engines.values())
             self._engines.clear()
+        for handle in handles:
+            close = getattr(handle.engine, "close", None)
+            if callable(close):
+                close()
 
     def _resolve_path(self, raw_path: str | Path) -> str:
         return str(
@@ -231,8 +242,9 @@ class PyTorchModelCache:
         resident_device = getattr(engine, "resident_device", None)
         if isinstance(resident_device, str) and resident_device:
             return resident_device
-        if callable(getattr(engine, "offload_from_gpu", None)) or callable(getattr(engine, "ensure_on_gpu", None)):
-            return "cuda"
+        device = getattr(engine, "device", None)
+        if device is not None:
+            return str(device)
         return "cpu"
 
     def _is_gpu_pressure_high(self) -> bool:
@@ -266,37 +278,22 @@ class PyTorchModelCache:
             if not self._is_gpu_pressure_high():
                 break
             handle.engine.offload_from_gpu()
-            handle.resident_device = "cpu"
+            handle.resident_device = self._detect_resident_device(handle.engine)
             handle.last_used_at = time.perf_counter()
             model_cache_logger.warning(
                 "检测到 GPU 显存压力，已卸载空闲模型到 CPU cache_key={}",
                 handle.cache_key,
             )
 
-    @staticmethod
-    def _build_engine(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str) -> Any:
-        import_started = time.perf_counter()
-        model_cache_logger.info("开始导入 PyTorch 推理模块")
-        from backend.app.inference import pytorch_optimized
-        model_cache_logger.info(
-            "PyTorch 推理模块导入完成 elapsed_ms={:.2f}",
-            (time.perf_counter() - import_started) * 1000,
+    def _build_engine(self, gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str) -> Any:
+        started = time.perf_counter()
+        model_cache_logger.info("开始构建 GSV Runtime 实例")
+        from backend.app.inference.gsv_runtime_adapter import GSVRuntimeEngineAdapter
+        engine = GSVRuntimeEngineAdapter(
+            gpt_path, sovits_path, str(self._resources_root or self._project_root),
+            device=self._inference_device, dtype=self._inference_dtype,
+            cnhubert_path=cnhubert_path, bert_path=bert_path,
+            reference_path_resolver=self._resolve_path,
         )
-
-        construct_started = time.perf_counter()
-        model_cache_logger.info(
-            "开始构建 PyTorch 推理实例 gpt_path={} sovits_path={}",
-            gpt_path,
-            sovits_path,
-        )
-        engine = pytorch_optimized.GPTSoVITSOptimizedInference(
-            gpt_path,
-            sovits_path,
-            cnhubert_path,
-            bert_path,
-        )
-        model_cache_logger.info(
-            "PyTorch 推理实例构建完成 elapsed_ms={:.2f}",
-            (time.perf_counter() - construct_started) * 1000,
-        )
+        model_cache_logger.info("GSV Runtime 实例构建完成 elapsed_ms={:.2f}", (time.perf_counter() - started) * 1000)
         return engine

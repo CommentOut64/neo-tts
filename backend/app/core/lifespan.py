@@ -129,5 +129,8 @@ async def app_lifespan(app: FastAPI):
         yield
     finally:
         cleanup_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await cleanup_task
+        try:
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
+        finally:
+            model_cache.clear()

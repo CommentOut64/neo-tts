@@ -34,6 +34,13 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r" {2,}", " ", text).strip()
 
 
+def ensure_sentence_end(text: str, language: str) -> str:
+    content = text.strip()
+    if content and content[-1] not in OFFICIAL_SPLIT_PUNCTUATION:
+        content += "." if language == "en" else "。"
+    return content
+
+
 def is_decimal_dot_at(text: str, index: int) -> bool:
     return (
         0 < index < len(text) - 1

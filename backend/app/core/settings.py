@@ -39,8 +39,14 @@ class AppSettings:
     gpu_offload_enabled: bool = True
     gpu_min_free_mb: int = 2048
     gpu_reserve_mb_for_load: int = 4096
+    inference_device: str = "auto"
+    inference_dtype: str = "float32"
 
     def __post_init__(self) -> None:
+        if self.inference_device not in {"auto", "cpu", "cuda"}:
+            raise ValueError("inference_device must be auto, cpu, or cuda")
+        if self.inference_dtype not in {"float32", "float16"}:
+            raise ValueError("inference_dtype must be float32 or float16")
         resolved_project_root = self.project_root.resolve()
         distribution_kind = _normalize_distribution_kind(self.distribution_kind)
         app_core_root = (
@@ -371,4 +377,6 @@ def get_settings() -> AppSettings:
         gpu_offload_enabled=gpu_offload_enabled,
         gpu_min_free_mb=gpu_min_free_mb,
         gpu_reserve_mb_for_load=gpu_reserve_mb_for_load,
+        inference_device=os.environ.get("NEO_TTS_DEVICE", "auto").strip().lower(),
+        inference_dtype=os.environ.get("NEO_TTS_DTYPE", "float32").strip().lower(),
     )

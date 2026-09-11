@@ -34,6 +34,9 @@ class ReferenceContext:
     reference_identity: str = ""
     reference_audio_fingerprint: str = ""
     reference_text_fingerprint: str = ""
+    runtime_model_revision: str = ""
+    runtime_sovits_revision: str = ""
+    runtime_processing_revision: str = ""
 
 
 @dataclass(frozen=True)
