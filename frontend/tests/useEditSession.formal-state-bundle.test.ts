@@ -132,8 +132,9 @@ function createSegment(documentVersion: number, segmentId: string) {
     previous_segment_id: null,
     next_segment_id: null,
     segment_kind: "speech" as const,
-    raw_text: `第 ${documentVersion} 版`,
-    normalized_text: `第 ${documentVersion} 版`,
+    stem: `第 ${documentVersion} 版`,
+    terminal_raw: "",
+    terminal_source: "synthetic" as const,
     text_language: "zh",
     render_version: documentVersion,
     render_asset_id: `asset-${documentVersion}`,
@@ -324,7 +325,7 @@ describe("useEditSession formal state bundle", () => {
       segments: [
         {
           ...createSegment(1, "seg-1"),
-          raw_text: "第一句。",
+          stem: "第一句",
           terminal_raw: "？！",
           terminal_closer_suffix: "”",
           terminal_source: "original",
@@ -333,7 +334,7 @@ describe("useEditSession formal state bundle", () => {
         {
           ...createSegment(1, "seg-2"),
           order_key: 2,
-          raw_text: "Hello world。",
+          stem: "Hello world",
           terminal_raw: "",
           terminal_closer_suffix: "",
           terminal_source: "synthetic",
