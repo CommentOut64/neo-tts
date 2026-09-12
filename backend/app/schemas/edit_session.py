@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.app.text.segment_standardizer import build_segment_display_text
 
 
-ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
+ResolvedLanguage = Literal["zh", "ja", "en", "mixed", "unknown"]
 InferenceExclusionReason = Literal[
     "none",
     "other_language_segment",

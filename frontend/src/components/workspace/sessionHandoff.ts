@@ -32,7 +32,7 @@ interface SessionSegmentLike {
   terminal_raw?: string;
   terminal_closer_suffix?: string;
   terminal_source?: "original" | "synthetic";
-  detected_language?: "zh" | "ja" | "en" | "unknown" | null;
+  detected_language?: "zh" | "ja" | "en" | "mixed" | "unknown" | null;
 }
 
 interface ResolveNavbarRuntimeHintInput {

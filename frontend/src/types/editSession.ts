@@ -201,7 +201,7 @@ export interface InitializeRequest {
   segment_boundary_mode?: 'raw_strong_punctuation' | 'zh_period'
 }
 
-export type ResolvedLanguage = 'zh' | 'ja' | 'en' | 'unknown'
+export type ResolvedLanguage = 'zh' | 'ja' | 'en' | 'mixed' | 'unknown'
 export type InferenceExclusionReason =
   | 'none'
   | 'other_language_segment'

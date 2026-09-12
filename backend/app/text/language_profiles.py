@@ -4,7 +4,7 @@ from typing import Literal, TypedDict
 
 
 SupportedLanguage = Literal["zh", "ja", "en"]
-ResolvedLanguage = Literal["zh", "ja", "en", "unknown"]
+ResolvedLanguage = Literal["zh", "ja", "en", "mixed", "unknown"]
 
 
 class LanguageProfile(TypedDict):

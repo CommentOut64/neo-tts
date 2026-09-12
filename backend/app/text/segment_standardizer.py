@@ -4,6 +4,8 @@ import string
 from dataclasses import dataclass
 from typing import Literal
 
+from runtime.gsv.language import LanguageResolutionService
+
 from backend.app.inference.text_processing import is_decimal_dot_at, normalize_whitespace
 from backend.app.text.language_profiles import ResolvedLanguage, get_language_profile
 from backend.app.text.terminal_capsule import (
@@ -24,6 +26,7 @@ _APPROX_CHARS_PER_SECOND = 5.0
 _SHORT_SEGMENT_SECONDS = 3.0
 _LONG_SEGMENT_SECONDS = 30.0
 _SUPPORTED_LANGUAGES = {"zh", "ja", "en"}
+_language_resolver = LanguageResolutionService()
 _FORCED_NEWLINE_TRAILING_PUNCTUATION = frozenset("，,、；;：:。．.!！？?…—")
 _FORCED_NEWLINE_LEADING_PUNCTUATION = (
     _FORCED_NEWLINE_TRAILING_PUNCTUATION | CLOSER_CHARACTERS
@@ -380,179 +383,34 @@ def _match_terminal_at(text: str, index: int) -> str | None:
 
 def _resolve_single_segment_language_meta(text: str, text_language: str) -> SegmentLanguageMeta:
     language = text_language.lower()
-    if language in _SUPPORTED_LANGUAGES:
-        return SegmentLanguageMeta(detected_language=language, inference_exclusion_reason="none")
-    if language == "auto":
-        detected_language = _detect_segment_language(text)
-        return SegmentLanguageMeta(
-            detected_language=detected_language,
-            inference_exclusion_reason="none" if detected_language in _SUPPORTED_LANGUAGES else "language_unresolved",
-        )
-    if language in {"unknown", ""}:
+    if language not in _SUPPORTED_LANGUAGES | {"auto", "mixed"}:
+        reason = "language_unresolved" if language in {"unknown", ""} else "unsupported_language"
+        return SegmentLanguageMeta(detected_language="unknown", inference_exclusion_reason=reason)
+    if not text.strip():
         return SegmentLanguageMeta(detected_language="unknown", inference_exclusion_reason="language_unresolved")
-    return SegmentLanguageMeta(detected_language="unknown", inference_exclusion_reason="unsupported_language")
+    resolution = _language_resolver.resolve(language, text)
+    supported = all(span.language in _SUPPORTED_LANGUAGES for span in resolution.spans)
+    detected = resolution.mode if supported else "unknown"
+    return SegmentLanguageMeta(
+        detected_language=detected,
+        inference_exclusion_reason="none" if supported else "language_unresolved",
+    )
 
 
 def _resolve_batch_language_meta(
     raw_segments: list[str],
     text_language: str,
 ) -> tuple[list[SegmentLanguageMeta], ResolvedLanguage, LanguageDetectionSource]:
-    language = text_language.lower()
-    if language in _SUPPORTED_LANGUAGES:
-        return (
-            [SegmentLanguageMeta(detected_language=language, inference_exclusion_reason="none") for _ in raw_segments],
-            language,
-            "explicit",
-        )
-    if language == "auto":
-        detected_languages = [_detect_segment_language(raw_segment) for raw_segment in raw_segments]
-        resolved_document_language = _resolve_document_language(detected_languages)
-        return (
-            [
-                _derive_batch_segment_language_meta(detected_language, resolved_document_language)
-                for detected_language in detected_languages
-            ],
-            resolved_document_language,
-            "auto",
-        )
-    reason = "language_unresolved" if language in {"unknown", ""} else "unsupported_language"
-    return (
-        [SegmentLanguageMeta(detected_language="unknown", inference_exclusion_reason=reason) for _ in raw_segments],
-        "unknown",
-        "explicit",
-    )
-
-
-def _derive_batch_segment_language_meta(
-    detected_language: ResolvedLanguage,
-    resolved_document_language: ResolvedLanguage,
-) -> SegmentLanguageMeta:
-    if detected_language == "unknown":
-        return SegmentLanguageMeta(detected_language="unknown", inference_exclusion_reason="language_unresolved")
-    if resolved_document_language != "unknown" and detected_language != resolved_document_language:
-        return SegmentLanguageMeta(
-            detected_language=detected_language,
-            inference_exclusion_reason="other_language_segment",
-        )
-    return SegmentLanguageMeta(detected_language=detected_language, inference_exclusion_reason="none")
+    metadata = [_resolve_single_segment_language_meta(text, text_language) for text in raw_segments]
+    resolved = _resolve_document_language([item.detected_language for item in metadata])
+    return metadata, resolved, "auto" if text_language.lower() in {"auto", "mixed"} else "explicit"
 
 
 def _resolve_document_language(detected_languages: list[ResolvedLanguage]) -> ResolvedLanguage:
-    counts: dict[ResolvedLanguage, int] = {language: 0 for language in _SUPPORTED_LANGUAGES}
-    for detected_language in detected_languages:
-        if detected_language in _SUPPORTED_LANGUAGES:
-            counts[detected_language] += 1
-    best_language = max(counts, key=counts.get)
-    best_count = counts[best_language]
-    if best_count == 0:
+    known = {language for language in detected_languages if language != "unknown"}
+    if not known:
         return "unknown"
-    tied = [language for language, count in counts.items() if count == best_count]
-    if len(tied) > 1:
-        return "unknown"
-    return best_language
-
-
-def _detect_segment_language(text: str) -> ResolvedLanguage:
-    segment_languages = _detect_segment_languages_via_lang_segmenter(text)
-    if segment_languages:
-        unique_languages = {language for language in segment_languages if language in _SUPPORTED_LANGUAGES}
-        if len(unique_languages) > 1:
-            return "unknown"
-        detected_language = _resolve_document_language(segment_languages)
-        if detected_language != "unknown" and _has_cross_script_language_signal(text, detected_language):
-            return "unknown"
-        return detected_language
-    detected_language = _detect_segment_language_heuristic(text)
-    if detected_language != "unknown" and _has_cross_script_language_signal(text, detected_language):
-        return "unknown"
-    return detected_language
-
-
-def _get_lang_segmenter():
-    from GPT_SoVITS.text.LangSegmenter import LangSegmenter
-
-    return LangSegmenter
-
-
-def _detect_segment_languages_via_lang_segmenter(text: str) -> list[ResolvedLanguage]:
-    sample = normalize_whitespace(text)
-    if not sample:
-        return []
-    try:
-        lang_segmenter = _get_lang_segmenter()
-    except ImportError:
-        return []
-
-    detected_languages: list[ResolvedLanguage] = []
-    for item in lang_segmenter.getTexts(sample, default_lang=""):
-        mapped_language = _map_lang_segmenter_language(item.get("lang", ""))
-        if mapped_language == "unknown":
-            continue
-        detected_languages.append(mapped_language)
-    return detected_languages
-
-
-def _map_lang_segmenter_language(language: str) -> ResolvedLanguage:
-    normalized = language.lower()
-    if normalized in {"zh", "yue", "wuu", "zh-cn", "zh-tw"}:
-        return "zh"
-    if normalized == "ja":
-        return "ja"
-    if normalized == "en":
-        return "en"
-    return "unknown"
-
-
-def _has_cross_script_language_signal(text: str, detected_language: ResolvedLanguage) -> bool:
-    sample = parse_terminal_capsule(text).stem
-    has_latin = False
-    has_han = False
-    has_kana = False
-    for char in sample:
-        codepoint = ord(char)
-        if ("A" <= char <= "Z") or ("a" <= char <= "z"):
-            has_latin = True
-        elif 0x3040 <= codepoint <= 0x30FF:
-            has_kana = True
-        elif 0x4E00 <= codepoint <= 0x9FFF:
-            has_han = True
-    if detected_language == "en":
-        return has_han or has_kana
-    if detected_language == "zh":
-        return has_latin and not has_kana
-    if detected_language == "ja":
-        return has_latin and (has_han or has_kana)
-    return False
-
-
-def _detect_segment_language_heuristic(text: str) -> ResolvedLanguage:
-    sample = parse_terminal_capsule(text).stem
-    latin_count = 0
-    han_count = 0
-    kana_count = 0
-    hangul_count = 0
-    for char in sample:
-        codepoint = ord(char)
-        if ("A" <= char <= "Z") or ("a" <= char <= "z"):
-            latin_count += 1
-            continue
-        if 0x3040 <= codepoint <= 0x30FF:
-            kana_count += 1
-            continue
-        if 0x4E00 <= codepoint <= 0x9FFF:
-            han_count += 1
-            continue
-        if 0xAC00 <= codepoint <= 0xD7AF:
-            hangul_count += 1
-    if kana_count > 0:
-        return "ja"
-    if hangul_count > 0 and hangul_count >= max(latin_count, han_count):
-        return "unknown"
-    if han_count > 0 and latin_count == 0:
-        return "zh"
-    if latin_count > 0 and han_count == 0:
-        return "en"
-    return "unknown"
+    return "mixed" if len(known) > 1 or "mixed" in known else next(iter(known))
 
 
 def _profile_language(text_language: str) -> ResolvedLanguage:
