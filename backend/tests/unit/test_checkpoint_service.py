@@ -12,7 +12,7 @@ class _BoundaryContextTrackingBackend(_FakeEditableBackend):
         super().__init__()
         self.boundary_context_speeds: list[float] = []
 
-    def render_boundary_asset(self, left_asset, right_asset, edge, context) -> BoundaryAssetPayload:
+    def render_boundary_asset(self, left_asset, right_asset, edge, context, *, should_cancel=None) -> BoundaryAssetPayload:
         speed = float(context.inference_config.get("speed", 1.0))
         self.boundary_context_speeds.append(speed)
         sample_count = 2 if speed < 1.0 else 1

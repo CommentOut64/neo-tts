@@ -39,6 +39,7 @@ from backend.app.text.segment_standardizer import build_segment_display_text
 class FakeEditableInferenceBackend:
     def __init__(self, gate: threading.Event | None = None, *, wait_timeout: float | None = 2.0) -> None:
         self.gate = gate
+        self.render_started = threading.Event()
         self.wait_timeout = wait_timeout
         self.segment_calls: list[tuple[str, str]] = []
         self.boundary_calls: list[tuple[str, str, str]] = []
@@ -48,6 +49,7 @@ class FakeEditableInferenceBackend:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback=None,
+        should_cancel=None,
     ) -> ReferenceContext:
         del progress_callback
         return ReferenceContext(
@@ -64,7 +66,8 @@ class FakeEditableInferenceBackend:
             inference_config={"margin_frame_count": 0, "speed": resolved_context.speed},
         )
 
-    def render_segment_base(self, segment, context, *, progress_callback=None) -> SegmentRenderAssetPayload:
+    def render_segment_base(self, segment, context, *, progress_callback=None, should_cancel=None) -> SegmentRenderAssetPayload:
+        self.render_started.set()
         del progress_callback
         if self.gate is not None:
             if self.wait_timeout is None:
@@ -91,7 +94,7 @@ class FakeEditableInferenceBackend:
             trace=None,
         )
 
-    def render_boundary_asset(self, left_asset, right_asset, edge, context) -> BoundaryAssetPayload:
+    def render_boundary_asset(self, left_asset, right_asset, edge, context, *, should_cancel=None) -> BoundaryAssetPayload:
         del context
         self.boundary_calls.append((edge.left_segment_id, edge.right_segment_id, edge.boundary_strategy))
         return BoundaryAssetPayload(
@@ -446,9 +449,9 @@ def test_upload_reference_audio_rejects_unsupported_extension(test_app_settings)
 
 def test_initialize_route_does_not_construct_real_backend_before_accepted_response(test_app_settings, monkeypatch):
     constructed: list[tuple[str, str, str, str]] = []
-    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+    runtime_module = importlib.import_module("backend.app.inference.gsv_runtime_adapter")
 
-    def fake_runtime(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
+    def fake_runtime(gpt_path: str, sovits_path: str, resources_root: str, *, cnhubert_path: str, bert_path: str, **kwargs):
         constructed.append((gpt_path, sovits_path, cnhubert_path, bert_path))
         return FakeEditableInferenceBackend()
 
@@ -459,7 +462,7 @@ def test_initialize_route_does_not_construct_real_backend_before_accepted_respon
         def start(self) -> None:
             return None
 
-    monkeypatch.setattr(runtime_module, "GPTSoVITSOptimizedInference", fake_runtime)
+    monkeypatch.setattr(runtime_module, "GSVRuntimeEngineAdapter", fake_runtime)
     monkeypatch.setattr(
         render_job_service_module,
         "threading",
@@ -880,7 +883,7 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
         assert payload["analysis_stage"] == "complete"
         assert payload["total_segments"] == 3
         assert payload["next_cursor"] == 2
-        assert payload["resolved_document_language"] == "zh"
+        assert payload["resolved_document_language"] == "mixed"
         assert payload["language_detection_source"] == "auto"
         assert payload["segments"][0]["stem"] == "第一句"
         assert payload["segments"][0]["display_text"] == "第一句？！"
@@ -889,7 +892,7 @@ def test_standardization_preview_route_returns_capsules_and_language_summary(tes
         assert payload["segments"][1]["stem"] == "Second sentence"
         assert payload["segments"][1]["display_text"] == "Second sentence!"
         assert payload["segments"][1]["detected_language"] == "en"
-        assert payload["segments"][1]["inference_exclusion_reason"] == "other_language_segment"
+        assert payload["segments"][1]["inference_exclusion_reason"] == "none"
         assert "canonical_text" not in payload["segments"][0]
 
 

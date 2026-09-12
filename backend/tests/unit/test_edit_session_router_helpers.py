@@ -9,7 +9,7 @@ from backend.app.inference.editable_types import ReferenceContext, ResolvedRende
 
 
 class _FakeBackend:
-    def build_reference_context(self, resolved_context, *, progress_callback=None):
+    def build_reference_context(self, resolved_context, *, progress_callback=None, should_cancel=None):
         del progress_callback
         return ReferenceContext(
             reference_context_id="ctx-demo",
@@ -25,10 +25,10 @@ class _FakeBackend:
             inference_config={},
         )
 
-    def render_segment_base(self, segment, context, *, progress_callback=None):
+    def render_segment_base(self, segment, context, *, progress_callback=None, should_cancel=None):
         raise AssertionError("render_segment_base should not be called in this test")
 
-    def render_boundary_asset(self, left_asset, right_asset, edge, context):
+    def render_boundary_asset(self, left_asset, right_asset, edge, context, *, should_cancel=None):
         raise AssertionError("render_boundary_asset should not be called in this test")
 
 

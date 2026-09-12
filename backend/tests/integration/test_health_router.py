@@ -38,6 +38,7 @@ def test_app_lifespan_initializes_edit_session_dependencies(test_app_settings):
 
 def test_app_lifespan_preloads_configured_voices_on_start(test_app_settings, monkeypatch):
     preload_calls: list[tuple[str, str]] = []
+    clear_calls = []
 
     class _FakeModelCache:
         def __init__(self, project_root, cnhubert_base_path, bert_path, engine_factory=None, warmup_hook=None) -> None:
@@ -48,7 +49,7 @@ def test_app_lifespan_preloads_configured_voices_on_start(test_app_settings, mon
             return object()
 
         def clear(self):
-            return None
+            clear_calls.append(True)
 
     monkeypatch.setattr(
         "backend.app.inference.model_cache.PyTorchModelCache",
@@ -63,6 +64,7 @@ def test_app_lifespan_preloads_configured_voices_on_start(test_app_settings, mon
                 str((test_app_settings.project_root / "pretrained_models" / "demo.pth").resolve()),
             )
         ]
+    assert clear_calls == [True]
 
 
 def test_app_lifespan_preloads_managed_voice_relative_to_user_data_root_on_start(tmp_path, monkeypatch):

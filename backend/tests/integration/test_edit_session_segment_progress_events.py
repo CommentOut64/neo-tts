@@ -126,7 +126,7 @@ def test_edit_session_edit_job_event_stream_replays_segment_and_block_progress_b
 
 def test_edit_session_event_stream_replays_prepare_progress_before_segments_initialized(test_app_settings):
     class _PrepareProgressBackend(FakeEditableInferenceBackend):
-        def build_reference_context(self, resolved_context, *, progress_callback=None):
+        def build_reference_context(self, resolved_context, *, progress_callback=None, should_cancel=None):
             if callable(progress_callback):
                 progress_callback(
                     {

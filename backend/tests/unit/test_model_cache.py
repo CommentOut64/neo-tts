@@ -1,8 +1,6 @@
 import pathlib
 import importlib
 import sys
-from types import SimpleNamespace
-from types import ModuleType
 
 from backend.app.inference.model_cache import PyTorchModelCache
 
@@ -162,13 +160,13 @@ def test_model_cache_resolves_managed_weight_paths_relative_to_user_data_root(tm
 
 
 def test_model_cache_default_factory_uses_backend_runtime_module(tmp_path: pathlib.Path, monkeypatch):
-    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+    runtime_module = importlib.import_module("backend.app.inference.gsv_runtime_adapter")
     sentinel = object()
 
-    def fake_runtime(*args):
+    def fake_runtime(*args, **kwargs):
         return sentinel
 
-    monkeypatch.setattr(runtime_module, "GPTSoVITSOptimizedInference", fake_runtime)
+    monkeypatch.setattr(runtime_module, "GSVRuntimeEngineAdapter", fake_runtime)
 
     cache = PyTorchModelCache(
         project_root=tmp_path,
@@ -182,60 +180,43 @@ def test_model_cache_default_factory_uses_backend_runtime_module(tmp_path: pathl
     assert engine is sentinel
 
 
-def test_model_cache_build_engine_logs_import_and_construct_boundaries(monkeypatch):
-    logged: list[tuple[str, tuple]] = []
-
-    class _FakeLogger:
-        def info(self, message, *args):
-            logged.append(("info", (message, *args)))
-
-    fake_runtime_module = ModuleType("backend.app.inference.pytorch_optimized")
+def test_model_cache_build_engine_logs_construction_and_passes_runtime_config(tmp_path, monkeypatch):
+    logged = []
+    calls = []
     sentinel = object()
 
-    def fake_runtime(*args):
+    class FakeLogger:
+        def info(self, message, *args):
+            logged.append(message)
+
+    def factory(*args, **kwargs):
+        calls.append((args, kwargs))
         return sentinel
 
-    fake_runtime_module.GPTSoVITSOptimizedInference = fake_runtime
-    fake_inference_package = ModuleType("backend.app.inference")
-    fake_inference_package.pytorch_optimized = fake_runtime_module
-
-    monkeypatch.setattr("backend.app.inference.model_cache.model_cache_logger", _FakeLogger())
-    monkeypatch.setitem(sys.modules, "backend.app.inference", fake_inference_package)
-    monkeypatch.setitem(sys.modules, "backend.app.inference.pytorch_optimized", fake_runtime_module)
-
-    engine = PyTorchModelCache._build_engine("demo-gpt.ckpt", "demo-sovits.pth", "hubert", "bert")
-
+    monkeypatch.setattr("backend.app.inference.model_cache.model_cache_logger", FakeLogger())
+    monkeypatch.setattr("backend.app.inference.gsv_runtime_adapter.GSVRuntimeEngineAdapter", factory)
+    cache = PyTorchModelCache(
+        project_root=tmp_path, cnhubert_base_path="hubert", bert_path="bert",
+        inference_device="cpu", inference_dtype="float32", warmup_hook=lambda engine: None,
+    )
+    engine = cache._build_engine("gpt.ckpt", "sovits.pth", "hubert", "bert")
     assert engine is sentinel
-    info_entries = [entry[1] for entry in logged if entry[0] == "info"]
-    assert ("开始导入 PyTorch 推理模块",) in info_entries
-    assert any(
-        len(entry) == 3
-        and entry[0] == "开始构建 PyTorch 推理实例 gpt_path={} sovits_path={}"
-        and entry[1] == "demo-gpt.ckpt"
-        and entry[2] == "demo-sovits.pth"
-        for entry in info_entries
-    )
-    assert any(
-        len(entry) == 2 and entry[0] == "PyTorch 推理模块导入完成 elapsed_ms={:.2f}"
-        for entry in info_entries
-    )
-    assert any(
-        len(entry) == 2 and entry[0] == "PyTorch 推理实例构建完成 elapsed_ms={:.2f}"
-        for entry in info_entries
-    )
+    assert calls == [(("gpt.ckpt", "sovits.pth", str(tmp_path)), {
+        "device": "cpu", "dtype": "float32", "cnhubert_path": "hubert", "bert_path": "bert",
+        "reference_path_resolver": cache._resolve_path,
+    })]
+    assert "开始构建 GSV Runtime 实例" in logged
+    assert "GSV Runtime 实例构建完成 elapsed_ms={:.2f}" in logged
 
 
-def test_pytorch_runtime_bootstraps_gpt_sovits_import_paths():
-    runtime_module = importlib.import_module("backend.app.inference.pytorch_optimized")
+def test_native_frontend_bootstraps_paths_from_package_location(monkeypatch):
+    from runtime.gsv.native import _ensure_gpt_path
+
     project_root = pathlib.Path(__file__).resolve().parents[3]
-    gpt_sovits_root = str((project_root / "GPT_SoVITS").resolve())
-    repo_root = str(project_root.resolve())
-
-    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root, gpt_sovits_root}]
-    importlib.reload(runtime_module)
-
-    assert repo_root in sys.path
-    assert gpt_sovits_root in sys.path
+    required = {str(project_root), str(project_root / "GPT_SoVITS")}
+    monkeypatch.setattr(sys, "path", [entry for entry in sys.path if entry not in required])
+    _ensure_gpt_path()
+    assert required.issubset(sys.path)
 
 
 def test_model_cache_clear_drops_cached_engines(tmp_path: pathlib.Path):
@@ -266,12 +247,15 @@ class _FakeCacheEngine:
         self.name = name
         self.offload_calls = 0
         self.ensure_calls = 0
+        self.resident_device = "cuda"
 
     def offload_from_gpu(self) -> None:
         self.offload_calls += 1
+        self.resident_device = "cpu"
 
     def ensure_on_gpu(self) -> None:
         self.ensure_calls += 1
+        self.resident_device = "cuda"
 
 
 def test_model_cache_acquire_and_release_tracks_usage(tmp_path: pathlib.Path):
@@ -368,3 +352,28 @@ def test_model_cache_does_not_offload_pinned_or_active_handles(tmp_path: pathlib
 
     assert pinned.engine.offload_calls == 0
     assert active.engine.offload_calls == 0
+
+
+def test_model_cache_runtime_flag_uses_application_adapter(tmp_path: pathlib.Path, monkeypatch):
+    created = []
+
+    class Adapter:
+        resident_device = "cpu"
+
+        def __init__(self, *args, **kwargs):
+            created.append(args)
+            assert kwargs["device"] == "auto"
+            assert kwargs["dtype"] == "float32"
+
+    monkeypatch.setattr(
+        "backend.app.inference.gsv_runtime_adapter.GSVRuntimeEngineAdapter",
+        Adapter,
+    )
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        resources_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+    )
+    cache.get_model_handle("model/gpt.ckpt", "model/sovits.pth")
+    assert created and created[0][2] == str(tmp_path.resolve())

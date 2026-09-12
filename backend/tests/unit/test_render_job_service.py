@@ -1,7 +1,6 @@
 import threading
 import shutil
 import time
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,6 +8,7 @@ import torch
 
 from backend.app.schemas.edit_session import AppendSegmentsRequest, CheckpointState
 from backend.app.inference.editable_gateway import EditableInferenceGateway
+from backend.app.inference.types import InferenceCancelledError
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
@@ -40,6 +40,8 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.render_job_service import RenderJobService, RenderPlan
 from backend.app.services.reference_binding import build_binding_key
+from runtime.gsv import RuntimeFailure
+from runtime.gsv.errors import error_info
 
 
 class _FakeVoiceService:
@@ -72,6 +74,7 @@ class _FakeEditableBackend:
         resolved_context: ResolvedRenderContext,
         *,
         progress_callback=None,
+        should_cancel=None,
     ) -> ReferenceContext:
         if callable(progress_callback):
             progress_callback(
@@ -95,7 +98,7 @@ class _FakeEditableBackend:
             inference_config={"margin_frame_count": 0, "speed": resolved_context.speed},
         )
 
-    def render_segment_base(self, segment, context, *, progress_callback=None) -> SegmentRenderAssetPayload:
+    def render_segment_base(self, segment, context, *, progress_callback=None, should_cancel=None) -> SegmentRenderAssetPayload:
         if callable(progress_callback):
             progress_callback(
                 {
@@ -129,7 +132,7 @@ class _FakeEditableBackend:
             trace=None,
         )
 
-    def render_boundary_asset(self, left_asset, right_asset, edge, context) -> BoundaryAssetPayload:
+    def render_boundary_asset(self, left_asset, right_asset, edge, context, *, should_cancel=None) -> BoundaryAssetPayload:
         del context
         if self.fail_boundary:
             raise RuntimeError("boundary render failed")
@@ -556,7 +559,7 @@ def test_get_standardization_preview_response_paginates_and_returns_structured_p
     assert response.analysis_stage == "complete"
     assert response.total_segments == 3
     assert response.next_cursor == 2
-    assert response.resolved_document_language == "zh"
+    assert response.resolved_document_language == "mixed"
     assert response.language_detection_source == "auto"
     assert [segment.order_key for segment in response.segments] == [1, 2]
     assert response.segments[0].stem == "第一句"
@@ -567,7 +570,7 @@ def test_get_standardization_preview_response_paginates_and_returns_structured_p
     assert response.segments[1].stem == "Second sentence"
     assert response.segments[1].display_text == "Second sentence!"
     assert response.segments[1].detected_language == "en"
-    assert response.segments[1].inference_exclusion_reason == "other_language_segment"
+    assert response.segments[1].inference_exclusion_reason == "none"
     assert not hasattr(response.segments[0], "canonical_text")
 
 
@@ -1275,6 +1278,81 @@ def test_build_preview_selects_segment_edge_and_block_after_commit(tmp_path):
     assert segment_preview.audio.size > 0
     assert edge_preview.audio.size > 0
     assert block_preview.audio.size > 0
+
+
+def test_runtime_failure_emits_one_safe_event_and_persists_error_code(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(InitializeEditSessionRequest(
+        raw_text="第一句。", voice_id="voice-demo", text_language="zh",
+        reference_audio_path="ref.wav", reference_text="参考文本。", reference_language="zh",
+    ))
+
+    def fail_render(*args, **kwargs):
+        raise RuntimeFailure(
+            error_info("ACOUSTIC_FAILED", checkpoint="acoustic.decode", message="Audio generation failed."),
+            RuntimeError("private-resource-path"),
+        )
+
+    monkeypatch.setattr(service._gateway._backend, "render_segment_base", fail_render)
+    service.run_initialize_job(accepted.job.job_id)
+    job = service.get_job(accepted.job.job_id)
+    assert job.status == "failed"
+    assert job.error_code == "ACOUSTIC_FAILED"
+    assert job.runtime_error["job_id"] == accepted.job.job_id
+    record = service._repository.get_render_job(job.job_id)
+    assert record.runtime_error == job.runtime_error
+    queue = service._runtime.subscribe(job.job_id)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    service._runtime.unsubscribe(job.job_id, queue)
+    error_events = [event for event in events if event["event"] == "runtime_error"]
+    assert len(error_events) == 1
+    assert "private-resource-path" not in str(error_events)
+    failed_events = [event for event in events if event["event"] == "job_failed"]
+    assert len(failed_events) == 1
+
+
+@pytest.mark.parametrize("stage", ["build_reference_context", "render_segment_base", "render_boundary_asset"])
+@pytest.mark.parametrize("job_kind", ["initialize", "edit"])
+def test_runtime_stage_cancellation_preserves_completed_audio(tmp_path, monkeypatch, stage, job_kind):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(
+            raw_text="第一句。第二句。第三句。",
+            text_language="zh",
+            voice_id="voice-demo",
+            reference_audio_path="ref.wav",
+            reference_text="参考文本。",
+            reference_language="zh",
+        )
+    )
+    if job_kind == "edit":
+        service.run_initialize_job(accepted.job.job_id)
+        snapshot = service.get_head_snapshot()
+        accepted = service.create_rerender_segment_job(snapshot.segments[0].segment_id)
+
+    calls = []
+
+    def cancel_stage(*args, should_cancel=None, **kwargs):
+        calls.append(stage)
+        assert service.cancel_job(accepted.job.job_id)
+        assert should_cancel is not None and should_cancel()
+        raise InferenceCancelledError("cancelled at runtime checkpoint")
+
+    monkeypatch.setattr(service._gateway._backend, stage, cancel_stage)
+    runner = service.run_initialize_job if job_kind == "initialize" else service.run_edit_job
+    runner(accepted.job.job_id)
+
+    job = service.get_job(accepted.job.job_id)
+    assert calls == [stage]
+    assert job.status == "cancelled_partial"
+    assert job.checkpoint_id is not None
+    checkpoint = service._checkpoint_service.get_current_checkpoint(accepted.job.document_id)
+    assert checkpoint.status == "cancelled_partial"
+    if job_kind == "initialize" and stage != "render_boundary_asset":
+        assert service.get_head_snapshot().segments == []
+        assert len(checkpoint.remaining_segment_ids) == 3
 
 
 def test_cancel_job_requests_runtime_cancel(tmp_path):

@@ -20,9 +20,8 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
 def test_edit_session_cancel_returns_partial_head_and_keeps_timeline_playable(test_app_settings):
     gate = threading.Event()
     app = create_app(settings=test_app_settings)
-    app.state.editable_inference_gateway = EditableInferenceGateway(
-        FakeEditableInferenceBackend(gate=gate, wait_timeout=None)
-    )
+    backend = FakeEditableInferenceBackend(gate=gate, wait_timeout=None)
+    app.state.editable_inference_gateway = EditableInferenceGateway(backend)
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
@@ -33,6 +32,7 @@ def test_edit_session_cancel_returns_partial_head_and_keeps_timeline_playable(te
         )
         assert initialize.status_code == 202
         job_id = initialize.json()["job"]["job_id"]
+        assert backend.render_started.wait(timeout=5)
 
         cancel_response = client.post(f"/v1/edit-session/render-jobs/{job_id}/cancel")
         assert cancel_response.status_code == 200
@@ -80,6 +80,7 @@ def test_edit_session_edit_job_cancel_returns_partial_head_and_keeps_timeline_pl
 
         gate = threading.Event()
         fake_backend.gate = gate
+        fake_backend.render_started.clear()
         fake_backend.wait_timeout = None
 
         append_response = client.post(
@@ -91,6 +92,7 @@ def test_edit_session_edit_job_cancel_returns_partial_head_and_keeps_timeline_pl
         )
         assert append_response.status_code == 202
         edit_job_id = append_response.json()["job"]["job_id"]
+        assert fake_backend.render_started.wait(timeout=5)
 
         cancel_response = client.post(f"/v1/edit-session/render-jobs/{edit_job_id}/cancel")
         assert cancel_response.status_code == 200

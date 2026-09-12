@@ -1,11 +1,40 @@
 import io
 import time
 import wave
+from dataclasses import replace
+from pathlib import Path
 
+import pytest
+import torch
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
 from backend.app.inference.editable_types import build_boundary_asset_id
+from backend.app.inference.gsv_runtime_adapter import GSVRuntimeEngineAdapter
+from backend.app.text.segment_standardizer import build_segment_display_text
+from backend.app.text.terminal_capsule import parse_terminal_capsule
+from runtime.gsv.loader import NativeBackend
+
+
+def _segment_display_text(segment: dict) -> str:
+    """Read the current structured segment contract as the legacy raw text value."""
+    return build_segment_display_text(
+        stem=segment["stem"],
+        text_language=segment["text_language"],
+        terminal_raw=segment.get("terminal_raw", ""),
+        terminal_closer_suffix=segment.get("terminal_closer_suffix", ""),
+        terminal_source=segment.get("terminal_source", "synthetic"),
+    )
+
+
+def _segment_text_patch(raw_text: str) -> dict[str, str]:
+    state = parse_terminal_capsule(raw_text)
+    return {
+        "stem": state.stem,
+        "terminal_raw": state.terminal_raw,
+        "terminal_closer_suffix": state.terminal_closer_suffix,
+        "terminal_source": state.terminal_source,
+    }
 
 
 def _wait_for_terminal_job(client: TestClient, job_id: str, *, timeout: float = 300.0) -> dict:
@@ -73,7 +102,12 @@ def _fetch_paginated_items(client: TestClient, path: str, *, limit: int = 2) -> 
             return items
 
 
-def _assert_frontend_consumable_state(client: TestClient, expected_segments: list[str]) -> None:
+def _assert_frontend_consumable_state(
+    client: TestClient,
+    expected_segments: list[str],
+    *,
+    export_root: Path,
+) -> None:
     snapshot = client.get("/v1/edit-session/snapshot")
     assert snapshot.status_code == 200, snapshot.text
     snapshot_payload = snapshot.json()
@@ -81,7 +115,7 @@ def _assert_frontend_consumable_state(client: TestClient, expected_segments: lis
 
     segments = _fetch_paginated_items(client, "/v1/edit-session/segments", limit=2)
     edges = _fetch_paginated_items(client, "/v1/edit-session/edges", limit=2)
-    assert [item["raw_text"] for item in segments] == expected_segments
+    assert [_segment_display_text(item) for item in segments] == expected_segments
     assert len(edges) == max(0, len(expected_segments) - 1)
 
     playback_map = client.get("/v1/edit-session/playback-map")
@@ -98,7 +132,7 @@ def _assert_frontend_consumable_state(client: TestClient, expected_segments: lis
             "/v1/edit-session/exports/composition",
             json={
                 "document_version": snapshot_payload["document_version"],
-                "target_dir": f"e2e-composition-v{snapshot_payload['document_version']}",
+                "target_dir": str(export_root / f"e2e-composition-v{snapshot_payload['document_version']}"),
                 "overwrite_policy": "replace",
             },
         )
@@ -142,8 +176,11 @@ def _assert_frontend_consumable_state(client: TestClient, expected_segments: lis
         assert _read_wav_sample_count(audio.content) > 0
 
 
-def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
-    app = create_app(settings=real_model_app_settings)
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_real_model_edit_session_flow(real_model_env, real_model_app_settings, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    app = create_app(settings=replace(real_model_app_settings, inference_device=device))
     with TestClient(app) as client:
         initialize = client.post(
             "/v1/edit-session/initialize",
@@ -158,22 +195,37 @@ def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
         initialize_job_id = initialize.json()["job"]["job_id"]
         _wait_for_terminal_job(client, initialize_job_id)
 
+        handles = list(app.state.model_cache._engines.values())
+        assert handles
+        for handle in handles:
+            assert isinstance(handle.engine, GSVRuntimeEngineAdapter)
+            backend = handle.engine._lease.backend
+            assert isinstance(backend, NativeBackend)
+            assert handle.resident_device == device
+            assert backend.device == device
+            assert next(backend.t2s_model.parameters()).device.type == device
+            assert next(backend.vq_model.parameters()).device.type == device
+
         initial_snapshot = _wait_for_snapshot_version(client, 1)
         assert initial_snapshot["session_status"] == "ready"
         assert len(initial_snapshot["segments"]) == len(real_model_env.expected_segments)
         assert len(initial_snapshot["edges"]) == len(real_model_env.expected_segments) - 1
         segment_id = initial_snapshot["segments"][0]["segment_id"]
         edge_id = initial_snapshot["edges"][0]["edge_id"]
-        baseline_text = initial_snapshot["segments"][0]["raw_text"]
+        baseline_text = _segment_display_text(initial_snapshot["segments"][0])
         baseline_pause = initial_snapshot["edges"][0]["pause_duration_seconds"]
         baseline_strategy = initial_snapshot["edges"][0]["boundary_strategy"]
-        assert [item["raw_text"] for item in initial_snapshot["segments"]] == real_model_env.expected_segments
-        _assert_frontend_consumable_state(client, real_model_env.expected_segments)
+        assert [_segment_display_text(item) for item in initial_snapshot["segments"]] == real_model_env.expected_segments
+        _assert_frontend_consumable_state(
+            client,
+            real_model_env.expected_segments,
+            export_root=real_model_app_settings.edit_session_exports_dir,
+        )
 
         patch_segment = client.patch(
             f"/v1/edit-session/segments/{segment_id}",
             json={
-                "raw_text": real_model_env.updated_first_segment_text,
+                "text_patch": _segment_text_patch(real_model_env.updated_first_segment_text),
                 "text_language": real_model_env.text_language,
             },
         )
@@ -181,7 +233,7 @@ def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
         _wait_for_terminal_job(client, patch_segment.json()["job"]["job_id"])
 
         updated_snapshot = _wait_for_snapshot_version(client, 2)
-        assert updated_snapshot["segments"][0]["raw_text"] == real_model_env.updated_first_segment_text
+        assert _segment_display_text(updated_snapshot["segments"][0]) == real_model_env.updated_first_segment_text
 
         preview = client.get("/v1/edit-session/preview", params={"segment_id": segment_id})
         assert preview.status_code == 200, preview.text
@@ -214,7 +266,11 @@ def test_real_model_edit_session_flow(real_model_env, real_model_app_settings):
         _wait_for_terminal_job(client, restore.json()["job"]["job_id"])
 
         restored_snapshot = _wait_for_snapshot_version(client, 5)
-        assert restored_snapshot["segments"][0]["raw_text"] == baseline_text
+        assert _segment_display_text(restored_snapshot["segments"][0]) == baseline_text
         assert restored_snapshot["edges"][0]["pause_duration_seconds"] == baseline_pause
         assert restored_snapshot["edges"][0]["boundary_strategy"] == baseline_strategy
-        _assert_frontend_consumable_state(client, real_model_env.expected_segments)
+        _assert_frontend_consumable_state(
+            client,
+            real_model_env.expected_segments,
+            export_root=real_model_app_settings.edit_session_exports_dir,
+        )

@@ -46,7 +46,7 @@ def test_standardize_segment_text_auto_uses_lang_segmenter(monkeypatch):
             calls.append((text, default_lang))
             return [{"lang": "en", "text": text}]
 
-    monkeypatch.setattr(segment_standardizer, "_get_lang_segmenter", lambda: FakeLangSegmenter)
+    monkeypatch.setattr(segment_standardizer._language_resolver, "_get_segmenter", lambda: FakeLangSegmenter)
 
     result = standardize_segment_text("Hello world!", "auto")
 
@@ -65,16 +65,16 @@ def test_standardize_segment_texts_auto_uses_lang_segmenter_for_batch_document_l
                 return [{"lang": "en", "text": text}]
             return [{"lang": "zh", "text": text}]
 
-    monkeypatch.setattr(segment_standardizer, "_get_lang_segmenter", lambda: FakeLangSegmenter)
+    monkeypatch.setattr(segment_standardizer._language_resolver, "_get_segmenter", lambda: FakeLangSegmenter)
 
     batch = standardize_segment_texts(["第一句？！", "Second sentence!"], "auto")
 
-    assert batch.resolved_document_language == "unknown"
+    assert batch.resolved_document_language == "mixed"
     assert [segment.detected_language for segment in batch.segments] == ["zh", "en"]
     assert calls == [("第一句？！", ""), ("Second sentence!", "")]
 
 
-def test_standardize_segment_text_auto_marks_mixed_segment_as_unknown(monkeypatch):
+def test_standardize_segment_text_auto_preserves_mixed_segment(monkeypatch):
     class FakeLangSegmenter:
         @staticmethod
         def getTexts(text: str, default_lang: str = ""):
@@ -83,19 +83,19 @@ def test_standardize_segment_text_auto_marks_mixed_segment_as_unknown(monkeypatc
                 {"lang": "en", "text": "deploy API server"},
             ]
 
-    monkeypatch.setattr(segment_standardizer, "_get_lang_segmenter", lambda: FakeLangSegmenter)
+    monkeypatch.setattr(segment_standardizer._language_resolver, "_get_segmenter", lambda: FakeLangSegmenter)
 
     result = standardize_segment_text("今天开始 deploy API server。", "auto")
 
-    assert result.detected_language == "unknown"
-    assert result.inference_exclusion_reason == "language_unresolved"
+    assert result.detected_language == "mixed"
+    assert result.inference_exclusion_reason == "none"
 
 
-def test_standardize_segment_text_auto_marks_real_mixed_script_segment_as_unknown():
+def test_standardize_segment_text_auto_preserves_real_mixed_script_segment():
     result = standardize_segment_text("版本号是 v0.0.3，ready to ship 吗？", "auto")
 
-    assert result.detected_language == "unknown"
-    assert result.inference_exclusion_reason == "language_unresolved"
+    assert result.detected_language == "mixed"
+    assert result.inference_exclusion_reason == "none"
 
 
 def test_split_text_segments_with_terminal_capsules_skips_decimal_dot_and_keeps_english_period():

@@ -1,14 +1,18 @@
 import io
+import json
 from pathlib import Path
 import wave
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.core.settings import AppSettings
 from backend.app.inference.types import InferenceCancelledError
 from backend.app.main import create_app
 from backend.app.services.inference_runtime import InferenceRuntimeController
+from runtime.gsv import RuntimeFailure
+from runtime.gsv.errors import error_info
 
 
 class FakeInferenceEngine:
@@ -73,6 +77,7 @@ def test_audio_speech_merges_voice_defaults_and_streams_wav(sample_voice_config)
         assert wav_file.getframerate() == 32000
         assert wav_file.getnframes() == 3
     assert app.state.inference_engine.last_request is not None
+    assert app.state.inference_engine.last_request.request_id == response.headers["x-inference-task-id"]
     assert app.state.inference_engine.last_request.speed == 1.0
     assert app.state.inference_engine.last_request.top_k == 15
     assert app.state.inference_engine.last_request.ref_audio.endswith("demo.wav")
@@ -163,6 +168,88 @@ def test_audio_speech_accepts_multipart_custom_reference_audio(sample_voice_conf
     assert app.state.inference_engine.last_request.top_k == 9
     assert app.state.inference_engine.last_request.ref_audio.endswith("custom.wav")
     assert not Path(app.state.inference_engine.last_request.ref_audio).exists()
+
+
+@pytest.mark.parametrize("during_iteration", [False, True])
+def test_audio_speech_exposes_safe_runtime_error_and_logs_cause(sample_voice_config, during_iteration):
+    settings = _build_settings(sample_voice_config)
+    app = create_app(settings=settings)
+
+    class FailingEngine:
+        def synthesize_stream(self, request, **kwargs):
+            def fail():
+                raise RuntimeFailure(
+                    error_info("CUDA_OOM", checkpoint="semantic.generate", message="GPU memory is insufficient."),
+                    RuntimeError("private-resource-path"),
+                )
+
+            if not during_iteration:
+                fail()
+
+            def stream():
+                fail()
+                yield  # pragma: no cover
+
+            return 32000, stream()
+
+    app.state.inference_engine = FailingEngine()
+    response = TestClient(app).post("/v1/audio/speech", json={"input": "hello", "voice": "demo"})
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "CUDA_OOM"
+    assert error["checkpoint"] == "semantic.generate"
+    assert error["request_id"] == response.headers["x-inference-task-id"]
+    assert "private-resource-path" not in response.text
+    assert "Traceback" not in response.text
+    state = app.state.inference_runtime.snapshot()
+    assert state.status == "error"
+    assert state.runtime_error == error
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (settings.project_root / "logs").glob("*.log"))
+    assert "private-resource-path" not in logs
+    assert error["request_id"] in logs
+    assert "semantic.generate" in logs
+    records = [
+        json.loads(line)
+        for path in (settings.project_root / "logs" / "runtime-exceptions").glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["error"]["request_id"] == error["request_id"]
+    assert "private-resource-path" in records[0]["traceback"]
+    assert records[0]["error"]["error_code"] == "CUDA_OOM"
+
+
+@pytest.mark.parametrize("cancel_after_chunk", [False, True])
+def test_audio_speech_closes_stream_when_consumption_finishes_or_is_cancelled(sample_voice_config, cancel_after_chunk):
+    app = create_app(settings=_build_settings(sample_voice_config))
+    closed = []
+
+    class Stream:
+        def __init__(self):
+            self.done = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.done:
+                raise StopIteration
+            self.done = True
+            if cancel_after_chunk:
+                app.state.inference_runtime.request_force_pause(message="cancelled after chunk")
+            return np.ones(8, dtype=np.float32)
+
+        def close(self):
+            closed.append(True)
+
+    class Engine:
+        def synthesize_stream(self, request, **kwargs):
+            return 32000, Stream()
+
+    app.state.inference_engine = Engine()
+    response = TestClient(app).post("/v1/audio/speech", json={"input": "hello", "voice": "demo"})
+    assert response.status_code == (409 if cancel_after_chunk else 200)
+    assert closed == [True]
 
 
 def test_audio_speech_persists_request_lifecycle_logs(sample_voice_config):

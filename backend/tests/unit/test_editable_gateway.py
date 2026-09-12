@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 import torch
 
 from backend.app.inference.editable_gateway import (
@@ -10,8 +9,10 @@ from backend.app.inference.editable_gateway import (
     RoutingEditableInferenceGateway,
 )
 from backend.app.inference.editable_types import ReferenceContext, ResolvedRenderContext, ResolvedVoiceBinding
-from backend.app.inference.pytorch_optimized import GPTSoVITSOptimizedInference
-from backend.app.schemas.edit_session import EditableEdge, EditableSegment, InitializeEditSessionRequest
+from backend.app.inference.gsv_runtime_adapter import GSVRuntimeEngineAdapter
+from runtime.gsv import GSVRuntime, ModelSpec, RuntimeConfig
+from runtime.gsv import native
+from backend.app.schemas.edit_session import EditableEdge, EditableSegment
 
 
 class _FakeT2SModel:
@@ -76,38 +77,58 @@ class _FakeVQModel:
         return self.boundary_audio.clone(), boundary_result_frame_count, trace
 
 
-def _build_inference(*, decoder_frame_count: int = 14) -> GPTSoVITSOptimizedInference:
-    inference = GPTSoVITSOptimizedInference.__new__(GPTSoVITSOptimizedInference)
-    inference.device = "cpu"
-    inference.is_half = False
-    inference.hps = SimpleNamespace(
+def _build_inference(tmp_path, monkeypatch, *, decoder_frame_count: int = 14) -> GSVRuntimeEngineAdapter:
+    hps = SimpleNamespace(
         data=SimpleNamespace(sampling_rate=32000, hop_length=640),
         model=SimpleNamespace(version="v2Pro"),
     )
-    inference.t2s_model = _FakeT2SModel([101, 102, 103, 104])
-    inference.vq_model = _FakeVQModel(
-        decoder_frame_count=decoder_frame_count,
-        audio=np.arange(decoder_frame_count * 640, dtype=np.float32),
-        boundary_audio=np.arange(6 * 640, dtype=np.float32),
+    backend = native.NativeInferenceBackend(
+        t2s_model=_FakeT2SModel([101, 102, 103, 104]),
+        vq_model=_FakeVQModel(
+            decoder_frame_count=decoder_frame_count,
+            audio=np.arange(decoder_frame_count * 640, dtype=np.float32),
+            boundary_audio=np.arange(6 * 640, dtype=np.float32),
+        ),
+        hps=hps, device="cpu", dtype=torch.float32, resources_root=str(tmp_path),
     )
-    inference.get_phones_and_bert = lambda text, language, version, default_lang=None: (
-        [11, 12, 13] if text == "参考文本。" else [21, 22],
-        torch.zeros((1024, 3 if text == "参考文本。" else 2), dtype=torch.float32),
-        text,
-    )
-    inference.get_spepc = lambda filename: (
-        torch.ones((1, 704, 12), dtype=torch.float32),
-        torch.ones((1, 16000), dtype=torch.float32),
-    )
-    inference._extract_prompt_semantic = lambda reference_audio_path: torch.tensor([7, 8, 9], dtype=torch.long)
-    inference._compute_reference_speaker_embedding = (
-        lambda refer_audio: torch.ones((1, 2048), dtype=torch.float32)
-    )
+    backend._frontends_ready = True
+    backend.tokenizer = None
+    backend.bert_model = None
+
+    def text_features(text, language, version, tokenizer, bert_model, device, dtype, resolution=None, *, g2pw_factory=None):
+        phones = [11, 12, 13] if text == "参考文本。" else [21, 22]
+        return phones, torch.zeros((1024, len(phones)), dtype=torch.float32), text
+
+    monkeypatch.setattr(native, "_clean_text_features", text_features)
+
+    def prepare_reference(request, control, observer):
+        phones, bert, text = native._clean_text_features(
+            request.text, request.language, "v2Pro", None, None, "cpu", torch.float32, request.language_resolution
+        )
+        return {
+            "semantic": np.asarray([7, 8, 9], dtype=np.int64),
+            "spectrogram": torch.ones((1, 704, 12), dtype=torch.float32),
+            "speaker": torch.ones((1, 2048), dtype=torch.float32),
+            "phones": phones, "bert": bert, "text": text,
+        }
+
+    backend.prepare_reference = prepare_reference
+    gpt, sovits = tmp_path / "gpt.ckpt", tmp_path / "sovits.pth"
+    gpt.write_bytes(b"fixture-gpt")
+    sovits.write_bytes(b"fixture-sovits")
+    inference = GSVRuntimeEngineAdapter.__new__(GSVRuntimeEngineAdapter)
+    inference._spec = ModelSpec(str(gpt), str(sovits))
+    inference._runtime = GSVRuntime(RuntimeConfig(str(tmp_path)), backend_factory=lambda *args: backend)
+    inference._lease = inference._runtime.load_model(inference._spec)
+    inference.hps = hps
+    inference._target_device = "cpu"
+    inference._target_dtype = "float32"
+    inference._reference_path_resolver = lambda path: str((tmp_path / path).resolve())
     return inference
 
 
-def test_build_reference_context_uses_resolved_render_context_fields():
-    inference = _build_inference()
+def test_build_reference_context_uses_resolved_render_context_fields(tmp_path, monkeypatch):
+    inference = _build_inference(tmp_path, monkeypatch)
     resolved_context = ResolvedRenderContext(
         voice_id="voice-demo",
         model_key="gpt-sovits-v2",
@@ -148,12 +169,12 @@ def test_build_reference_context_uses_resolved_render_context_fields():
     assert context.reference_text_fingerprint == "text-fp"
 
 
-def test_render_segment_base_shrinks_margin_when_segment_is_too_short():
-    inference = _build_inference(decoder_frame_count=14)
+def test_render_segment_base_shrinks_margin_when_segment_is_too_short(tmp_path, monkeypatch):
+    inference = _build_inference(tmp_path, monkeypatch, decoder_frame_count=14)
     context = inference.build_reference_context(
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
+        ResolvedRenderContext(
             voice_id="voice-demo",
+            model_key="gpt-sovits-v2",
             reference_audio_path="ref.wav",
             reference_text="参考文本",
             reference_language="zh",
@@ -177,15 +198,15 @@ def test_render_segment_base_shrinks_margin_when_segment_is_too_short():
     assert asset.right_margin_sample_count == 2 * 640
     assert asset.core_sample_count == 10 * 640
     assert asset.trace is not None
-    assert asset.trace["right_margin_frames"] == [12.0, 13.0]
+    assert asset.trace["right_margin_frames"] == [[12.0, 13.0]]
 
 
-def test_render_segment_base_prefers_detected_language_for_auto_segment():
-    inference = _build_inference(decoder_frame_count=14)
+def test_render_segment_base_prefers_detected_language_for_auto_segment(tmp_path, monkeypatch):
+    inference = _build_inference(tmp_path, monkeypatch, decoder_frame_count=14)
     context = inference.build_reference_context(
-        InitializeEditSessionRequest(
-            raw_text="Hello world!",
+        ResolvedRenderContext(
             voice_id="voice-demo",
+            model_key="gpt-sovits-v2",
             reference_audio_path="ref.wav",
             reference_text="参考文本",
             reference_language="zh",
@@ -193,13 +214,13 @@ def test_render_segment_base_prefers_detected_language_for_auto_segment():
     )
     calls: list[tuple[str, str, str | None]] = []
 
-    def fake_get_phones_and_bert(text, language, version, default_lang=None):
+    def fake_get_phones_and_bert(text, language, version, tokenizer, bert_model, device, dtype, resolution=None, *, g2pw_factory=None):
         del version
-        calls.append((text, language, default_lang))
+        calls.append((text, language))
         width = 3 if len(calls) == 1 else 2
         return [11] * width, torch.zeros((1024, width), dtype=torch.float32), text
 
-    inference.get_phones_and_bert = fake_get_phones_and_bert
+    monkeypatch.setattr(native, "_clean_text_features", fake_get_phones_and_bert)
     segment = EditableSegment(
         segment_id="seg-auto-en",
         document_id="doc-1",
@@ -215,16 +236,16 @@ def test_render_segment_base_prefers_detected_language_for_auto_segment():
 
     asset = inference.render_segment_base(segment, context)
 
-    assert calls == [("Hello world!", "en", "zh")]
+    assert calls == [("Hello world!", "en")]
     assert asset.render_version == 2
 
 
-def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
-    inference = _build_inference()
+def test_render_boundary_asset_uses_left_right_versions_as_cache_key(tmp_path, monkeypatch):
+    inference = _build_inference(tmp_path, monkeypatch)
     context = inference.build_reference_context(
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
+        ResolvedRenderContext(
             voice_id="voice-demo",
+            model_key="gpt-sovits-v2",
             reference_audio_path="ref.wav",
             reference_text="参考文本",
             reference_language="zh",
@@ -268,15 +289,15 @@ def test_render_boundary_asset_uses_left_right_versions_as_cache_key():
     assert "seg-left" in boundary_asset.boundary_asset_id
     assert "3" in boundary_asset.boundary_asset_id
     assert "5" in boundary_asset.boundary_asset_id
-    assert inference.vq_model.decode_boundary_prefix_calls[0]["boundary_result_frame_count"] == 6
+    assert inference._lease.backend.vq_model.decode_boundary_prefix_calls[0]["boundary_result_frame_count"] == 6
 
 
-def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
-    inference = _build_inference()
+def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap(tmp_path, monkeypatch):
+    inference = _build_inference(tmp_path, monkeypatch)
     context = inference.build_reference_context(
-        InitializeEditSessionRequest(
-            raw_text="第一句。",
+        ResolvedRenderContext(
             voice_id="voice-demo",
+            model_key="gpt-sovits-v2",
             reference_audio_path="ref.wav",
             reference_text="参考文本",
             reference_language="zh",
@@ -318,14 +339,14 @@ def test_render_boundary_asset_uses_crossfade_only_without_latent_overlap():
 
     assert boundary_asset.boundary_strategy == "crossfade_only"
     assert boundary_asset.trace["boundary_kind"] == "crossfade_only"
-    assert inference.vq_model.decode_boundary_prefix_calls == []
+    assert inference._lease.backend.vq_model.decode_boundary_prefix_calls == []
 
 
 def test_editable_gateway_delegates_to_backend():
     backend = SimpleNamespace(
-        build_reference_context=lambda resolved_context, *, progress_callback=None: ("context", resolved_context.voice_id),
-        render_segment_base=lambda segment, context, *, progress_callback=None: ("segment", segment.segment_id, context),
-        render_boundary_asset=lambda left_asset, right_asset, edge, context: (
+        build_reference_context=lambda resolved_context, *, progress_callback=None, should_cancel=None: ("context", resolved_context.voice_id),
+        render_segment_base=lambda segment, context, *, progress_callback=None, should_cancel=None: ("segment", segment.segment_id, context),
+        render_boundary_asset=lambda left_asset, right_asset, edge, context, *, should_cancel=None: (
             "boundary",
             left_asset,
             right_asset,
@@ -379,7 +400,7 @@ def test_editable_gateway_delegates_to_backend():
 def test_editable_gateway_forwards_reference_context_progress_callback():
     captured_events: list[dict] = []
 
-    def _build_reference_context(resolved_context, *, progress_callback=None):
+    def _build_reference_context(resolved_context, *, progress_callback=None, should_cancel=None):
         if callable(progress_callback):
             progress_callback(
                 {
@@ -392,8 +413,8 @@ def test_editable_gateway_forwards_reference_context_progress_callback():
 
     backend = SimpleNamespace(
         build_reference_context=_build_reference_context,
-        render_segment_base=lambda segment, context, *, progress_callback=None: ("segment", segment.segment_id, context),
-        render_boundary_asset=lambda left_asset, right_asset, edge, context: (
+        render_segment_base=lambda segment, context, *, progress_callback=None, should_cancel=None: ("segment", segment.segment_id, context),
+        render_boundary_asset=lambda left_asset, right_asset, edge, context, *, should_cancel=None: (
             "boundary",
             left_asset,
             right_asset,
@@ -437,9 +458,9 @@ def test_lazy_editable_gateway_clear_backend_forces_rebuild():
     def build_backend():
         index = len(created) + 1
         backend = SimpleNamespace(
-            build_reference_context=lambda resolved_context, *, progress_callback=None, current=index: ("context", current, resolved_context.voice_id),
+            build_reference_context=lambda resolved_context, *, progress_callback=None, should_cancel=None, current=index: ("context", current, resolved_context.voice_id),
             render_segment_base=lambda segment, context: ("segment", segment.segment_id, context),
-            render_boundary_asset=lambda left_asset, right_asset, edge, context: (
+            render_boundary_asset=lambda left_asset, right_asset, edge, context, *, should_cancel=None: (
                 "boundary",
                 left_asset,
                 right_asset,
@@ -480,7 +501,7 @@ def test_routing_editable_gateway_dispatches_by_binding_paths():
 
     def build_backend(tag: str):
         return SimpleNamespace(
-            build_reference_context=lambda resolved_context, *, progress_callback=None, current=tag: ReferenceContext(
+            build_reference_context=lambda resolved_context, *, progress_callback=None, should_cancel=None, current=tag: ReferenceContext(
                 reference_context_id=f"{current}:{resolved_context.voice_id}",
                 voice_id=resolved_context.voice_id,
                 model_id=resolved_context.model_key,
@@ -492,12 +513,12 @@ def test_routing_editable_gateway_dispatches_by_binding_paths():
                 reference_speaker_embedding=torch.zeros((1, 1), dtype=torch.float32),
                 inference_config_fingerprint=current,
             ),
-            render_segment_base=lambda segment, context, *, progress_callback=None, current=tag: (
+            render_segment_base=lambda segment, context, *, progress_callback=None, should_cancel=None, current=tag: (
                 current,
                 segment.segment_id,
                 context.backend_cache_key,
             ),
-            render_boundary_asset=lambda left_asset, right_asset, edge, context, current=tag: (
+            render_boundary_asset=lambda left_asset, right_asset, edge, context, *, should_cancel=None, current=tag: (
                 current,
                 edge.edge_id,
                 context.backend_cache_key,
