@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 
 from backend.app.inference.text_processing import compute_effective_margin_frame_count
+from runtime.gsv import ReferenceBundle, SpeakerFeatures, StyleFeatures
 
 if TYPE_CHECKING:
     import numpy as np
@@ -37,6 +38,14 @@ class ReferenceContext:
     runtime_model_revision: str = ""
     runtime_sovits_revision: str = ""
     runtime_processing_revision: str = ""
+    model_revision: str = ""
+    preset_id: str = ""
+    preset_revision: str = ""
+    reference_bundle: ReferenceBundle | None = field(default=None, repr=False, compare=False)
+    speaker_features: SpeakerFeatures | None = field(default=None, repr=False, compare=False)
+    style_features: StyleFeatures | None = field(default=None, repr=False, compare=False)
+    style_reference_fallback: str | None = None
+    reference_component_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,10 @@ class ResolvedVoiceBinding:
     gpt_path: str | None = None
     sovits_path: str | None = None
     speaker_meta: dict[str, Any] = field(default_factory=dict)
+    model_id: str | None = None
+    model_revision: str = ""
+    preset_id: str | None = None
+    preset_revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +81,13 @@ class ResolvedRenderContext:
     resolved_voice_binding: ResolvedVoiceBinding | None = None
     render_profile_id: str | None = None
     render_profile_fingerprint: str = ""
+    model_id: str | None = None
+    model_revision: str = ""
+    preset_id: str | None = None
+    preset_revision: str = ""
+    style_reference_audio_path: str | None = None
+    style_reference_text: str | None = None
+    style_reference_language: str | None = None
 
 
 @dataclass(frozen=True)

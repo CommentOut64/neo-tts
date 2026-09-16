@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import threading
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass, replace
@@ -20,6 +21,7 @@ from .errors import (
 )
 from .language import LanguageResolutionService
 from .loader import load_model as _load_model
+from .reference_cache import ReferenceComponentCache, cpu_clone
 from .types import (
     BoundaryRequest,
     BoundaryResult,
@@ -27,6 +29,7 @@ from .types import (
     ModelLease,
     ModelSpec,
     ReferenceFeatures,
+    ReferenceBundle,
     ReferenceRequest,
     RenderConfig,
     RuntimeConfig,
@@ -49,7 +52,13 @@ class GSVRuntime:
         self._closed = False
         self._lock = threading.RLock()
         self._compute_lock = threading.Lock()
+        self._device_transition_lock = threading.Lock()
+        self._model_compute_lock = self._compute_lock
         self._language = LanguageResolutionService(self.config.resources_root)
+        self._reference_components = ReferenceComponentCache(
+            max_entries=self.config.reference_cache_entries,
+            max_bytes=self.config.reference_cache_bytes,
+        )
 
     def _ensure_open(self, control=None):
         if self._closed or self._close_requested:
@@ -94,18 +103,20 @@ class GSVRuntime:
             return current
 
     @runtime_entrypoint(RuntimePhase.REFERENCE, "reference.prepare", "REFERENCE_FEATURE_FAILED")
-    def prepare_reference(self, lease: ModelLease, reference: ReferenceRequest, control: Control | None = None, observer=None) -> ReferenceFeatures:
+    def prepare_reference(self, lease: ModelLease, reference: ReferenceRequest | ReferenceBundle, control: Control | None = None, observer=None) -> ReferenceFeatures:
         control = control or Control()
         current = None
         try:
+            bundle = reference if isinstance(reference, ReferenceBundle) else None
+            reference = bundle.speaker_reference if bundle is not None else reference
             current = self._enter(lease, control)
             check_cancelled(control, "reference.start", observer)
             resolution = self._language.resolve_or_reuse(reference.language, reference.text, reference.language_resolution, observer=observer)
             reference = replace(reference, language=resolution.inference_language, language_resolution=resolution)
-            with self._compute_lock:
+            with self._model_compute_lock:
                 if not reference.text.strip() or not reference.audio_path:
                     raise RuntimeFailure(error_info("REFERENCE_INVALID", checkpoint="reference.validate", message="Reference audio and text are required.", control=control))
-                payload = _cpu_copy(current.backend.prepare_reference(reference, control, observer))
+                payload, component_keys = self._prepare_reference_components(current, reference, control, observer)
                 check_cancelled(control, "reference.output", observer)
                 data = getattr(getattr(getattr(current.backend, "engine", None), "hps", None), "data", None)
                 sample_rate = int(getattr(data, "sampling_rate", current.identity.sample_rate))
@@ -115,7 +126,9 @@ class GSVRuntime:
                     model_revision=current.identity.gpt_revision,
                     sovits_revision=current.identity.sovits_revision,
                     processing_revision=self.config.processing_revision,
+                    resource_revision=bundle.resource_revision if bundle is not None else "",
                     sample_rate=sample_rate,
+                    metadata={"reference_component_keys": component_keys},
                     semantic_tokens=tuple(_sequence_value(_payload_value(payload, "semantic_tokens", "semantic"))),
                     phones=tuple(_sequence_value(_payload_value(payload, "phones", "phones"))),
                     payload=payload,
@@ -130,6 +143,48 @@ class GSVRuntime:
             if current is not None:
                 cleanup_operation("lifecycle.activity_release", lambda: self._leave(current.lease_id))
 
+    def _prepare_reference_components(self, current: ModelLease, reference: ReferenceRequest, control, observer):
+        """Cache audio and transcript components independently, always as CPU clones."""
+        backend = current.backend
+        prepare_speaker = getattr(backend, "prepare_speaker_reference", None)
+        prepare_text = getattr(backend, "prepare_reference_text", None)
+        compose = getattr(backend, "compose_reference", None)
+        if not (callable(prepare_speaker) and callable(prepare_text) and callable(compose)):
+            # Third-party injected backends retain the original one-shot contract.
+            return _cpu_copy(backend.prepare_reference(reference, control, observer)), {}
+
+        audio_revision = reference.content_revision or _content_revision(reference.audio_path)
+        frontend_revisions = self._frontend_revisions(backend)
+        cnhubert_revision, bert_revision, sv_revision = frontend_revisions
+        speaker_key = (
+            "speaker", audio_revision, current.identity.sovits_revision,
+            cnhubert_revision, sv_revision, self.config.processing_revision,
+        )
+        text_key = (
+            "reference_text", _text_revision(reference.text), reference.language,
+            self.config.processing_revision, bert_revision,
+        )
+        speaker = self._reference_components.get(speaker_key)
+        if speaker is None:
+            speaker = cpu_clone(prepare_speaker(reference, control, observer))
+            self._reference_components.put(speaker_key, speaker)
+        text = self._reference_components.get(text_key)
+        if text is None:
+            text = cpu_clone(prepare_text(reference, control, observer))
+            self._reference_components.put(text_key, text)
+        return cpu_clone(compose(speaker, text)), {
+            "speaker": speaker_key,
+            "reference_text": text_key,
+        }
+
+    def _frontend_revisions(self, backend) -> tuple[str, str, str]:
+        revisions = getattr(backend, "frontend_revisions", None)
+        if callable(revisions):
+            value = tuple(revisions())
+            if len(value) == 3:
+                return value
+        return ("", "", "")
+
     @runtime_entrypoint(RuntimePhase.SEMANTIC, "semantic.segment", "ACOUSTIC_FAILED")
     def render_segment(self, lease: ModelLease, segment: SegmentRequest, features: ReferenceFeatures, config: RenderConfig, control: Control | None = None, observer=None) -> SegmentResult:
         control = control or Control(segment_id=segment.segment_id)
@@ -142,7 +197,7 @@ class GSVRuntime:
             check_cancelled(control, "semantic.start", observer)
             resolution = self._language.resolve_or_reuse(segment.language, segment.text, segment.language_resolution, observer=observer)
             segment = replace(segment, language=resolution.inference_language, language_resolution=resolution)
-            with self._compute_lock:
+            with self._model_compute_lock:
                 payload = current.backend.render_segment(segment, features.payload, config, control, observer)
                 check_cancelled(control, "output.segment", observer)
                 audio = _validated_audio(getattr(payload, "core_audio", getattr(payload, "audio", payload)), control)
@@ -188,7 +243,7 @@ class GSVRuntime:
                 raise RuntimeFailure(error_info("BOUNDARY_CONTEXT_INCOMPATIBLE", checkpoint="boundary.validate", message="Boundary segment identities do not match.", control=control))
             if left.sample_rate != current.identity.sample_rate or right.sample_rate != current.identity.sample_rate:
                 raise RuntimeFailure(error_info("BOUNDARY_CONTEXT_INCOMPATIBLE", checkpoint="boundary.validate", message="Boundary sample rates do not match the model.", control=control))
-            with self._compute_lock:
+            with self._model_compute_lock:
                 payload = current.backend.render_boundary(boundary, left, right, features.payload, config, control, observer)
                 check_cancelled(control, "output.boundary", observer)
                 audio = _validated_audio(getattr(payload, "boundary_audio", getattr(payload, "audio", payload)), control)
@@ -249,7 +304,7 @@ class GSVRuntime:
 
     @runtime_entrypoint(RuntimePhase.DEVICE, "device.move", "DEVICE_TRANSFER_FAILED")
     def move_model(self, lease: ModelLease, device: str, dtype: str, *, observer=None, control=None) -> ModelLease:
-        with self._compute_lock, self._lock:
+        with self._device_transition_lock, self._lock:
             current = self._lease(lease)
             if self._active.get(current.lease_id, 0):
                 raise RuntimeFailure(error_info("DEVICE_TRANSFER_FAILED", checkpoint="device.move", message="Model is active."))
@@ -318,6 +373,7 @@ class GSVRuntime:
                     failures.append(exc)
         try:
             cleanup_operation("lifecycle.language_close", self._language.close)
+            cleanup_operation("lifecycle.reference_cache_clear", self._reference_components.clear)
         except RuntimeFailure as exc:
             failures.append(exc)
         if failures:
@@ -404,3 +460,15 @@ def _cpu_copy(value):
     if is_dataclass(value):
         return replace(value, **{field.name: _cpu_copy(getattr(value, field.name)) for field in fields(value)})
     return copy.deepcopy(value)
+
+
+def _content_revision(path: str) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _text_revision(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()

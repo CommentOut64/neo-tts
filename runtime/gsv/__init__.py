@@ -24,7 +24,13 @@ from .types import (
     ModelIdentity,
     ModelSpec,
     ReferenceFeatures,
+    ReferenceBundle,
     ReferenceRequest,
+    SpeakerFeatureKey,
+    SpeakerFeatures,
+    StyleSemanticKey,
+    StyleFeatures,
+    StyleTextKey,
     RenderConfig,
     RuntimeConfig,
     RuntimeDescription,
@@ -36,7 +42,7 @@ from .types import (
 
 __all__ = [
     "BoundaryRequest", "BoundaryResult", "Control", "GSVRuntime", "ModelLease", "ModelSpec",
-    "ReferenceFeatures", "ReferenceRequest", "RenderConfig", "RuntimeConfig", "RuntimeDescription",
+    "ReferenceBundle", "ReferenceFeatures", "ReferenceRequest", "SpeakerFeatureKey", "SpeakerFeatures", "StyleSemanticKey", "StyleFeatures", "StyleTextKey", "RenderConfig", "RuntimeConfig", "RuntimeDescription",
     "RuntimeDiagnostic", "RuntimeDiagnosticCollector", "RuntimeErrorInfo", "RuntimeEventSink", "RuntimeFailure", "SegmentRequest", "SegmentResult", "ModelIdentity",
     "SynthesisRequest", "SynthesisResult", "close", "describe", "load_model", "prepare_reference", "release",
     "render_boundary", "render_segment", "synthesize",

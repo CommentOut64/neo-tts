@@ -7,6 +7,7 @@ import numpy as np
 
 from backend.app.core.logging import get_logger
 from backend.app.core.path_resolution import resolve_runtime_path
+from backend.app.inference.asset_fingerprint import content_sha256
 from backend.app.inference.editable_types import (
     BoundaryAssetPayload,
     ReferenceContext,
@@ -27,10 +28,15 @@ from runtime.gsv import (
     Control,
     GSVRuntime,
     ModelSpec,
+    ReferenceBundle,
     ReferenceRequest,
     RenderConfig,
     RuntimeConfig,
     SegmentRequest,
+    SpeakerFeatures,
+    StyleSemanticKey,
+    StyleFeatures,
+    StyleTextKey,
 )
 from runtime.gsv.errors import RuntimeFailure, check_cancelled
 
@@ -63,12 +69,12 @@ class _RuntimeObserver:
 class GSVRuntimeEngineAdapter:
     """Application DTO adapter; computation and ownership stay in ``runtime.gsv``."""
 
-    def __init__(self, gpt_path: str, sovits_path: str, resources_root: str, *, device="auto", dtype="float32", cnhubert_path=None, bert_path=None, reference_path_resolver=None) -> None:
+    def __init__(self, gpt_path: str, sovits_path: str, resources_root: str, *, device="auto", dtype="float32", cnhubert_path=None, bert_path=None, frontend_pool=None, reference_path_resolver=None) -> None:
         self._reference_path_resolver = reference_path_resolver or (
             lambda path: str(resolve_runtime_path(path, project_root=Path(resources_root)))
         )
         self._spec = ModelSpec(gpt_path, sovits_path)
-        self._runtime = GSVRuntime(RuntimeConfig(resources_root, device=device, dtype=dtype, cnhubert_path=cnhubert_path, bert_path=bert_path))
+        self._runtime = GSVRuntime(RuntimeConfig(resources_root, device=device, dtype=dtype, cnhubert_path=cnhubert_path, bert_path=bert_path, frontend_pool=frontend_pool))
         self._lease = self._runtime.load_model(self._spec, observer=_RuntimeObserver())
         self.hps = SimpleNamespace(data=SimpleNamespace(sampling_rate=self._lease.identity.sample_rate))
         self._target_device = self._lease.identity.device
@@ -79,19 +85,12 @@ class GSVRuntimeEngineAdapter:
         return self._lease.backend.device
 
     def build_reference_context(self, resolved_context, *, progress_callback=None, should_cancel=None) -> ReferenceContext:
+        bundle = self._build_reference_bundle(resolved_context)
         features = self._runtime_call(
-            self._runtime.prepare_reference,
-            self._lease,
-            ReferenceRequest(
-                self._reference_path_resolver(resolved_context.reference_audio_path),
-                ensure_sentence_end(resolved_context.reference_text, resolved_context.reference_language),
-                resolved_context.reference_language,
-                identity=resolved_context.reference_identity,
-                content_revision=resolved_context.reference_audio_fingerprint,
-            ),
-            Control(should_cancel=should_cancel),
+            self._runtime.prepare_reference, self._lease, bundle, Control(should_cancel=should_cancel),
             observer=_RuntimeObserver(progress_callback, status="preparing", reference_progress=True),
         )
+        style_semantic_key, style_text_key = self._style_component_keys(bundle)
         payload = features.payload
         config = {
             "speed": resolved_context.speed,
@@ -107,7 +106,7 @@ class GSVRuntimeEngineAdapter:
         return ReferenceContext(
             reference_context_id=f"{resolved_context.reference_identity}:{features.content_revision}",
             voice_id=resolved_context.voice_id,
-            model_id=resolved_context.model_key,
+            model_id=resolved_context.model_id or resolved_context.model_key,
             reference_audio_path=resolved_context.reference_audio_path,
             reference_text=str(payload.get("text", resolved_context.reference_text)),
             reference_language=resolved_context.reference_language,
@@ -121,12 +120,43 @@ class GSVRuntimeEngineAdapter:
             prompt_norm_text=str(payload.get("text", resolved_context.reference_text)),
             reference_scope=resolved_context.reference_scope,
             reference_identity=resolved_context.reference_identity,
-            reference_audio_fingerprint=resolved_context.reference_audio_fingerprint,
+            reference_audio_fingerprint=features.content_revision,
             reference_text_fingerprint=resolved_context.reference_text_fingerprint,
             runtime_model_revision=features.model_revision,
             runtime_sovits_revision=features.sovits_revision,
             runtime_processing_revision=features.processing_revision,
+            model_revision=resolved_context.model_revision,
+            preset_id=resolved_context.preset_id or resolved_context.voice_id,
+            preset_revision=resolved_context.preset_revision,
+            reference_bundle=bundle,
+            speaker_features=SpeakerFeatures(bundle.speaker_reference, payload=payload),
+            style_features=StyleFeatures(bundle.style_reference) if bundle.style_reference is not None else None,
+            style_reference_fallback=(
+                "single_reference" if getattr(resolved_context, "style_reference_audio_path", None)
+                and bundle.style_reference is None else None
+            ),
+            reference_component_keys={
+                **dict(features.metadata.get("reference_component_keys", {})),
+                **({"style_semantic": (
+                    style_semantic_key.audio_revision, style_semantic_key.cnhubert_revision,
+                    style_semantic_key.quantizer_revision,
+                )} if style_semantic_key else {}),
+                **({"style_text": (
+                    style_text_key.text_revision, style_text_key.language,
+                    style_text_key.g2p_revision, style_text_key.bert_tokenizer_revision,
+                )} if style_text_key else {}),
+            },
         )
+
+    def _style_component_keys(self, bundle: ReferenceBundle) -> tuple[StyleSemanticKey | None, StyleTextKey | None]:
+        """Reserve exact S2 style keys without extracting/conditioning style in this phase."""
+        style = bundle.style_reference
+        if style is None:
+            return None, None
+        audio_revision = style.content_revision or style.audio_path
+        semantic = StyleSemanticKey(audio_revision, self._lease.identity.gpt_revision, self._lease.identity.quantizer)
+        text = StyleTextKey(style.identity or style.text, style.language, self._runtime.config.processing_revision, self._lease.identity.gpt_revision)
+        return semantic, text
 
     def render_segment_base(self, segment, context: ReferenceContext, *, progress_callback=None, should_cancel=None) -> SegmentRenderAssetPayload:
         text_language = segment.text_language
@@ -221,7 +251,7 @@ class GSVRuntimeEngineAdapter:
             trace=dict(result.trace),
         )
 
-    def infer_optimized(self, *, ref_wav_path, prompt_text, prompt_lang, text, text_lang, top_k=15, top_p=1.0, temperature=1.0, speed=1.0, noise_scale=0.35, should_cancel=None, text_split_method="cut5", pause_length=0.3, progress_callback=None, **kwargs):
+    def infer_optimized(self, *, ref_wav_path, prompt_text, prompt_lang, text, text_lang, top_k=15, top_p=1.0, temperature=1.0, speed=1.0, noise_scale=0.35, should_cancel=None, text_split_method="cut5", pause_length=0.3, progress_callback=None, model_revision="", preset_id="", preset_revision="", style_ref_audio=None, style_ref_text=None, style_ref_lang=None, **kwargs):
         control = Control(should_cancel=should_cancel)
         observer = _RuntimeObserver()
         try:
@@ -230,7 +260,25 @@ class GSVRuntimeEngineAdapter:
             if not segments:
                 return
             config = RenderConfig(top_k=top_k, top_p=top_p, temperature=temperature, speed=speed, noise_scale=noise_scale, margin_frame_count=0)
-            reference = self._runtime.prepare_reference(self._lease, ReferenceRequest(self._reference_path_resolver(ref_wav_path), ensure_sentence_end(prompt_text, prompt_lang), prompt_lang), control, observer)
+            reference = self._runtime.prepare_reference(
+                self._lease,
+                self._build_reference_bundle(
+                    SimpleNamespace(
+                        reference_audio_path=ref_wav_path,
+                        reference_text=prompt_text,
+                        reference_language=prompt_lang,
+                        reference_identity=preset_id or "",
+                        reference_audio_fingerprint="",
+                        model_revision=model_revision,
+                        preset_revision=preset_revision,
+                        style_reference_audio_path=style_ref_audio,
+                        style_reference_text=style_ref_text,
+                        style_reference_language=style_ref_lang,
+                    )
+                ),
+                control,
+                observer,
+            )
             chunks = []
             for index, segment in enumerate(segments):
                 check_cancelled(control, "semantic.start")
@@ -280,6 +328,7 @@ class GSVRuntimeEngineAdapter:
             model_revision=context.runtime_model_revision,
             sovits_revision=context.runtime_sovits_revision,
             processing_revision=context.runtime_processing_revision,
+            resource_revision=context.reference_bundle.resource_revision if context.reference_bundle is not None else "",
             sample_rate=self._lease.identity.sample_rate,
             semantic_tokens=tuple(np.asarray(context.reference_semantic_tokens).reshape(-1).tolist()),
             phones=tuple(context.prompt_phones),
@@ -291,6 +340,37 @@ class GSVRuntimeEngineAdapter:
                 "bert": context.prompt_bert,
                 "text": context.prompt_norm_text,
             },
+        )
+
+    def _build_reference_bundle(self, context) -> ReferenceBundle:
+        speaker_path = self._reference_path_resolver(context.reference_audio_path)
+        speaker = ReferenceRequest(
+            speaker_path,
+            ensure_sentence_end(context.reference_text, context.reference_language),
+            context.reference_language,
+            identity=context.reference_identity,
+            content_revision=content_sha256(speaker_path),
+        )
+        style_path = getattr(context, "style_reference_audio_path", None)
+        style_text = getattr(context, "style_reference_text", None)
+        style_language = getattr(context, "style_reference_language", None)
+        style = None
+        if style_path and style_text and style_language:
+            style = ReferenceRequest(
+                self._reference_path_resolver(style_path),
+                ensure_sentence_end(style_text, style_language),
+                style_language,
+                identity=f"{context.reference_identity}:style",
+            )
+        return ReferenceBundle(
+            speaker_reference=speaker,
+            style_reference=style,
+            model_revision=getattr(context, "model_revision", ""),
+            # Audio content belongs to the component key, not the shared-resource
+            # revision. Keep the latter explicit and stable until a resource catalog
+            # is introduced.
+            resource_revision=self._runtime.config.shared_resource_revision,
+            processing_revision=getattr(context, "runtime_processing_revision", "") or self._runtime.config.processing_revision,
         )
 
     @staticmethod

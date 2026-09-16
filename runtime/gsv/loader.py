@@ -179,6 +179,7 @@ class NativeBackend:
             resources_root=config.resources_root,
             cnhubert_path=config.cnhubert_path,
             bert_path=config.bert_path,
+            frontend_pool=config.frontend_pool,
         )
         self._closed = False
 
@@ -193,6 +194,9 @@ class NativeBackend:
 
     def synthesize(self, request, control=None, observer=None):
         return self._delegate.synthesize(request, control, observer)
+
+    def frontend_revisions(self) -> tuple[str, str, str]:
+        return self._delegate.frontend_revisions()
 
     def move_to(self, device: str, dtype: str) -> None:
         import torch

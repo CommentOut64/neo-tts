@@ -8,9 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 
 from .errors import (
+    RuntimeDiagnostic,
     RuntimeFailure,
     RuntimePhase,
     check_cancelled,
+    emit,
     error_info,
     runtime_checkpoint,
 )
@@ -113,7 +115,7 @@ def _split_audio(audio: np.ndarray, encoder_frames, margin_frames: int, stride: 
 
 
 class NativeInferenceBackend:
-    def __init__(self, *, t2s_model, vq_model, hps, device: str, dtype, resources_root: str, cnhubert_path=None, bert_path=None):
+    def __init__(self, *, t2s_model, vq_model, hps, device: str, dtype, resources_root: str, cnhubert_path=None, bert_path=None, frontend_pool=None):
         self.t2s_model = t2s_model
         self.vq_model = vq_model
         self.hps = hps
@@ -123,6 +125,9 @@ class NativeInferenceBackend:
         self.resources_root = Path(resources_root)
         self.cnhubert_path = cnhubert_path
         self.bert_path = bert_path
+        self._frontend_pool = frontend_pool
+        self._frontend_pool_key = None
+        self._frontend_revisions: tuple[str, str, str] = ()
         self._g2pw = None
         self._frontends_ready = False
         self._closed = False
@@ -144,14 +149,41 @@ class NativeInferenceBackend:
         for path in (hubert_path, bert_path, sv_path):
             if not path.exists():
                 raise FileNotFoundError(str(path))
-        with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.cnhubert", "RESOURCE_INVALID"):
-            self.ssl_model = cnhubert.CNHubert(base_path=str(hubert_path)).to(self.device).eval()
-        with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.bert", "RESOURCE_INVALID"):
-            self.tokenizer = AutoTokenizer.from_pretrained(str(bert_path), local_files_only=True)
-            self.bert_model = AutoModelForMaskedLM.from_pretrained(str(bert_path), local_files_only=True).to(self.device).eval()
-        with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.sv", "RESOURCE_INVALID"):
-            self.sv_model = SV(self.device, self.dtype == torch.float16, model_path=str(sv_path))
+        def build_frontends():
+            with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.cnhubert", "RESOURCE_INVALID"):
+                ssl_model = cnhubert.CNHubert(base_path=str(hubert_path)).to(self.device).eval()
+            with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.bert", "RESOURCE_INVALID"):
+                tokenizer = AutoTokenizer.from_pretrained(str(bert_path), local_files_only=True)
+                bert_model = AutoModelForMaskedLM.from_pretrained(str(bert_path), local_files_only=True).to(self.device).eval()
+            with runtime_checkpoint(None, RuntimePhase.RESOURCE, "resources.sv", "RESOURCE_INVALID"):
+                sv_model = SV(self.device, self.dtype == torch.float16, model_path=str(sv_path))
+            return {"ssl_model": ssl_model, "tokenizer": tokenizer, "bert_model": bert_model, "sv_model": sv_model}
+
+        if self._frontend_pool is None:
+            resources = build_frontends()
+            from .frontend_pool import content_revision
+
+            self._frontend_revisions = (
+                content_revision(hubert_path),
+                content_revision(bert_path),
+                content_revision(sv_path),
+            )
+        else:
+            self._frontend_pool_key, resources = self._frontend_pool.acquire(
+                cnhubert_path=hubert_path, bert_path=bert_path, sv_path=sv_path,
+                device=self.device, dtype=str(self.dtype), factory=build_frontends,
+            )
+            self._frontend_revisions = self._frontend_pool_key[:3]
+        self.ssl_model = resources["ssl_model"]
+        self.tokenizer = resources["tokenizer"]
+        self.bert_model = resources["bert_model"]
+        self.sv_model = resources["sv_model"]
         self._frontends_ready = True
+
+    def frontend_revisions(self) -> tuple[str, str, str]:
+        """Return content revisions for resources used by reference components."""
+        self._ensure_frontends()
+        return self._frontend_revisions
 
     def _get_g2pw(self, control=None, observer=None):
         if self._g2pw is not None:
@@ -169,6 +201,17 @@ class NativeInferenceBackend:
                     providers=["CUDAExecutionProvider", "CPUExecutionProvider"] if self.device == "cuda" else ["CPUExecutionProvider"],
                     local_files_only=True,
                 )
+                session = getattr(self._g2pw, "session_g2pW", None)
+                if session is None:
+                    session = getattr(getattr(self._g2pw, "_g2pw", None), "session_g2pW", None)
+                activated = tuple(session.get_providers()) if session is not None and hasattr(session, "get_providers") else tuple(getattr(self._g2pw, "providers", ()) or getattr(self._g2pw, "_providers", ()) or ())
+                self._g2pw_activated_providers = activated
+                required = "CUDAExecutionProvider" if self.device == "cuda" else "CPUExecutionProvider"
+                if required not in activated:
+                    raise RuntimeError(f"Required ORT provider {required} was not activated")
+                emit(observer, RuntimeDiagnostic("success", RuntimePhase.TEXT_FRONTEND, "resources.g2pw.providers", {
+                    "requested": required, "activated": ",".join(activated),
+                }))
             except (FileNotFoundError, ImportError) as exc:
                 raise RuntimeFailure(error_info(
                     "LANGUAGE_RESOURCE_MISSING", checkpoint="resources.g2pw",
@@ -181,7 +224,8 @@ class NativeInferenceBackend:
                 ), exc) from exc
         return self._g2pw
 
-    def prepare_reference(self, request, control=None, observer=None):
+    def prepare_speaker_reference(self, request, control=None, observer=None):
+        """Extract only audio-derived speaker material; output is CPU-owned."""
         import torch
 
         check_cancelled(control, "reference.start", observer)
@@ -202,6 +246,17 @@ class NativeInferenceBackend:
                 audio16 = audio
             speaker = self.sv_model.compute_embedding3(audio16).detach().cpu()
         check_cancelled(control, "reference.speaker", observer)
+        return {
+            "semantic": semantic,
+            "spectrogram": spec.detach().cpu(),
+            "speaker": speaker,
+        }
+
+    def prepare_reference_text(self, request, control=None, observer=None):
+        """Extract transcript-derived material independently from speaker audio."""
+        check_cancelled(control, "reference.text.start", observer)
+        with runtime_checkpoint(observer, RuntimePhase.RESOURCE, "resources.frontends", "RESOURCE_MISSING", control):
+            self._ensure_frontends()
         with runtime_checkpoint(observer, RuntimePhase.TEXT_FRONTEND, "reference.g2p", "TEXT_FRONTEND_FAILED", control):
             phones, bert, norm = _clean_text_features(
                 request.text, request.language, self.hps.model.version, self.tokenizer,
@@ -210,13 +265,21 @@ class NativeInferenceBackend:
             )
         check_cancelled(control, "reference.output", observer)
         return {
-            "semantic": semantic,
-            "spectrogram": spec.detach().cpu(),
-            "speaker": speaker,
             "phones": tuple(phones),
             "bert": bert.detach().cpu(),
             "text": norm,
         }
+
+    def compose_reference(self, speaker, text):
+        """Combine isolated CPU components into the legacy backend payload shape."""
+        return {**speaker, **text}
+
+    def prepare_reference(self, request, control=None, observer=None):
+        """Compatibility entrypoint for callers not using Runtime component caching."""
+        return self.compose_reference(
+            self.prepare_speaker_reference(request, control, observer),
+            self.prepare_reference_text(request, control, observer),
+        )
 
     def render_segment(self, request, features, config, control=None, observer=None):
         import torch
@@ -328,6 +391,10 @@ class NativeInferenceBackend:
         self.t2s_model = None
         self.vq_model = None
         self._g2pw = None
+        if self._frontend_pool is not None:
+            self._frontend_pool.release(self._frontend_pool_key)
+            self._frontend_pool_key = None
+        self._frontend_revisions = ()
         self._frontends_ready = False
         for name in ("ssl_model", "bert_model", "sv_model", "tokenizer"):
             model = getattr(self, name, None)
@@ -340,10 +407,20 @@ class NativeInferenceBackend:
         self.t2s_model.to(device=device, dtype=dtype)
         self.vq_model.to(device=device, dtype=dtype)
         if self._frontends_ready:
-            self.ssl_model.to(device=device)
-            self.bert_model.to(device=device)
-            self.sv_model.embedding_model.to(device=device, dtype=dtype)
-            self.sv_model.is_half = dtype == torch.float16
+            if self._frontend_pool is not None:
+                # A pooled instance may serve another backend. Drop only this
+                # lease and rebuild lazily under the destination device key.
+                self._frontend_pool.release(self._frontend_pool_key)
+                self._frontend_pool_key = None
+                self._frontend_revisions = ()
+                for name in ("ssl_model", "bert_model", "sv_model", "tokenizer"):
+                    delattr(self, name)
+                self._frontends_ready = False
+            else:
+                self.ssl_model.to(device=device)
+                self.bert_model.to(device=device)
+                self.sv_model.embedding_model.to(device=device, dtype=dtype)
+                self.sv_model.is_half = dtype == torch.float16
         if device != self.device:
             self._g2pw = None
         self.device = device

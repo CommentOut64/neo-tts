@@ -28,6 +28,10 @@ class RuntimeConfig:
     g2p_provider: str = "official"
     processing_revision: str = "s1"
     cache_budget: int = 0
+    reference_cache_entries: int = 32
+    reference_cache_bytes: int = 256 * 1024 * 1024
+    shared_resource_revision: str = ""
+    frontend_pool: Any = field(default=None, repr=False, compare=False)
     cnhubert_path: str | None = None
     bert_path: str | None = None
 
@@ -39,6 +43,8 @@ class RuntimeConfig:
             raise ValueError("Only the official G2P provider is supported")
         if self.cache_budget < 0:
             raise ValueError("cache_budget cannot be negative")
+        if self.reference_cache_entries < 1 or self.reference_cache_bytes < 0:
+            raise ValueError("reference cache limits must be non-negative")
         if self.dtype not in {"float32", "float16", "half"}:
             raise ValueError("dtype must be float32 or float16")
         for name in ("cnhubert_path", "bert_path"):
@@ -109,6 +115,80 @@ class ReferenceRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class SpeakerFeatureKey:
+    audio_revision: str
+    sovits_revision: str
+    cnhubert_revision: str
+    sv_revision: str
+    spectrogram_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class StyleSemanticKey:
+    audio_revision: str
+    cnhubert_revision: str
+    quantizer_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class StyleTextKey:
+    text_revision: str
+    language: str
+    g2p_revision: str
+    bert_tokenizer_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerFeatures:
+    """Speaker reference features; payload is runtime-owned and optional for adapters."""
+
+    reference: ReferenceRequest
+    payload: Any = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class StyleFeatures:
+    """Optional style exemplar features. S1 carries this contract only."""
+
+    reference: ReferenceRequest
+    payload: Any = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceBundle:
+    speaker_reference: ReferenceRequest
+    style_reference: ReferenceRequest | None = None
+    model_revision: str = ""
+    resource_revision: str = ""
+    processing_revision: str = ""
+
+    @property
+    def style_reference_exemplar(self) -> ReferenceRequest | None:
+        return self.style_reference
+
+    # Single-reference compatibility projection used by existing adapters/tests.
+    @property
+    def audio_path(self) -> str:
+        return self.speaker_reference.audio_path
+
+    @property
+    def text(self) -> str:
+        return self.speaker_reference.text
+
+    @property
+    def language(self) -> str:
+        return self.speaker_reference.language
+
+    @property
+    def identity(self) -> str:
+        return self.speaker_reference.identity
+
+    @property
+    def content_revision(self) -> str:
+        return self.speaker_reference.content_revision
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceFeatures:
     reference_id: str
     content_revision: str
@@ -116,6 +196,7 @@ class ReferenceFeatures:
     sample_rate: int
     sovits_revision: str = ""
     processing_revision: str = ""
+    resource_revision: str = ""
     semantic_tokens: tuple[int, ...] = ()
     phones: tuple[int, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
