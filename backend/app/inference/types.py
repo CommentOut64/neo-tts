@@ -27,6 +27,13 @@ class InferenceRequest(BaseModel):
     ref_lang: str
     gpt_path: str
     sovits_path: str
+    model_id: str | None = None
+    model_revision: str = ""
+    preset_id: str | None = None
+    preset_revision: str = ""
+    style_ref_audio: str | None = None
+    style_ref_text: str | None = None
+    style_ref_lang: str | None = None
 
 
 class PreparedSynthesisRequest(InferenceRequest):
@@ -45,6 +52,9 @@ class ModelHandle:
     last_used_at: float = 0.0
     resident_device: str = "cuda"
     pinned: bool = False
+    target_device: str = "auto"
+    target_dtype: str = "float32"
+    state: str = "hot"
 
 
 @dataclass(frozen=True)
@@ -53,15 +63,17 @@ class ModelCacheIdentity:
     sovits_path: str
     gpt_fingerprint: str = ""
     sovits_fingerprint: str = ""
+    target_device: str = "auto"
+    dtype: str = "float32"
 
     @property
     def cache_key(self) -> str:
         return "|".join(
             [
-                self.gpt_path,
                 self.gpt_fingerprint,
-                self.sovits_path,
                 self.sovits_fingerprint,
+                self.target_device,
+                self.dtype,
             ]
         )
 

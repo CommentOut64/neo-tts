@@ -27,10 +27,16 @@ class InitializeEditSessionRequest(BaseModel):
     text_language: str = Field(default="auto", description="全文文本语言，通常为 `auto` 或 `zh`。")
     voice_id: str = Field(description="初始化使用的音色 ID。")
     model_id: str = Field(default="gpt-sovits-v2", description="兼容字段，初始化时记录的模型标识。")
+    model_revision: str = Field(default="", description="可选模型内容 revision。")
+    preset_id: str | None = Field(default=None, description="可选预设逻辑 ID；缺失时投影为 voice_id。")
+    preset_revision: str = Field(default="", description="可选预设 revision。")
     reference_source: Literal["preset", "custom"] = Field(default="preset", description="初始化参考来源。")
     reference_audio_path: str | None = Field(default=None, description="可选的参考音频路径；未提供时使用 voice 配置默认值。")
     reference_text: str | None = Field(default=None, description="可选的参考文本；未提供时使用 voice 配置默认值。")
     reference_language: str | None = Field(default=None, description="可选的参考文本语言；未提供时使用 voice 配置默认值。")
+    style_reference_audio_path: str | None = Field(default=None, description="可选风格参考音频；S1 仅传递，不参与 conditioning。")
+    style_reference_text: str | None = Field(default=None, description="可选风格参考文本。")
+    style_reference_language: str | None = Field(default=None, description="可选风格参考文本语言。")
     speed: float = Field(default=1.0, description="初始化默认语速。")
     top_k: int = Field(default=15, description="初始化默认采样 top_k。")
     top_p: float = Field(default=1.0, description="初始化默认采样 top_p。")
@@ -127,6 +133,10 @@ class VoiceBinding(BaseModel):
     sovits_path: str | None = Field(default=None, description="可选的 SoVITS 模型路径。")
     gpt_path: str | None = Field(default=None, description="可选的 GPT 模型路径。")
     speaker_meta: dict[str, Any] = Field(default_factory=dict, description="可选的说话人附加元数据。")
+    model_id: str | None = Field(default=None, description="模型目录中的逻辑模型 ID；缺失时由 model_key 投影。")
+    model_revision: str = Field(default="", description="模型内容 revision。")
+    preset_id: str | None = Field(default=None, description="模型下的预设 ID；缺失时由 voice_id 投影。")
+    preset_revision: str = Field(default="", description="预设内容 revision。")
 
 
 class SegmentGroup(BaseModel):
@@ -252,6 +262,10 @@ class VoiceBindingPatchRequest(BaseModel):
     sovits_path: str | None = Field(default=None, description="新的 SoVITS 模型路径。")
     gpt_path: str | None = Field(default=None, description="新的 GPT 模型路径。")
     speaker_meta: dict[str, Any] | None = Field(default=None, description="新的说话人附加元数据。")
+    model_id: str | None = Field(default=None, description="新的逻辑模型 ID。")
+    model_revision: str | None = Field(default=None, description="新的模型 revision。")
+    preset_id: str | None = Field(default=None, description="新的预设 ID。")
+    preset_revision: str | None = Field(default=None, description="新的预设 revision。")
 
     @model_validator(mode="after")
     def _validate_has_patch_fields(self) -> "VoiceBindingPatchRequest":
@@ -263,6 +277,10 @@ class VoiceBindingPatchRequest(BaseModel):
                 self.sovits_path,
                 self.gpt_path,
                 self.speaker_meta,
+                self.model_id,
+                self.model_revision,
+                self.preset_id,
+                self.preset_revision,
             )
         ):
             raise ValueError("At least one voice binding field must be provided.")

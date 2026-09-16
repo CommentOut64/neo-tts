@@ -44,6 +44,12 @@ class PyTorchSynthesisPipeline:
             pause_length=request.pause_length,
             progress_callback=progress_callback,
             should_cancel=should_cancel,
+            model_revision=request.model_revision,
+            preset_id=request.preset_id,
+            preset_revision=request.preset_revision,
+            style_ref_audio=request.style_ref_audio,
+            style_ref_text=request.style_ref_text,
+            style_ref_lang=request.style_ref_lang,
         )
         sample_rate = int(model.hps.data.sampling_rate)
         return sample_rate, stream

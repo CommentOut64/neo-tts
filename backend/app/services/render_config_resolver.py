@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from typing import Literal
 
 from backend.app.core.exceptions import EditSessionNotFoundError
-from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
+from backend.app.inference.asset_fingerprint import cached_content_sha256, fingerprint_text
 from backend.app.schemas.edit_session import (
     DocumentSnapshot,
     EditableEdge,
@@ -17,6 +17,7 @@ from backend.app.schemas.edit_session import (
 )
 from backend.app.services.reference_binding import build_binding_key, merge_reference_override
 from backend.app.services.session_reference_asset_service import SessionReferenceAsset
+from backend.app.services.model_catalog import ModelCatalogService
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,9 @@ class ResolvedReferenceSelection:
     reference_text: str
     reference_text_fingerprint: str
     reference_language: str
+    style_reference_audio_path: str | None = None
+    style_reference_text: str | None = None
+    style_reference_language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,8 +59,9 @@ class ResolvedEdgeConfig:
 
 
 class RenderConfigResolver:
-    def __init__(self, *, voice_service: object | None = None) -> None:
+    def __init__(self, *, voice_service: object | None = None, model_catalog: ModelCatalogService | None = None) -> None:
         self._voice_service = voice_service
+        self._model_catalog = model_catalog
 
     def resolve_segment(self, *, snapshot: DocumentSnapshot, segment_id: str) -> ResolvedSegmentConfig:
         segment = next((item for item in snapshot.segments if item.segment_id == segment_id), None)
@@ -65,6 +70,7 @@ class RenderConfigResolver:
 
         render_profile = self._resolve_render_profile(snapshot=snapshot, segment=segment)
         voice_binding = self._resolve_voice_binding(snapshot=snapshot, segment=segment)
+        voice_binding = self._resolve_catalog_binding(voice_binding)
         resolved_reference = self._resolve_reference_selection(
             render_profile=render_profile,
             voice_binding=voice_binding,
@@ -91,6 +97,10 @@ class RenderConfigResolver:
                 "reference_text_fingerprint": (
                     resolved_reference.reference_text_fingerprint if resolved_reference is not None else ""
                 ),
+                "model_id": voice_binding.model_id or voice_binding.model_key,
+                "model_revision": voice_binding.model_revision,
+                "preset_id": voice_binding.preset_id or voice_binding.voice_id,
+                "preset_revision": voice_binding.preset_revision,
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -98,8 +108,10 @@ class RenderConfigResolver:
         render_context_fingerprint = hashlib.sha1(fingerprint_payload.encode("utf-8")).hexdigest()
         model_cache_key = build_binding_key(
             voice_id=voice_binding.voice_id,
-            model_key=voice_binding.model_key,
+            model_key=voice_binding.model_id or voice_binding.model_key,
         )
+        if voice_binding.model_revision or voice_binding.preset_revision:
+            model_cache_key = f"{model_cache_key}:{voice_binding.model_revision}:{voice_binding.preset_revision}"
         return ResolvedSegmentConfig(
             segment=segment,
             render_profile=effective_render_profile,
@@ -107,6 +119,20 @@ class RenderConfigResolver:
             render_context_fingerprint=render_context_fingerprint,
             model_cache_key=model_cache_key,
             resolved_reference=resolved_reference,
+        )
+
+    def _resolve_catalog_binding(self, binding: VoiceBinding) -> VoiceBinding:
+        if self._model_catalog is None or not binding.model_id or binding.model_id == "gpt-sovits-v2":
+            return binding
+        model, preset = self._model_catalog.resolve(
+            model_id=binding.model_id, model_revision=binding.model_revision,
+            preset_id=binding.preset_id, preset_revision=binding.preset_revision,
+        )
+        return replace(
+            binding, model_key=model.model_id, model_id=model.model_id,
+            model_revision=model.model_revision, preset_id=preset.preset_id,
+            preset_revision=preset.preset_revision, gpt_path=model.gpt_path_hint,
+            sovits_path=model.sovits_path_hint,
         )
 
     def resolve_edge(self, *, snapshot: DocumentSnapshot, edge_id: str) -> ResolvedEdgeConfig:
@@ -164,7 +190,7 @@ class RenderConfigResolver:
     ) -> str:
         if left_binding.voice_id != right_binding.voice_id:
             return "crossfade_only"
-        if left_binding.model_key != right_binding.model_key:
+        if (left_binding.model_id or left_binding.model_key, left_binding.model_revision) != (right_binding.model_id or right_binding.model_key, right_binding.model_revision):
             return "crossfade_only"
         return requested_strategy
 
@@ -190,12 +216,31 @@ class RenderConfigResolver:
     ) -> ResolvedReferenceSelection | None:
         binding_key = build_binding_key(
             voice_id=voice_binding.voice_id,
-            model_key=voice_binding.model_key,
+            model_key=voice_binding.model_id or voice_binding.model_key,
         )
         override = render_profile.reference_overrides_by_binding.get(binding_key)
         legacy_override = self._build_legacy_reference_override(render_profile)
         active_override = override or legacy_override or self._resolve_legacy_binding_fallback(render_profile)
         session_reference_asset = self._resolve_session_reference_asset(active_override)
+
+        if self._model_catalog is not None and voice_binding.model_id and voice_binding.model_id != "gpt-sovits-v2":
+            _, preset = self._model_catalog.resolve(
+                model_id=voice_binding.model_id, model_revision=voice_binding.model_revision,
+                preset_id=voice_binding.preset_id, preset_revision=voice_binding.preset_revision,
+            )
+            if active_override is None:
+                return ResolvedReferenceSelection(
+                    binding_key=binding_key, source="preset", reference_scope="model_preset",
+                    reference_identity=f"{preset.preset_id}:{preset.preset_revision}",
+                    reference_audio_path=preset.speaker_reference_audio_path,
+                    reference_audio_fingerprint=self._safe_content_sha256(preset.speaker_reference_audio_path),
+                    reference_text=preset.speaker_reference_text,
+                    reference_text_fingerprint=fingerprint_text(preset.speaker_reference_text),
+                    reference_language=preset.speaker_reference_language,
+                    style_reference_audio_path=preset.style_reference_audio_path,
+                    style_reference_text=preset.style_reference_text,
+                    style_reference_language=preset.style_reference_language,
+                )
 
         if self._voice_service is None:
             if active_override is None:
@@ -299,7 +344,7 @@ class RenderConfigResolver:
             reference_scope=reference_scope,
             reference_identity=reference_identity,
             reference_audio_path=merged_reference["reference_audio_path"],
-            reference_audio_fingerprint=self._safe_fingerprint_file(merged_reference["reference_audio_path"]),
+            reference_audio_fingerprint=self._safe_content_sha256(merged_reference["reference_audio_path"]),
             reference_text=merged_reference["reference_text"],
             reference_text_fingerprint=fingerprint_text(merged_reference["reference_text"]),
             reference_language=merged_reference["reference_language"],
@@ -353,9 +398,8 @@ class RenderConfigResolver:
         *,
         session_reference_asset: SessionReferenceAsset | None,
     ) -> str:
-        if session_reference_asset is not None:
-            return session_reference_asset.audio_fingerprint
-        return RenderConfigResolver._safe_fingerprint_file(raw_path)
+        del session_reference_asset
+        return RenderConfigResolver._safe_content_sha256(raw_path)
 
     @staticmethod
     def _has_value(value: object) -> bool:
@@ -400,10 +444,10 @@ class RenderConfigResolver:
         return next(iter(render_profile.reference_overrides_by_binding.values()))
 
     @staticmethod
-    def _safe_fingerprint_file(raw_path: str) -> str:
+    def _safe_content_sha256(raw_path: str) -> str:
         if not raw_path:
             return ""
         try:
-            return fingerprint_file(raw_path)
+            return cached_content_sha256(raw_path)
         except FileNotFoundError:
             return ""

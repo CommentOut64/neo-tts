@@ -66,6 +66,7 @@ from backend.app.services.edit_session_service import EditSessionService
 from backend.app.services.export_service import ExportService
 from backend.app.services.render_job_service import RenderJobService
 from backend.app.services.voice_service import VoiceService
+from backend.app.services.model_catalog import ModelCatalogService
 
 
 router = APIRouter(prefix="/v1/edit-session", tags=["edit-session"])
@@ -182,12 +183,32 @@ def _build_edit_session_service(request: Request) -> EditSessionService:
     )
 
 
-def _build_render_job_service(request: Request, *, voice_id: str | None = None) -> RenderJobService:
+def _build_model_catalog(request: Request) -> ModelCatalogService:
+    existing = getattr(request.app.state, "model_catalog", None)
+    if existing is not None:
+        return existing
+    settings = request.app.state.settings
+    catalog = ModelCatalogService(
+        user_data_root=settings.user_data_root,
+        builtin_voices=VoiceRepository(config_path=settings.voices_config_path, settings=settings).list_voices(),
+    )
+    request.app.state.model_catalog = catalog
+    return catalog
+
+
+def _build_render_job_service(
+    request: Request,
+    *,
+    voice_id: str | None = None,
+    model_id: str | None = None,
+) -> RenderJobService:
     if voice_id is None:
         active_session = request.app.state.edit_session_repository.get_active_session()
         if active_session is None or active_session.initialize_request is None:
             raise EditSessionNotFoundError("Active edit session not found.")
         voice_id = active_session.initialize_request.voice_id
+        model_id = active_session.initialize_request.model_id
+    use_catalog = model_id is not None and model_id != "gpt-sovits-v2"
     return RenderJobService(
         repository=request.app.state.edit_session_repository,
         asset_store=request.app.state.edit_asset_store,
@@ -196,6 +217,7 @@ def _build_render_job_service(request: Request, *, voice_id: str | None = None) 
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
+        model_catalog=_build_model_catalog(request) if use_catalog else None,
     )
 
 
@@ -211,6 +233,7 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         session_service=_build_edit_session_service(request),
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),
+        model_catalog=_build_model_catalog(request),
         run_jobs_in_background=False,
     )
 
@@ -320,7 +343,7 @@ async def upload_reference_audio(
     responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
 )
 def initialize_edit_session(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
-    service = _build_render_job_service(request, voice_id=body.voice_id)
+    service = _build_render_job_service(request, voice_id=body.voice_id, model_id=body.model_id)
     return service.create_initialize_job(body)
 
 
@@ -333,7 +356,7 @@ def initialize_edit_session(request: Request, body: InitializeEditSessionRequest
     responses={**BAD_REQUEST_RESPONSE, **CONFLICT_RESPONSE},
 )
 def create_render_job(request: Request, body: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
-    service = _build_render_job_service(request, voice_id=body.voice_id)
+    service = _build_render_job_service(request, voice_id=body.voice_id, model_id=body.model_id)
     return service.create_initialize_job(body)
 
 

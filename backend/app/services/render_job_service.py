@@ -102,6 +102,7 @@ from backend.app.services.segment_group_service import SegmentGroupService
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.timeline_manifest_service import TimelineManifestService
 from backend.app.services.reference_binding import build_binding_key
+from backend.app.services.model_catalog import ModelCatalogService
 from backend.app.text.segment_standardizer import (
     build_standardization_preview,
     split_text_segments_with_terminal_capsules,
@@ -197,6 +198,7 @@ class RenderJobService:
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
         checkpoint_service: CheckpointService | None = None,
+        model_catalog: ModelCatalogService | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -216,8 +218,9 @@ class RenderJobService:
             edge_service=self._edge_service,
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
+        self._model_catalog = model_catalog
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
-        self._render_config_resolver = RenderConfigResolver(voice_service=session_service)
+        self._render_config_resolver = RenderConfigResolver(voice_service=session_service, model_catalog=model_catalog)
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
         self._checkpoint_service = checkpoint_service or CheckpointService(
             repository=repository,
@@ -2710,6 +2713,14 @@ class RenderJobService:
 
     def _handle_runtime_failure(self, plan: RenderPlan, exc: RuntimeFailure) -> None:
         report_failure(None, exc)
+        if self._model_catalog is not None:
+            catalog_models = {
+                (binding.model_id, binding.model_revision)
+                for binding in plan.voice_bindings
+                if binding.model_id and binding.model_id != "gpt-sovits-v2" and binding.model_revision
+            }
+            for model_id, model_revision in catalog_models:
+                self._model_catalog.mark_runtime_failure(model_id, model_revision, exc.info.error_code)
         _, payload = map_runtime_error(exc.info, job_id=plan.job_id)
         error = payload["error"]
         render_job_logger.error(
@@ -2976,6 +2987,10 @@ class RenderJobService:
             scope="session",
             voice_id=request.voice_id,
             model_key=request.model_id,
+            model_id=request.model_id,
+            model_revision=request.model_revision,
+            preset_id=request.voice_id,
+            preset_revision=request.preset_revision,
         )
         reference_overrides_by_binding: dict[str, ReferenceBindingOverride] = {}
         if request.reference_source == "custom":
@@ -3016,6 +3031,25 @@ class RenderJobService:
         resolved_context = ResolvedRenderContext(
             voice_id=resolved.voice_binding.voice_id,
             model_key=resolved.voice_binding.model_key,
+            model_id=resolved.voice_binding.model_id or resolved.voice_binding.model_key,
+            model_revision=resolved.voice_binding.model_revision,
+            preset_id=resolved.voice_binding.preset_id or resolved.voice_binding.voice_id,
+            preset_revision=resolved.voice_binding.preset_revision,
+            style_reference_audio_path=(
+                resolved_reference.style_reference_audio_path
+                if resolved_reference is not None
+                else None
+            ),
+            style_reference_text=(
+                resolved_reference.style_reference_text
+                if resolved_reference is not None
+                else None
+            ),
+            style_reference_language=(
+                resolved_reference.style_reference_language
+                if resolved_reference is not None
+                else None
+            ),
             reference_audio_path=(
                 resolved_reference.reference_audio_path
                 if resolved_reference is not None
@@ -3063,6 +3097,10 @@ class RenderJobService:
                 gpt_path=resolved.voice_binding.gpt_path,
                 sovits_path=resolved.voice_binding.sovits_path,
                 speaker_meta=dict(resolved.voice_binding.speaker_meta),
+                model_id=resolved.voice_binding.model_id or resolved.voice_binding.model_key,
+                model_revision=resolved.voice_binding.model_revision,
+                preset_id=resolved.voice_binding.preset_id or resolved.voice_binding.voice_id,
+                preset_revision=resolved.voice_binding.preset_revision,
             ),
             render_profile_id=resolved.render_profile.render_profile_id,
             render_profile_fingerprint=resolved.render_context_fingerprint,
@@ -3094,9 +3132,16 @@ class RenderJobService:
         return ResolvedRenderContext(
             voice_id=request.voice_id,
             model_key=request.model_id,
+            model_id=request.model_id,
+            model_revision=request.model_revision,
+            preset_id=request.voice_id,
+            preset_revision=request.preset_revision,
             reference_audio_path=request.reference_audio_path or "",
             reference_text=request.reference_text or "",
             reference_language=request.reference_language or "",
+            style_reference_audio_path=request.style_reference_audio_path,
+            style_reference_text=request.style_reference_text,
+            style_reference_language=request.style_reference_language,
             reference_scope="session_override" if request.reference_source == "custom" else "voice_preset",
             reference_identity=(
                 f"{request.voice_id}:{request.model_id}"
@@ -3112,6 +3157,10 @@ class RenderJobService:
                 voice_binding_id="binding-session-default",
                 voice_id=request.voice_id,
                 model_key=request.model_id,
+                model_id=request.model_id,
+                model_revision=request.model_revision,
+                preset_id=request.voice_id,
+                preset_revision=request.preset_revision,
             ),
             render_profile_id="profile-session-default",
         )

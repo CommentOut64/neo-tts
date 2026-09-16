@@ -41,6 +41,7 @@ from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
 from backend.app.services.tts_service import TtsService
 from backend.app.services.voice_service import VoiceService
+from backend.app.services.model_catalog import ModelCatalogService
 
 
 router = APIRouter(prefix="/v1/audio", tags=["tts"])
@@ -94,6 +95,17 @@ def _build_voice_service(request: Request) -> VoiceService:
     settings = request.app.state.settings
     repository = VoiceRepository(config_path=settings.voices_config_path, settings=settings)
     return VoiceService(repository)
+
+
+def _build_model_catalog(request: Request) -> ModelCatalogService:
+    existing = getattr(request.app.state, "model_catalog", None)
+    if existing is not None:
+        return existing
+    settings = request.app.state.settings
+    voices = VoiceRepository(config_path=settings.voices_config_path, settings=settings).list_voices()
+    catalog = ModelCatalogService(user_data_root=settings.user_data_root, builtin_voices=voices)
+    request.app.state.model_catalog = catalog
+    return catalog
 
 
 def _build_inference_engine(request: Request) -> PyTorchInferenceEngine:
@@ -215,6 +227,7 @@ async def text_to_speech(request: Request) -> Response:
     )
     runtime = _build_inference_runtime(request)
     task_id: str | None = None
+    catalog_revision = payload.model_revision
     cleanup_after_return = True
 
     try:
@@ -231,17 +244,23 @@ async def text_to_speech(request: Request) -> Response:
         )
 
         voice_started = time.perf_counter()
-        voice_service = _build_voice_service(request)
-        voice_profile = voice_service.get_voice(payload.voice)
-        tts_logger.debug(
-            "音色配置加载完成 voice={} elapsed_ms={:.2f}",
-            payload.voice,
-            (time.perf_counter() - voice_started) * 1000,
-        )
-
         prepare_started = time.perf_counter()
         tts_service = TtsService()
-        prepared_request = tts_service.prepare_request(payload, voice_profile)
+        if payload.model_id is not None:
+            model, preset = _build_model_catalog(request).resolve(
+                model_id=payload.model_id, model_revision=payload.model_revision,
+                preset_id=payload.preset_id, preset_revision=payload.preset_revision,
+            )
+            prepared_request = tts_service.prepare_catalog_request(payload, model, preset)
+            catalog_revision = model.model_revision
+        else:
+            voice_service = _build_voice_service(request)
+            voice_profile = voice_service.get_voice(payload.voice)
+            tts_logger.debug(
+                "音色配置加载完成 voice={} elapsed_ms={:.2f}",
+                payload.voice, (time.perf_counter() - voice_started) * 1000,
+            )
+            prepared_request = tts_service.prepare_request(payload, voice_profile)
         prepared_request = prepared_request.model_copy(update={"request_id": task_id})
         tts_logger.debug(
             "推理请求组装完成 voice={} elapsed_ms={:.2f}",
@@ -350,6 +369,8 @@ async def text_to_speech(request: Request) -> Response:
                 tts_logger.warning("TTS 流式推理被取消 task_id={}", task_id)
                 return
             except RuntimeFailure as exc:
+                if payload.model_id is not None:
+                    _build_model_catalog(request).mark_runtime_failure(payload.model_id, catalog_revision, exc.info.error_code)
                 record_runtime_failure(exc, request_id=task_id)
                 _, error_payload = map_runtime_error(exc.info, request_id=task_id)
                 runtime.mark_failed(task_id=task_id, message=exc.info.message, runtime_error=error_payload["error"])
@@ -371,6 +392,10 @@ async def text_to_speech(request: Request) -> Response:
         response.headers["X-Inference-Task-Id"] = task_id
         return response
     except RuntimeFailure as exc:
+        if payload.model_id is not None:
+            _build_model_catalog(request).mark_runtime_failure(
+                payload.model_id, catalog_revision, exc.info.error_code,
+            )
         record_runtime_failure(exc, request_id=task_id)
         status, error_payload = map_runtime_error(exc.info, request_id=task_id)
         if task_id is not None:

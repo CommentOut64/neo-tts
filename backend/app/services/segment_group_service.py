@@ -215,6 +215,10 @@ class SegmentGroupService:
                 "sovits_path": patch.sovits_path if patch.sovits_path is not None else base.sovits_path,
                 "gpt_path": patch.gpt_path if patch.gpt_path is not None else base.gpt_path,
                 "speaker_meta": patch.speaker_meta if patch.speaker_meta is not None else dict(base.speaker_meta),
+                "model_id": patch.model_id if patch.model_id is not None else base.model_id,
+                "model_revision": patch.model_revision if patch.model_revision is not None else base.model_revision,
+                "preset_id": patch.preset_id if patch.preset_id is not None else base.preset_id,
+                "preset_revision": patch.preset_revision if patch.preset_revision is not None else base.preset_revision,
             }
         )
         return (

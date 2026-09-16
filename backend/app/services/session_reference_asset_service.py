@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from backend.app.core.exceptions import AssetNotFoundError
-from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
+from backend.app.inference.asset_fingerprint import content_sha256, fingerprint_text
 
 
 class SessionReferenceAsset(BaseModel):
@@ -49,7 +49,7 @@ class SessionReferenceAssetService:
             session_id=session_id,
             binding_key=binding_key,
             audio_path=str(audio_path),
-            audio_fingerprint=fingerprint_file(str(audio_path)),
+            audio_fingerprint=content_sha256(audio_path),
             reference_text=reference_text,
             reference_text_fingerprint=fingerprint_text(reference_text),
             reference_language=reference_language,
