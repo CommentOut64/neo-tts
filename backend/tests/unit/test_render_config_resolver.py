@@ -9,7 +9,7 @@ from backend.app.schemas.edit_session import (
     VoiceBinding,
 )
 from backend.app.schemas.voice import VoiceDefaults, VoiceProfile
-from backend.app.inference.asset_fingerprint import fingerprint_file
+from backend.app.inference.asset_fingerprint import content_sha256
 from backend.app.services.render_config_resolver import RenderConfigResolver
 from backend.app.services.session_reference_asset_service import SessionReferenceAsset
 
@@ -302,7 +302,7 @@ def test_render_config_resolver_prefers_session_reference_asset_identity_over_fl
         session_id="doc-1",
         binding_key="voice-a:model-a",
         audio_path=str(asset_audio_path),
-        audio_fingerprint=fingerprint_file(str(asset_audio_path)),
+        audio_fingerprint=content_sha256(asset_audio_path),
         reference_text="",
         reference_text_fingerprint="",
         reference_language="",
@@ -360,7 +360,7 @@ def test_render_config_resolver_session_reference_asset_identity_change_updates_
     asset_audio_path = tmp_path / "references" / "shared" / "audio.wav"
     asset_audio_path.parent.mkdir(parents=True, exist_ok=True)
     asset_audio_path.write_bytes(b"RIFFshared")
-    shared_fingerprint = fingerprint_file(str(asset_audio_path))
+    shared_fingerprint = content_sha256(asset_audio_path)
     voice_service = _FakeVoiceService(
         session_assets={
             "asset-a": SessionReferenceAsset(
@@ -452,3 +452,50 @@ def test_render_config_resolver_session_reference_asset_identity_change_updates_
     assert before_resolved.resolved_reference.reference_identity == "doc-1:asset-a"
     assert after_resolved.resolved_reference.reference_identity == "doc-1:asset-b"
     assert before_resolved.render_context_fingerprint != after_resolved.render_context_fingerprint
+
+
+def test_render_config_resolver_content_replacement_changes_formal_identity(tmp_path):
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"same-size-audio")
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-reference-content",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={
+                    "voice-a:model-a": ReferenceBindingOverride(
+                        reference_audio_path=str(audio_path),
+                        reference_text="参考文本",
+                        reference_language="zh",
+                    )
+                },
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    before = _resolver().resolve_segment(snapshot=snapshot, segment_id="seg-1")
+    audio_path.write_bytes(b"same-size-data")
+    after = _resolver().resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert before.resolved_reference is not None
+    assert after.resolved_reference is not None
+    assert before.resolved_reference.reference_audio_fingerprint != after.resolved_reference.reference_audio_fingerprint
+    assert before.render_context_fingerprint != after.render_context_fingerprint

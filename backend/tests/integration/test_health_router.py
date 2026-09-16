@@ -158,6 +158,16 @@ def test_app_lifespan_offloads_idle_models_under_gpu_pressure_before_loading_new
             self.resident_device = "cuda"
 
     project_root = tmp_path
+    for relative in (
+        "pretrained_models/neuro2.ckpt", "pretrained_models/neuro2.pth",
+        "pretrained_models/a.ckpt", "pretrained_models/a.pth",
+        "pretrained_models/b.ckpt", "pretrained_models/b.pth",
+        "pretrained_models/c.ckpt", "pretrained_models/c.pth",
+        "pretrained_models/d.ckpt", "pretrained_models/d.pth",
+    ):
+        path = project_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(relative.encode("utf-8"))
     voices_config_path = project_root / "voices.json"
     voices_config_path.write_text(
         json.dumps(

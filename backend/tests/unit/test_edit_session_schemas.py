@@ -43,6 +43,21 @@ def test_initialize_edit_session_request_exposes_frozen_defaults():
     assert request.segment_boundary_mode == "raw_strong_punctuation"
 
 
+def test_initialize_request_and_voice_binding_patch_accept_revision_identity_fields():
+    from backend.app.schemas.edit_session import VoiceBindingPatchRequest
+
+    request = InitializeEditSessionRequest(
+        raw_text="第一句。", voice_id="legacy-voice", model_id="model-1", model_revision="m2",
+        preset_id="preset-1", preset_revision="p3",
+    )
+    patch = VoiceBindingPatchRequest(model_id="model-2", model_revision="m3", preset_id="preset-2", preset_revision="p4")
+
+    assert request.model_revision == "m2"
+    assert request.preset_id == "preset-1"
+    assert patch.model_id == "model-2"
+    assert patch.preset_revision == "p4"
+
+
 def test_pause_duration_seconds_rejects_out_of_range_values():
     with pytest.raises(ValidationError):
         InitializeEditSessionRequest(

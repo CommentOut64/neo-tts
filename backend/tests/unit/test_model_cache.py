@@ -1,8 +1,35 @@
 import pathlib
 import importlib
 import sys
+from hashlib import sha256
+
+import pytest
 
 from backend.app.inference.model_cache import PyTorchModelCache
+
+
+def _write_weight_fixtures(tmp_path: pathlib.Path) -> None:
+    for relative in (
+        "pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth",
+        "pretrained_models/gpt_a.ckpt", "pretrained_models/sovits_a.pth",
+        "pretrained_models/gpt_b.ckpt", "pretrained_models/sovits_b.pth",
+        "pretrained_models/a.ckpt", "pretrained_models/a.pth",
+        "pretrained_models/b.ckpt", "pretrained_models/b.pth",
+        "pretrained_models/pinned.ckpt", "pretrained_models/pinned.pth",
+        "pretrained_models/active.ckpt", "pretrained_models/active.pth",
+        "pretrained_models/new.ckpt", "pretrained_models/new.pth",
+        "model/gpt.ckpt", "model/sovits.pth",
+        "storage/managed_voices/demo/weights/demo.ckpt",
+        "storage/managed_voices/demo/weights/demo.pth",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(relative.encode("utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def model_weight_fixtures(tmp_path):
+    _write_weight_fixtures(tmp_path)
 
 
 def test_model_cache_reuses_engine_for_same_resolved_paths(tmp_path: pathlib.Path):
@@ -27,6 +54,18 @@ def test_model_cache_reuses_engine_for_same_resolved_paths(tmp_path: pathlib.Pat
 
     assert first is second
     assert len(created) == 1
+
+
+def test_model_cache_rejects_missing_weight_before_cache_lookup(tmp_path: pathlib.Path):
+    cache = PyTorchModelCache(
+        project_root=tmp_path,
+        cnhubert_base_path="pretrained_models/chinese-hubert-base",
+        bert_path="pretrained_models/chinese-roberta-wwm-ext-large",
+        engine_factory=lambda *args: object(),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        cache.get_model_handle("missing.ckpt", "missing.pth")
 
 
 def test_model_cache_creates_new_engine_for_different_model_paths(tmp_path: pathlib.Path):
@@ -95,14 +134,16 @@ def test_model_cache_exposes_model_handle_with_normalized_paths(tmp_path: pathli
         sovits_fingerprint="sovits-fp",
     )
 
-    assert handle.cache_key.endswith("gpt.ckpt|gpt-fp|%s|sovits-fp" % str((tmp_path / "pretrained_models" / "sovits.pth").resolve()))
+    expected_gpt = sha256(b"pretrained_models/gpt.ckpt").hexdigest()
+    expected_sovits = sha256(b"pretrained_models/sovits.pth").hexdigest()
+    assert handle.cache_key == f"{expected_gpt}|{expected_sovits}|cuda|float32"
     assert handle.gpt_path == str((tmp_path / "pretrained_models" / "gpt.ckpt").resolve())
     assert handle.sovits_path == str((tmp_path / "pretrained_models" / "sovits.pth").resolve())
-    assert handle.gpt_fingerprint == "gpt-fp"
-    assert handle.sovits_fingerprint == "sovits-fp"
+    assert handle.gpt_fingerprint == expected_gpt
+    assert handle.sovits_fingerprint == expected_sovits
 
 
-def test_model_cache_creates_new_engine_for_same_paths_when_fingerprint_changes(tmp_path: pathlib.Path):
+def test_model_cache_creates_new_engine_for_same_paths_when_content_changes(tmp_path: pathlib.Path):
     created = []
 
     def fake_factory(gpt_path: str, sovits_path: str, cnhubert_path: str, bert_path: str):
@@ -116,18 +157,9 @@ def test_model_cache_creates_new_engine_for_same_paths_when_fingerprint_changes(
         engine_factory=fake_factory,
     )
 
-    first = cache.get_engine(
-        "pretrained_models/gpt.ckpt",
-        "pretrained_models/sovits.pth",
-        gpt_fingerprint="gpt-fp-a",
-        sovits_fingerprint="sovits-fp-a",
-    )
-    second = cache.get_engine(
-        "pretrained_models/gpt.ckpt",
-        "pretrained_models/sovits.pth",
-        gpt_fingerprint="gpt-fp-b",
-        sovits_fingerprint="sovits-fp-b",
-    )
+    first = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
+    (tmp_path / "pretrained_models" / "gpt.ckpt").write_bytes(b"changed-gpt-content")
+    second = cache.get_engine("pretrained_models/gpt.ckpt", "pretrained_models/sovits.pth")
 
     assert first is not second
     assert len(created) == 2
@@ -203,6 +235,7 @@ def test_model_cache_build_engine_logs_construction_and_passes_runtime_config(tm
     assert engine is sentinel
     assert calls == [(("gpt.ckpt", "sovits.pth", str(tmp_path)), {
         "device": "cpu", "dtype": "float32", "cnhubert_path": "hubert", "bert_path": "bert",
+        "frontend_pool": cache._frontend_pool,
         "reference_path_resolver": cache._resolve_path,
     })]
     assert "开始构建 GSV Runtime 实例" in logged

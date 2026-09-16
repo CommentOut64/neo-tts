@@ -29,6 +29,9 @@ def test_g2pw_uses_explicit_resources_and_releases_session_on_device_change(tmp_
     class Converter:
         def __init__(self, **kwargs):
             calls.append(kwargs)
+            self._g2pw = SimpleNamespace(
+                session_g2pW=SimpleNamespace(get_providers=lambda: tuple(kwargs["providers"]))
+            )
 
     monkeypatch.setattr(g2pw, "G2PWPinyin", Converter)
     outside = tmp_path / "outside"
@@ -44,6 +47,7 @@ def test_g2pw_uses_explicit_resources_and_releases_session_on_device_change(tmp_
     assert calls[0]["model_source"] == str(bert)
     assert calls[0]["local_files_only"] is True
     assert calls[0]["providers"] == ["CPUExecutionProvider"]
+    assert backend._g2pw_activated_providers == ("CPUExecutionProvider",)
 
     backend.move_to("cuda", torch.float16)
     assert first() is None

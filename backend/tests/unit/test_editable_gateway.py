@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import hashlib
 
 import numpy as np
 import torch
@@ -113,9 +114,13 @@ def _build_inference(tmp_path, monkeypatch, *, decoder_frame_count: int = 14) ->
         }
 
     backend.prepare_reference = prepare_reference
+    backend.prepare_speaker_reference = None
+    backend.prepare_reference_text = None
+    backend.compose_reference = None
     gpt, sovits = tmp_path / "gpt.ckpt", tmp_path / "sovits.pth"
     gpt.write_bytes(b"fixture-gpt")
     sovits.write_bytes(b"fixture-sovits")
+    (tmp_path / "ref.wav").write_bytes(b"fixture-reference")
     inference = GSVRuntimeEngineAdapter.__new__(GSVRuntimeEngineAdapter)
     inference._spec = ModelSpec(str(gpt), str(sovits))
     inference._runtime = GSVRuntime(RuntimeConfig(str(tmp_path)), backend_factory=lambda *args: backend)
@@ -165,7 +170,7 @@ def test_build_reference_context_uses_resolved_render_context_fields(tmp_path, m
     assert context.inference_config["noise_scale"] == 0.4
     assert context.reference_scope == "session_override"
     assert context.reference_identity == "voice-demo:model-demo:asset-1"
-    assert context.reference_audio_fingerprint == "audio-fp"
+    assert context.reference_audio_fingerprint == hashlib.sha256(b"fixture-reference").hexdigest()
     assert context.reference_text_fingerprint == "text-fp"
 
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.inference.asset_fingerprint import fingerprint_file, fingerprint_text
+from backend.app.inference.asset_fingerprint import ContentHashCache, fingerprint_file, fingerprint_text
 
 
 def test_fingerprint_file_changes_when_file_metadata_changes(tmp_path: Path):
@@ -27,3 +27,14 @@ def test_fingerprint_file_requires_existing_file(tmp_path: Path):
 
 def test_fingerprint_text_changes_when_text_changes():
     assert fingerprint_text("参考文本一") != fingerprint_text("参考文本二")
+
+
+def test_content_hash_cache_rehashes_when_probe_changes(tmp_path: Path):
+    target = tmp_path / "reference.wav"
+    target.write_bytes(b"same-size-one")
+    cache = ContentHashCache(max_entries=1)
+
+    first = cache.digest(target)
+    target.write_bytes(b"same-size-two")
+
+    assert cache.digest(target) != first
