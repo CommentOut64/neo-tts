@@ -1,5 +1,13 @@
 export class ApiRequestError extends Error {
   readonly statusCode: number | null
+  readonly projectError?: {
+    code?: unknown
+    phase?: unknown
+    retryable?: unknown
+    action?: unknown
+    request_id?: unknown
+    message?: unknown
+  }
 
   constructor(message: string, statusCode: number | null = null) {
     super(message)
@@ -13,6 +21,7 @@ interface ApiErrorLike {
     status?: number
     data?: {
       detail?: unknown
+      error?: unknown
     }
   }
   code?: string
@@ -21,10 +30,13 @@ interface ApiErrorLike {
 export function toApiRequestError(error: ApiErrorLike): ApiRequestError {
   if (typeof error.response?.status === 'number') {
     const detail = error.response.data?.detail
-    const message = typeof detail === 'string' && detail.trim().length > 0
-      ? detail
-      : `HTTP ${error.response.status}`
-    return new ApiRequestError(message, error.response.status)
+    const envelope = error.response.data?.error
+    const message = extractErrorMessage(envelope) ?? extractErrorMessage(detail) ?? `HTTP ${error.response.status}`
+    const apiError = new ApiRequestError(message, error.response.status)
+    if (envelope && typeof envelope === "object") {
+      Object.assign(apiError, { projectError: envelope })
+    }
+    return apiError
   }
 
   if (error.code === 'ECONNABORTED') {
@@ -32,6 +44,19 @@ export function toApiRequestError(error: ApiErrorLike): ApiRequestError {
   }
 
   return new ApiRequestError('网络错误，请检查连接')
+}
+
+function extractErrorMessage(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value
+  }
+  if (value && typeof value === "object") {
+    const message = (value as { message?: unknown }).message
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message
+    }
+  }
+  return null
 }
 
 export function extractStatusCode(error: unknown): number | null {

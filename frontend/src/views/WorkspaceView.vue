@@ -32,6 +32,10 @@ import ExportDialog from '@/components/workspace/ExportDialog.vue'
 import ParameterDraftConfirm from '@/components/workspace/ParameterDraftConfirm.vue'
 import { resolveWorkspaceEntryAction } from '@/components/workspace/sessionHandoff'
 import { buildTextLanguageResolutionDialogModel } from '@/utils/textLanguageResolution'
+import { useProjectLifecycle } from '@/composables/useProjectLifecycle'
+import { useWorkspaceDraftPersistence } from '@/composables/useWorkspaceDraftPersistence'
+import { chooseNeoProjectFile, chooseNeoProjectSavePath } from '@/platform/projectFileDialog'
+import type { ProjectPayload } from '@/types/projects'
 
 const route = useRoute()
 const {
@@ -42,6 +46,14 @@ const {
   backfillInputDraftFromAppliedText,
   rememberSessionInitialText,
   sourceDraftRevision,
+  snapshot,
+  timeline,
+  documentVersion,
+  segments,
+  edges,
+  groups,
+  renderProfiles,
+  voiceBindings,
 } = useEditSession()
 const {
   text,
@@ -49,10 +61,14 @@ const {
   draftRevision,
   lastSentToSessionRevision,
   source,
+  setText,
   setTextLanguage,
 } = useInputDraft()
 const { currentRenderJob } = useRuntimeState()
 const parameterPanel = useParameterPanel()
+const workspaceDraftPersistence = useWorkspaceDraftPersistence()
+const suppressRebuildPrompt = ref(false)
+const restoredProjectSession = ref(false)
 const { exportDialogVisible, closeExportDialog } = useWorkspaceDialogState()
 const voices = ref<VoiceProfile[]>([])
 const selectedVoice = computed(() => voices.value.find((voice) => voice.name === initParams.value.voice_id) ?? null)
@@ -64,6 +80,7 @@ const workspaceEntryAction = computed(() =>
     draftRevision: draftRevision.value,
     lastSentToSessionRevision: lastSentToSessionRevision.value,
     sourceDraftRevision: sourceDraftRevision.value,
+    suppressRebuildPrompt: suppressRebuildPrompt.value,
   }),
 )
 const handoffConfirmVisible = ref(false)
@@ -110,6 +127,350 @@ const { restoreCache, persistCacheWhenIdle } = useInferenceParamsCache()
 const isRestoring = ref(false)
 const isBootstrappingWorkspace = ref(true)
 
+function buildProjectPayload(): ProjectPayload {
+  const documentId = snapshot.value?.document_id ?? `workspace-${Date.now()}`
+  const version = snapshot.value?.document_version ?? documentVersion.value ?? 0
+  const snapshotId = `${documentId}-head-${version}`
+  const currentSegments = segments.value.length > 0 ? segments.value : snapshot.value?.segments ?? []
+  const currentEdges = edges.value.length > 0 ? edges.value : snapshot.value?.edges ?? []
+  const defaultBinding = voiceBindings.value.find(
+    (binding) => binding.voice_binding_id === snapshot.value?.default_voice_binding_id,
+  ) ?? voiceBindings.value[0]
+  const modelIdentity = defaultBinding
+    ? {
+        model_id: defaultBinding.model_id ?? defaultBinding.model_key,
+        model_revision: defaultBinding.model_revision ?? "",
+        preset_id: defaultBinding.preset_id ?? defaultBinding.voice_id,
+        preset_revision: defaultBinding.preset_revision ?? "",
+        path_hint: { gpt: defaultBinding.gpt_path, sovits: defaultBinding.sovits_path },
+      }
+    : {}
+  const assetById = new Map<string, Record<string, unknown>>()
+  const assetRefs: Record<string, unknown>[] = []
+  const referencesById = new Map<string, Record<string, unknown>>()
+  const referenceHashes: Record<string, string> = {}
+  for (const segment of currentSegments) {
+    if (!segment.render_asset_id) continue
+    assetById.set(segment.render_asset_id, {
+      asset_id: segment.render_asset_id,
+      kind: "formal",
+      role: "segment",
+      media_type: "audio/wav",
+      codec: "pcm_s16le",
+      byte_count: 0,
+      ready: 0,
+      metadata: { format_version: 1 },
+    })
+    assetRefs.push({ owner_type: "segment", owner_id: segment.segment_id, asset_id: segment.render_asset_id, purpose: "formal" })
+  }
+  const timelineId = timeline.value?.timeline_manifest_id ?? null
+  if (timelineId) {
+    assetById.set(timelineId, {
+      asset_id: timelineId,
+      kind: "timeline",
+      media_type: "application/json",
+      codec: "json",
+      byte_count: 0,
+      ready: 0,
+      metadata: { format_version: 1 },
+    })
+    assetRefs.push({ owner_type: "project", owner_id: documentId, asset_id: timelineId, purpose: "timeline" })
+  }
+  const addSessionReference = (
+    bindingKey: string,
+    override: Record<string, unknown>,
+  ) => {
+    const referenceAssetId = typeof override.session_reference_asset_id === "string"
+      ? override.session_reference_asset_id
+      : ""
+    if (!referenceAssetId) return
+    const referenceId = `speaker-${referenceAssetId}`
+    const audioAssetId = `reference-audio-${referenceAssetId}`
+    const audioFingerprint = typeof override.reference_audio_fingerprint === "string"
+      ? override.reference_audio_fingerprint
+      : ""
+    const textFingerprint = typeof override.reference_text_fingerprint === "string"
+      ? override.reference_text_fingerprint
+      : ""
+    const language = typeof override.reference_language === "string"
+      ? override.reference_language
+      : ""
+    const metadata = {
+      reference_asset_id: referenceAssetId,
+      session_id: documentId,
+      binding_key: bindingKey,
+      audio_path: typeof override.reference_audio_path === "string"
+        ? override.reference_audio_path
+        : null,
+      reference_identity: typeof override.reference_identity === "string"
+        ? override.reference_identity
+        : null,
+      reference_text: typeof override.reference_text === "string"
+        ? override.reference_text
+        : "",
+      reference_language: language,
+      reference_audio_fingerprint: audioFingerprint || null,
+      reference_text_fingerprint: textFingerprint || null,
+    }
+    if (!assetById.has(audioAssetId)) {
+      assetById.set(audioAssetId, {
+        asset_id: audioAssetId,
+        kind: "reference_audio",
+        role: "speaker",
+        media_type: "audio/wav",
+        codec: "raw",
+        byte_count: 0,
+        ready: 0,
+        metadata,
+      })
+    }
+    if (!referencesById.has(referenceId)) {
+      referencesById.set(referenceId, {
+        reference_id: referenceId,
+        role: "speaker",
+        audio_asset_id: audioAssetId,
+        text_hash: textFingerprint || null,
+        language,
+        source: "session_override",
+        revision: version,
+        status: "present",
+        metadata: { ...metadata, binding_keys: [bindingKey] },
+      })
+    } else {
+      const reference = referencesById.get(referenceId)!
+      const metadataValue = reference.metadata
+      const referenceMetadata = metadataValue && typeof metadataValue === "object"
+        ? metadataValue as Record<string, unknown>
+        : {}
+      const bindingKeys = Array.isArray(referenceMetadata.binding_keys)
+        ? referenceMetadata.binding_keys.filter((item): item is string => typeof item === "string")
+        : []
+      if (!bindingKeys.includes(bindingKey)) bindingKeys.push(bindingKey)
+      reference.metadata = { ...referenceMetadata, binding_keys: bindingKeys }
+    }
+    assetRefs.push({ owner_type: "reference", owner_id: referenceId, asset_id: audioAssetId, purpose: "audio" })
+    if (audioFingerprint || textFingerprint || language) {
+      referenceHashes[bindingKey] = [audioFingerprint, textFingerprint, language].join("|")
+    }
+  }
+  for (const profile of renderProfiles.value) {
+    for (const [bindingKey, override] of Object.entries(profile.reference_overrides_by_binding ?? {})) {
+      addSessionReference(bindingKey, override as unknown as Record<string, unknown>)
+    }
+  }
+  for (const [bindingKey, selection] of Object.entries(initParams.value.referenceSelectionsByBinding)) {
+    if (selection.source !== "custom") continue
+    addSessionReference(bindingKey, {
+      session_reference_asset_id: selection.session_reference_asset_id,
+      reference_audio_path: selection.custom_ref_path,
+      reference_text: selection.ref_text,
+      reference_language: selection.ref_lang,
+      reference_audio_fingerprint: selection.reference_audio_fingerprint,
+      reference_text_fingerprint: selection.reference_text_fingerprint,
+    })
+  }
+  const draftEnvelope = workspaceDraftPersistence.captureEnvelope({
+    documentId,
+    baseSnapshotId: snapshotId,
+    inputRevision: draftRevision.value,
+    parameterPatch: parameterPanel.draftPatch.value as Record<string, unknown>,
+    inputDraft: {
+      text: text.value,
+      draftRevision: draftRevision.value,
+      source: source.value,
+      referenceDraft: {
+        voice_id: initParams.value.voice_id,
+        ref_source: initParams.value.ref_source,
+        ref_text: initParams.value.ref_text,
+        ref_lang: initParams.value.ref_lang,
+      },
+    },
+  })
+  return {
+    project: {
+      project_id: documentId,
+      workspace_id: null,
+      head_snapshot_id: snapshotId,
+      timeline_manifest_id: timelineId,
+      head_revision: version,
+      baseline_revision: 0,
+      timeline_revision: timeline.value?.timeline_version ?? 0,
+      checkpoint_partial_revision: 0,
+      checkpoint_working_revision: 0,
+      input_revision: draftRevision.value,
+      draft_revision: draftRevision.value,
+      draft_payload: draftEnvelope,
+      reference_hashes: referenceHashes,
+      model_identity: modelIdentity,
+      model_resolution_status: "exact",
+    },
+    snapshots: [{
+      snapshot_id: snapshotId,
+      kind: "head",
+      revision: version,
+      config: {
+        default_render_profile_id: snapshot.value?.default_render_profile_id ?? null,
+        default_voice_binding_id: snapshot.value?.default_voice_binding_id ?? null,
+        render_profiles: renderProfiles.value,
+        voice_bindings: voiceBindings.value,
+        groups: groups.value,
+      },
+      segments: currentSegments.map((segment, position) => ({
+        segment_id: segment.segment_id,
+        position,
+        group_id: segment.group_id,
+        text: {
+          stem: segment.stem,
+          terminal_raw: segment.terminal_raw ?? "",
+          terminal_closer_suffix: segment.terminal_closer_suffix ?? "",
+          terminal_source: segment.terminal_source ?? "synthetic",
+          text_language: segment.text_language,
+        },
+        binding: voiceBindings.value.find((binding) => binding.voice_binding_id === segment.voice_binding_id) ?? {},
+        parameters: segment.inference_override,
+        status: {
+          render_status: segment.render_status,
+          render_version: segment.render_version,
+          segment_revision: segment.segment_revision,
+        },
+        formal_asset_id: segment.render_asset_id,
+      })),
+      edges: currentEdges.map((edge, position) => ({
+        edge_id: edge.edge_id,
+        position,
+        from_segment_id: edge.left_segment_id,
+        to_segment_id: edge.right_segment_id,
+        policy: {
+          pause_duration_seconds: edge.pause_duration_seconds,
+          boundary_strategy: edge.boundary_strategy,
+          effective_boundary_strategy: edge.effective_boundary_strategy,
+        },
+        status: { edge_status: edge.edge_status, edge_version: edge.edge_version },
+      })),
+      groups: groups.value.map((group, position) => ({
+        group_id: group.group_id,
+        position,
+        binding: { voice_binding_id: group.voice_binding_id },
+        parameters: { render_profile_id: group.render_profile_id },
+      })),
+    }],
+    assets: [...assetById.values()],
+    references: [...referencesById.values()],
+    asset_refs: Array.from(
+      new Map(
+        assetRefs.map((item) => [
+          [item.owner_type, item.owner_id, item.asset_id, item.purpose].join("\u0000"),
+          item,
+        ]),
+      ).values(),
+    ),
+    blobs: [],
+  }
+}
+
+const projectLifecycle = useProjectLifecycle({
+  capture: buildProjectPayload,
+  flushDraft: async () => {
+    if (parameterPanel.hasDirty.value) {
+      await parameterPanel.submitDraft()
+    }
+  },
+  restore: async (project) => {
+    suppressRebuildPrompt.value = true
+    restoredProjectSession.value = Boolean(
+      project && typeof project === "object" && (
+        typeof project.head_snapshot_id === "string" ||
+        typeof project.baseline_snapshot_id === "string"
+      ),
+    )
+    const rawDraft = project && typeof project.draft_payload === "object"
+      ? project.draft_payload
+      : null
+    const restoredEnvelope = workspaceDraftPersistence.restoreEnvelope(rawDraft)
+    // Keep an existing local draft on conflict.  A server-captured draft is
+    // only adopted when the input surface is empty, then formal state loads.
+    try {
+      if (restoredEnvelope) {
+        setText(restoredEnvelope.inputDraft.text)
+      }
+      await discoverSession()
+      if (!restoredEnvelope && appliedText.value) {
+        backfillInputDraftFromAppliedText(appliedText.value)
+      }
+    } finally {
+      promptedRebuildRevision.value = draftRevision.value
+      suppressRebuildPrompt.value = false
+    }
+  },
+})
+const projectError = computed(() => projectLifecycle.lastError.value)
+const projectFileId = projectLifecycle.projectId
+const projectFileRevision = projectLifecycle.saveRevision
+const projectFileDirty = projectLifecycle.dirty
+const projectFileReadOnly = projectLifecycle.readOnly
+const projectFileBusy = projectLifecycle.isBusy
+
+async function handleProjectNew() {
+  if (projectLifecycle.dirty.value) {
+    try {
+      await ElMessageBox.confirm("当前项目有未保存修改，确认新建项目并放弃这些修改吗？", "新建项目", {
+        confirmButtonText: "新建",
+        cancelButtonText: "取消",
+        type: "warning",
+      })
+    } catch {
+      return
+    }
+  }
+  if (sessionStatus.value !== "empty") await clearSession()
+  restoredProjectSession.value = false
+  const response = await projectLifecycle.createNew()
+  if (response) ElMessage.success("已创建新项目工作区")
+}
+
+async function handleProjectOpen() {
+  const path = await chooseNeoProjectFile()
+  if (!path) return
+  const response = await projectLifecycle.open(path)
+  if (response) ElMessage.success("项目已打开")
+}
+
+async function handleProjectSave() {
+  const response = await projectLifecycle.save()
+  if (response) ElMessage.success(response.dirty ? "项目已保存，但捕获后仍有新修改" : "项目已保存")
+}
+
+async function handleProjectSaveAs() {
+  const path = await chooseNeoProjectSavePath(undefined, `${projectLifecycle.projectId.value ?? "project"}.neo`)
+  if (!path) return
+  const response = await projectLifecycle.saveAs(path)
+  if (response) ElMessage.success("项目已另存为")
+}
+
+async function handleProjectClose() {
+  if (projectLifecycle.dirty.value) {
+    try {
+      await ElMessageBox.confirm("当前项目有未保存修改，确认关闭并放弃这些修改吗？", "关闭项目", {
+        confirmButtonText: "关闭",
+        cancelButtonText: "取消",
+        type: "warning",
+      })
+    } catch {
+      return
+    }
+  }
+  if (sessionStatus.value !== "empty") await clearSession()
+  restoredProjectSession.value = false
+  projectLifecycle.close()
+}
+
+watch(
+  [draftRevision, () => parameterPanel.hasDirty.value, sessionStatus],
+  () => {
+    if (!isBootstrappingWorkspace.value && sessionStatus.value !== "empty") projectLifecycle.markDirty(true)
+  },
+)
+
 function applyVoiceDefaults(params: WorkspaceInitParams, voice: VoiceProfile | null): WorkspaceInitParams {
   if (!voice?.defaults) {
     return params
@@ -153,6 +514,10 @@ function syncReferenceSelectionForCurrentVoice(
     return params
   }
 
+  const currentSelection = Object.entries(params.referenceSelectionsByBinding).find(
+    ([key]) => key.startsWith(`${params.voice_id}:`),
+  )?.[1]
+
   return {
     ...params,
     referenceSelectionsByBinding: upsertReferenceSelectionByBinding({
@@ -160,6 +525,15 @@ function syncReferenceSelectionForCurrentVoice(
       voiceId: params.voice_id,
       entry: buildReferenceSelectionEntry({
         source: params.ref_source,
+        sessionReferenceAssetId: params.ref_source === 'custom'
+          ? currentSelection?.session_reference_asset_id ?? null
+          : null,
+        referenceAudioFingerprint: params.ref_source === 'custom'
+          ? currentSelection?.reference_audio_fingerprint ?? null
+          : null,
+        referenceTextFingerprint: params.ref_source === 'custom'
+          ? currentSelection?.reference_text_fingerprint ?? null
+          : null,
         customRefPath: params.custom_ref_path,
         refText: params.ref_text,
         refLang: params.ref_lang,
@@ -362,6 +736,20 @@ async function handleSubmitDraftAndContinue() {
 
 const handleInit = async () => {
   if (!initParams.value.voice_id || !text.value) return
+  if (projectFileReadOnly.value) {
+    ElMessage.error("当前导入项目处于只读降级状态，不能重新初始化会话")
+    return
+  }
+  // A restored project must use its installed active session.  If hydration
+  // raced with the initial route probe, retry discovery instead of posting a
+  // new initialize request against the imported project.
+  if (restoredProjectSession.value && sessionStatus.value !== "ready") {
+    await discoverSession()
+    if (sessionStatus.value !== "ready") {
+      ElMessage.error("项目会话尚未恢复，已取消重新初始化")
+      return
+    }
+  }
   if (sessionStatus.value === 'ready') {
     try {
       await clearSession()
@@ -394,6 +782,25 @@ const handleInit = async () => {
       customReferenceAudioPath: effectiveReferenceSelection.custom_ref_path,
       customReferenceAudioFile: initParams.value.custom_ref_file,
       upload: uploadEditSessionReferenceAudio,
+      onUploaded: (response) => {
+        initParams.value = syncReferenceSelectionForCurrentVoice({
+          ...initParams.value,
+          custom_ref_path: response.reference_audio_path,
+          referenceSelectionsByBinding: upsertReferenceSelectionByBinding({
+            selections: initParams.value.referenceSelectionsByBinding,
+            voiceId: initParams.value.voice_id,
+            entry: buildReferenceSelectionEntry({
+              source: "custom",
+              sessionReferenceAssetId: response.reference_asset_id,
+              customRefPath: response.reference_audio_path,
+              refText: initParams.value.ref_text,
+              refLang: initParams.value.ref_lang,
+              referenceAudioFingerprint: response.reference_audio_fingerprint,
+              referenceTextFingerprint: response.reference_text_fingerprint,
+            }),
+          }),
+        })
+      },
     })
   } catch (err) {
     ElMessage.error(`参考音频上传失败: ${(err as Error).message}`)
@@ -470,6 +877,19 @@ const handleUploadCustomRef = async (file: File) => {
     initParams.value = syncReferenceSelectionForCurrentVoice({
       ...initParams.value,
       custom_ref_path: response.reference_audio_path,
+      referenceSelectionsByBinding: upsertReferenceSelectionByBinding({
+        selections: initParams.value.referenceSelectionsByBinding,
+        voiceId: initParams.value.voice_id,
+        entry: buildReferenceSelectionEntry({
+          source: "custom",
+          sessionReferenceAssetId: response.reference_asset_id,
+          customRefPath: response.reference_audio_path,
+          refText: initParams.value.ref_text,
+          refLang: initParams.value.ref_lang,
+          referenceAudioFingerprint: response.reference_audio_fingerprint,
+          referenceTextFingerprint: response.reference_text_fingerprint,
+        }),
+      }),
     })
     ElMessage.success(`参考音频已上传：${response.filename}`)
   } catch (err) {
@@ -520,6 +940,21 @@ watch(
 
 <template>
   <div class="max-w-[1440px] mx-auto px-4 lg:px-8 py-6 h-[calc(100vh-3.5rem)] flex flex-col md:flex-row gap-6">
+    <div class="fixed top-14 left-4 right-4 z-20 flex items-center gap-2 rounded-md border border-border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+      <button class="rounded border border-border px-2 py-1 text-xs" :disabled="projectFileBusy" @click="handleProjectNew">新建</button>
+      <button class="rounded border border-border px-2 py-1 text-xs" :disabled="projectFileBusy" @click="handleProjectOpen">打开</button>
+      <button class="rounded border border-border px-2 py-1 text-xs" :disabled="projectFileBusy || projectFileReadOnly" @click="handleProjectSave">保存</button>
+      <button class="rounded border border-border px-2 py-1 text-xs" :disabled="projectFileBusy || projectFileReadOnly" @click="handleProjectSaveAs">另存为</button>
+      <button class="rounded border border-border px-2 py-1 text-xs" :disabled="projectFileBusy" @click="handleProjectClose">关闭</button>
+      <span class="ml-2 text-xs text-muted-fg">
+        {{ projectFileId || '未命名项目' }} · rev {{ projectFileRevision }}
+        <span v-if="projectFileDirty" class="text-amber-600">· 未保存</span>
+        <span v-if="projectFileReadOnly" class="text-red-600">· 只读降级</span>
+      </span>
+      <span v-if="projectError" class="ml-auto max-w-[40%] truncate text-xs text-red-600" :title="projectError.message">
+        {{ projectError.code }}: {{ projectError.message }}
+      </span>
+    </div>
     <!-- Left panel: parameters -->
     <aside class="w-full md:w-[35%] lg:w-[30%] md:max-h-[calc(100vh-8rem)] md:overflow-y-auto space-y-5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent pr-1">
       <div v-if="isBootstrappingWorkspace"></div>

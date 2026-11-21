@@ -25,6 +25,8 @@ declare global {
       ): Promise<AppUpdateRestartResponse>;
       openExternalUrl(url: string): Promise<void>;
       getPathForFile(file: File): string | null;
+      openProjectFileDialog?(initialDir?: string): Promise<string | null>;
+      saveProjectFileDialog?(initialDir?: string, suggestedName?: string): Promise<string | null>;
     };
   }
 }

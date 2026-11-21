@@ -150,6 +150,10 @@ export interface VoiceBinding {
   sovits_path: string | null
   gpt_path: string | null
   speaker_meta: Record<string, unknown>
+  model_id?: string | null
+  model_revision?: string
+  preset_id?: string | null
+  preset_revision?: string
 }
 
 export interface SegmentListResponse {
