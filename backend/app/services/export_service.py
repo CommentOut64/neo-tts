@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import queue
 import shutil
 import threading
+from typing import Callable, Iterable
 from uuid import uuid4
 
 from backend.app.core.exceptions import EditSessionNotFoundError
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
+from backend.app.inference.editable_types import build_boundary_asset_id
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     CompositionExportRequest,
@@ -38,11 +40,13 @@ class ExportService:
         repository: EditSessionRepository,
         asset_store: EditAssetStore,
         subtitle_export_service: SubtitleExportService | None = None,
+        asset_pinner: Callable[[Iterable[str]], object] | None = None,
         run_jobs_in_background: bool = True,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
         self._subtitle_export_service = subtitle_export_service or SubtitleExportService()
+        self._asset_pinner = asset_pinner
         self._run_jobs_in_background = run_jobs_in_background
         self._composition_builder = CompositionBuilder()
         self._lock = threading.Lock()
@@ -124,7 +128,8 @@ class ExportService:
                 progress=0.05,
                 message="正在准备导出目录与清单。",
             )
-            output_manifest = self._export(job)
+            with self._pin_job_assets(job):
+                output_manifest = self._export(job)
         except Exception as exc:
             current_job = self.get_job(export_job_id)
             if current_job is not None and current_job.staging_dir:
@@ -155,6 +160,39 @@ class ExportService:
             output_manifest=output_manifest,
             staging_dir=None,
         )
+
+    def _pin_job_assets(self, job: ExportJobResponse):
+        if self._asset_pinner is None:
+            return nullcontext()
+        snapshot = self._repository.get_snapshot_by_document_version(job.document_id, job.document_version)
+        asset_ids: set[str] = set()
+        if snapshot is not None:
+            asset_ids.update(segment.render_asset_id for segment in snapshot.segments if segment.render_asset_id)
+            asset_ids.update(snapshot.block_ids)
+            segments_by_id = {segment.segment_id: segment for segment in snapshot.segments}
+            for edge in snapshot.edges:
+                left = segments_by_id.get(edge.left_segment_id)
+                right = segments_by_id.get(edge.right_segment_id)
+                if left is None or right is None or left.render_asset_id is None or right.render_asset_id is None:
+                    continue
+                asset_ids.add(
+                    build_boundary_asset_id(
+                        left_segment_id=edge.left_segment_id,
+                        left_render_version=left.render_version,
+                        right_segment_id=edge.right_segment_id,
+                        right_render_version=right.render_version,
+                        edge_version=edge.edge_version,
+                        boundary_strategy=edge.boundary_strategy,
+                    )
+                )
+            if snapshot.composition_manifest_id:
+                asset_ids.add(snapshot.composition_manifest_id)
+            if snapshot.timeline_manifest_id:
+                asset_ids.add(snapshot.timeline_manifest_id)
+        # Pinning is part of the export read transaction.  Do not silently
+        # continue without a pin when the coordinator rejects the request;
+        # otherwise GC could remove an asset while the export is reading it.
+        return self._asset_pinner(asset_ids)
 
     def _create_export_job(
         self,

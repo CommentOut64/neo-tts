@@ -6,6 +6,7 @@ from backend.app.api.routers.system import router as system_router
 from backend.app.api.routers.tts import router as tts_router
 from backend.app.api.routers.voices import router as voices_router
 from backend.app.api.routers.models import router as models_router
+from backend.app.api.routers.projects import router as projects_router
 
 
 api_router = APIRouter()
@@ -13,5 +14,6 @@ api_router.include_router(health_router)
 api_router.include_router(system_router)
 api_router.include_router(voices_router)
 api_router.include_router(models_router)
+api_router.include_router(projects_router)
 api_router.include_router(tts_router)
 api_router.include_router(edit_session_router)

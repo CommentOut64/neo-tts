@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -17,6 +16,8 @@ from backend.app.services.export_service import ExportService
 from backend.app.services.inference_params_cache import InferenceParamsCacheStore
 from backend.app.services.inference_runtime import InferenceRuntimeController
 from backend.app.services.synthesis_result_store import SynthesisResultStore
+from backend.app.services.project_session_service import ProjectSessionService
+from backend.app.services.model_catalog import ModelCatalogService
 
 lifespan_logger = get_logger("lifespan")
 
@@ -103,14 +104,34 @@ async def app_lifespan(app: FastAPI):
         staging_ttl_seconds=settings.edit_session_staging_ttl_seconds,
     )
     edit_session_runtime = EditSessionRuntime()
+    project_session_service = ProjectSessionService(
+        user_data_root=settings.user_data_root,
+        asset_store=edit_asset_store,
+        edit_session_repository=edit_session_repository,
+    )
     edit_session_export_service = ExportService(
         repository=edit_session_repository,
         asset_store=edit_asset_store,
+        asset_pinner=project_session_service.pin_assets,
     )
+    try:
+        builtin_voices = VoiceRepository(
+            config_path=settings.voices_config_path,
+            settings=settings,
+        ).list_voices()
+    except Exception as exc:
+        lifespan_logger.warning("项目模型目录初始化跳过内置音色 reason={}", exc)
+        builtin_voices = []
+    app.state.model_catalog = ModelCatalogService(
+        user_data_root=settings.user_data_root,
+        builtin_voices=builtin_voices,
+    )
+    project_session_service.set_model_catalog(app.state.model_catalog)
     edit_session_maintenance_service = EditSessionMaintenanceService(
         repository=edit_session_repository,
         asset_store=edit_asset_store,
         runtime=edit_session_runtime,
+        project_session=project_session_service,
     )
     await edit_session_maintenance_service.reconcile_on_startup()
     cleanup_task = asyncio.create_task(edit_session_maintenance_service.run_periodic_loop())
@@ -125,6 +146,7 @@ async def app_lifespan(app: FastAPI):
     app.state.edit_session_export_service = edit_session_export_service
     app.state.edit_session_maintenance_service = edit_session_maintenance_service
     app.state.edit_session_cleanup_task = cleanup_task
+    app.state.project_session_service = project_session_service
     try:
         yield
     finally:

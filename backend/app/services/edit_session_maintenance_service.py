@@ -7,6 +7,7 @@ import asyncio
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.services.edit_asset_store import AssetGcReport, EditAssetStore
 from backend.app.services.edit_session_runtime import EditSessionRuntime
+from backend.app.services.project_session_service import ProjectSessionService
 
 
 @dataclass(frozen=True)
@@ -29,11 +30,13 @@ class EditSessionMaintenanceService:
         repository: EditSessionRepository,
         asset_store: EditAssetStore,
         runtime: EditSessionRuntime,
+        project_session: ProjectSessionService | None = None,
         interval_seconds: float = 300.0,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
         self._runtime = runtime
+        self._project_session = project_session
         self._interval_seconds = interval_seconds
         self.last_periodic_report = MaintenanceReport()
 
@@ -122,9 +125,15 @@ class EditSessionMaintenanceService:
         if active_session is not None and active_session.active_job_id is not None:
             formal_gc_report = AssetGcReport(deleted_asset_paths=[], kept_asset_paths=[])
         else:
-            formal_gc_report = self._asset_store.collect_unreferenced_formal_assets(
-                referenced_graph.as_relative_asset_paths()
-            )
+            if self._project_session is None:
+                formal_gc_report = self._asset_store.collect_unreferenced_formal_assets(
+                    referenced_graph.as_relative_asset_paths()
+                )
+            else:
+                formal_gc_report = self._project_session.collect_unreferenced_formal_assets(
+                    referenced_graph.as_relative_asset_paths(),
+                    asset_store=self._asset_store,
+                )
         return MaintenanceReport(
             recovered_document_id=(
                 self._repository.get_active_session().document_id
