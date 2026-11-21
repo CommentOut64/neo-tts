@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
+from pathlib import Path
 from typing import Literal
 
 from backend.app.core.exceptions import EditSessionNotFoundError
@@ -329,18 +330,33 @@ class RenderConfigResolver:
             if active_override is not None
             else None,
         )
-        reference_scope = "session_override" if active_override is not None else "voice_preset"
+        # Older project captures can carry a path produced by resolving an
+        # empty reference value (for example the user-data ``storage``
+        # directory).  Such a directory is never valid reference audio. Drop
+        # only that malformed override and retain the current voice preset so
+        # imported projects remain editable.
+        malformed_override = self._is_directory_reference_path(
+            merged_reference["reference_audio_path"]
+        )
+        if malformed_override:
+            merged_reference = merge_reference_override(
+                preset_voice=preset_voice,
+                override=None,
+            )
+        reference_scope = "voice_preset" if malformed_override else (
+            "session_override" if active_override is not None else "voice_preset"
+        )
         reference_identity = (
             self._build_session_reference_identity(
                 binding_key=binding_key,
                 session_reference_asset=session_reference_asset,
             )
-            if active_override is not None
+            if active_override is not None and not malformed_override
             else f"{voice_binding.voice_id}:preset"
         )
         return ResolvedReferenceSelection(
             binding_key=binding_key,
-            source="custom" if active_override is not None else "preset",
+            source="custom" if active_override is not None and not malformed_override else "preset",
             reference_scope=reference_scope,
             reference_identity=reference_identity,
             reference_audio_path=merged_reference["reference_audio_path"],
@@ -449,5 +465,9 @@ class RenderConfigResolver:
             return ""
         try:
             return cached_content_sha256(raw_path)
-        except FileNotFoundError:
+        except OSError:
             return ""
+
+    @staticmethod
+    def _is_directory_reference_path(raw_path: str) -> bool:
+        return bool(raw_path) and Path(raw_path).is_dir()

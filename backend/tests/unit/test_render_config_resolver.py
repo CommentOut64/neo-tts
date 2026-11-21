@@ -499,3 +499,47 @@ def test_render_config_resolver_content_replacement_changes_formal_identity(tmp_
     assert after.resolved_reference is not None
     assert before.resolved_reference.reference_audio_fingerprint != after.resolved_reference.reference_audio_fingerprint
     assert before.render_context_fingerprint != after.render_context_fingerprint
+
+
+def test_render_config_resolver_falls_back_to_voice_preset_for_directory_override(tmp_path):
+    snapshot = DocumentSnapshot(
+        snapshot_id="head-directory-reference",
+        document_id="doc-1",
+        snapshot_kind="head",
+        document_version=1,
+        segments=[_segment("seg-1", 1)],
+        edges=[],
+        groups=[],
+        render_profiles=[
+            RenderProfile(
+                render_profile_id="profile-session",
+                scope="session",
+                name="session",
+                reference_overrides_by_binding={
+                    "voice-a:model-a": ReferenceBindingOverride(
+                        reference_audio_path=str(tmp_path),
+                        reference_text="stale reference",
+                        reference_language="zh",
+                    )
+                },
+            )
+        ],
+        voice_bindings=[
+            VoiceBinding(
+                voice_binding_id="binding-session",
+                scope="session",
+                voice_id="voice-a",
+                model_key="model-a",
+            )
+        ],
+        default_render_profile_id="profile-session",
+        default_voice_binding_id="binding-session",
+    )
+
+    resolved = _resolver().resolve_segment(snapshot=snapshot, segment_id="seg-1")
+
+    assert resolved.resolved_reference is not None
+    assert resolved.resolved_reference.source == "preset"
+    assert resolved.resolved_reference.reference_scope == "voice_preset"
+    assert resolved.resolved_reference.reference_audio_path == "preset-a.wav"
+    assert resolved.resolved_reference.reference_text == "预设-A"
