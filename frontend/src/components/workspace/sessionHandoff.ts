@@ -22,6 +22,7 @@ interface ResolveWorkspaceEntryActionInput {
   draftRevision: number;
   lastSentToSessionRevision: number | null;
   sourceDraftRevision: number | null;
+  suppressRebuildPrompt?: boolean;
 }
 
 interface SessionSegmentLike {
@@ -80,6 +81,10 @@ export function isExportBlockedByRenderJob(job: RenderJobSummary | null): boolea
 export function resolveWorkspaceEntryAction(
   input: ResolveWorkspaceEntryActionInput,
 ): WorkspaceEntryAction {
+  if (input.suppressRebuildPrompt) {
+    return "idle";
+  }
+
   if (!input.hasInputText) {
     return "idle";
   }

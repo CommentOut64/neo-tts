@@ -102,6 +102,9 @@ const voiceBindings = ref<VoiceBinding[]>([])
 const sessionResourcesLoaded = ref(false)
 const formalStateStatus = ref<FormalStateStatus>('idle')
 const formalStateEpoch = ref(0)
+// Project open and initial route hydration can overlap.  A stale snapshot
+// response must never replace the session installed by the newer project.
+let discoverSessionEpoch = 0
 
 interface FormalSessionBundle {
   snapshot: EditSessionSnapshot
@@ -292,8 +295,12 @@ export function useEditSession() {
   }
 
   async function discoverSession() {
+    const requestEpoch = ++discoverSessionEpoch
     try {
       const data = await getSnapshot()
+      if (requestEpoch !== discoverSessionEpoch) {
+        return
+      }
       applySnapshotMeta(data)
       
       if (data.session_status === 'initializing' && activeJob.value) {
@@ -310,6 +317,9 @@ export function useEditSession() {
         }
       }
     } catch (err) {
+      if (requestEpoch !== discoverSessionEpoch) {
+        return
+      }
       if (extractStatusCode(err) === 404) {
         resetSessionState()
       } else {

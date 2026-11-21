@@ -80,14 +80,23 @@ export function buildReferenceSelectionEntry(input: {
   customRefPath: string | null;
   refText: string;
   refLang: string;
+  referenceAudioFingerprint?: string | null;
+  referenceTextFingerprint?: string | null;
 }): ReferenceSelectionByBindingEntry {
-  return {
+  const entry: ReferenceSelectionByBindingEntry = {
     source: input.source,
     session_reference_asset_id: input.sessionReferenceAssetId ?? null,
     custom_ref_path: input.customRefPath,
     ref_text: input.refText,
     ref_lang: input.refLang,
   };
+  if (input.referenceAudioFingerprint != null) {
+    entry.reference_audio_fingerprint = input.referenceAudioFingerprint;
+  }
+  if (input.referenceTextFingerprint != null) {
+    entry.reference_text_fingerprint = input.referenceTextFingerprint;
+  }
+  return entry;
 }
 
 function buildPresetReferenceSelectionEntry(
@@ -246,19 +255,28 @@ function normalizeReferenceSelectionsByBinding(
       return [];
     }
 
+    const entry: ReferenceSelectionByBindingEntry = {
+      source,
+      session_reference_asset_id: readNullableString(
+        (value as Record<string, unknown>).session_reference_asset_id,
+      ),
+      custom_ref_path: readNullableString(
+        (value as Record<string, unknown>).custom_ref_path,
+      ),
+      ref_text: readString((value as Record<string, unknown>).ref_text) ?? "",
+      ref_lang: readString((value as Record<string, unknown>).ref_lang) ?? "auto",
+    };
+    const audioFingerprint = readNullableString(
+      (value as Record<string, unknown>).reference_audio_fingerprint,
+    );
+    const textFingerprint = readNullableString(
+      (value as Record<string, unknown>).reference_text_fingerprint,
+    );
+    if (audioFingerprint != null) entry.reference_audio_fingerprint = audioFingerprint;
+    if (textFingerprint != null) entry.reference_text_fingerprint = textFingerprint;
     return [[
       bindingKey,
-      {
-        source,
-        session_reference_asset_id: readNullableString(
-          (value as Record<string, unknown>).session_reference_asset_id,
-        ),
-        custom_ref_path: readNullableString(
-          (value as Record<string, unknown>).custom_ref_path,
-        ),
-        ref_text: readString((value as Record<string, unknown>).ref_text) ?? "",
-        ref_lang: readString((value as Record<string, unknown>).ref_lang) ?? "auto",
-      },
+      entry,
     ]] as const;
   });
 

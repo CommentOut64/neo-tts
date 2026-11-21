@@ -201,4 +201,26 @@ describe("useWorkspaceDraftPersistence", () => {
     expect(persistence.readSnapshot("doc-1")).toBeNull();
     expect(localStorageMock.getItem("neo-tts-workspace-local-draft::doc-1")).toBeNull();
   });
+
+  it("captureEnvelope/restoreEnvelope 统一保存正文、参数、顺序和输入草稿", async () => {
+    const { useWorkspaceDraftPersistence } = await loadPersistenceModule();
+    const persistence = useWorkspaceDraftPersistence();
+    const envelope = persistence.captureEnvelope({
+      documentId: "doc-1",
+      baseSnapshotId: "snap-1",
+      inputRevision: 4,
+      parameterPatch: { speed: 1.1 },
+      stagedOrder: ["seg-2", "seg-1"],
+      segmentTextDrafts: { "seg-1": createDraft() },
+      inputDraft: {
+        text: "未应用输入",
+        draftRevision: 4,
+        source: "manual",
+        referenceDraft: { language: "zh" },
+      },
+    });
+
+    expect(persistence.restoreEnvelope(envelope)).toEqual(envelope);
+    expect(persistence.restoreEnvelope({ ...envelope, inputRevision: "bad" })).toBeNull();
+  });
 });

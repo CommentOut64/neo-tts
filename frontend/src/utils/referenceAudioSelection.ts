@@ -6,6 +6,7 @@ export interface ResolveInitializeReferenceAudioPathOptions {
   customReferenceAudioPath: string | null | undefined;
   customReferenceAudioFile: File | null | undefined;
   upload: (file: File) => Promise<ReferenceAudioUploadResponse>;
+  onUploaded?: (response: ReferenceAudioUploadResponse) => void;
 }
 
 export async function resolveInitializeReferenceAudioPath(
@@ -24,5 +25,6 @@ export async function resolveInitializeReferenceAudioPath(
   }
 
   const response = await options.upload(options.customReferenceAudioFile);
+  options.onUploaded?.(response);
   return response.reference_audio_path;
 }

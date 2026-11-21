@@ -1,9 +1,15 @@
-import type { WorkspaceDraftSnapshot } from "@/utils/workspaceDraftSnapshot";
+import type {
+  WorkspaceDraftEnvelope,
+  WorkspaceDraftSnapshot,
+} from "@/utils/workspaceDraftSnapshot";
+import type { WorkspaceSegmentTextDraft } from "@/components/workspace/workspace-editor/terminalRegionModel";
 import {
   WORKSPACE_DRAFT_INDEX_KEY,
   buildWorkspaceDraftStorageKey,
   isWorkspaceDraftCompatible,
   normalizeWorkspaceDraftSnapshot,
+  normalizeWorkspaceDraftEnvelope,
+  WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION,
   type WorkspaceDraftCompatibilityInput,
 } from "@/utils/workspaceDraftSnapshot";
 
@@ -155,11 +161,62 @@ export function useWorkspaceDraftPersistence() {
     storage.removeItem(WORKSPACE_DRAFT_INDEX_KEY);
   }
 
+  function captureEnvelope(input: {
+    documentId: string;
+    baseSnapshotId: string | null;
+    inputRevision: number;
+    parameterPatch?: Record<string, unknown>;
+    stagedOrder?: string[] | null;
+    segmentTextDrafts?: Record<string, WorkspaceSegmentTextDraft>;
+    inputDraft: {
+      text: string;
+      draftRevision: number;
+      source: string;
+      referenceDraft?: Record<string, unknown> | null;
+    };
+    updatedAt?: string;
+  }): WorkspaceDraftEnvelope {
+    if (!input.documentId || !Number.isFinite(input.inputRevision)) {
+      throw new Error("workspace draft capture requires documentId and inputRevision");
+    }
+    return {
+      schemaVersion: WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION,
+      documentId: input.documentId,
+      baseSnapshotId: input.baseSnapshotId,
+      inputRevision: input.inputRevision,
+      parameterPatch: { ...(input.parameterPatch ?? {}) },
+      stagedOrder: input.stagedOrder ? [...input.stagedOrder] : null,
+      segmentTextDrafts: { ...(input.segmentTextDrafts ?? {}) },
+      inputDraft: {
+        text: input.inputDraft.text,
+        draftRevision: input.inputDraft.draftRevision,
+        source: input.inputDraft.source,
+        referenceDraft: input.inputDraft.referenceDraft ? { ...input.inputDraft.referenceDraft } : null,
+      },
+      updatedAt: input.updatedAt ?? new Date().toISOString(),
+    };
+  }
+
+  function restoreEnvelope(raw: unknown): WorkspaceDraftEnvelope | null {
+    return normalizeWorkspaceDraftEnvelope(raw);
+  }
+
+  async function flushDraft(
+    input: Parameters<typeof captureEnvelope>[0],
+    flush?: () => void | Promise<void>,
+  ): Promise<WorkspaceDraftEnvelope> {
+    await flush?.();
+    return captureEnvelope(input);
+  }
+
   return {
     readSnapshot,
     readCompatibleSnapshot,
     saveSnapshot,
     clearSnapshot,
     clearAllSnapshots,
+    captureEnvelope,
+    restoreEnvelope,
+    flushDraft,
   };
 }

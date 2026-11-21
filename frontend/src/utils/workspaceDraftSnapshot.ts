@@ -7,6 +7,7 @@ import {
 import type { WorkspaceSegmentTextDraft } from "@/components/workspace/workspace-editor/terminalRegionModel";
 
 export const WORKSPACE_DRAFT_SCHEMA_VERSION = 3 as const;
+export const WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_DRAFT_STORAGE_PREFIX = "neo-tts-workspace-local-draft::";
 export const WORKSPACE_DRAFT_INDEX_KEY = "neo-tts-workspace-local-draft-index";
 
@@ -30,6 +31,23 @@ export interface WorkspaceDraftCompatibilityInput {
   documentId: string;
   documentVersion: number;
   segmentIds: string[];
+}
+
+export interface WorkspaceDraftEnvelope {
+  schemaVersion: typeof WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION;
+  documentId: string;
+  baseSnapshotId: string | null;
+  inputRevision: number;
+  parameterPatch: Record<string, unknown>;
+  stagedOrder: string[] | null;
+  segmentTextDrafts: Record<string, WorkspaceSegmentTextDraft>;
+  inputDraft: {
+    text: string;
+    draftRevision: number;
+    source: string;
+    referenceDraft: Record<string, unknown> | null;
+  };
+  updatedAt: string;
 }
 
 function isRecord(raw: unknown): raw is Record<string, unknown> {
@@ -183,4 +201,56 @@ export function isWorkspaceDraftCompatible(
   return snapshot.segmentIds.every(
     (segmentId, index) => segmentId === input.segmentIds[index],
   );
+}
+
+export function normalizeWorkspaceDraftEnvelope(raw: unknown): WorkspaceDraftEnvelope | null {
+  if (!isRecord(raw) || raw.schemaVersion !== WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION) {
+    return null;
+  }
+  if (typeof raw.documentId !== "string" || raw.documentId.length === 0) {
+    return null;
+  }
+  if (typeof raw.baseSnapshotId !== "string" && raw.baseSnapshotId !== null) {
+    return null;
+  }
+  if (typeof raw.inputRevision !== "number" || !Number.isFinite(raw.inputRevision)) {
+    return null;
+  }
+  if (!isRecord(raw.parameterPatch)) {
+    return null;
+  }
+  if (raw.stagedOrder !== null && (!Array.isArray(raw.stagedOrder) || !raw.stagedOrder.every((item) => typeof item === "string"))) {
+    return null;
+  }
+  const segmentTextDrafts = normalizeSegmentDrafts(raw.segmentTextDrafts);
+  if (segmentTextDrafts === null || !isRecord(raw.inputDraft)) {
+    return null;
+  }
+  const inputDraft = raw.inputDraft;
+  if (
+    typeof inputDraft.text !== "string" ||
+    typeof inputDraft.draftRevision !== "number" ||
+    !Number.isFinite(inputDraft.draftRevision) ||
+    typeof inputDraft.source !== "string" ||
+    (inputDraft.referenceDraft !== null && !isRecord(inputDraft.referenceDraft)) ||
+    typeof raw.updatedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: WORKSPACE_DRAFT_ENVELOPE_SCHEMA_VERSION,
+    documentId: raw.documentId,
+    baseSnapshotId: raw.baseSnapshotId,
+    inputRevision: raw.inputRevision,
+    parameterPatch: { ...raw.parameterPatch },
+    stagedOrder: raw.stagedOrder === null ? null : [...raw.stagedOrder],
+    segmentTextDrafts,
+    inputDraft: {
+      text: inputDraft.text,
+      draftRevision: inputDraft.draftRevision,
+      source: inputDraft.source,
+      referenceDraft: inputDraft.referenceDraft === null ? null : { ...inputDraft.referenceDraft },
+    },
+    updatedAt: raw.updatedAt,
+  };
 }

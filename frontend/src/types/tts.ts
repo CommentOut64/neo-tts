@@ -125,6 +125,8 @@ export interface ReferenceSelectionByBindingEntry {
   custom_ref_path: string | null
   ref_text: string
   ref_lang: string
+  reference_audio_fingerprint?: string | null
+  reference_text_fingerprint?: string | null
 }
 
 export type ReferenceSelectionByBinding = Record<string, ReferenceSelectionByBindingEntry>

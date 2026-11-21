@@ -9,6 +9,20 @@ import {
 } from "../src/components/workspace/sessionHandoff";
 
 describe("sessionHandoff", () => {
+  it("项目文件恢复期间不触发输入稿重建", () => {
+    expect(
+      resolveWorkspaceEntryAction({
+        sessionStatus: "ready",
+        hasInputText: true,
+        inputSource: "manual",
+        draftRevision: 3,
+        lastSentToSessionRevision: null,
+        sourceDraftRevision: 1,
+        suppressRebuildPrompt: true,
+      }),
+    ).toBe("idle");
+  });
+
   it("空输入稿不会触发 workspace 初始化动作", () => {
     expect(
       resolveWorkspaceEntryAction({
