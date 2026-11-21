@@ -9,8 +9,10 @@ from backend.app.schemas.system import PrepareExitResponse, SystemVersionRespons
 from backend.app.services.app_exit_service import AppExitService
 from backend.app.services.inference_residual_service import InferenceResidualService
 from backend.app.services.synthesis_result_store import SynthesisResultStore
+from backend.app.core.logging import get_logger
 
 router = APIRouter(prefix="/v1/system", tags=["System"])
+system_logger = get_logger("system")
 
 class FolderSelectResponse(BaseModel):
     path: str | None
@@ -131,6 +133,11 @@ def open_file_dialog(initial_dir: str | None = None, accept: str | None = None):
     t.start()
     t.join()
 
+    system_logger.info(
+        "file dialog completed accept={} selected={}",
+        accept,
+        bool(result["path"]),
+    )
     return FileSelectResponse(path=result["path"])
 
 
