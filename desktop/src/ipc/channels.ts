@@ -4,3 +4,5 @@ export const APP_OPEN_EXTERNAL_URL_CHANNEL = "app:open-external-url";
 export const APP_CHECK_UPDATE_CHANNEL = "app:check-update";
 export const APP_START_UPDATE_DOWNLOAD_CHANNEL = "app:start-update-download";
 export const APP_RESTART_AND_APPLY_UPDATE_CHANNEL = "app:restart-and-apply-update";
+export const APP_PROJECT_OPEN_DIALOG_CHANNEL = "project:open-dialog";
+export const APP_PROJECT_SAVE_DIALOG_CHANNEL = "project:save-dialog";

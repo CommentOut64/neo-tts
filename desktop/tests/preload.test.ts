@@ -43,4 +43,19 @@ describe("desktop preload", () => {
     );
     expect(getPathForFile).toHaveBeenCalledWith(fakeFile);
   });
+
+  it("只暴露项目文件对话框的窄 bridge", async () => {
+    await import("../src/preload");
+
+    const [, bridge] = exposeInMainWorld.mock.calls[0]!;
+    expect(typeof bridge.openProjectFileDialog).toBe("function");
+    expect(typeof bridge.saveProjectFileDialog).toBe("function");
+    bridge.openProjectFileDialog("F:/projects");
+    bridge.saveProjectFileDialog("F:/projects", "demo.neo");
+    expect(invoke).toHaveBeenCalledWith("project:open-dialog", { initialDir: "F:/projects" });
+    expect(invoke).toHaveBeenCalledWith("project:save-dialog", {
+      initialDir: "F:/projects",
+      suggestedName: "demo.neo",
+    });
+  });
 });

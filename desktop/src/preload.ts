@@ -8,6 +8,8 @@ import {
 	APP_REQUEST_EXIT_CHANNEL,
 	APP_RESTART_AND_APPLY_UPDATE_CHANNEL,
 	APP_START_UPDATE_DOWNLOAD_CHANNEL,
+	APP_PROJECT_OPEN_DIALOG_CHANNEL,
+	APP_PROJECT_SAVE_DIALOG_CHANNEL,
 } from "./ipc/channels";
 
 const runtimeInfo = ipcRenderer.sendSync(APP_GET_RUNTIME_INFO_CHANNEL) as ElectronRuntimeInfo;
@@ -30,4 +32,8 @@ contextBridge.exposeInMainWorld("neoTTS", {
 			return null;
 		}
 	},
+	openProjectFileDialog: (initialDir?: string) =>
+		ipcRenderer.invoke(APP_PROJECT_OPEN_DIALOG_CHANNEL, { initialDir }),
+	saveProjectFileDialog: (initialDir?: string, suggestedName?: string) =>
+		ipcRenderer.invoke(APP_PROJECT_SAVE_DIALOG_CHANNEL, { initialDir, suggestedName }),
 });

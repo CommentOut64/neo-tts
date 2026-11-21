@@ -11,6 +11,8 @@ import {
 	APP_REQUEST_EXIT_CHANNEL,
 	APP_RESTART_AND_APPLY_UPDATE_CHANNEL,
 	APP_START_UPDATE_DOWNLOAD_CHANNEL,
+	APP_PROJECT_OPEN_DIALOG_CHANNEL,
+	APP_PROJECT_SAVE_DIALOG_CHANNEL,
 } from "./ipc/channels";
 import { buildElectronRuntimeInfo } from "./ipc/runtimeInfo";
 import { createCompositeRuntimeLogger, createFileRuntimeLogger, createNoopRuntimeLogger, type RuntimeLogger } from "./logging/runtimeLogger";
@@ -475,6 +477,27 @@ export async function runMain(options: RunMainOptions): Promise<void> {
 			return;
 		}
 		await Promise.resolve(options.openExternalUrl?.(url));
+	});
+	options.ipcMain.handle(APP_PROJECT_OPEN_DIALOG_CHANNEL, async (_event, request) => {
+		const { dialog } = require("electron") as typeof import("electron");
+		const input = request && typeof request === "object" ? request as { initialDir?: unknown } : {};
+		const result = await dialog.showOpenDialog({
+			properties: ["openFile"],
+			defaultPath: typeof input.initialDir === "string" ? input.initialDir : undefined,
+			filters: [{ name: "Neo project", extensions: ["neo"] }],
+		});
+		return result.canceled ? null : result.filePaths[0] ?? null;
+	});
+	options.ipcMain.handle(APP_PROJECT_SAVE_DIALOG_CHANNEL, async (_event, request) => {
+		const { dialog } = require("electron") as typeof import("electron");
+		const input = request && typeof request === "object" ? request as { initialDir?: unknown; suggestedName?: unknown } : {};
+		const result = await dialog.showSaveDialog({
+			defaultPath: typeof input.suggestedName === "string" && input.suggestedName.length > 0
+				? input.suggestedName
+				: typeof input.initialDir === "string" ? input.initialDir : undefined,
+			filters: [{ name: "Neo project", extensions: ["neo"] }],
+		});
+		return result.canceled ? null : result.filePath ?? null;
 	});
 	void backend.exited.then((error) => {
 		if (shuttingDown) {
