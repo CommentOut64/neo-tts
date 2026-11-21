@@ -357,6 +357,51 @@ def test_get_segment_context_prefers_voice_preset_over_initialize_request_fallba
     assert context.reference_language == "zh"
 
 
+def test_edit_prepare_uses_snapshot_reference_instead_of_rehydrated_request(tmp_path, monkeypatch):
+    service = _build_service(tmp_path)
+    accepted = service.create_initialize_job(
+        InitializeEditSessionRequest(raw_text="第一句。", voice_id="demo")
+    )
+    service.run_initialize_job(accepted.job.job_id)
+    active_session = service._session_service.require_active_session()  # noqa: SLF001
+    service._repository.upsert_active_session(  # noqa: SLF001
+        active_session.model_copy(
+            update={
+                "initialize_request": InitializeEditSessionRequest(
+                    raw_text="第一句。",
+                    voice_id="demo",
+                    reference_source="preset",
+                )
+            }
+        )
+    )
+    captured_reference_paths: list[str] = []
+    original_build = service._gateway.build_reference_context  # noqa: SLF001
+
+    def capture_context(resolved_context, **kwargs):
+        captured_reference_paths.append(resolved_context.reference_audio_path)
+        return original_build(resolved_context, **kwargs)
+
+    monkeypatch.setattr(service._gateway, "build_reference_context", capture_context)  # noqa: SLF001
+    segment_id = service.get_head_snapshot().segments[0].segment_id
+    edit_job = service.create_update_segment_job(
+        segment_id,
+        UpdateSegmentRequest(
+            text_patch={
+                "stem": "第一句修改后",
+                "terminal_raw": "。",
+                "terminal_closer_suffix": "",
+                "terminal_source": "original",
+            }
+        ),
+    )
+
+    service.run_edit_job(edit_job.job.job_id)
+
+    assert captured_reference_paths[0] == "fake.wav"
+    assert service.get_job(edit_job.job.job_id).status == "completed"
+
+
 def test_get_snapshot_source_text_prefers_initialize_request_raw_text(tmp_path):
     service = _build_service(tmp_path)
     accepted = service.create_initialize_job(

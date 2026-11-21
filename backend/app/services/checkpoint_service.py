@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Iterable
 from uuid import uuid4
 
 import numpy as np
@@ -37,6 +38,7 @@ class CheckpointService:
         block_planner: BlockPlanner | None = None,
         composition_builder: CompositionBuilder | None = None,
         timeline_manifest_service: TimelineManifestService | None = None,
+        asset_pinner: Callable[[Iterable[str]], object] | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
@@ -45,6 +47,7 @@ class CheckpointService:
         self._composition_builder = composition_builder or CompositionBuilder()
         self._timeline_manifest_service = timeline_manifest_service or TimelineManifestService()
         self._render_config_resolver = RenderConfigResolver()
+        self._asset_pinner = asset_pinner
 
     def get_current_checkpoint(self, document_id: str) -> CheckpointState | None:
         return self._repository.get_latest_checkpoint(document_id)
@@ -53,6 +56,47 @@ class CheckpointService:
         self._repository.delete_checkpoints_for_document(document_id)
 
     def save_partial_head(
+        self,
+        *,
+        document_id: str,
+        job_id: str,
+        active_session: ActiveDocumentState,
+        full_snapshot: DocumentSnapshot,
+        resolve_boundary_context: Callable[[EditableEdge], ReferenceContext],
+        segment_assets: dict[str, SegmentRenderAssetPayload],
+        boundary_assets: dict[str, BoundaryAssetPayload],
+        status: str,
+    ) -> tuple[CheckpointState, DocumentSnapshot]:
+        asset_ids = {
+            segment.render_asset_id
+            for segment in full_snapshot.segments
+            if segment.render_asset_id
+        }
+        asset_ids.update(full_snapshot.block_ids)
+        asset_ids.update(
+            getattr(asset, "boundary_asset_id", "")
+            for asset in boundary_assets.values()
+            if getattr(asset, "boundary_asset_id", None)
+        )
+        asset_ids.update(
+            getattr(asset, "render_asset_id", "")
+            for asset in segment_assets.values()
+            if getattr(asset, "render_asset_id", None)
+        )
+        pin_context = self._asset_pinner(asset_ids) if self._asset_pinner else nullcontext()
+        with pin_context:
+            return self._save_partial_head_impl(
+                document_id=document_id,
+                job_id=job_id,
+                active_session=active_session,
+                full_snapshot=full_snapshot,
+                resolve_boundary_context=resolve_boundary_context,
+                segment_assets=segment_assets,
+                boundary_assets=boundary_assets,
+                status=status,
+            )
+
+    def _save_partial_head_impl(
         self,
         *,
         document_id: str,

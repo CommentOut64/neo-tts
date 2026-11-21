@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import queue
 
@@ -180,6 +181,7 @@ def _build_edit_session_service(request: Request) -> EditSessionService:
         asset_store=request.app.state.edit_asset_store,
         runtime=request.app.state.edit_session_runtime,
         voice_service=_build_voice_service(request),
+        capability_provider=lambda: getattr(getattr(request.app.state, "project_session_service", None), "current_capability", {"edit": True}),
     )
 
 
@@ -217,6 +219,8 @@ def _build_render_job_service(
         session_service=_build_edit_session_service(request),
         gateway=_build_editable_gateway(request, voice_id=voice_id),
         audio_delivery_service=AudioDeliveryService(),
+        asset_pinner=getattr(getattr(request.app.state, "project_session_service", None), "pin_assets", None),
+        capability_provider=lambda: getattr(getattr(request.app.state, "project_session_service", None), "current_capability", {"edit": True}),
         model_catalog=_build_model_catalog(request) if use_catalog else None,
     )
 
@@ -233,6 +237,8 @@ def _build_readonly_render_job_service(request: Request) -> RenderJobService:
         session_service=_build_edit_session_service(request),
         gateway=gateway,
         audio_delivery_service=AudioDeliveryService(),
+        asset_pinner=getattr(getattr(request.app.state, "project_session_service", None), "pin_assets", None),
+        capability_provider=lambda: getattr(getattr(request.app.state, "project_session_service", None), "current_capability", {"edit": True}),
         model_catalog=_build_model_catalog(request),
         run_jobs_in_background=False,
     )
@@ -254,14 +260,21 @@ def _stream_audio_asset(
     expires_at=None,
     download: bool = False,
 ) -> Response:
-    return _build_audio_delivery_service().build_streaming_response(
-        request=request,
-        asset_path=asset_path,
-        content_type="audio/wav",
-        etag=etag,
-        expires_at=expires_at,
-        download=download,
+    project_session = getattr(request.app.state, "project_session_service", None)
+    pin_context = (
+        project_session.pin_assets([asset_path.name])
+        if project_session is not None
+        else nullcontext()
     )
+    with pin_context:
+        return _build_audio_delivery_service().build_streaming_response(
+            request=request,
+            asset_path=asset_path,
+            content_type="audio/wav",
+            etag=etag,
+            expires_at=expires_at,
+            download=download,
+        )
 
 
 def _build_formal_audio_descriptor(request: Request, *, asset_id: str, asset_path: Path):

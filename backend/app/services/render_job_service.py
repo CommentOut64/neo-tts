@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
 import time
-from typing import Callable
+from typing import Callable, Iterable
 from uuid import uuid4
 
 import numpy as np
@@ -15,6 +15,7 @@ from backend.app.core.exceptions import (
     AssetNotFoundError,
     EditSessionNotFoundError,
     SnapshotStateError,
+    ProjectReadOnlyError,
 )
 from backend.app.inference.audio_processing import build_wav_bytes, float_audio_chunk_to_pcm16_bytes
 from backend.app.inference.editable_gateway import EditableInferenceGateway
@@ -131,6 +132,7 @@ class RenderPlan:
     job_kind: str
     document_id: str
     request: InitializeEditSessionRequest
+    snapshot: DocumentSnapshot | None = None
     document_version: int = 1
     context: ReferenceContext | None = None
     segments: list[EditableSegment] = field(default_factory=list)
@@ -198,7 +200,9 @@ class RenderJobService:
         render_planner: RenderPlanner | None = None,
         audio_delivery_service: AudioDeliveryService | None = None,
         checkpoint_service: CheckpointService | None = None,
+        asset_pinner: Callable[[Iterable[str]], object] | None = None,
         model_catalog: ModelCatalogService | None = None,
+        capability_provider: Callable[[], dict[str, bool]] | None = None,
         run_jobs_in_background: bool = True,
         preview_ttl_seconds: int = 600,
     ) -> None:
@@ -219,6 +223,7 @@ class RenderJobService:
         )
         self._segment_group_service = segment_group_service or SegmentGroupService()
         self._model_catalog = model_catalog
+        self._capability_provider = capability_provider
         self._render_planner = render_planner or RenderPlanner(block_planner=self._block_planner)
         self._render_config_resolver = RenderConfigResolver(voice_service=session_service, model_catalog=model_catalog)
         self._audio_delivery_service = audio_delivery_service or AudioDeliveryService()
@@ -229,6 +234,7 @@ class RenderJobService:
             block_planner=self._block_planner,
             composition_builder=self._composition_builder,
             timeline_manifest_service=self._timeline_manifest_service,
+            asset_pinner=asset_pinner,
         )
         self._run_jobs_in_background = run_jobs_in_background
         self._preview_ttl_seconds = preview_ttl_seconds
@@ -236,12 +242,15 @@ class RenderJobService:
         self._queued_edit_jobs: dict[str, QueuedEditJob] = {}
 
     def _assert_can_commit_configuration(self) -> None:
+        if self._capability_provider is not None and not self._capability_provider().get("edit", True):
+            raise ProjectReadOnlyError("Project is read-only degraded; editing is unavailable.")
         try:
             self._runtime.assert_can_start()
         except RuntimeError as exc:
             raise ActiveRenderJobConflictError(str(exc)) from exc
 
     def create_initialize_job(self, request: InitializeEditSessionRequest) -> RenderJobAcceptedResponse:
+        self._assert_can_commit_configuration()
         try:
             self._runtime.assert_can_start()
         except RuntimeError as exc:
@@ -694,6 +703,7 @@ class RenderJobService:
         )
 
     def create_restore_baseline_job(self) -> RenderJobAcceptedResponse:
+        self._assert_can_commit_configuration()
         try:
             self._runtime.assert_can_start()
         except RuntimeError as exc:
@@ -873,6 +883,7 @@ class RenderJobService:
         )
 
     def create_rerender_segment_job(self, segment_id: str) -> RenderJobAcceptedResponse:
+        self._assert_can_commit_configuration()
         before_snapshot = self._session_service.get_head_snapshot()
         target_segment = next(
             (segment for segment in before_snapshot.segments if segment.segment_id == segment_id),
@@ -977,6 +988,7 @@ class RenderJobService:
             job_kind=queued_job.job_kind,
             document_id=queued_job.snapshot.document_id,
             request=queued_job.request,
+            snapshot=queued_job.snapshot.model_copy(deep=True),
             document_version=queued_job.snapshot.document_version,
             segments=[segment.model_copy(deep=True) for segment in queued_job.snapshot.segments],
             edges=[edge.model_copy(deep=True) for edge in queued_job.snapshot.edges],
@@ -1057,6 +1069,7 @@ class RenderJobService:
         return accepted
 
     def create_resume_job(self, job_id: str) -> RenderJobAcceptedResponse:
+        self._assert_can_commit_configuration()
         job = self.get_job(job_id)
         if job is None:
             raise EditSessionNotFoundError(f"Render job '{job_id}' not found.")
@@ -1500,8 +1513,20 @@ class RenderJobService:
             message="正在准备编辑作业。",
         )
         if self._should_prepare_edit_reference_context(plan):
+            snapshot = plan.snapshot
+            if snapshot is None or not plan.segments:
+                raise SnapshotStateError("Edit job snapshot is missing its segment configuration.")
+            target_segment_ids = plan.target_segment_ids or {segment.segment_id for segment in plan.segments}
+            target_segment = next(
+                (segment for segment in plan.segments if segment.segment_id in target_segment_ids),
+                plan.segments[0],
+            )
+            resolved_context, _ = self._build_resolved_context_from_segment(
+                snapshot=snapshot,
+                segment=target_segment,
+            )
             plan.context = self._gateway.build_reference_context(
-                self._build_resolved_context_from_request(plan.request),
+                resolved_context,
                 progress_callback=self._build_prepare_progress_callback(
                     job_id=plan.job_id,
                     default_message="正在准备编辑作业。",
@@ -2791,6 +2816,8 @@ class RenderJobService:
         skip_render: bool = False,
         skip_compose: bool = False,
     ) -> RenderJobAcceptedResponse:
+        if self._capability_provider is not None and not self._capability_provider().get("edit", True):
+            raise ProjectReadOnlyError("Project is read-only degraded; editing is unavailable.")
         try:
             self._runtime.assert_can_start()
         except RuntimeError as exc:
@@ -2865,6 +2892,8 @@ class RenderJobService:
         after_snapshot: DocumentSnapshot,
         change_reason: str,
     ) -> RenderJobAcceptedResponse:
+        if self._capability_provider is not None and not self._capability_provider().get("edit", True):
+            raise ProjectReadOnlyError("Project is read-only degraded; editing is unavailable.")
         if after_snapshot.document_version <= before_snapshot.document_version:
             after_snapshot = after_snapshot.model_copy(
                 deep=True,
@@ -3022,11 +3051,27 @@ class RenderJobService:
         snapshot: DocumentSnapshot,
         segment: EditableSegment,
     ) -> ReferenceContext:
-        resolved = self._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)
-        cache_key = f"{resolved.model_cache_key}:{resolved.render_context_fingerprint}"
+        resolved_context, cache_key = self._build_resolved_context_from_segment(
+            snapshot=snapshot,
+            segment=segment,
+        )
         context = plan.context_cache.get(cache_key)
         if context is not None:
             return context
+        context = self._gateway.build_reference_context(
+            resolved_context,
+            should_cancel=self._build_cancel_checker(plan),
+        )
+        plan.context_cache[cache_key] = context
+        return context
+
+    def _build_resolved_context_from_segment(
+        self,
+        *,
+        snapshot: DocumentSnapshot,
+        segment: EditableSegment,
+    ) -> tuple[ResolvedRenderContext, str]:
+        resolved = self._render_config_resolver.resolve_segment(snapshot=snapshot, segment_id=segment.segment_id)
         resolved_reference = resolved.resolved_reference
         resolved_context = ResolvedRenderContext(
             voice_id=resolved.voice_binding.voice_id,
@@ -3120,12 +3165,7 @@ class RenderJobService:
             resolved_context.render_profile_id,
             resolved_context.resolved_voice_binding.voice_binding_id,
         )
-        context = self._gateway.build_reference_context(
-            resolved_context,
-            should_cancel=self._build_cancel_checker(plan),
-        )
-        plan.context_cache[cache_key] = context
-        return context
+        return resolved_context, f"{resolved.model_cache_key}:{resolved.render_context_fingerprint}"
 
     @staticmethod
     def _build_resolved_context_from_request(request: InitializeEditSessionRequest) -> ResolvedRenderContext:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from uuid import uuid4
 
 from backend.app.core.logging import get_logger
 from backend.app.inference.runtime_errors import map_runtime_error
@@ -30,6 +31,10 @@ class AssetExpiredError(RuntimeError):
 
 class InvalidRangeError(RuntimeError):
     pass
+
+
+class ProjectReadOnlyError(PermissionError):
+    code = "READ_ONLY_DEGRADED"
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -65,3 +70,18 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ValueError)
     async def _value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(ProjectReadOnlyError)
+    async def _project_read_only_handler(request: Request, exc: ProjectReadOnlyError) -> JSONResponse:
+        error = {
+            "code": exc.code,
+            "phase": "capability",
+            "retryable": False,
+            "action": "choose_model",
+            "request_id": request.headers.get("x-request-id") or uuid4().hex,
+            "message": str(exc),
+        }
+        return JSONResponse(
+            status_code=423,
+            content={"ok": False, "detail": error, "error": error},
+        )

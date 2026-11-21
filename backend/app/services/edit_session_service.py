@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Callable
 from uuid import uuid4
 
-from backend.app.core.exceptions import EditSessionNotFoundError
+from backend.app.core.exceptions import EditSessionNotFoundError, ProjectReadOnlyError
 from backend.app.repositories.edit_session_repository import EditSessionRepository
 from backend.app.schemas.edit_session import (
     ActiveDocumentState,
@@ -43,6 +44,7 @@ class EditSessionService:
         runtime: EditSessionRuntime,
         voice_service: VoiceService,
         session_reference_asset_service: SessionReferenceAssetService | None = None,
+        capability_provider: Callable[[], dict[str, bool]] | None = None,
     ) -> None:
         self._repository = repository
         self._asset_store = asset_store
@@ -51,6 +53,11 @@ class EditSessionService:
         self._session_reference_asset_service = session_reference_asset_service or SessionReferenceAssetService(
             assets_root=asset_store.assets_root
         )
+        self._capability_provider = capability_provider
+
+    def _assert_editable(self) -> None:
+        if self._capability_provider is not None and not self._capability_provider().get("edit", True):
+            raise ProjectReadOnlyError("Project is read-only degraded; editing is unavailable.")
 
     def prepare_initialize_request(self, request: InitializeEditSessionRequest) -> InitializeEditSessionRequest:
         voice = self._voice_service.get_voice(request.voice_id)
@@ -74,6 +81,7 @@ class EditSessionService:
         reference_text: str = "",
         reference_language: str = "",
     ) -> SessionReferenceAsset:
+        self._assert_editable()
         active_session = self.require_active_session()
         return self._session_reference_asset_service.create_asset(
             session_id=active_session.document_id,
@@ -99,6 +107,7 @@ class EditSessionService:
         reference_text: str | None = None,
         reference_language: str | None = None,
     ) -> SessionReferenceAsset:
+        self._assert_editable()
         active_session = self.require_active_session()
         return self._session_reference_asset_service.update_asset(
             session_id=active_session.document_id,
@@ -109,6 +118,7 @@ class EditSessionService:
         )
 
     def initialize_document(self, request: InitializeEditSessionRequest) -> tuple[ActiveDocumentState, RenderJobResponse]:
+        self._assert_editable()
         now = datetime.now(timezone.utc)
         document_id = uuid4().hex
         job_id = uuid4().hex
@@ -226,6 +236,7 @@ class EditSessionService:
         after_snapshot: DocumentSnapshot,
         pending_segment_ids: set[str] | None = None,
     ) -> ConfigurationCommitResponse:
+        self._assert_editable()
         active_session = self.require_active_session()
         next_document_version = max(before_snapshot.document_version, after_snapshot.document_version)
         if next_document_version <= before_snapshot.document_version:
